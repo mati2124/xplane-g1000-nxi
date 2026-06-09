@@ -1,0 +1,347 @@
+#include "render/pfd/PfdInternal.h"
+
+namespace avionics::pfd {
+namespace {
+
+void drawHsiAircraftSymbol(Renderer& r, float cx, float cy, float radius) {
+  const float wing = radius * 0.22f;
+  const float nose = radius * 0.14f;
+  const float thick = radius * 0.06f;
+  r.strokeLine(cx - wing, cy, cx + wing, cy, thick, colors::kWhite);
+  r.strokeLine(cx, cy - nose, cx, cy + nose * 0.35f, thick, colors::kWhite);
+  r.fillCircle(cx, cy, radius * 0.04f, colors::kWhite);
+}
+
+void drawTurnRateIndicator(Renderer& r, float cx, float cy, float radius,
+                           float turnRateDegPerSec) {
+  // The turn-rate scale hugs the top of the compass ring. The G1000 maps a
+  // standard-rate turn (3 deg/sec, an 18 deg heading change in 6 s) to the long
+  // outer tick and half-standard (9 deg) to the short inner tick, on each side
+  // of the lubber line.
+  const float stdTick = radius * 0.10f;
+  const float halfTick = radius * 0.055f;
+
+  r.save();
+  r.translate(cx, cy);
+  auto tick = [&](float deg, float len) {
+    r.save();
+    r.rotateDegrees(deg);
+    r.strokeLine(0.0f, -radius, 0.0f, -radius - len, 2.0f, colors::kWhite);
+    r.restore();
+  };
+  tick(-18.0f, stdTick);
+  tick(-9.0f, halfTick);
+  tick(9.0f, halfTick);
+  tick(18.0f, stdTick);
+
+  // Magenta turn-rate trend vector: an arc on the ring from the lubber line to
+  // the heading predicted in six seconds at the present turn rate, capped just
+  // past standard rate. Beyond 4 deg/sec an arrowhead is shown and the
+  // prediction is no longer valid.
+  const float predicted = turnRateDegPerSec * 6.0f;
+  const float capped = std::max(-24.0f, std::min(24.0f, predicted));
+  if (std::fabs(capped) > 0.5f) {
+    constexpr int kSeg = 24;
+    Point arc[kSeg + 1];
+    for (int i = 0; i <= kSeg; ++i) {
+      float x, y;
+      polarOffset(capped * (i / static_cast<float>(kSeg)), radius, x, y);
+      arc[i] = {x, y};
+    }
+    const float lineW = std::max(3.0f, radius * 0.035f);
+    r.strokePolyline(arc, kSeg + 1, lineW, colors::kMagenta);
+
+    if (std::fabs(turnRateDegPerSec) > 4.0f) {
+      const float dir = capped > 0.0f ? 1.0f : -1.0f;
+      float tx, ty, bx, by;
+      polarOffset(capped, radius, tx, ty);
+      polarOffset(capped - dir * 6.0f, radius, bx, by);
+      const float ux = tx - bx, uy = ty - by;
+      const float ul = std::sqrt(ux * ux + uy * uy);
+      const float nx = -uy / ul, ny = ux / ul;
+      const float ah = radius * 0.05f;
+      const Point head[3] = {{tx, ty},
+                             {bx + nx * ah, by + ny * ah},
+                             {bx - nx * ah, by - ny * ah}};
+      r.fillPolygon(head, 3, colors::kMagenta);
+    }
+  }
+  r.restore();
+}
+
+void drawCourseNeedle(Renderer& r, float radius, float courseDeg, float devDots,
+                      bool toFlag, bool valid, const Color& c) {
+  // NXi CDI needle: a thin arrow whose head sits just inside the compass ring,
+  // a short fixed shaft and tail, four deviation dots at 32 px (~0.21 r)
+  // spacing, and a moving deviation bar offset by the cross-track in dots.
+  r.save();
+  r.rotateDegrees(courseDeg);
+
+  const float tip = radius * 0.88f;
+  const float headLen = radius * 0.12f;
+  const float headHalf = radius * 0.055f;
+  const float dotSpacing = radius * 0.209f;
+  const float barHalf = radius * 0.36f;
+  const float tailInner = radius * 0.50f;
+  const float tailOuter = radius * 0.80f;
+  const float shaftW = std::max(2.0f, radius * 0.014f);
+  const float dotR = radius * 0.018f;
+
+  const Point head[3] = {
+      {0.0f, -tip}, {-headHalf, -tip + headLen}, {headHalf, -tip + headLen}};
+  r.fillPolygon(head, 3, c);
+  r.strokeLine(0.0f, -tip + headLen, 0.0f, -barHalf, shaftW, c);
+  r.strokeLine(0.0f, tailInner, 0.0f, tailOuter, shaftW, c);
+
+  for (int i = 1; i <= 2; ++i) {
+    const float dx = static_cast<float>(i) * dotSpacing;
+    r.fillCircle(-dx, 0.0f, dotR, colors::kWhite);
+    r.fillCircle(dx, 0.0f, dotR, colors::kWhite);
+  }
+
+  if (valid) {
+    const float off = std::max(-2.0f, std::min(2.0f, devDots)) * dotSpacing;
+    r.strokeLine(off, -barHalf, off, barHalf, shaftW, c);
+
+    const float ty = radius * 0.46f;
+    const float th = radius * 0.075f;
+    if (toFlag) {
+      const Point to[3] = {{0.0f, -ty - th}, {-th, -ty}, {th, -ty}};
+      r.fillPolygon(to, 3, c);
+    } else {
+      const Point fr[3] = {{0.0f, ty + th}, {-th, ty}, {th, ty}};
+      r.fillPolygon(fr, 3, c);
+    }
+  }
+  r.restore();
+}
+
+void drawBearingPointer(Renderer& r, float radius, float bearingDeg, bool dbl) {
+  // NXi bearing pointers are thin (2 px) cyan needles: an arrowhead just inside
+  // the ring with a short upper shaft, and a separate tail near the bottom of
+  // the ring, leaving the center clear. The double-bar needle (BRG2) doubles
+  // the shaft/tail and uses an open (chevron) arrowhead.
+  r.save();
+  r.rotateDegrees(bearingDeg);
+  const Color c = colors::kCyan;
+  const float headTip = radius * 0.84f;
+  const float headLen = radius * 0.14f;
+  const float headHalf = radius * 0.085f;
+  const float shoulder = headTip - headLen;
+  const float upperInner = radius * 0.50f;
+  const float tailInner = radius * 0.50f;
+  const float tailOuter = radius * 0.78f;
+  const float w = 2.0f * (radius / 153.0f);
+
+  if (!dbl) {
+    r.strokeLine(0.0f, -shoulder, 0.0f, -upperInner, w, c);
+    r.strokeLine(0.0f, tailInner, 0.0f, tailOuter, w, c);
+    const Point head[3] = {
+        {0.0f, -headTip}, {-headHalf, -shoulder}, {headHalf, -shoulder}};
+    r.fillPolygon(head, 3, c);
+  } else {
+    const float off = radius * 0.035f;
+    for (int k = 0; k < 2; ++k) {
+      const float x = (k == 0 ? -off : off);
+      r.strokeLine(x, -shoulder, x, -upperInner, w, c);
+      r.strokeLine(x, tailInner, x, tailOuter, w, c);
+    }
+    // Open chevron arrowhead.
+    r.strokeLine(0.0f, -headTip, -headHalf, -shoulder, w, c);
+    r.strokeLine(0.0f, -headTip, headHalf, -shoulder, w, c);
+  }
+  r.restore();
+}
+
+void drawWindBox(Renderer& r, float cx, float cy, float displayH,
+                 const FlightData& d) {
+  const float textSize = fontPx(wt::kHsiSource, displayH);
+  if (!d.windValid || d.windSpeedKts < 1.0f) {
+    r.fillText(cx, cy, "NO WIND DATA", textSize, TextAlign::Center,
+               colors::kLabelText);
+    return;
+  }
+  const float arrowR = displayH * 0.023f;
+  const float rel = d.windDirectionDeg + 180.0f - d.headingDeg;
+  r.save();
+  r.translate(cx, cy);
+  r.save();
+  r.rotateDegrees(rel);
+  // Bolder shaft (scaled with the display so it doesn't go wispy at high DPI)
+  // and a filled arrowhead, matching the solid NXi wind-direction arrow.
+  const float shaftW = std::max(2.5f, displayH * 0.0045f);
+  const float ah = arrowR * 0.62f;
+  r.strokeLine(0.0f, arrowR, 0.0f, -arrowR + ah * 0.5f, shaftW, colors::kWhite);
+  const Point head[3] = {
+      {0.0f, -arrowR}, {-ah, -arrowR + ah}, {ah, -arrowR + ah}};
+  r.fillPolygon(head, 3, colors::kWhite);
+  r.restore();
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%03d\u00b0",
+                static_cast<int>(std::lround(d.windDirectionDeg)) % 360);
+  r.fillText(arrowR * 1.6f, -textSize * 0.6f, std::string(buf), textSize,
+             TextAlign::Left, colors::kWhite);
+  r.fillText(arrowR * 1.6f, textSize * 0.6f,
+             formatInt(d.windSpeedKts) + "KT", textSize, TextAlign::Left,
+             colors::kWhite);
+  r.restore();
+}
+
+void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
+             const FlightData& d) {
+  const float headingDeg = d.headingDeg;
+  const float selectedHeadingDeg = d.selectedHeadingDeg;
+  const Color navColor =
+      (d.cdiSource == CdiSource::Gps) ? colors::kMagenta : colors::kActiveGreen;
+  const float labelSize = fontPx(wt::kRoseLetter, displayH);
+  const float headingBoxW = fontPx(wt::kHeadingBox, displayH) * 2.8f;
+  const float headingBoxH = fontPx(wt::kHeadingBox, displayH) * 1.15f;
+  const float headingBoxY = cy - radius - displayH * 0.052f;
+
+  drawTurnRateIndicator(r, cx, cy, radius, d.turnRateDegPerSec);
+
+  const float lubW = radius * 0.06f;
+  const float lubH = radius * 0.08f;
+  const float lubApexY = cy - radius + lubH * 0.15f;
+  const Point lubber[3] = {{cx, lubApexY},
+                           {cx - lubW, lubApexY - lubH},
+                           {cx + lubW, lubApexY - lubH}};
+  r.fillPolygon(lubber, 3, colors::kWhite);
+
+  r.fillCircle(cx, cy, radius, colors::kRoseBackground);
+
+  const float clipPad = radius * 0.10f;
+  r.save();
+  r.clip(cx - radius - clipPad, cy - radius - clipPad,
+         2.0f * (radius + clipPad), 2.0f * (radius + clipPad));
+  r.translate(cx, cy);
+  r.rotateDegrees(-headingDeg);
+
+  // The NXi compass rose has no outer ring/outline; the card boundary is
+  // implied entirely by the 5deg/10deg tick marks and the cardinal labels.
+  const float majorTick = radius * 0.10f;
+  const float minorTick = radius * 0.052f;
+  for (int deg = 0; deg < 360; deg += 5) {
+    const bool major = (deg % 10) == 0;
+    r.save();
+    r.rotateDegrees(static_cast<float>(deg));
+    const float len = major ? majorTick : minorTick;
+    r.strokeLine(0.0f, -radius, 0.0f, -radius + len, major ? 2.0f : 1.5f,
+                 colors::kWhite);
+    r.restore();
+  }
+
+  const float cardLabelR = radius - majorTick - radius * 0.14f;
+  for (int deg = 0; deg < 360; deg += 30) {
+    r.save();
+    r.rotateDegrees(static_cast<float>(deg));
+    const bool cardinal = (deg % 90) == 0;
+    r.fillText(0.0f, -cardLabelR, roseLabel(deg),
+               cardinal ? fontPx(wt::kRoseCardinal, displayH) : labelSize,
+               TextAlign::Center, colors::kWhite);
+    r.restore();
+  }
+
+  if (d.bearing1Valid) drawBearingPointer(r, radius, d.bearing1Deg, false);
+  if (d.bearing2Valid) drawBearingPointer(r, radius, d.bearing2Deg, true);
+  drawCourseNeedle(r, radius, d.courseDeg, d.cdiDeviationDots, d.cdiToFlag,
+                   d.navSignalValid, navColor);
+
+  {
+    r.save();
+    r.rotateDegrees(selectedHeadingDeg);
+    const float halfW = radius * 0.085f;
+    const float outR = radius + radius * 0.07f;
+    const float notch = radius * 0.045f;
+    const Point bug[7] = {{-halfW, -outR}, {halfW, -outR}, {halfW, -radius},
+                          {notch, -radius}, {0.0f, -radius + notch},
+                          {-notch, -radius}, {-halfW, -radius}};
+    r.fillPolygon(bug, 7, colors::kCyan);
+    r.restore();
+  }
+
+  // Current track over the ground: a magenta diamond riding the inner edge of
+  // the compass ring, rotating with the card so it points at the track value.
+  {
+    r.save();
+    r.rotateDegrees(d.trackDeg);
+    const float dh = radius * 0.052f;
+    const float dw = radius * 0.044f;
+    const float cyD = -radius + dh;
+    const Point diamond[4] = {
+        {0.0f, cyD - dh}, {dw, cyD}, {0.0f, cyD + dh}, {-dw, cyD}};
+    r.fillPolygon(diamond, 4, colors::kMagenta);
+    r.restore();
+  }
+  r.restore();
+
+  drawHsiAircraftSymbol(r, cx, cy, radius);
+
+  drawReadoutBox(r, cx - headingBoxW * 0.5f, headingBoxY, headingBoxW,
+                 headingBoxH, formatHeading(headingDeg),
+                 fontPx(wt::kHeadingBox, displayH), NotchSide::None);
+
+  const float annSize = fontPx(wt::kHsiBug, displayH);
+  const float annRowY = headingBoxY + headingBoxH * 0.5f;
+  r.fillText(cx - headingBoxW * 0.62f, annRowY,
+             "HDG " + formatHeading(selectedHeadingDeg) + "\u00b0", annSize,
+             TextAlign::Right, colors::kCyan);
+  // GPS source annunciates Desired Track (DTK); VOR/LOC annunciate Course (CRS).
+  const char* crsLabel = (d.cdiSource == CdiSource::Gps) ? "DTK " : "CRS ";
+  r.fillText(cx + headingBoxW * 0.62f, annRowY,
+             crsLabel + formatHeading(d.courseDeg) + "\u00b0", annSize,
+             TextAlign::Left, navColor);
+
+  // Bearing-pointer source/distance windows are rendered in the bottom info
+  // panel (NXi places them there, not inside the rose).
+}
+
+void drawCdiSource(Renderer& r, const Layout& L, const FlightData& d,
+                   float displayH) {
+  // Nav source and (for GPS) the flight phase are annunciated inside the upper
+  // half of the rose, straddling the course pointer (e.g. "GPS   TERM").
+  const char* text = "GPS";
+  Color c = colors::kMagenta;
+  bool isGps = false;
+  switch (d.cdiSource) {
+    case CdiSource::Gps:  text = "GPS";  c = colors::kMagenta;     isGps = true; break;
+    case CdiSource::Nav1: text = "VOR1"; c = colors::kActiveGreen; break;
+    case CdiSource::Nav2: text = "VOR2"; c = colors::kActiveGreen; break;
+  }
+  const float size = fontPx(wt::kHsiSource, displayH);
+  const float y = L.hsiCy - L.hsiRadius * 0.20f;
+  if (isGps) {
+    r.fillText(L.hsiCx - L.hsiRadius * 0.27f, y, text, size, TextAlign::Center,
+               c);
+    if (!d.gpsFlightPhase.empty()) {
+      // Per the G1000 Pilot's Guide (Table 2-3), the flight-phase annunciation
+      // is normally magenta (amber only under cautionary conditions), matching
+      // the GPS source color rather than the cyan used for selected references.
+      r.fillText(L.hsiCx + L.hsiRadius * 0.27f, y, d.gpsFlightPhase, size,
+                 TextAlign::Center, colors::kMagenta);
+    }
+  } else {
+    r.fillText(L.hsiCx, y, text, size, TextAlign::Center, c);
+  }
+}
+
+}  // namespace
+
+void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
+                    float h) {
+  // AHRS heading failure: the compass rose, CDI, and wind (all referenced to
+  // heading) are replaced by a red X with an "HDG" annunciation.
+  if (!d.headingValid) {
+    const float rr = L.hsiRadius * 1.12f;
+    drawFailureX(r, L.hsiCx - rr, L.hsiCy - rr, rr * 2.0f, rr * 2.0f, "HDG", h);
+    return;
+  }
+
+  drawHsi(r, L.hsiCx, L.hsiCy, L.hsiRadius, h, d);
+  drawCdiSource(r, L, d, h);
+  drawWindBox(r, L.hsiCx - L.hsiRadius * 1.85f,
+              L.hsiCy - L.hsiRadius * 0.08f, h, d);
+}
+
+}  // namespace avionics::pfd
