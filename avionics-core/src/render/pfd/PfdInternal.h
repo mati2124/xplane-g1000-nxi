@@ -6,6 +6,7 @@
 
 #include "avionics/Color.h"
 #include "avionics/FlightData.h"
+#include "avionics/MapData.h"
 #include "avionics/Renderer.h"
 #include "avionics/SoftkeyController.h"
 
@@ -39,6 +40,10 @@ struct Layout {
   float casAnnunTop, casAnnunLeft, casAnnunW;
 
   float hsiCx, hsiCy, hsiRadius;
+
+  // PFD inset map (lower-left over the attitude window). The MFD MAP page will
+  // reuse MapView with a full-screen rect instead of these layout constants.
+  float insetMapX, insetMapY, insetMapW, insetMapH;
 };
 
 Layout computeLayout(float w, float h);
@@ -178,6 +183,8 @@ void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d, float h);
 void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
                                 const FlightData& d, float h);
 void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d, float h);
+void drawInsetMap(Renderer& r, const Layout& L, const MapData& map,
+                  const FlightData& d, const SoftkeyController& ui, float h);
 void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
                 const SoftkeyController& ui, float w, float h);
 

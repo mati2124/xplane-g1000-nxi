@@ -31,7 +31,10 @@ else()
   target_compile_definitions(xplane-avionics PRIVATE APL=0 IBM=0 LIN=1)
 endif()
 
-target_link_libraries(xplane-avionics PRIVATE avionics-core)
+# Airspace parsing runs on a background std::thread.
+find_package(Threads REQUIRED)
+
+target_link_libraries(xplane-avionics PRIVATE avionics-core Threads::Threads)
 
 # X-Plane loads plugins as <name>/<platform>/<name>.xpl with no lib prefix.
 set_target_properties(xplane-avionics PROPERTIES

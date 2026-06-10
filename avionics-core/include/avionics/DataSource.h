@@ -2,6 +2,7 @@
 
 #include "avionics/ConnectionState.h"
 #include "avionics/FlightData.h"
+#include "avionics/MapData.h"
 
 namespace avionics {
 
@@ -21,12 +22,19 @@ class DataSource {
   // The latest decoded state. Must be cheap; called once per rendered frame.
   virtual const FlightData& snapshot() const = 0;
 
+  // Slow-changing map/navigation snapshot for the inset map and future MFD MAP
+  // page. Default is empty; shells that can populate nav data override this.
+  virtual const MapData& mapSnapshot() const { return emptyMap_; }
+
   // Health of this source. Sources that are always available (the mock feed,
   // the in-process dataref reader) keep the default; network-backed sources
   // override it so the display can show the boot / connection-lost screens.
   virtual ConnectionState connectionState() const {
     return ConnectionState::Connected;
   }
+
+ private:
+  static inline const MapData emptyMap_{};
 };
 
 }  // namespace avionics

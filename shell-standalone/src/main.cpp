@@ -13,6 +13,9 @@
 //   --source mock|xplane     initial data feed (default: auto-detect)
 //   --xplane-host HOST        X-Plane host (default: 127.0.0.1)
 //   --xplane-port PORT        X-Plane UDP port (default: 49000)
+//   --fms-plan NAME           .fms flight plan for the inset map route
+//                             (name under Output/FMS plans/, or a full path;
+//                             default: most recently modified .fms in that dir)
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>  // GL_SILENCE_DEPRECATION is set by the build.
@@ -159,6 +162,18 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     engine.onPointerDown(2.5 * cellW, rowY);  // "Wind" toggle on
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     engine.renderFrame(fbWidth, fbHeight, 1.0f);
+  } else if (state != nullptr && std::strcmp(state, "map") == 0) {
+    // Turn on the PFD inset map: open the Map/HSI submenu, then toggle "Inset".
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.renderFrame(fbWidth, fbHeight, 1.0f);  // establishes the click space
+    const double barH = fbHeight * (35.0 / 768.0);
+    const double cellW = fbWidth / 12.0;
+    const double rowY = fbHeight - barH * 0.5;
+    engine.onPointerDown(1.5 * cellW, rowY);  // "Map/HSI" -> open submenu
+    engine.onPointerDown(2.5 * cellW, rowY);  // "Inset" toggle on
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    engine.renderFrame(fbWidth, fbHeight, 1.0f);
   } else {
     engine.skipBoot();
     engine.update(seconds);
@@ -302,8 +317,11 @@ int main(int argc, char** argv) {
                                  ? static_cast<std::uint16_t>(std::atoi(portStr))
                                  : kDefaultXPlanePort;
 
+  const char* fmsPlanArg = FlagValue(argc, argv, "--fms-plan");
+
   avionics::MockDataSource mock;
-  avionics::XPlaneConnection xplane(host ? host : kDefaultXPlaneHost, port);
+  avionics::XPlaneConnection xplane(host ? host : kDefaultXPlaneHost, port,
+                                      fmsPlanArg ? fmsPlanArg : "");
 
   const char* sourceArg = FlagValue(argc, argv, "--source");
   const bool startWithXPlane =

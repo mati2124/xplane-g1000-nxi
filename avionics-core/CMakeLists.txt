@@ -7,6 +7,10 @@ add_library(avionics-core STATIC
   src/SoftkeyController.cpp
   src/render/BootScreen.cpp
   src/render/PrimaryFlightDisplay.cpp
+  src/nav/OpenAirParser.cpp
+  src/render/map/MapProjection.cpp
+  src/render/map/MapView.cpp
+  src/render/pfd/InsetMap.cpp
   src/render/pfd/PfdShared.cpp
   src/render/pfd/AttitudeIndicator.cpp
   src/render/pfd/AirspeedTape.cpp

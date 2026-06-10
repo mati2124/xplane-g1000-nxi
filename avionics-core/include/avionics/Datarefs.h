@@ -21,6 +21,15 @@ inline constexpr const char* kVerticalSpeedFpm =
 inline constexpr const char* kSlipDeg =
     "sim/cockpit2/gauges/indicators/slip_deg";
 
+// Ownship geographic position (decimal degrees) for the moving map. These are
+// doubles in the sim; the in-process plugin reads them at full precision via
+// XPLMGetDatad, while the standalone shell receives them as floats over RREF
+// (still ~1-2 m, fine at inset-map scale).
+inline constexpr const char* kLatitudeDeg =
+    "sim/flightmodel/position/latitude";
+inline constexpr const char* kLongitudeDeg =
+    "sim/flightmodel/position/longitude";
+
 // Track / turn rate (deg, deg/sec).
 inline constexpr const char* kGroundTrackDegMag =
     "sim/cockpit2/gauges/indicators/ground_track_mag_pilot";

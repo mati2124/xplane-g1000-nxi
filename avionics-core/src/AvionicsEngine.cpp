@@ -82,11 +82,13 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
                                     : withAllSensorsFailed(dataSource_->snapshot());
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:
-      PrimaryFlightDisplay::render(renderer_, data, softkeys_, widthPx,
-                                   heightPx);
+      PrimaryFlightDisplay::render(renderer_, data, dataSource_->mapSnapshot(),
+                                   softkeys_, widthPx, heightPx);
       break;
     case DisplayPage::MultiFunctionDisplay:
-      // TODO: MFD page groups (MAP / WPT / AUX / NRST).
+      // TODO: MFD page groups (MAP / WPT / AUX / NRST). The MAP page should call
+      // MapView::render with a full-viewport MapViewConfig; data comes from the
+      // same DataSource::mapSnapshot() used by the PFD inset.
       break;
   }
 

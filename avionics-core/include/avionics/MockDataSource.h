@@ -11,9 +11,11 @@ class MockDataSource : public DataSource {
  public:
   void update(double dtSeconds) override;
   const FlightData& snapshot() const override { return data_; }
+  const MapData& mapSnapshot() const override { return map_; }
 
  private:
   FlightData data_;
+  MapData map_;
   double elapsedSeconds_ = 0.0;
 };
 

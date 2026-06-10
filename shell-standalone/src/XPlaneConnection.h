@@ -3,7 +3,11 @@
 #include <cstdint>
 #include <string>
 
+#include "AirspaceStore.h"
+#include "FmsPlanStore.h"
+#include "NavData.h"
 #include "XPlaneWebApi.h"
+#include "avionics/MapData.h"
 #include "avionics/SimulatorConnection.h"
 
 namespace avionics {
@@ -26,7 +30,8 @@ namespace avionics {
 class XPlaneConnection : public SimulatorConnection {
  public:
   explicit XPlaneConnection(std::string host = "127.0.0.1",
-                            std::uint16_t port = 49000);
+                            std::uint16_t port = 49000,
+                            std::string fmsPlan = "");
   ~XPlaneConnection() override;
 
   XPlaneConnection(const XPlaneConnection&) = delete;
@@ -34,12 +39,18 @@ class XPlaneConnection : public SimulatorConnection {
 
   void update(double dtSeconds) override;
   const FlightData& snapshot() const override { return data_; }
+  const MapData& mapSnapshot() const override { return map_; }
   ConnectionState connectionState() const override;
   const char* simulatorName() const override { return "X-PLANE"; }
 
  private:
   void sendSubscriptions(int frequencyHz);
   void drainSocket();
+
+  // Refresh the moving-map snapshot (ownship position + nearby features). The
+  // feature list is range-filtered from the nav database on a throttled timer,
+  // not every frame, since the database holds the whole world.
+  void updateMap(double dtSeconds);
 
   // Advance the locally-ticked zulu (UTC) clock and write it into data_'s
   // hour/minute/second fields. Decouples the displayed clock from packet
@@ -77,6 +88,22 @@ class XPlaneConnection : public SimulatorConnection {
   // phase (ENR/TERM/APR/OCN) is derived from it each frame; 0 means no usable
   // GPS scale (no active flight plan), which blanks the phase annunciation.
   float gpsHdefNmPerDot_ = 0.0f;
+
+  // Ownship position decoded from RREF (float precision; ~1-2 m at these
+  // magnitudes, fine for the inset map). havePosition_ stays false until the
+  // first lat AND lon packets arrive so the map shows "NO GPS POSITION".
+  float ownshipLatDeg_ = 0.0f;
+  float ownshipLonDeg_ = 0.0f;
+  bool haveLat_ = false;
+  bool haveLon_ = false;
+
+  // Moving-map snapshot and its nearby-feature rebuild timer.
+  MapData map_;
+  NavDataStore navData_;
+  AirspaceStore airspace_;
+  FmsPlanStore fmsPlan_;
+  double sinceMapRebuildSeconds_ = 0.0;
+
   std::string host_;
   std::uint16_t port_;
 

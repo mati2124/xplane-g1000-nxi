@@ -340,8 +340,11 @@ void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
 
   drawHsi(r, L.hsiCx, L.hsiCy, L.hsiRadius, h, d);
   drawCdiSource(r, L, d, h);
-  drawWindBox(r, L.hsiCx - L.hsiRadius * 1.85f,
-              L.hsiCy - L.hsiRadius * 0.08f, h, d);
+  // Wind window: upper-left of the HSI rose, below the airspeed tape and right
+  // of the inset map (G1000 NXi Pilot's Guide places it "to the upper left of
+  // the HSI").
+  drawWindBox(r, L.hsiCx - L.hsiRadius * 1.40f,
+              L.hsiCy - L.hsiRadius * 0.62f, h, d);
 }
 
 }  // namespace avionics::pfd

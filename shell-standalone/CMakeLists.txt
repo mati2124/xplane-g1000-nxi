@@ -21,6 +21,9 @@ set(STANDALONE_SOURCES
   src/main.cpp
   src/XPlaneConnection.cpp
   src/XPlaneWebApi.cpp
+  src/NavData.cpp
+  src/FmsPlanStore.cpp
+  src/AirspaceStore.cpp
 )
 
 # The Web API client polls X-Plane on a background thread.

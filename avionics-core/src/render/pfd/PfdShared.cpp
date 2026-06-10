@@ -68,6 +68,14 @@ Layout computeLayout(float w, float h) {
   L.casAnnunTop = Y(338.0f);
   L.casAnnunLeft = L.vsiX + L.vsiW + X(28.0f);  // gap to the right of the VSI
   L.casAnnunW = X(1018.0f) - L.casAnnunLeft;
+
+  // Inset map: far lower-left corner of the PFD (G1000 Pilot's Guide). It sits
+  // below the wind window (which occupies the upper-left of the HSI region) and
+  // left of the HSI rose, down to just above the info panel (top 679).
+  L.insetMapX = X(8.0f);
+  L.insetMapY = Y(504.0f);
+  L.insetMapW = X(272.0f);
+  L.insetMapH = Y(170.0f);
   return L;
 }
 

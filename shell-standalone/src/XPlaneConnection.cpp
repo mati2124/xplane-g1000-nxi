@@ -233,6 +233,20 @@ constexpr int kApModeBaseIndex = kZuluSubscriptionIndex + 1;
 // It is decoded into the gpsFlightPhase string rather than a float field.
 constexpr int kGpsSensitivityIndex = kApModeBaseIndex + kApModeCount;
 
+// Ownship latitude/longitude subscriptions for the moving map. Like the zulu
+// clock they decode into dedicated members (not a FlightData field) since the
+// map consumes them separately.
+constexpr int kLatitudeIndex = kGpsSensitivityIndex + 1;
+constexpr int kLongitudeIndex = kLatitudeIndex + 1;
+
+// How often the nearby-feature list is rebuilt from the nav database. Ownship
+// position updates every frame; the (range-filtered) feature scan is throttled.
+constexpr double kMapRebuildIntervalSeconds = 1.0;
+// Display range for the inset map, and the cap on features fed to the renderer.
+constexpr float kMapRangeNm = 10.0f;
+constexpr std::size_t kMaxMapFeatures = 250;
+constexpr std::size_t kMaxMapAirspaces = 60;
+
 // Map the active GPS CDI sensitivity (NM per dot; the G1000 uses a 2-dot full
 // scale) to the flight-phase annunciation shown in the HSI. Full-scale NM is
 // 2 x the per-dot value. A non-positive value means there is no usable GPS
@@ -409,9 +423,11 @@ float readLeFloat(const unsigned char* p) {
 
 }  // namespace
 
-XPlaneConnection::XPlaneConnection(std::string host, std::uint16_t port)
+XPlaneConnection::XPlaneConnection(std::string host, std::uint16_t port,
+                                   std::string fmsPlan)
     : host_(std::move(host)),
       port_(port),
+      fmsPlan_(std::move(fmsPlan)),
       webApi_(host_, XPlaneWebApi::kDefaultPort) {
 #ifdef _WIN32
   WSADATA wsa;
@@ -486,6 +502,8 @@ void XPlaneConnection::sendSubscriptions(int frequencyHz) {
     subscribe(kApModeBaseIndex + k, kApModePaths[k]);
   }
   subscribe(kGpsSensitivityIndex, datarefs::kGpsHdefNmPerDot);
+  subscribe(kLatitudeIndex, datarefs::kLatitudeDeg);
+  subscribe(kLongitudeIndex, datarefs::kLongitudeDeg);
 }
 
 void XPlaneConnection::drainSocket() {
@@ -524,6 +542,12 @@ void XPlaneConnection::drainSocket() {
             static_cast<int>(std::lround(value));
       } else if (index == kGpsSensitivityIndex) {
         gpsHdefNmPerDot_ = value;
+      } else if (index == kLatitudeIndex) {
+        ownshipLatDeg_ = value;
+        haveLat_ = true;
+      } else if (index == kLongitudeIndex) {
+        ownshipLonDeg_ = value;
+        haveLon_ = true;
       }
     }
     lastPacketSeconds_ = elapsedSeconds_;
@@ -593,11 +617,13 @@ void XPlaneConnection::update(double dtSeconds) {
     data_.fmaToWpt = webApi_.destinationId();
     data_.fmaFromWpt.clear();
     updateZuluClock(dtSeconds);
+    updateMap(dtSeconds);
   } else {
     // Link down: re-prime on the next reconnect, and periodically re-subscribe
     // so we recover if X-Plane was started after us (or restarted).
     primed_ = false;
     zuluPrimed_ = false;
+    map_.positionValid = false;
     if (sinceResubscribeSeconds_ >= kResubscribeIntervalSeconds) {
       sendSubscriptions(kSubscribeFrequencyHz);
       sinceResubscribeSeconds_ = 0.0;
@@ -636,6 +662,40 @@ void XPlaneConnection::updateZuluClock(double dtSeconds) {
   data_.utcHour = (total / 3600) % 24;
   data_.utcMinute = (total / 60) % 60;
   data_.utcSecond = total % 60;
+}
+
+void XPlaneConnection::updateMap(double dtSeconds) {
+  map_.rangeNm = kMapRangeNm;
+  map_.positionValid = haveLat_ && haveLon_;
+  if (!map_.positionValid) return;
+
+  map_.ownshipLat = static_cast<double>(ownshipLatDeg_);
+  map_.ownshipLon = static_cast<double>(ownshipLonDeg_);
+
+  // Flight plan: parsed from an X-Plane .fms file (see FmsPlanStore). The live
+  // FMS is not available over UDP, so this tracks the exported/loaded plan file
+  // rather than in-cockpit edits until a plugin bridge exists.
+  fmsPlan_.refreshIfChanged();
+  if (fmsPlan_.loaded() && !fmsPlan_.flightPlan().empty()) {
+    map_.flightPlan = fmsPlan_.flightPlan();
+  }
+
+  // Nearby navaids/fixes from the parsed nav database. Rebuild on a throttled
+  // timer rather than every frame, since the database spans the whole world.
+  sinceMapRebuildSeconds_ += dtSeconds;
+  const bool due = map_.features.empty() ||
+                   sinceMapRebuildSeconds_ >= kMapRebuildIntervalSeconds;
+  if (due) {
+    if (navData_.loaded()) {
+      map_.features = navData_.nearby(map_.ownshipLat, map_.ownshipLon,
+                                      map_.rangeNm, kMaxMapFeatures);
+    }
+    if (airspace_.loaded()) {
+      map_.airspaces = airspace_.nearby(map_.ownshipLat, map_.ownshipLon,
+                                        map_.rangeNm, kMaxMapAirspaces);
+    }
+    sinceMapRebuildSeconds_ = 0.0;
+  }
 }
 
 void XPlaneConnection::updateFmaModes() {

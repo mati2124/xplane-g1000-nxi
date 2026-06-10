@@ -1,8 +1,83 @@
 #include "avionics/MockDataSource.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <vector>
 
 namespace avionics {
+namespace {
+
+constexpr double kKpaoLat = 37.4611;
+constexpr double kKpaoLon = -122.1153;
+
+// Build a tessellated circular airspace ring (radius in NM) for the demo map.
+std::vector<GeoPoint> demoCircle(double lat, double lon, double radiusNm,
+                                 int segments = 48) {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kNmPerDeg = 60.0;
+  const double cosLat = std::max(0.05, std::cos(lat * kPi / 180.0));
+  std::vector<GeoPoint> ring;
+  ring.reserve(static_cast<std::size_t>(segments) + 1);
+  for (int i = 0; i <= segments; ++i) {
+    const double a = 2.0 * kPi * (static_cast<double>(i) / segments);
+    ring.push_back({lat + (radiusNm / kNmPerDeg) * std::cos(a),
+                    lon + (radiusNm / (kNmPerDeg * cosLat)) * std::sin(a)});
+  }
+  return ring;
+}
+
+void seedDemoAirspace(MapData& map) {
+  // Demo only: ceilings are set well above the mock cruise altitude so all
+  // three rings stay visible through the altitude declutter.
+  MapAirspace classC;
+  classC.airspaceClass = AirspaceClass::ClassC;
+  classC.name = "DEMO-C";
+  classC.floorFt = 0.0f;
+  classC.ceilingFt = 8400.0f;
+  classC.boundary = demoCircle(kKpaoLat, kKpaoLon, 4.5);
+
+  MapAirspace classD;
+  classD.airspaceClass = AirspaceClass::ClassD;
+  classD.name = "KSQL-D";
+  classD.floorFt = 0.0f;
+  classD.ceilingFt = 9000.0f;
+  classD.boundary = demoCircle(37.5111, -122.2495, 3.0);
+
+  MapAirspace classB;
+  classB.airspaceClass = AirspaceClass::ClassB;
+  classB.name = "DEMO-B";
+  classB.floorFt = 0.0f;
+  classB.ceilingFt = 10000.0f;
+  classB.boundary = {
+      {37.40, -122.26}, {37.55, -122.26}, {37.56, -122.02}, {37.41, -122.00},
+  };
+
+  map.airspaces = {classB, classC, classD};
+}
+
+void seedDemoMap(MapData& map) {
+  map.ownshipLat = kKpaoLat;
+  map.ownshipLon = kKpaoLon;
+  map.rangeNm = 10.0f;
+  map.positionValid = true;
+  map.flightPlan = {
+      {kKpaoLat, kKpaoLon, "KPAO"},
+      {37.5930, -121.8810, "SUNOL"},
+      {36.9357, -121.7896, "KWVI"},
+  };
+  map.features = {
+      {MapFeatureType::Airport, 37.5111, -122.2495, "KSQL"},
+      {MapFeatureType::Vor, 37.3925, -122.2808, "OSI"},
+      {MapFeatureType::Ndb, 37.5100, -122.0300, "OAK"},
+      {MapFeatureType::Fix, 37.4200, -122.0500, "MENLO"},
+      {MapFeatureType::Fix, 37.5300, -122.1700, "EDDYY"},
+      {MapFeatureType::Airport, 37.6213, -122.3790, "KSFO"},
+  };
+  seedDemoAirspace(map);
+}
+
+}  // namespace
 
 void MockDataSource::update(double dtSeconds) {
   elapsedSeconds_ += dtSeconds;
@@ -97,6 +172,16 @@ void MockDataSource::update(double dtSeconds) {
   data_.utcHour = (totalSec / 3600) % 24;
   data_.utcMinute = (totalSec / 60) % 60;
   data_.utcSecond = totalSec % 60;
+
+  if (map_.flightPlan.empty()) seedDemoMap(map_);
+
+  // Drift ownship along track for a live inset map in mock mode.
+  const double hdgRad =
+      static_cast<double>(data_.headingDeg) * 3.14159265358979323846 / 180.0;
+  const double nm = static_cast<double>(data_.groundSpeedKts) * dtSeconds / 3600.0;
+  map_.ownshipLat += nm * std::cos(hdgRad) / 60.0;
+  map_.ownshipLon +=
+      nm * std::sin(hdgRad) / (60.0 * std::cos(kKpaoLat * 3.14159265358979323846 / 180.0));
 }
 
 }  // namespace avionics

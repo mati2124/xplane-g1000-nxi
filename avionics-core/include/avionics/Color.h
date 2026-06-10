@@ -67,6 +67,11 @@ inline constexpr Color kCyan{0.0f, 0.85f, 1.0f, 1.0f};
 // Active radio frequency / GPS source annunciation (G1000 uses a bright green).
 inline constexpr Color kActiveGreen{0.0f, 0.95f, 0.0f, 1.0f};
 
+// Airspace boundaries on the moving map, following the Garmin scheme: Class B
+// and D are blue (D dashed), Class C is magenta, and special-use airspace
+// (restricted/prohibited/danger) is red.
+inline constexpr Color kAirspaceBlue{0.30f, 0.55f, 1.0f, 1.0f};
+
 // Top NAV/COM bar and bottom info-panel boxes use a dark blue-grey vertical
 // gradient (rgb(4,4,12) -> rgb(24,28,43)), per the NXi NavComBox. The softkey
 // bar is near-black.

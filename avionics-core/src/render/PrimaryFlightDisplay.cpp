@@ -5,6 +5,7 @@
 namespace avionics {
 
 void PrimaryFlightDisplay::render(Renderer& r, const FlightData& d,
+                                  const MapData& map,
                                   const SoftkeyController& ui, int widthPx,
                                   int heightPx) {
   const float w = static_cast<float>(widthPx);
@@ -14,6 +15,7 @@ void PrimaryFlightDisplay::render(Renderer& r, const FlightData& d,
   r.fillRect(0.0f, 0.0f, w, h, colors::kBlack);
 
   pfd::drawAttitude(r, L, d, w, h);
+  pfd::drawInsetMap(r, L, map, d, ui, h);
   pfd::drawAirspeedTape(r, L, d, h);
   pfd::drawAltimeter(r, L, d, h);
   pfd::drawVerticalSpeedIndicator(r, L, d, h);
