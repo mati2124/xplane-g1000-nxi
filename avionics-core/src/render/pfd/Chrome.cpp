@@ -615,8 +615,8 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
 
   constexpr int kVisibleEntries = 3;
   const int cursor = ui.nearestCursor();
-  const int first = std::max(
-      0, std::min(cursor, static_cast<int>(list.size()) - kVisibleEntries));
+  // The list scrolls only once the cursor moves past the bottom visible row.
+  const int first = std::max(0, cursor - kVisibleEntries + 1);
   const float entryH = (f.top + f.h - f.contentTop) /
                        static_cast<float>(kVisibleEntries);
   const float labelX = f.x + f.w * 0.05f;

@@ -19,6 +19,7 @@ FetchContent_MakeAvailable(glfw)
 
 set(STANDALONE_SOURCES
   src/main.cpp
+  src/AppSettings.cpp
   src/XPlaneConnection.cpp
   src/XPlaneWebApi.cpp
   src/NavData.cpp

@@ -16,6 +16,18 @@
 
 static AvDataSourceMenuController* gController = nil;
 
+// Owns the single checkable "Show Bezel Keys" item and forwards toggles to the
+// C++ callback. Held alive for the process lifetime by the static pointer below.
+@interface AvBezelVisibilityMenuController : NSObject
+@property(nonatomic, assign) avionics::BezelVisibilityMenuCallback callback;
+@property(nonatomic, assign) void* context;
+@property(nonatomic, strong) NSMenuItem* showItem;
+- (void)toggleBezel:(id)sender;
+- (void)syncSelection:(BOOL)showBezel;
+@end
+
+static AvBezelVisibilityMenuController* gBezelController = nil;
+
 @implementation AvDataSourceMenuController
 
 - (void)selectMock:(id)sender {
@@ -31,6 +43,23 @@ static AvDataSourceMenuController* gController = nil;
       useXPlane ? NSControlStateValueOff : NSControlStateValueOn;
   self.xplaneItem.state =
       useXPlane ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+@end
+
+@implementation AvBezelVisibilityMenuController
+
+- (void)toggleBezel:(id)sender {
+  // AppKit does not flip an NSMenuItem's checkmark on click, so compute the new
+  // state as the inverse of the current one and apply it ourselves.
+  const BOOL showBezel = (self.showItem.state != NSControlStateValueOn);
+  [self syncSelection:showBezel];
+  if (self.callback) self.callback(self.context, showBezel ? true : false);
+}
+
+- (void)syncSelection:(BOOL)showBezel {
+  self.showItem.state =
+      showBezel ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 @end
@@ -80,6 +109,44 @@ void InstallDataSourceMenu(bool initiallyXPlane, DataSourceMenuCallback callback
 void SetDataSourceMenuSelection(bool useXPlane) {
   if (gController != nil) {
     [gController syncSelection:(useXPlane ? YES : NO)];
+  }
+}
+
+void InstallBezelVisibilityMenu(bool initiallyShow,
+                                BezelVisibilityMenuCallback callback,
+                                void* context) {
+  @autoreleasepool {
+    NSMenu* mainMenu = [NSApp mainMenu];
+    if (mainMenu == nil) {
+      mainMenu = [[NSMenu alloc] init];
+      [NSApp setMainMenu:mainMenu];
+    }
+
+    gBezelController = [[AvBezelVisibilityMenuController alloc] init];
+    gBezelController.callback = callback;
+    gBezelController.context = context;
+
+    NSMenuItem* viewMenuItem = [[NSMenuItem alloc] init];
+    NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    [viewMenuItem setSubmenu:viewMenu];
+
+    NSMenuItem* showItem =
+        [[NSMenuItem alloc] initWithTitle:@"Show Bezel Keys"
+                                   action:@selector(toggleBezel:)
+                            keyEquivalent:@"b"];
+    [showItem setTarget:gBezelController];
+    [viewMenu addItem:showItem];
+
+    gBezelController.showItem = showItem;
+    [gBezelController syncSelection:(initiallyShow ? YES : NO)];
+
+    [mainMenu addItem:viewMenuItem];
+  }
+}
+
+void SetBezelVisibilityMenuSelection(bool showBezel) {
+  if (gBezelController != nil) {
+    [gBezelController syncSelection:(showBezel ? YES : NO)];
   }
 }
 

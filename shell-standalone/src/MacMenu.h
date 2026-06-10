@@ -2,7 +2,8 @@
 
 // Native macOS menu-bar integration for the standalone shell. The standalone
 // app already gets a Cocoa menu bar from GLFW; this adds a "Data Source" menu
-// for switching between the mock feed and the live X-Plane connection.
+// for switching between the mock feed and the live X-Plane connection and a
+// "View" menu for toggling the hardware bezel strips.
 //
 // These are declared unconditionally but only implemented on macOS (MacMenu.mm
 // is compiled only on Apple), so callers guard the calls with __APPLE__.
@@ -22,5 +23,19 @@ void InstallDataSourceMenu(bool initiallyXPlane, DataSourceMenuCallback callback
 // Updates the menu checkmarks to reflect the current selection (e.g. after the
 // source was toggled with the keyboard rather than the menu).
 void SetDataSourceMenuSelection(bool useXPlane);
+
+// Invoked on the main thread when the user toggles the bezel-strip visibility.
+// showBezel == true draws the hardware bezel strips, false hides them.
+using BezelVisibilityMenuCallback = void (*)(void* context, bool showBezel);
+
+// Adds the "View" menu with a checkable "Show Bezel Keys" item. initiallyShow
+// sets whether the item starts checked. The callback fires when the user
+// toggles it.
+void InstallBezelVisibilityMenu(bool initiallyShow,
+                                BezelVisibilityMenuCallback callback,
+                                void* context);
+
+// Updates the "Show Bezel Keys" checkmark to reflect the current state.
+void SetBezelVisibilityMenuSelection(bool showBezel);
 
 }  // namespace avionics

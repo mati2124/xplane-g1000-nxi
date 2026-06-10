@@ -39,6 +39,7 @@
 #include <utility>
 #include <vector>
 
+#include "AppSettings.h"
 #include "ChecklistStore.h"
 #include "DsfTerrainStore.h"
 #include "FmsPlanStore.h"
@@ -92,7 +93,15 @@ inline int SoftkeyStripPx(int fbHeight) {
 // responsibility.
 inline void RenderSuite(avionics::NanoVgRenderer& renderer,
                         avionics::AvionicsEngine& eng, int fbWidth,
-                        int fbHeight) {
+                        int fbHeight, bool showBezel = true) {
+  // With the bezel hidden the screen fills the whole window (no physical key
+  // strips to frame it), so the engine draws into the full framebuffer.
+  if (!showBezel) {
+    glViewport(0, 0, fbWidth, fbHeight);
+    eng.renderFrame(fbWidth, fbHeight, 1.0f);
+    return;
+  }
+
   const int bezelPx = BezelStripPx(fbWidth);
   const int softkeyPx = SoftkeyStripPx(fbHeight);
   const int screenW = std::max(1, fbWidth - bezelPx);
@@ -160,7 +169,38 @@ struct AppState {
   // as soon as it connects. Cleared once the user takes manual control (M key /
   // menu) or when a --source was given explicitly.
   bool autoDetectXPlane = false;
+  // Whether the hardware bezel strips are drawn (and the windows sized to
+  // include them). Mirrors settings.showBezel; toggled from the View menu.
+  bool showBezel = true;
+  // Persisted user preferences, written back when the user changes the feed or
+  // toggles the bezel.
+  avionics::AppSettings settings;
 };
+
+// Window dimensions for the two bezel states: the full suite (screen + strips)
+// when the bezel is shown, and the bare 4:3 screen when it is hidden.
+inline int SuiteWindowWidth(bool showBezel) {
+  return showBezel ? kSuiteWidth : kWindowWidth;
+}
+inline int SuiteWindowHeight(bool showBezel) {
+  return showBezel ? kSuiteHeight : kWindowHeight;
+}
+
+// Resizes both windows to match the current bezel state and keeps the MFD
+// docked just to the right of the PFD.
+void ApplyBezelWindowSize(AppState& app) {
+  const int w = SuiteWindowWidth(app.showBezel);
+  const int h = SuiteWindowHeight(app.showBezel);
+  if (app.pfdWindow != nullptr) glfwSetWindowSize(app.pfdWindow, w, h);
+  if (app.mfdWindow != nullptr) {
+    glfwSetWindowSize(app.mfdWindow, w, h);
+    if (app.pfdWindow != nullptr) {
+      int px = 0, py = 0;
+      glfwGetWindowPos(app.pfdWindow, &px, &py);
+      glfwSetWindowPos(app.mfdWindow, px + w + kWindowGap, py);
+    }
+  }
+}
 
 // Point both displays at the same feed so the MFD and PFD never diverge.
 void SwitchSource(AppState& app, bool useXPlane) {
@@ -177,11 +217,28 @@ void SwitchSource(AppState& app, bool useXPlane) {
 #endif
 }
 
+// Persists the current data-source choice so the next launch starts on it.
+void PersistDataSource(AppState& app) {
+  app.settings.useXPlane = app.usingXPlane;
+  avionics::SaveAppSettings(app.settings);
+}
+
 // Menu-bar action target: switches the feed when the user picks from the menu.
 void OnMenuSelectSource(void* context, bool useXPlane) {
   auto* app = static_cast<AppState*>(context);
   app->autoDetectXPlane = false;  // explicit user choice wins from here on
   SwitchSource(*app, useXPlane);
+  PersistDataSource(*app);
+}
+
+// Menu-bar action target: shows/hides the hardware bezel strips and remembers
+// the choice across runs.
+void OnMenuToggleBezel(void* context, bool showBezel) {
+  auto* app = static_cast<AppState*>(context);
+  app->showBezel = showBezel;
+  app->settings.showBezel = showBezel;
+  avionics::SaveAppSettings(app->settings);
+  ApplyBezelWindowSize(*app);
 }
 
 // Renders a single deterministic frame offscreen and writes it to a binary PPM
@@ -279,8 +336,10 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
       engine.pressBezelKey(avionics::BezelKey::FmsNext);
     }
     engine.pressBezelKey(avionics::BezelKey::Ent);  // MINS Off -> BARO
-    for (int i = 0; i < 23; ++i) {
-      engine.pressBezelKey(avionics::BezelKey::FmsNext);  // 2300 ft
+    for (int i = 0; i < 54; ++i) {
+      // 5400 ft: just below the mock's cruise altitude so the BARO MIN box
+      // and the tape bug are both captured.
+      engine.pressBezelKey(avionics::BezelKey::FmsNext);
     }
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuite(renderer, engine, fbWidth, fbHeight);
@@ -294,15 +353,16 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
     RenderSuite(renderer, engine, fbWidth, fbHeight);
   } else if (state != nullptr && std::strcmp(state, "ident") == 0) {
-    // Transponder code entry plus the IDNT annunciation: type two digits of a
-    // new squawk, then press Ident from the Code softkeys.
+    // IDNT annunciation plus an in-progress squawk entry: press Ident at the
+    // root (starts the 18 s annunciation), then type two digits of a new code
+    // on the XPDR > Code softkeys.
     engine.skipBoot();
     engine.update(seconds);
+    engine.pressSoftkey(8);  // "Ident" -> IDNT annunciation
     engine.pressSoftkey(7);  // "XPDR"
     engine.pressSoftkey(5);  // "Code"
     engine.pressSoftkey(4);  // digit 4
     engine.pressSoftkey(5);  // digit 5
-    engine.pressSoftkey(8);  // "Ident"
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuite(renderer, engine, fbWidth, fbHeight);
   } else if (state != nullptr && std::strcmp(state, "map") == 0) {
@@ -410,6 +470,7 @@ void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
     if (app != nullptr) {
       app->autoDetectXPlane = false;  // explicit user choice wins from here on
       SwitchSource(*app, !app->usingXPlane);
+      PersistDataSource(*app);
     }
   }
 }
@@ -422,6 +483,9 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
   if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
   auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
   if (app == nullptr) return;
+  // With the bezel hidden there are no physical keys to click; the screen
+  // itself is just glass, so swallow the click.
+  if (!app->showBezel) return;
 
   avionics::AvionicsEngine* engine =
       (window == app->mfdWindow) ? app->mfdEngine : app->pfdEngine;
@@ -482,13 +546,13 @@ bool HasFlag(int argc, char** argv, const char* flag) {
 // on failure. `share` lets a second window share the first's GL object space
 // (unused here -- each renderer owns its own resources -- but kept for clarity).
 GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
-                                 GLFWwindow* share) {
+                                 GLFWwindow* share, int width, int height) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_FLOATING, alwaysOnTop ? GLFW_TRUE : GLFW_FALSE);
-  return glfwCreateWindow(kSuiteWidth, kSuiteHeight, title, nullptr, share);
+  return glfwCreateWindow(width, height, title, nullptr, share);
 }
 
 }  // namespace
@@ -514,10 +578,27 @@ int main(int argc, char** argv) {
 
   const bool wantMfd = !HasFlag(argc, argv, "--no-mfd");
 
+  // Restore persisted preferences unless the command line overrides them.
+  const avionics::AppSettings savedSettings = avionics::LoadAppSettings();
+  const bool showBezel = savedSettings.showBezel;
+  const int winW = SuiteWindowWidth(showBezel);
+  const int winH = SuiteWindowHeight(showBezel);
+
+  const char* sourceArg = FlagValue(argc, argv, "--source");
+  bool startWithXPlane = false;
+  bool autoDetectXPlane = false;
+  if (sourceArg != nullptr) {
+    startWithXPlane = std::strcmp(sourceArg, kSourceXPlane) == 0;
+  } else if (savedSettings.loaded) {
+    startWithXPlane = savedSettings.useXPlane;
+  } else {
+    autoDetectXPlane = true;
+  }
+
   // The PFD window owns vsync (paces the whole loop). Its context is created
   // first; the renderer is constructed while that context is current.
-  GLFWwindow* pfdWindow = CreateAvionicsWindow(kWindowTitle, alwaysOnTop,
-                                               nullptr);
+  GLFWwindow* pfdWindow =
+      CreateAvionicsWindow(kWindowTitle, alwaysOnTop, nullptr, winW, winH);
   if (!pfdWindow) {
     std::fprintf(stderr, "Failed to create window\n");
     glfwTerminate();
@@ -542,7 +623,8 @@ int main(int argc, char** argv) {
   GLFWwindow* mfdWindow = nullptr;
   avionics::NanoVgRenderer* mfdRenderer = nullptr;
   if (wantMfd) {
-    mfdWindow = CreateAvionicsWindow(kMfdWindowTitle, alwaysOnTop, nullptr);
+    mfdWindow =
+        CreateAvionicsWindow(kMfdWindowTitle, alwaysOnTop, nullptr, winW, winH);
     if (mfdWindow) {
       glfwMakeContextCurrent(mfdWindow);
       glfwSwapInterval(0);
@@ -563,7 +645,7 @@ int main(int argc, char** argv) {
   if (mfdWindow != nullptr) {
     int px = 0, py = 0;
     glfwGetWindowPos(pfdWindow, &px, &py);
-    glfwSetWindowPos(mfdWindow, px + kSuiteWidth + kWindowGap, py);
+    glfwSetWindowPos(mfdWindow, px + winW + kWindowGap, py);
   }
 
   // Both feeds exist for the whole session; the engines are pointed at one at a
@@ -598,10 +680,6 @@ int main(int argc, char** argv) {
   avionics::XPlaneConnection xplane(host ? host : kDefaultXPlaneHost, port,
                                     navData, fmsPlan, &terrain, &checklists);
 
-  const char* sourceArg = FlagValue(argc, argv, "--source");
-  const bool startWithXPlane =
-      sourceArg != nullptr && std::strcmp(sourceArg, kSourceXPlane) == 0;
-
   avionics::DataSource& initialSource =
       startWithXPlane ? static_cast<avionics::DataSource&>(xplane)
                       : static_cast<avionics::DataSource&>(mock);
@@ -625,9 +703,13 @@ int main(int argc, char** argv) {
   app.mock = &mock;
   app.xplane = &xplane;
   app.usingXPlane = startWithXPlane;
-  // With no explicit --source, start on mock and auto-switch to X-Plane once it
-  // is detected. An explicit --source pins the feed instead.
-  app.autoDetectXPlane = sourceArg == nullptr;
+  app.autoDetectXPlane = autoDetectXPlane;
+  app.showBezel = showBezel;
+  app.settings = savedSettings;
+  if (!app.settings.loaded) {
+    app.settings.useXPlane = startWithXPlane;
+    app.settings.showBezel = showBezel;
+  }
   app.pfdEngine = &pfdEngine;
   app.mfdEngine = mfdEngine;
   app.pfdWindow = pfdWindow;
@@ -636,14 +718,15 @@ int main(int argc, char** argv) {
   if (mfdWindow != nullptr) glfwSetWindowUserPointer(mfdWindow, &app);
 
 #if defined(__APPLE__)
-  // Add the "Data Source" menu (Mock Data / X-Plane) to the macOS menu bar.
+  // macOS menu bar: data feed and bezel visibility (both persisted).
   avionics::InstallDataSourceMenu(startWithXPlane, &OnMenuSelectSource, &app);
+  avionics::InstallBezelVisibilityMenu(showBezel, &OnMenuToggleBezel, &app);
 #endif
 
   // Renders one engine into its window: the avionics screen on the left and the
   // hardware bezel strip on the right. The gauge code draws directly in
   // framebuffer pixels, so the NanoVG device-pixel-ratio is 1.0.
-  const auto renderWindow = [](GLFWwindow* win, avionics::AvionicsEngine& eng,
+  const auto renderWindow = [&app](GLFWwindow* win, avionics::AvionicsEngine& eng,
                                avionics::NanoVgRenderer& renderer, double dt) {
     glfwMakeContextCurrent(win);
     int fbWidth = 0, fbHeight = 0;
@@ -652,7 +735,7 @@ int main(int argc, char** argv) {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     eng.update(dt);
-    RenderSuite(renderer, eng, fbWidth, fbHeight);
+    RenderSuite(renderer, eng, fbWidth, fbHeight, app.showBezel);
     glfwSwapBuffers(win);
   };
 
