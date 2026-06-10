@@ -245,15 +245,21 @@ void OnMenuToggleBezel(void* context, bool showBezel) {
 // (P6). PPM keeps this dependency-free; convert to PNG with `sips` afterwards.
 // Returns 0 on success. The mock state is advanced by `seconds` so we can pick a
 // clean, representative attitude (seconds = 0 is wings-level, no turbulence).
-int RunScreenshot(const char* path, double seconds, const char* state) {
+// When `fmsPlan` is non-null the mock flies that .fms route (same selector
+// rules as the interactive --fms-plan flag) instead of its built-in demo route.
+int RunScreenshot(const char* path, double seconds, const char* state,
+                  const char* fmsPlan, bool showBezel) {
   glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-  GLFWwindow* window = glfwCreateWindow(kSuiteWidth, kSuiteHeight, kWindowTitle,
-                                        nullptr, nullptr);
+  // Match the framebuffer to the bezel state: the full suite (screen + key
+  // strips) when the bezel is shown, the bare 4:3 screen when it is hidden.
+  GLFWwindow* window = glfwCreateWindow(SuiteWindowWidth(showBezel),
+                                        SuiteWindowHeight(showBezel),
+                                        kWindowTitle, nullptr, nullptr);
   if (!window) {
     std::fprintf(stderr, "Failed to create window\n");
     return 1;
@@ -279,6 +285,17 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
   dataSource.setChecklistSource(&checklists);
   for (int i = 0; i < 400 && !navData.ready(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  // Optional .fms route: once it has loaded, fly it on the mock feed (the
+  // aircraft repositions to the route's first waypoint), matching the
+  // interactive shell's --fms-plan behavior.
+  if (fmsPlan != nullptr) {
+    avionics::FmsPlanStore plan(fmsPlan);
+    for (int i = 0; i < 400 && !plan.loaded(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (plan.flightPlan().size() >= 2) dataSource.setRoute(plan.flightPlan());
   }
 
   avionics::AvionicsEngine engine(dataSource, renderer, kLabelMock);
@@ -310,7 +327,7 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     engine.update(seconds);
     engine.pressSoftkey(11);  // Alerts key
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "menu") == 0) {
     // Exercise the softkey menu state machine: open the PFD Options submenu and
     // turn on a couple of display-option toggles so the captured frame shows the
@@ -321,7 +338,7 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     engine.pressSoftkey(1);  // "SVT" toggle on
     engine.pressSoftkey(2);  // "Wind" toggle on
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "tmrref") == 0) {
     // Timer/References window: open it, start the timer, run it for a bit,
     // then set BARO minimums so the BARO MIN box and tape bug are captured.
@@ -342,7 +359,7 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
       engine.pressBezelKey(avionics::BezelKey::FmsNext);
     }
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "nrst") == 0) {
     // Nearest Airports window with the FMS cursor stepped to the second entry.
     engine.skipBoot();
@@ -351,7 +368,7 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     engine.pressBezelKey(avionics::BezelKey::FmsNext);
     for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "ident") == 0) {
     // IDNT annunciation plus an in-progress squawk entry: press Ident at the
     // root (starts the 18 s annunciation), then type two digits of a new code
@@ -364,7 +381,7 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     engine.pressSoftkey(4);  // digit 4
     engine.pressSoftkey(5);  // digit 5
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "map") == 0) {
     // Turn on the PFD inset map: open the Map/HSI submenu, then toggle "Inset".
     engine.skipBoot();
@@ -372,13 +389,13 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     engine.pressSoftkey(1);  // "Map/HSI" -> open submenu
     engine.pressSoftkey(2);  // "Inset" toggle on
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
     // The MFD full-screen MAP page (its own window in normal operation).
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strncmp(state, "mfd", 3) == 0) {
     // MFD page screenshots. The state encodes a page-group softkey plus an
     // optional repeat count (pressing the active group's key again steps to
@@ -412,7 +429,7 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
       for (int p = 0; p < 3; ++p) engine.pressBezelKey(avionics::BezelKey::Ent);
     }
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "failed") == 0) {
     // Capture the connection-lost display: populate believable live values from
     // the mock feed, then serve them through a source that reports the link as
@@ -423,11 +440,11 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     avionics::AvionicsEngine failedEngine(stale, renderer, kSourceXPlane);
     failedEngine.skipBoot();
     failedEngine.update(1.0 / 60.0);
-    RenderSuite(renderer, failedEngine, fbWidth, fbHeight);
+    RenderSuite(renderer, failedEngine, fbWidth, fbHeight, showBezel);
   } else {
     engine.skipBoot();
     engine.update(seconds);
-    RenderSuite(renderer, engine, fbWidth, fbHeight);
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   }
   glFinish();
 
@@ -567,11 +584,16 @@ int main(int argc, char** argv) {
 
   // Offscreen single-frame capture mode for development/iteration:
   //   avionics-standalone --screenshot out.ppm [--time SECONDS]
+  //       [--state STATE] [--fms-plan NAME] [--no-bezel]
+  // --no-bezel captures just the 4:3 avionics screen, omitting the hardware
+  // bezel key column and softkey strip.
   if (const char* shot = FlagValue(argc, argv, "--screenshot")) {
     const char* timeStr = FlagValue(argc, argv, "--time");
     const double seconds = timeStr ? std::atof(timeStr) : 0.0;
     const char* state = FlagValue(argc, argv, "--state");
-    const int rc = RunScreenshot(shot, seconds, state);
+    const char* fmsPlan = FlagValue(argc, argv, "--fms-plan");
+    const bool showBezel = !HasFlag(argc, argv, "--no-bezel");
+    const int rc = RunScreenshot(shot, seconds, state, fmsPlan, showBezel);
     glfwTerminate();
     return rc;
   }
