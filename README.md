@@ -132,3 +132,21 @@ Replicate **behavior and layout** from public Garmin documentation (Pilot's
 Guide / Cockpit Reference Guide) and the free G1000 PC Trainer. Do **not** copy
 Garmin's bitmaps, fonts, or any decompiled code — reimplement the look with
 vector drawing.
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0** — see
+the [LICENSE](LICENSE) file for the full text.
+
+> Copyright (C) 2026 Andywmm9
+>
+> This program is free software: you can redistribute it and/or modify it under
+> the terms of the GNU General Public License as published by the Free Software
+> Foundation, either version 3 of the License, or (at your option) any later
+> version. This program is distributed in the hope that it will be useful, but
+> WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+> FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+> details.
+
+"Garmin" and "G1000" are trademarks of Garmin Ltd. This is an independent,
+unofficial reimplementation and is not affiliated with or endorsed by Garmin.
