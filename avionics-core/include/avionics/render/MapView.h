@@ -15,6 +15,9 @@ struct MapViewStyle {
   bool showFlightPlan = true;
   bool showFeatures = true;
   bool showAirspace = true;
+  // Topographic terrain background (requires MapData::terrain). When off, the
+  // map keeps its plain dark background.
+  bool showTerrain = false;
   // Border, range label, and orientation annunciation. The inset map shows
   // these; a full-screen MFD page may supply its own chrome instead.
   bool showChrome = true;
@@ -29,6 +32,10 @@ struct MapViewConfig {
   float w = 0.0f;
   float h = 0.0f;
   MapOrientation orientation = MapOrientation::TrackUp;
+  // Per-view range, in NM. When > 0 it overrides MapData::rangeNm so several
+  // map instances (PFD inset vs. MFD MAP page) can show the same nav data at
+  // independent zooms. Defaults to 0 = follow the shared MapData range.
+  float rangeNm = 0.0f;
   MapViewStyle style;
 };
 

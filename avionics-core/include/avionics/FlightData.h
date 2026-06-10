@@ -30,6 +30,13 @@ struct FlightData {
   bool altitudeValid = true;       // ADC
   bool verticalSpeedValid = true;  // ADC
 
+  // Whole-feed health, distinct from the per-sensor flags above. The engine
+  // clears this (alongside every sensor flag) when the data link stops
+  // delivering fresh data, so the non-sensor readouts in the top NAV/COM bar
+  // and bottom info panel (radios, FMA, transponder, OAT, clock) blank out /
+  // show amber dashes instead of stale values, matching the red-X'd gauges.
+  bool dataLinkValid = true;
+
   // Crew Alerting System (CAS) conditions, sourced from X-Plane's annunciators.
   // Each is true while its annunciator is lit; SoftkeyController turns the set
   // into the warning/caution text shown in the PFD Alerts window.

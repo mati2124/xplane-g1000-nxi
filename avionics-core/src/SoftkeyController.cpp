@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "avionics/render/BezelKeys.h"
+
 namespace avionics {
 namespace {
 
@@ -198,6 +200,9 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data) {
   for (int i = 0; i < kSoftkeyCount; ++i) {
     press_[i] = std::max(0.0f, press_[i] - pressStep);
   }
+  for (int i = 0; i < kBezelKeyCount; ++i) {
+    bezelPress_[i] = std::max(0.0f, bezelPress_[i] - pressStep);
+  }
 
   // Alerts window eases toward its open/closed target at a constant rate.
   const float target = alertsOpen_ ? 1.0f : 0.0f;
@@ -238,6 +243,17 @@ int SoftkeyController::hitTest(float xPx, float yPx, float widthPx,
   int idx = static_cast<int>(xPx / cellW);
   idx = std::max(0, std::min(kSoftkeyCount - 1, idx));
   return idx;
+}
+
+void SoftkeyController::pressBezelKey(BezelKey key) {
+  const int i = static_cast<int>(key);
+  if (i < 0 || i >= kBezelKeyCount) return;
+  bezelPress_[i] = 1.0f;  // trigger the press-flash animation
+  if (key == BezelKey::RangeUp) {
+    insetRangeIndex_ = std::min(kMapRangeLadderCount - 1, insetRangeIndex_ + 1);
+  } else if (key == BezelKey::RangeDown) {
+    insetRangeIndex_ = std::max(0, insetRangeIndex_ - 1);
+  }
 }
 
 bool SoftkeyController::pointerDown(float xPx, float yPx, float widthPx,

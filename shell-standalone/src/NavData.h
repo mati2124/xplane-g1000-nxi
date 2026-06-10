@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "avionics/MapData.h"
+#include "avionics/NavFeatureSource.h"
 
 namespace avionics {
 
@@ -23,15 +24,16 @@ namespace avionics {
 // Loading runs on a background thread so the ~tens-of-MB parse never stalls the
 // render loop. Once loaded the lists are immutable, so nearby() reads them
 // without locking (publication is via the loaded_ acquire/release flag).
-class NavDataStore {
+class NavDataStore : public NavFeatureSource {
  public:
   NavDataStore();
-  ~NavDataStore();
+  ~NavDataStore() override;
 
   NavDataStore(const NavDataStore&) = delete;
   NavDataStore& operator=(const NavDataStore&) = delete;
 
   bool loaded() const { return loaded_.load(std::memory_order_acquire); }
+  bool ready() const override { return loaded(); }
 
   // Directory the nav data was loaded from, for diagnostics (empty if none).
   const std::string& sourceDir() const { return sourceDir_; }
@@ -39,7 +41,7 @@ class NavDataStore {
   // Features within rangeNm of (lat, lon), nearest first, capped at maxCount.
   // Returns empty until loaded().
   std::vector<MapFeature> nearby(double lat, double lon, float rangeNm,
-                                 std::size_t maxCount) const;
+                                 std::size_t maxCount) const override;
 
  private:
   void load();  // background-thread entry point

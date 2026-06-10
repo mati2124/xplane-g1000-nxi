@@ -1,16 +1,35 @@
 #include "avionics/render/MapView.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "avionics/Color.h"
+#include "avionics/Terrain.h"
 #include "render/map/MapProjection.h"
 
 namespace avionics {
 namespace {
 
 constexpr float kWtCanvasHeight = 768.0f;
+
+// Nav-feature symbol size, in 768-px-canvas units. Symbols are sized off the
+// display (like text) rather than the viewport, so they stay a fixed, legible
+// size on both the small PFD inset and the full-screen MFD MAP page instead of
+// ballooning on the larger viewport.
+constexpr float kFeatureSymbolWt = 8.0f;
+
+// Range-based feature declutter (NM): each class is hidden once the map range
+// exceeds its threshold, matching the G1000's progressive decluttering. Fixes
+// (intersections) are the densest, so they only appear when zoomed well in, and
+// at most kMaxFixesDrawn of the nearest ones are drawn.
+constexpr float kFeatureRangeAirportNm = 150.0f;
+constexpr float kFeatureRangeVorNm = 100.0f;
+constexpr float kFeatureRangeNdbNm = 40.0f;
+constexpr float kFeatureRangeFixNm = 7.5f;
+constexpr int kMaxFixesDrawn = 40;
 
 float fontPx(float wtPx, float displayH) {
   return wtPx * (displayH / kWtCanvasHeight);
@@ -38,6 +57,97 @@ const char* orientationLabel(MapOrientation mode) {
       return "TRK";
   }
   return "";
+}
+
+// Topographic color ramp (ft MSL -> color). Muted/desaturated so the white,
+// cyan and magenta map symbology stays legible on top: water is dark blue,
+// lowlands green, hills tan/brown, peaks grey. The shoreline is a sharp step
+// from blue (<=0 ft) to green (>0 ft).
+struct TerrainStop {
+  float ft;
+  Color color;
+};
+
+constexpr TerrainStop kTerrainStops[] = {
+    {-400.0f, {0.03f, 0.06f, 0.11f, 1.0f}},   // deep water
+    {0.0f, {0.05f, 0.10f, 0.16f, 1.0f}},      // shoreline water
+    {1.0f, {0.06f, 0.16f, 0.08f, 1.0f}},      // lowland green
+    {1000.0f, {0.10f, 0.22f, 0.10f, 1.0f}},   // green
+    {2500.0f, {0.24f, 0.26f, 0.12f, 1.0f}},   // olive
+    {4500.0f, {0.32f, 0.24f, 0.12f, 1.0f}},   // tan
+    {7000.0f, {0.34f, 0.22f, 0.14f, 1.0f}},   // brown
+    {10000.0f, {0.45f, 0.42f, 0.40f, 1.0f}},  // grey rock
+    {13000.0f, {0.62f, 0.60f, 0.58f, 1.0f}},  // light grey / snow
+};
+
+Color terrainColor(float ft) {
+  constexpr int n =
+      static_cast<int>(sizeof(kTerrainStops) / sizeof(kTerrainStops[0]));
+  if (ft <= kTerrainStops[0].ft) return kTerrainStops[0].color;
+  if (ft >= kTerrainStops[n - 1].ft) return kTerrainStops[n - 1].color;
+  for (int i = 1; i < n; ++i) {
+    if (ft <= kTerrainStops[i].ft) {
+      const Color& a = kTerrainStops[i - 1].color;
+      const Color& b = kTerrainStops[i].color;
+      const float t =
+          (ft - kTerrainStops[i - 1].ft) /
+          (kTerrainStops[i].ft - kTerrainStops[i - 1].ft);
+      return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
+              a.b + (b.b - a.b) * t, 1.0f};
+    }
+  }
+  return kTerrainStops[n - 1].color;
+}
+
+// Fills the map viewport with a topographic raster: a grid of quads sampled
+// from the terrain source and colored by elevation. The grid is built in
+// geographic space around ownship and projected (with the map rotation) so it
+// scrolls and rotates with the rest of the map. The grid covers ~2x the range
+// in each direction so it still fills the rotated viewport corners.
+void drawTerrain(Renderer& r, const TerrainSource& terrain, double centerLat,
+                 double centerLon, float cx, float cy, float pixelsPerNm,
+                 float rotation, float rangeNm, const MapViewConfig& config) {
+  constexpr int kN = 40;  // cells per side
+  const float halfNm = rangeNm * 2.0f;
+  const float stepNm = (2.0f * halfNm) / kN;
+  const double nmLon = map::nmPerDegLon(centerLat);
+
+  std::vector<Point> pts(static_cast<size_t>(kN + 1) * (kN + 1));
+  for (int i = 0; i <= kN; ++i) {  // i: north (top) -> south
+    const double northNm = halfNm - i * stepNm;
+    for (int j = 0; j <= kN; ++j) {  // j: west -> east
+      const double eastNm = -halfNm + j * stepNm;
+      const double lat = centerLat + northNm / map::kNmPerDegLat;
+      const double lon = centerLon + eastNm / nmLon;
+      float x = 0.0f, y = 0.0f;
+      map::latLonToLocalPx(lat, lon, centerLat, centerLon, cx, cy, pixelsPerNm,
+                           rotation, x, y);
+      pts[static_cast<size_t>(i) * (kN + 1) + j] = {x, y};
+    }
+  }
+
+  const float minX = config.x, maxX = config.x + config.w;
+  const float minY = config.y, maxY = config.y + config.h;
+  for (int i = 0; i < kN; ++i) {
+    const double cellNorthNm = halfNm - (i + 0.5) * stepNm;
+    for (int j = 0; j < kN; ++j) {
+      const Point& a = pts[static_cast<size_t>(i) * (kN + 1) + j];
+      const Point& b = pts[static_cast<size_t>(i) * (kN + 1) + j + 1];
+      const Point& c = pts[static_cast<size_t>(i + 1) * (kN + 1) + j + 1];
+      const Point& d = pts[static_cast<size_t>(i + 1) * (kN + 1) + j];
+      const float qMinX = std::min(std::min(a.x, b.x), std::min(c.x, d.x));
+      const float qMaxX = std::max(std::max(a.x, b.x), std::max(c.x, d.x));
+      const float qMinY = std::min(std::min(a.y, b.y), std::min(c.y, d.y));
+      const float qMaxY = std::max(std::max(a.y, b.y), std::max(c.y, d.y));
+      if (qMaxX < minX || qMinX > maxX || qMaxY < minY || qMinY > maxY) continue;
+
+      const double cellEastNm = -halfNm + (j + 0.5) * stepNm;
+      const double lat = centerLat + cellNorthNm / map::kNmPerDegLat;
+      const double lon = centerLon + cellEastNm / nmLon;
+      const Point quad[4] = {a, b, c, d};
+      r.fillPolygon(quad, 4, terrainColor(terrain.elevationFt(lat, lon)));
+    }
+  }
 }
 
 void drawOwnshipSymbol(Renderer& r, float cx, float cy, float size) {
@@ -144,10 +254,22 @@ Color featureColor(MapFeatureType type) {
 void drawFeature(Renderer& r, MapFeatureType type, float x, float y, float s,
                  const Color& c) {
   switch (type) {
-    case MapFeatureType::Airport:
-      r.strokeLine(x - s, y, x + s, y, 1.5f, c);
-      r.strokeLine(x, y - s, x, y + s, 1.5f, c);
+    case MapFeatureType::Airport: {
+      // Circle with a runway cross -- the Garmin towered-airport symbol, which
+      // reads as an airport far better than a bare plus sign.
+      constexpr int kSeg = 16;
+      const float rad = s * 0.85f;
+      Point ring[kSeg + 1];
+      for (int i = 0; i <= kSeg; ++i) {
+        const float a = static_cast<float>(i) / static_cast<float>(kSeg) *
+                        2.0f * 3.14159265f;
+        ring[i] = {x + rad * std::cos(a), y + rad * std::sin(a)};
+      }
+      r.strokePolyline(ring, kSeg + 1, 1.5f, c);
+      r.strokeLine(x - rad, y, x + rad, y, 1.5f, c);
+      r.strokeLine(x, y - rad, x, y + rad, 1.5f, c);
       break;
+    }
     case MapFeatureType::Vor: {
       // Closed triangle outline (repeat the first vertex so the polyline closes).
       const Point tri[4] = {{x, y - s}, {x - s, y + s * 0.6f},
@@ -180,7 +302,10 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   const float cx = config.x + config.w * 0.5f;
   const float cy = config.y + config.h * 0.5f;
   const float mapRadiusPx = 0.45f * std::min(config.w, config.h);
-  const float rangeNm = std::max(0.5f, map.rangeNm);
+  // A per-view range override lets the MFD MAP page zoom independently of the
+  // PFD inset while reading the same MapData.
+  const float rangeNm =
+      std::max(0.5f, config.rangeNm > 0.0f ? config.rangeNm : map.rangeNm);
   const float pixelsPerNm = mapRadiusPx / rangeNm;
   const float rotation = orientationDeg(config.orientation, flight);
   const float labelSize = fontPx(config.style.labelFontWt, displayH);
@@ -188,9 +313,20 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
 
+  // Topographic terrain background, drawn first so everything else overlays it.
+  // Falls back to the plain background when no terrain source is available.
+  const bool terrainDrawn = config.style.showTerrain &&
+                            map.terrain != nullptr && map.positionValid;
+  if (terrainDrawn) {
+    drawTerrain(r, *map.terrain, map.ownshipLat, map.ownshipLon, cx, cy,
+                pixelsPerNm, rotation, rangeNm, config);
+  }
+
   if (config.style.showChrome) {
-    r.fillRect(config.x, config.y, config.w, config.h,
-               Color{0.0f, 0.0f, 0.0f, 0.82f});
+    if (!terrainDrawn) {
+      r.fillRect(config.x, config.y, config.w, config.h,
+                 Color{0.0f, 0.0f, 0.0f, 0.82f});
+    }
     r.strokeLine(config.x, config.y, config.x + config.w, config.y, 2.0f,
                  colors::kTapeTopBorder);
     r.strokeLine(config.x, config.y + config.h, config.x + config.w,
@@ -217,7 +353,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
 
   const double centerLat = map.ownshipLat;
   const double centerLon = map.ownshipLon;
-  const float symSize = std::max(4.0f, config.w * 0.028f);
+  const float symSize = std::max(5.0f, fontPx(kFeatureSymbolWt, displayH));
 
   // Airspace boundaries draw beneath the route and features. An altitude
   // declutter hides airspace whose vertical band is far from ownship, matching
@@ -273,7 +409,32 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   }
 
   if (config.style.showFeatures) {
+    // Range-based declutter, mirroring the G1000: drop the densest feature
+    // classes as the range opens up so the map stays readable, and cap the
+    // number of intersections drawn (the list is nearest-first, so the closest
+    // ones win) since terminal areas hold hundreds of them.
+    auto visibleAtRange = [&](MapFeatureType type) {
+      switch (type) {
+        case MapFeatureType::Airport:
+          return rangeNm <= kFeatureRangeAirportNm;
+        case MapFeatureType::Vor:
+          return rangeNm <= kFeatureRangeVorNm;
+        case MapFeatureType::Ndb:
+          return rangeNm <= kFeatureRangeNdbNm;
+        case MapFeatureType::Fix:
+        case MapFeatureType::Waypoint:
+          return rangeNm <= kFeatureRangeFixNm;
+      }
+      return true;
+    };
+
+    int fixesDrawn = 0;
     for (const MapFeature& f : map.features) {
+      if (!visibleAtRange(f.type)) continue;
+      const bool isFix =
+          f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
+      if (isFix && fixesDrawn >= kMaxFixesDrawn) continue;
+
       float x = 0.0f, y = 0.0f;
       map::latLonToLocalPx(f.lat, f.lon, centerLat, centerLon, cx, cy,
                            pixelsPerNm, rotation, x, y);
@@ -281,6 +442,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
           y < config.y - symSize || y > config.y + config.h + symSize) {
         continue;
       }
+      if (isFix) ++fixesDrawn;
       const Color c = featureColor(f.type);
       drawFeature(r, f.type, x, y, symSize, c);
       if (config.style.showChrome && !f.id.empty()) {

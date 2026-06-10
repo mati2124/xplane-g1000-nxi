@@ -56,16 +56,20 @@ void seedDemoAirspace(MapData& map) {
   map.airspaces = {classB, classC, classD};
 }
 
-void seedDemoMap(MapData& map) {
-  map.ownshipLat = kKpaoLat;
-  map.ownshipLon = kKpaoLon;
-  map.rangeNm = 10.0f;
-  map.positionValid = true;
-  map.flightPlan = {
+// Built-in route flown when the shell does not supply a real flight plan.
+// These are real Bay Area waypoints, so the demo still looks plausible.
+const std::vector<MapLeg>& defaultRoute() {
+  static const std::vector<MapLeg> kRoute = {
       {kKpaoLat, kKpaoLon, "KPAO"},
       {37.5930, -121.8810, "SUNOL"},
       {36.9357, -121.7896, "KWVI"},
+      {37.3925, -122.2808, "OSI"},
   };
+  return kRoute;
+}
+
+// Hand-placed nav features used only when no real NavFeatureSource is wired in.
+void seedDemoFeatures(MapData& map) {
   map.features = {
       {MapFeatureType::Airport, 37.5111, -122.2495, "KSQL"},
       {MapFeatureType::Vor, 37.3925, -122.2808, "OSI"},
@@ -76,6 +80,35 @@ void seedDemoMap(MapData& map) {
   };
   seedDemoAirspace(map);
 }
+
+// Great-circle-ish bearing (deg true) from a->b over short distances.
+double bearingDeg(double fromLat, double fromLon, double toLat, double toLon) {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kDegToRad = kPi / 180.0;
+  const double cosLat = std::max(0.05, std::cos(fromLat * kDegToRad));
+  const double north = (toLat - fromLat);
+  const double east = (toLon - fromLon) * cosLat;
+  double deg = std::atan2(east, north) / kDegToRad;
+  if (deg < 0.0) deg += 360.0;
+  return deg;
+}
+
+double distanceNm(double fromLat, double fromLon, double toLat, double toLon) {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kDegToRad = kPi / 180.0;
+  constexpr double kNmPerDeg = 60.0;
+  const double cosLat = std::max(0.05, std::cos(fromLat * kDegToRad));
+  const double north = (toLat - fromLat) * kNmPerDeg;
+  const double east = (toLon - fromLon) * kNmPerDeg * cosLat;
+  return std::sqrt(north * north + east * east);
+}
+
+// Features are pulled within this radius (and capped) so both the small PFD
+// inset and a zoomed-out MFD MAP page have data to draw, refreshed on a timer
+// since the world database is large.
+constexpr float kFeatureQueryRangeNm = 160.0f;
+constexpr std::size_t kMaxFeatures = 500;
+constexpr double kFeatureRebuildIntervalSeconds = 2.0;
 
 }  // namespace
 
@@ -112,6 +145,11 @@ void MockDataSource::update(double dtSeconds) {
   data_.groundSpeedKts = data_.airspeedKts - 2.0f;
   data_.oatCelsius = 12.0f + 3.0f * std::sin(t * 0.05f);
 
+  // Fly the route: this sets ownship position, heading, course and the FMA
+  // active-leg fields, so the heading-dependent fields below follow the route.
+  ensureRoute();
+  navigateRoute(dtSeconds);
+
   // Turn rate (deg/sec) is the analytic derivative of the smooth heading sweep
   // (45 + t*2.0 -> 2.0 deg/sec base) modulated by the bank, so the HSI turn-rate
   // trend tracks the roll. Track lags heading by a small wind-driven crab angle.
@@ -125,8 +163,8 @@ void MockDataSource::update(double dtSeconds) {
   data_.airspeedTrendKts = 18.0f * std::cos(t * 0.20f);
   data_.altitudeTrendFt = data_.verticalSpeedFpm * (6.0f / 60.0f);
 
-  // HSI course + CDI: hold a fixed course while the lateral deviation drifts.
-  data_.courseDeg = 45.0f;
+  // HSI course follows the active leg (set in navigateRoute); the lateral
+  // deviation drifts gently so the CDI shows some life.
   data_.cdiDeviationDots = 1.3f * std::sin(t * 0.13f);
   data_.cdiToFlag = true;
   data_.navSignalValid = true;
@@ -150,9 +188,6 @@ void MockDataSource::update(double dtSeconds) {
   data_.bearing2Valid = true;
   data_.bearing2Deg = std::fmod(data_.headingDeg - 40.0f + 360.0f, 360.0f);
   data_.bearing2DistanceNm = 23.7f;
-  data_.fmaLegDistanceNm = 12.4f - t * 0.02f;
-  data_.fmaLegBearingDeg =
-      std::fmod(data_.headingDeg + 15.0f + t * 0.5f, 360.0f);
   data_.transponderCode = 1200;
   data_.transponderMode = "ALT";
   data_.transponderReply = std::fmod(t, 9.0) < 0.4f;
@@ -173,15 +208,89 @@ void MockDataSource::update(double dtSeconds) {
   data_.utcMinute = (totalSec / 60) % 60;
   data_.utcSecond = totalSec % 60;
 
-  if (map_.flightPlan.empty()) seedDemoMap(map_);
+  refreshFeatures(dtSeconds);
+  map_.terrain = &terrain_;  // synthetic topographic background
+}
 
-  // Drift ownship along track for a live inset map in mock mode.
-  const double hdgRad =
-      static_cast<double>(data_.headingDeg) * 3.14159265358979323846 / 180.0;
-  const double nm = static_cast<double>(data_.groundSpeedKts) * dtSeconds / 3600.0;
-  map_.ownshipLat += nm * std::cos(hdgRad) / 60.0;
-  map_.ownshipLon +=
-      nm * std::sin(hdgRad) / (60.0 * std::cos(kKpaoLat * 3.14159265358979323846 / 180.0));
+void MockDataSource::setRoute(std::vector<MapLeg> route) {
+  route_ = std::move(route);
+  routeInitialized_ = false;  // re-seed position from the new route start
+}
+
+void MockDataSource::ensureRoute() {
+  if (routeInitialized_) return;
+
+  if (route_.size() < 2) route_ = defaultRoute();
+  map_.flightPlan = route_;
+  map_.rangeNm = 10.0f;
+  map_.ownshipLat = route_.front().lat;
+  map_.ownshipLon = route_.front().lon;
+  map_.positionValid = true;
+  legIndex_ = 1;
+  data_.headingDeg = static_cast<float>(
+      bearingDeg(route_[0].lat, route_[0].lon, route_[1].lat, route_[1].lon));
+
+  // Hand-placed demo features/airspace only when no real nav source is wired in
+  // (with one, refreshFeatures fills in the actual nearby navaids/fixes).
+  if (navFeatures_ == nullptr) seedDemoFeatures(map_);
+
+  routeInitialized_ = true;
+}
+
+void MockDataSource::navigateRoute(double dt) {
+  if (route_.size() < 2) return;
+
+  const MapLeg& target = route_[legIndex_];
+  const double brg =
+      bearingDeg(map_.ownshipLat, map_.ownshipLon, target.lat, target.lon);
+  const double distNm =
+      distanceNm(map_.ownshipLat, map_.ownshipLon, target.lat, target.lon);
+
+  // Ease the heading toward the bearing (shortest direction) at a standard-rate
+  // turn, so course changes at waypoints look like real turns, not snaps.
+  const double diff =
+      std::fmod(brg - data_.headingDeg + 540.0, 360.0) - 180.0;
+  const double turnStep = 3.0 * dt;  // ~standard rate
+  double heading = std::fabs(diff) <= turnStep
+                       ? brg
+                       : data_.headingDeg + (diff > 0.0 ? turnStep : -turnStep);
+  heading = std::fmod(heading + 360.0, 360.0);
+  data_.headingDeg = static_cast<float>(heading);
+  data_.courseDeg = static_cast<float>(brg);
+
+  // Move along the current heading at ground speed.
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kNmPerDeg = 60.0;
+  const double cosLat = std::max(0.05, std::cos(map_.ownshipLat * kPi / 180.0));
+  const double moveNm =
+      std::max(40.0, static_cast<double>(data_.groundSpeedKts)) * dt / 3600.0;
+  const double hdgRad = heading * kPi / 180.0;
+  map_.ownshipLat += moveNm * std::cos(hdgRad) / kNmPerDeg;
+  map_.ownshipLon += moveNm * std::sin(hdgRad) / (kNmPerDeg * cosLat);
+
+  // Active-leg readout on the FMA (top bar).
+  data_.fmaFromWpt = route_[(legIndex_ + route_.size() - 1) % route_.size()].id;
+  data_.fmaToWpt = target.id;
+  data_.fmaLegDistanceNm = static_cast<float>(distNm);
+  data_.fmaLegBearingDeg = static_cast<float>(brg);
+
+  // Sequence to the next leg on arrival, looping back to the start.
+  if (distNm <= std::max(0.4, moveNm * 1.5)) {
+    legIndex_ = (legIndex_ + 1) % route_.size();
+  }
+}
+
+void MockDataSource::refreshFeatures(double dt) {
+  if (navFeatures_ == nullptr) return;  // demo features already seeded
+
+  sinceFeatureRebuild_ += dt;
+  const bool due = map_.features.empty() ||
+                   sinceFeatureRebuild_ >= kFeatureRebuildIntervalSeconds;
+  if (due && navFeatures_->ready()) {
+    map_.features = navFeatures_->nearby(map_.ownshipLat, map_.ownshipLon,
+                                         kFeatureQueryRangeNm, kMaxFeatures);
+    sinceFeatureRebuild_ = 0.0;
+  }
 }
 
 }  // namespace avionics

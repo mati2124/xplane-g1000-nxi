@@ -3,8 +3,10 @@
 #include <string>
 
 #include "avionics/DataSource.h"
+#include "avionics/MfdController.h"
 #include "avionics/Renderer.h"
 #include "avionics/SoftkeyController.h"
+#include "avionics/render/BezelKeys.h"
 
 namespace avionics {
 
@@ -34,6 +36,12 @@ class AvionicsEngine {
   void setPage(DisplayPage page) { page_ = page; }
   DisplayPage page() const { return page_; }
 
+  // When two engines share one DataSource (e.g. a PFD window and an MFD window
+  // fed by the same sim link), only one should pump the source each frame.
+  // Call setDrivesDataSource(false) on the secondary engine so update() advances
+  // its own boot/UI animations without double-stepping the shared source.
+  void setDrivesDataSource(bool drives) { drivesDataSource_ = drives; }
+
   // Swap the live data source (e.g. toggling mock <-> X-Plane at runtime). The
   // boot sequence restarts so the new source's acquisition is shown cleanly.
   void setDataSource(DataSource& dataSource, std::string sourceLabel = "");
@@ -47,6 +55,14 @@ class AvionicsEngine {
   // and the windows it opens. Ignored unless the live page is up.
   void onPointerDown(double xPx, double yPx);
 
+  // ---- window bezel keys (drawn by the standalone shell around the screen) ----
+  // Apply a hardware bezel key press to whichever page is active (the range
+  // rocker zooms that page's map). Ignored unless the live page is up.
+  void pressBezelKey(BezelKey key);
+  // Press-flash levels (0..1, indexed by BezelKey) for the active page, so the
+  // shell can render the key feedback.
+  const float* bezelPressLevels() const;
+
  private:
   // True once the boot self-test has finished and the source is connected, i.e.
   // the interactive live page is actually on screen.
@@ -57,7 +73,9 @@ class AvionicsEngine {
   DisplayPage page_ = DisplayPage::PrimaryFlightDisplay;
   std::string sourceLabel_;
   double bootElapsedSeconds_ = 0.0;
+  bool drivesDataSource_ = true;
   SoftkeyController softkeys_;
+  MfdController mfd_;
   int lastWidthPx_ = 0;
   int lastHeightPx_ = 0;
 };

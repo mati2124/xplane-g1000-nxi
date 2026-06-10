@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "avionics/FlightData.h"
+#include "avionics/MapRange.h"
+#include "avionics/render/BezelKeys.h"
 
 namespace avionics {
 
@@ -105,6 +107,15 @@ class SoftkeyController {
   // Transponder mode selected on the XPDR submenu.
   XpdrMode xpdrMode() const { return xpdrMode_; }
 
+  // ---- window bezel key column (drawn by the standalone shell) ----
+  // Apply a press of a hardware bezel key: flashes the key and, for the range
+  // rocker, steps the PFD inset-map range.
+  void pressBezelKey(BezelKey key);
+  // Press-flash levels (0..1) for the bezel keys, indexed by BezelKey.
+  const float* bezelPressLevels() const { return bezelPress_.data(); }
+  // Range the bezel rocker drives for the PFD inset map.
+  float insetRangeNm() const { return mapRangeNmAt(insetRangeIndex_); }
+
  private:
   // Maps a pointer position to a softkey cell index, or -1 if outside the bar.
   static int hitTest(float xPx, float yPx, float widthPx, float heightPx);
@@ -120,6 +131,11 @@ class SoftkeyController {
   std::vector<SoftkeyMenu> menuStack_;
   std::array<bool, kDisplayToggleCount> toggles_{};
   XpdrMode xpdrMode_ = XpdrMode::Alt;
+
+  // On-screen bezel key column: per-key press-flash and the inset-map range it
+  // controls (the range rocker steps kMapRangeLadderNm).
+  std::array<float, kBezelKeyCount> bezelPress_{};
+  int insetRangeIndex_ = kMapRangeDefaultIndex;
 
   bool alertsOpen_ = false;
   float alertsAnim_ = 0.0f;

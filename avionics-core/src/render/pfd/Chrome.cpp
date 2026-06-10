@@ -6,6 +6,14 @@
 namespace avionics::pfd {
 namespace {
 
+// Placeholders shown for the chrome data readouts when the data link is down,
+// so a dead feed reads as unknown rather than as stale live values.
+constexpr const char* kFreqDash2 = "---.--";
+constexpr const char* kFreqDash3 = "---.---";
+constexpr const char* kOatDashes = "---";
+constexpr const char* kXpdrDashes = "----";
+constexpr const char* kTimeDashes = "--:--:--";
+
 // Smooth Hermite ease for window slide/fade, matching the Working Title feel.
 float smoothstep(float t) {
   t = std::max(0.0f, std::min(1.0f, t));
@@ -34,8 +42,6 @@ void drawFmaCenter(Renderer& r, float w, float h, float barH,
   const float rowSplitY = barH * 0.50f;
   const float pad = centerW * 0.015f;
 
-  r.strokeLine(left, rowSplitY, right, rowSplitY, 1.5f, colors::kPanelSeparator);
-
   const float row1Y = barH * 0.26f;
   const float row2Y = barH * 0.76f;
   const float smallSize = fontPx(wt::kFmaSmall, h);
@@ -45,6 +51,23 @@ void drawFmaCenter(Renderer& r, float w, float h, float barH,
 
   const float topLeftW = centerW * 0.56f;
   const float topRightX = left + topLeftW;
+  const float latW = centerW * 0.245f;
+  const float apW = centerW * 0.225f;
+  const float vertX = left + latW + apW;
+
+  // Static cell separators are always drawn so the FMA keeps its shape, even
+  // when the data link is down and the mode/leg fields are blanked.
+  r.strokeLine(left, rowSplitY, right, rowSplitY, 1.5f, colors::kPanelSeparator);
+  r.strokeLine(topRightX, barH * 0.08f, topRightX, rowSplitY - 1.0f, 1.5f,
+               colors::kPanelSeparator);
+  r.strokeLine(left + latW, rowSplitY + 1.0f, left + latW, barH * 0.92f, 1.5f,
+               colors::kPanelSeparator);
+  r.strokeLine(vertX, rowSplitY + 1.0f, vertX, barH * 0.92f, 1.5f,
+               colors::kPanelSeparator);
+
+  // Link down: the active leg and lateral/vertical modes are unknown, so leave
+  // the cells empty rather than annunciating stale captured modes.
+  if (!d.dataLinkValid) return;
 
   // Active-leg field: waypoint identifiers in white with a magenta leg arrow,
   // as on the real G1000 navigation status box.
@@ -57,8 +80,6 @@ void drawFmaCenter(Renderer& r, float w, float h, float barH,
     putText(r, x, row1Y, d.fmaToWpt, dataSize, colors::kWhite);
   }
 
-  r.strokeLine(topRightX, barH * 0.08f, topRightX, rowSplitY - 1.0f, 1.5f,
-               colors::kPanelSeparator);
   {
     char buf[24];
     std::snprintf(buf, sizeof(buf), "%.1f", d.fmaLegDistanceNm);
@@ -71,15 +92,6 @@ void drawFmaCenter(Renderer& r, float w, float h, float barH,
     putText(r, rx, row1Y, formatHeading(d.fmaLegBearingDeg) + "\u00b0",
             dataSize, colors::kMagenta);
   }
-
-  const float latW = centerW * 0.245f;
-  const float apW = centerW * 0.225f;
-  const float vertX = left + latW + apW;
-
-  r.strokeLine(left + latW, rowSplitY + 1.0f, left + latW, barH * 0.92f, 1.5f,
-               colors::kPanelSeparator);
-  r.strokeLine(vertX, rowSplitY + 1.0f, vertX, barH * 0.92f, 1.5f,
-               colors::kPanelSeparator);
 
   float lx = left + pad;
   if (!d.fmaLateralArmed.empty()) {
@@ -147,6 +159,16 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
   r.strokeLine(divR, barH * 0.12f, divR, barH * 0.88f, 2.0f,
                colors::kPanelSeparator);
 
+  // With the link down the tuned frequencies are unknown: show amber dashes in
+  // place of the active/standby readouts (the labels and transfer arrows stay).
+  const bool linkValid = d.dataLinkValid;
+  const Color activeColor = linkValid ? colors::kActiveGreen : colors::kBandYellow;
+  const Color standbyColor = linkValid ? colors::kWhite : colors::kBandYellow;
+  auto freqText = [&](float mhz, int decimals) {
+    return linkValid ? formatFreq(mhz, decimals)
+                     : std::string(decimals >= 3 ? kFreqDash3 : kFreqDash2);
+  };
+
   struct Nav {
     const char* label;
     float active, standby, cy;
@@ -156,11 +178,11 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
   for (const Nav& n : navs) {
     r.fillText(w * 0.012f, n.cy, n.label, labelSize, TextAlign::Left,
                colors::kLabelText);
-    r.fillText(w * 0.140f, n.cy, formatFreq(n.standby, 2), freqSize,
-               TextAlign::Right, colors::kWhite);
+    r.fillText(w * 0.140f, n.cy, freqText(n.standby, 2), freqSize,
+               TextAlign::Right, standbyColor);
     drawTransferArrow(r, w * 0.158f, n.cy, w * 0.011f);
-    r.fillText(w * 0.245f, n.cy, formatFreq(n.active, 2), freqSize,
-               TextAlign::Right, colors::kActiveGreen);
+    r.fillText(w * 0.245f, n.cy, freqText(n.active, 2), freqSize,
+               TextAlign::Right, activeColor);
   }
 
   const Nav coms[2] = {{"COM1", d.com1ActiveMhz, d.com1StandbyMhz, row1Cy},
@@ -169,13 +191,13 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
     // Right-align the active frequency just left of the transfer arrow so the
     // wider 3-decimal COM readouts never collide with the arrow (the NAV side
     // right-aligns away from the arrow for the same reason).
-    r.fillText(w * 0.832f, c.cy, formatFreq(c.active, 3), freqSize,
-               TextAlign::Right, colors::kActiveGreen);
+    r.fillText(w * 0.832f, c.cy, freqText(c.active, 3), freqSize,
+               TextAlign::Right, activeColor);
     drawTransferArrow(r, w * 0.844f, c.cy, w * 0.011f);
     // Right-align the standby just short of the identifier (rather than
     // left-aligning it, which grows the 3-decimal readout into the COMx label).
-    r.fillText(w * 0.940f, c.cy, formatFreq(c.standby, 3), freqSize,
-               TextAlign::Right, colors::kWhite);
+    r.fillText(w * 0.940f, c.cy, freqText(c.standby, 3), freqSize,
+               TextAlign::Right, standbyColor);
     r.fillText(w * 0.996f, c.cy, c.label, labelSize, TextAlign::Right,
                colors::kLabelText);
   }
@@ -211,12 +233,17 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   drawInfoBox(r, xpdrX, top, xpdrW, panelH);
   drawInfoBox(r, timeX, top, timeW, panelH);
 
+  const bool linkValid = d.dataLinkValid;
+  const Color valueColor = linkValid ? colors::kWhite : colors::kBandYellow;
+
   // OAT box.
   const float oatCy = top + panelH * 0.62f;
   r.fillText(oatW * 0.06f, oatCy, "OAT", labelSize, TextAlign::Left,
              colors::kLabelText);
-  r.fillText(oatW * 0.95f, oatCy, formatOat(d.oatCelsius) + "\u00b0C",
-             valueSize, TextAlign::Right, colors::kWhite);
+  r.fillText(oatW * 0.95f, oatCy,
+             (linkValid ? formatOat(d.oatCelsius) : std::string(kOatDashes)) +
+                 "\u00b0C",
+             valueSize, TextAlign::Right, valueColor);
 
   // Bearing-pointer info windows flanking the rose (BRG1 left, BRG2 right).
   const float brgSize = fontPx(wt::kInfoLabel, h);
@@ -238,17 +265,22 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
     putText(r, bx, brgRowCy, buf, brgSize, colors::kMagenta, 0.0f);
   }
 
-  // Transponder box: code, mode and reply ("R"), green in the air.
+  // Transponder box: code, mode and reply ("R"), green in the air. With the
+  // link down the squawk/mode are unknown, so the box shows amber dashes.
   const float xpdrCy = top + panelH * 0.62f;
-  char codeBuf[8];
-  std::snprintf(codeBuf, sizeof(codeBuf), "%04d", d.transponderCode);
   float xx = xpdrX + xpdrW * 0.04f;
   xx = putText(r, xx, xpdrCy, "XPDR", labelSize, colors::kLabelText, 0.40f);
-  xx = putText(r, xx, xpdrCy, codeBuf, labelSize, colors::kActiveGreen, 0.45f);
-  xx = putText(r, xx, xpdrCy, d.transponderMode, labelSize, colors::kActiveGreen,
-               0.45f);
-  if (d.transponderReply) {
-    putText(r, xx, xpdrCy, "R", labelSize, colors::kActiveGreen, 0.0f);
+  if (linkValid) {
+    char codeBuf[8];
+    std::snprintf(codeBuf, sizeof(codeBuf), "%04d", d.transponderCode);
+    xx = putText(r, xx, xpdrCy, codeBuf, labelSize, colors::kActiveGreen, 0.45f);
+    xx = putText(r, xx, xpdrCy, d.transponderMode, labelSize,
+                 colors::kActiveGreen, 0.45f);
+    if (d.transponderReply) {
+      putText(r, xx, xpdrCy, "R", labelSize, colors::kActiveGreen, 0.0f);
+    }
+  } else {
+    putText(r, xx, xpdrCy, kXpdrDashes, labelSize, colors::kBandYellow, 0.0f);
   }
 
   // Time box: label + HH:MM:SS.
@@ -256,8 +288,9 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   r.fillText(timeX + timeW * 0.06f, timeCy, d.clockIsUtc ? "UTC" : "LCL",
              labelSize, TextAlign::Left, colors::kLabelText);
   r.fillText(w - timeW * 0.05f, timeCy,
-             formatHms(d.utcHour, d.utcMinute, d.utcSecond), labelSize,
-             TextAlign::Right, colors::kWhite);
+             linkValid ? formatHms(d.utcHour, d.utcMinute, d.utcSecond)
+                       : std::string(kTimeDashes),
+             labelSize, TextAlign::Right, valueColor);
 }
 
 void drawSoftkeyBar(Renderer& r, float w, float h, const Layout& L,

@@ -5,9 +5,13 @@ add_library(avionics-core STATIC
   src/AvionicsEngine.cpp
   src/MockDataSource.cpp
   src/SoftkeyController.cpp
+  src/render/BezelKeys.cpp
   src/render/BootScreen.cpp
   src/render/PrimaryFlightDisplay.cpp
+  src/render/mfd/MfdController.cpp
+  src/render/mfd/MultiFunctionDisplay.cpp
   src/nav/OpenAirParser.cpp
+  src/nav/Terrain.cpp
   src/render/map/MapProjection.cpp
   src/render/map/MapView.cpp
   src/render/pfd/InsetMap.cpp

@@ -424,10 +424,11 @@ float readLeFloat(const unsigned char* p) {
 }  // namespace
 
 XPlaneConnection::XPlaneConnection(std::string host, std::uint16_t port,
-                                   std::string fmsPlan)
-    : host_(std::move(host)),
+                                   NavDataStore& navData, FmsPlanStore& fmsPlan)
+    : navData_(navData),
+      fmsPlan_(fmsPlan),
+      host_(std::move(host)),
       port_(port),
-      fmsPlan_(std::move(fmsPlan)),
       webApi_(host_, XPlaneWebApi::kDefaultPort) {
 #ifdef _WIN32
   WSADATA wsa;

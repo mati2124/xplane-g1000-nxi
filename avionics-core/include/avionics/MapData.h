@@ -5,6 +5,8 @@
 
 namespace avionics {
 
+class TerrainSource;
+
 // Kind of point feature drawn on the map. Shared by the PFD inset and the MFD
 // MAP page.
 enum class MapFeatureType { Airport, Vor, Ndb, Fix, Waypoint };
@@ -66,6 +68,11 @@ struct MapData {
   std::vector<MapLeg> flightPlan;
   std::vector<MapFeature> features;
   std::vector<MapAirspace> airspaces;
+
+  // Optional terrain elevation source for the topographic map background. Owned
+  // by the DataSource (not this struct); null when no terrain data is available
+  // (the map then keeps its plain black background).
+  const TerrainSource* terrain = nullptr;
 };
 
 }  // namespace avionics

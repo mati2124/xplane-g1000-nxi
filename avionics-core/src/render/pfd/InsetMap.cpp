@@ -15,6 +15,7 @@ void drawInsetMap(Renderer& r, const Layout& L, const MapData& map,
   config.w = L.insetMapW;
   config.h = L.insetMapH;
   config.orientation = MapOrientation::TrackUp;
+  config.rangeNm = ui.insetRangeNm();  // driven by the bezel range rocker
   config.style.showChrome = true;
   config.style.labelFontWt = wt::kHsiSource;
 

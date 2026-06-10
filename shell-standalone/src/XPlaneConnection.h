@@ -29,9 +29,10 @@ namespace avionics {
 // (SimConnect) can drop in behind the same interface.
 class XPlaneConnection : public SimulatorConnection {
  public:
-  explicit XPlaneConnection(std::string host = "127.0.0.1",
-                            std::uint16_t port = 49000,
-                            std::string fmsPlan = "");
+  // navData and fmsPlan are owned by the caller and shared with the mock feed
+  // so the (large) nav database and the flight plan are loaded only once.
+  XPlaneConnection(std::string host, std::uint16_t port, NavDataStore& navData,
+                   FmsPlanStore& fmsPlan);
   ~XPlaneConnection() override;
 
   XPlaneConnection(const XPlaneConnection&) = delete;
@@ -97,11 +98,12 @@ class XPlaneConnection : public SimulatorConnection {
   bool haveLat_ = false;
   bool haveLon_ = false;
 
-  // Moving-map snapshot and its nearby-feature rebuild timer.
+  // Moving-map snapshot and its nearby-feature rebuild timer. navData_ and
+  // fmsPlan_ are shared (owned by the shell, also used by the mock feed).
   MapData map_;
-  NavDataStore navData_;
+  NavDataStore& navData_;
   AirspaceStore airspace_;
-  FmsPlanStore fmsPlan_;
+  FmsPlanStore& fmsPlan_;
   double sinceMapRebuildSeconds_ = 0.0;
 
   std::string host_;
