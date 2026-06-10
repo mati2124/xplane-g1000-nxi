@@ -19,6 +19,7 @@ compile_commands.json
 .DS_Store
 .idea/
 .vscode/
+.cursor/
 *.user
 
 # Third-party SDKs (download locally, do not commit)
