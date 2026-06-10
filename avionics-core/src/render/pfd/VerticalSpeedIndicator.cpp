@@ -1,6 +1,7 @@
 #include "render/pfd/PfdInternal.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace avionics::pfd {
 namespace {
@@ -43,8 +44,26 @@ void drawVsiPointer(Renderer& r, float x, float vw, float pointerY,
   }
 }
 
+// Magenta chevron marking the Required Vertical Speed to reach a VNV target
+// altitude (G1000 NXi Pilot's Guide, VSI). It rides the VSI scale at the
+// required rate, pointing inward toward the tape.
+void drawRequiredVsChevron(Renderer& r, float x, float vw, float stripTop,
+                           float stripH, float cy, float pixelsPerFpm,
+                           float reqVsFpm) {
+  const float clamped = std::max(-kVsiMaxFpm, std::min(kVsiMaxFpm, reqVsFpm));
+  const float y = cy - clamped * pixelsPerFpm;
+  if (y < stripTop || y > stripTop + stripH) return;
+  const float cw = vw * 0.42f;
+  const float ch = vw * 0.34f;
+  const float tipX = x + vw * 0.30f;
+  const Point chevron[3] = {
+      {tipX, y}, {tipX + cw, y - ch}, {tipX + cw, y + ch}};
+  r.fillPolygon(chevron, 3, colors::kMagenta);
+}
+
 void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
-             float cy, float displayH, float vsFpm) {
+             float cy, float displayH, float vsFpm, bool reqVsValid,
+             float reqVsFpm) {
   const float pixelsPerFpm = (stripH * kVsiScaleHalfFraction) / kVsiMaxFpm;
   const float clamped = std::max(-kVsiMaxFpm, std::min(kVsiMaxFpm, vsFpm));
   const float pointerY = cy - clamped * pixelsPerFpm;
@@ -77,14 +96,22 @@ void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
   }
 
   r.strokeLine(x, cy, x + vw, cy, 1.5f, colors::kWhite);
+  if (reqVsValid) {
+    drawRequiredVsChevron(r, x, vw, stripTop, stripH, cy, pixelsPerFpm,
+                          reqVsFpm);
+  }
   r.restore();
 
   // The pointer slides to the current vertical speed; its body carries the
-  // numeric value when the rate exceeds 100 fpm (below that the caret shows with
-  // no digits), per the G1000 NXi. Drawn after the clip is released so the body
-  // can extend right of the narrow tape to fit the digits.
+  // numeric value, quantized to 50 fpm, once the rate exceeds 100 fpm (below
+  // that the caret shows with no digits), per the G1000 NXi (Pilot's Guide,
+  // VSI; WT quantizes the readout to 50 fpm steps). Drawn after the clip is
+  // released so the body can extend right of the narrow tape to fit the digits.
+  const long quantizedFpm = std::lround(vsFpm / 50.0f) * 50L;
   const std::string ptrText =
-      (std::abs(vsFpm) >= 100.0f) ? formatInt(vsFpm) : std::string();
+      (std::labs(quantizedFpm) >= 100L)
+          ? formatInt(static_cast<float>(quantizedFpm))
+          : std::string();
   drawVsiPointer(r, x, vw, pointerY, displayH, ptrText);
 }
 
@@ -96,8 +123,8 @@ void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
     drawFailureX(r, L.vsiX, L.vsiTop, L.vsiW, L.vsiH, "", h);
     return;
   }
-  drawVsi(r, L.vsiX, L.vsiW, L.vsiTop, L.vsiH, L.attCy, h,
-          d.verticalSpeedFpm);
+  drawVsi(r, L.vsiX, L.vsiW, L.vsiTop, L.vsiH, L.attCy, h, d.verticalSpeedFpm,
+          d.requiredVsValid, d.requiredVsFpm);
 }
 
 }  // namespace avionics::pfd

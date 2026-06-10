@@ -3,12 +3,17 @@
 # without the X-Plane SDK or a windowing/GPU stack present.
 add_library(avionics-core STATIC
   src/AvionicsEngine.cpp
+  src/ChecklistParser.cpp
   src/MockDataSource.cpp
   src/SoftkeyController.cpp
   src/render/BezelKeys.cpp
+  src/render/BezelStyle.cpp
   src/render/BootScreen.cpp
+  src/render/SoftkeyBezel.cpp
   src/render/PrimaryFlightDisplay.cpp
+  src/render/mfd/EisStrip.cpp
   src/render/mfd/MfdController.cpp
+  src/render/mfd/MfdPages.cpp
   src/render/mfd/MultiFunctionDisplay.cpp
   src/nav/OpenAirParser.cpp
   src/nav/Terrain.cpp
@@ -19,6 +24,7 @@ add_library(avionics-core STATIC
   src/render/pfd/AttitudeIndicator.cpp
   src/render/pfd/AirspeedTape.cpp
   src/render/pfd/Altimeter.cpp
+  src/render/pfd/VerticalDeviation.cpp
   src/render/pfd/VerticalSpeedIndicator.cpp
   src/render/pfd/Hsi.cpp
   src/render/pfd/Chrome.cpp

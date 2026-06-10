@@ -1,5 +1,8 @@
 #include "render/pfd/PfdInternal.h"
 
+#include <algorithm>
+#include <vector>
+
 namespace avionics::pfd {
 namespace {
 
@@ -52,9 +55,11 @@ void drawAirspeedColorBands(Renderer& r, float tapeX, float tapeW,
 }
 
 void drawVspeedBugs(Renderer& r, float tapeX, float tapeW, float stripTop,
-                    float stripH, float cy, float displayH, float airspeed) {
+                    float stripH, float cy, float displayH, float airspeed,
+                    const SoftkeyController& ui) {
   // V-speed reference bugs (GLIDE/VR/VX/VY) sit along the RIGHT (inner) edge of
   // the airspeed scale as black bugs with cyan letters, per the G1000 NXi.
+  // Each bug is shown only while enabled in the Timer/References window.
   const float ppu = stripH / kAirspeedViewableKnots;
   const float innerX = tapeX + tapeW;
   const float labelSize = fontPx(wt::kTapeLabel, displayH) * 0.85f;
@@ -64,6 +69,7 @@ void drawVspeedBugs(Renderer& r, float tapeX, float tapeW, float stripTop,
   r.save();
   r.clip(tapeX, stripTop, tapeW, stripH);
   for (int i = 0; i < kVSpeedRefCount; ++i) {
+    if (!ui.vspeedEnabled(static_cast<VspeedRef>(i))) continue;
     const VSpeedRef& v = kVSpeedRefs[i];
     const float y = cy - (v.kt - airspeed) * ppu;
     if (y < stripTop || y > stripTop + stripH) continue;
@@ -72,7 +78,7 @@ void drawVspeedBugs(Renderer& r, float tapeX, float tapeW, float stripTop,
     r.fillRect(bx, by, bugW, bugH, colors::kReadoutBox);
     const Point edge[2] = {{innerX, by}, {innerX, by + bugH}};
     r.strokePolyline(edge, 2, 2.5f, colors::kCyan);
-    r.fillText(bx + bugW * 0.5f, y, v.label, labelSize, TextAlign::Center,
+    r.fillText(bx + bugW * 0.5f, y, v.bugLabel, labelSize, TextAlign::Center,
                colors::kCyan);
   }
   r.restore();
@@ -152,10 +158,40 @@ void drawAirspeedReadout(Renderer& r, float x, float y, float w, float h,
   r.restore();
 }
 
+// Below 20 kt the airspeed scale bottoms out, so the enabled V-speed reference
+// bugs and their values are listed at the bottom of the tape, ordered highest
+// to lowest (G1000 NXi Pilot's Guide, Airspeed Indicator).
+void drawVspeedList(Renderer& r, float tapeX, float tapeW, float stripTop,
+                    float stripH, float displayH, const SoftkeyController& ui) {
+  // Only the ENABLED reference bugs are listed (Pilot's Guide, Airspeed
+  // Indicator), ordered highest to lowest.
+  std::vector<int> order;
+  for (int i = 0; i < kVSpeedRefCount; ++i) {
+    if (ui.vspeedEnabled(static_cast<VspeedRef>(i))) order.push_back(i);
+  }
+  std::sort(order.begin(), order.end(), [](int a, int b) {
+    return kVSpeedRefs[a].kt > kVSpeedRefs[b].kt;
+  });
+
+  const float labelSize = fontPx(wt::kTapeLabel, displayH) * 0.9f;
+  const float rowH = labelSize * 1.5f;
+  const int rows = static_cast<int>(order.size());
+  float y = stripTop + stripH - rowH * (rows + 0.5f);
+  for (int k = 0; k < rows; ++k) {
+    const VSpeedRef& v = kVSpeedRefs[order[k]];
+    const float rowCy = y + rowH * 0.5f;
+    r.fillText(tapeX + tapeW * 0.18f, rowCy, v.bugLabel, labelSize,
+               TextAlign::Left, colors::kCyan);
+    r.fillText(tapeX + tapeW * 0.92f, rowCy, formatInt(v.kt), labelSize,
+               TextAlign::Right, colors::kWhite);
+    y += rowH;
+  }
+}
+
 }  // namespace
 
 void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
-                      float h) {
+                      const SoftkeyController& ui, float h) {
   // Air data computer failure: the airspeed tape and TAS (both ADC-sourced)
   // are replaced by a red X.
   if (!d.airspeedValid) {
@@ -169,13 +205,15 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   drawAirspeedColorBands(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy,
                          d.airspeedKts);
   drawVspeedBugs(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
-                 d.airspeedKts);
+                 d.airspeedKts, ui);
+  if (d.airspeedKts < kAirspeedMinKnots) {
+    drawVspeedList(r, L.asiX, L.asiW, L.stripTop, L.stripH, h, ui);
+  }
   drawTrendVector(r, L.asiX + L.asiW, L.stripTop, L.stripH, L.attCy, h,
                   L.stripH / kAirspeedViewableKnots, d.airspeedTrendKts);
 
   const float readoutH = kAsiReadoutHeightWt * L.s;
   const float readoutSize = fontPx(wt::kReadout, h);
-  const float asiOverhang = L.asiW * kReadoutOverhangFraction;
 
   // The pointer is black until VNE, then red. If the trend vector crosses VNE
   // (but current speed has not), the digits turn amber as an early warning.
@@ -184,7 +222,6 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   const Color boxColor = overVne ? colors::kBandRed : colors::kReadoutBox;
   const Color textColor =
       (!overVne && trendOverVne) ? colors::kBandYellow : colors::kWhite;
-  (void)asiOverhang;
   drawAirspeedReadout(r, L.asiX, L.attCy - readoutH * 0.5f, L.asiW, readoutH,
                       d.airspeedKts, readoutSize, boxColor, textColor);
 

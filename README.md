@@ -1,4 +1,4 @@
-# XPlaneAvionics
+# X-Plane G1000 NXi
 
 A high-performance glass-cockpit (G1000-style PFD/MFD) for X-Plane, built as
 **one C++ engine with two shells** so the same avionics code runs:
@@ -96,18 +96,35 @@ Still to wire up:
       ("AHRS") and HSI compass ("HDG"); air data computer failure X's the
       airspeed, altitude, and vertical-speed tapes. Driven live from X-Plane's
       `sim/operation/failures/rel_ss_*` datarefs.
-- [x] Clickable softkey bar (`SoftkeyController`) with Working-Title-style
-      animations: a key-press flash and an eased slide/fade for pop-up windows.
-      Clicking "Alerts" toggles the Alerts/messages window, which lists active
-      alerts (color-coded by severity) derived from the sensor-validity flags.
+- [x] Softkey bar (`SoftkeyController`) driven by a row of twelve physical
+      softkey selection keys on the bezel below the screen, like the real GDU
+      bezel: the on-screen bar is labels only (white on black, selected keys
+      black-on-gray per the Pilot's Guide), and all interaction goes through
+      the bezel keys. Pressing "Alerts" toggles the Alerts/messages window,
+      which lists active alerts (color-coded by severity) derived from the
+      sensor-validity flags.
 - [x] Softkey menu state machine: the bar is a menu stack, so the root menu
       opens submenus (Map/HSI, PFD Opt, XPDR), each with a `Back` key that pops
       back up. Display-option keys are toggles that stay highlighted while on,
       and the XPDR submenu is a radio group (STBY/ON/ALT/GND).
+- [x] MFD page groups (MAP / WPT / AUX / NRST / FPL) with per-group page
+      memory, modeled on the G1000 Pilot's Guide for Cessna Nav III. The
+      group softkeys stand in for the large FMS knob (pressing the active
+      group's key again steps to its next page, like the small knob), the
+      on-screen FMS rocker steps pages directly, and the FPL bezel key
+      toggles the Active Flight Plan page. Pages: Navigation Map; Airport /
+      Intersection / NDB / VOR Information; Trip Planning, GPS Status,
+      System Status; Nearest Airports / Intersections / NDB / VOR /
+      Airspaces; Active Flight Plan. A page group/page indicator box sits
+      above the softkeys, and navaid frequencies are parsed from
+      `earth_nav.dat` for the information pages.
+- [x] EIS engine strip on the left edge of every MFD page (Cessna 172S fit):
+      RPM dial with green/red arcs, FFLOW / OIL PRES / OIL TEMP / EGT / VAC
+      bar indicators, per-tank FUEL QTY, ENG HRS, and the BUS VOLTS / BATT
+      AMPS electrical rows — driven live from X-Plane's engine, fuel, and
+      electrical datarefs (animated values on the mock feed).
 - [ ] Bind the NanoVG renderer inside the plugin via the X-Plane Avionics
       Device API (`XPLMCreateAvionicsEx`), replacing the legacy draw callback.
-- [ ] MFD page groups (MAP / WPT / AUX / NRST), reusing the softkey state
-      machine for page-group navigation.
 
 ### G1000 reference
 

@@ -7,6 +7,17 @@ namespace avionics {
 // Active navigation source annunciated on the HSI / CDI.
 enum class CdiSource { Gps, Nav1, Nav2 };
 
+// Vertical deviation indicator (VDI) shown on a scale to the LEFT of the
+// altimeter (G1000 NXi Pilot's Guide, Flight Instruments). The NXi shows a
+// green diamond for an ILS Glideslope, a magenta diamond for a GPS Glidepath,
+// and a magenta pointer for VNAV vertical deviation. When an ILS localizer is
+// tuned but no glideslope is being received, "NO GS" is shown in its place.
+enum class VerticalDeviationKind { None, Glideslope, Glidepath, Vnav };
+
+// Marker beacon receiver state, annunciated to the left of the altimeter:
+// outer (cyan "O"), middle (amber "M"), inner (white "I").
+enum class MarkerBeacon { None, Outer, Middle, Inner };
+
 // Decoded, platform-agnostic flight state consumed by the gauges.
 // Units are chosen to match what the displays render directly, so neither
 // shell has to do conversions in the hot path.
@@ -88,6 +99,11 @@ struct FlightData {
   float selectedHeadingDeg = 45.0f;
   float baroSettingInHg = 29.92f;
 
+  // Baro Transition Alert: while set, the BARO setting box flashes to prompt
+  // the pilot to change to/from standard pressure (G1000 NXi Pilot's Guide,
+  // Flight Instruments). Cleared once the pilot adjusts the setting.
+  bool baroTransitionAlert = false;
+
   // HSI lateral guidance for the active CDI source: the selected course and the
   // lateral deviation (in dots; + = the course line lies to the right) plus the
   // TO/FROM sense. navSignalValid gates the deviation bar and TO/FROM flag.
@@ -97,15 +113,41 @@ struct FlightData {
   bool navSignalValid = true;
 
   // Bearing pointers on the HSI. BRG1 is a single-line needle, BRG2 a
-  // double-line needle, each with an info window (source + slant-range).
+  // double-line needle, each with an info window (pointer icon, source, station
+  // /waypoint identifier, and GPS-derived slant-range) displayed below the HSI.
   bool bearing1Valid = false;
   float bearing1Deg = 0.0f;
   float bearing1DistanceNm = 0.0f;
   std::string bearing1Source = "GPS";
+  std::string bearing1Ident;
   bool bearing2Valid = false;
   float bearing2Deg = 0.0f;
   float bearing2DistanceNm = 0.0f;
   std::string bearing2Source = "VOR1";
+  std::string bearing2Ident;
+
+  // Vertical deviation indicator (left of the altimeter). vdiDeviationDots is
+  // positive when the aircraft is ABOVE the path (the diamond/pointer rides
+  // low); the scale is +/-2 dots. vdiValid gates the diamond -- when the kind
+  // is Glideslope and the signal is invalid (LOC tuned, no GS), "NO GS" shows.
+  VerticalDeviationKind vdiKind = VerticalDeviationKind::None;
+  bool vdiValid = false;
+  float vdiDeviationDots = 0.0f;
+
+  // Required Vertical Speed (fpm) to reach the active VNV target; drawn as a
+  // magenta chevron on the VSI scale when valid.
+  bool requiredVsValid = false;
+  float requiredVsFpm = 0.0f;
+
+  // Marker beacon receiver annunciation (left of the altimeter).
+  MarkerBeacon markerBeacon = MarkerBeacon::None;
+
+  // DME Information Window (PFD Opt > DME), shown above the BRG1 window when the
+  // DME display option is on: tuned source/mode, frequency, and slant-range.
+  std::string dmeMode = "NAV1";
+  float dmeFreqMhz = 113.00f;
+  float dmeDistanceNm = 0.0f;
+  bool dmeValid = false;
 
   // Flight director single-cue command bars on the attitude indicator. The bars
   // displace by the steering error (commanded minus actual) so the pilot flies
@@ -148,6 +190,25 @@ struct FlightData {
   int utcMinute = 42;
   int utcSecond = 15;
   bool clockIsUtc = true;
+
+  // Engine Indication System (EIS) strip on the left edge of the MFD, modeled
+  // on the single-engine Cessna Nav III fit (G1000 Pilot's Guide for Cessna
+  // Nav III, Section 3): tachometer, fuel flow, oil pressure/temperature, EGT,
+  // standby vacuum, per-tank fuel quantity, engine hours, and the
+  // voltmeter/ammeter rows.
+  float engineRpm = 2400.0f;
+  float fuelFlowGph = 9.8f;
+  float oilPressurePsi = 62.0f;
+  float oilTempDegF = 180.0f;
+  float egtDegF = 1450.0f;
+  float vacuumInHg = 4.9f;
+  float fuelQtyLeftGal = 22.0f;
+  float fuelQtyRightGal = 23.0f;
+  float engineHours = 0.0f;
+  float busVoltsMain = 27.9f;
+  float busVoltsEssential = 27.8f;
+  float battAmpsMain = 2.0f;
+  float battAmpsStandby = 0.0f;
 };
 
 }  // namespace avionics

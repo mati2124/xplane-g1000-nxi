@@ -4,13 +4,15 @@
 
 namespace avionics::pfd {
 
-const VSpeedRef kVSpeedRefs[] = {
-    {"R", 55.0f},
-    {"X", 62.0f},
-    {"Y", 74.0f},
-    {"G", 65.0f},
+// Indexed by avionics::VspeedRef (Glide, Vr, Vx, Vy) so the References window
+// On/Off toggles map 1:1 onto these rows. Defaults are the Cessna 172S values.
+const VSpeedRef kVSpeedRefs[kVspeedRefCount] = {
+    {"G", "GLIDE", 65.0f},
+    {"R", "VR", 55.0f},
+    {"X", "VX", 62.0f},
+    {"Y", "VY", 74.0f},
 };
-const int kVSpeedRefCount = 4;
+const int kVSpeedRefCount = kVspeedRefCount;
 
 Layout computeLayout(float w, float h) {
   Layout L;
@@ -25,6 +27,11 @@ Layout computeLayout(float w, float h) {
   L.infoPanelTop = Y(679.0f);
   L.infoPanelH = Y(55.0f);
   L.bottomBarH = Y(kWtCanvasHeightPx - 733.0f);
+
+  // Navigation Status Box overlays the top of the attitude window, just below
+  // the top bar / AFCS Status Box.
+  L.navStatusTop = L.topBarH;
+  L.navStatusH = Y(22.0f);
 
   // Airspeed indicator x=154 w=87 y=82 h=390; tape (scroll) area y=113 h=330.
   L.asiX = X(154.0f);
@@ -61,6 +68,18 @@ Layout computeLayout(float w, float h) {
   L.hsiCy = Y(571.0f);
   L.hsiRadius = 153.0f * L.s;
 
+  // Vertical deviation scale sits in the gap just left of the altimeter tape,
+  // vertically aligned with the scroll strip (G1000 NXi: Glideslope/Glidepath/
+  // VNAV deviation are shown to the left of the Altimeter).
+  L.vdiW = X(16.0f);
+  L.vdiX = L.altX - X(10.0f) - L.vdiW;
+  // Marker-beacon annunciation just above the deviation scale, left of the
+  // altimeter (Pilot's Guide, Marker Beacon Annunciations).
+  L.markerW = X(34.0f);
+  L.markerH = Y(34.0f);
+  L.markerX = L.altX - X(6.0f) - L.markerW;
+  L.markerY = L.stripTop;
+
   // CAS annunciation window. Per the G1000 Pilot's Guide (Fig. A-1) it sits to
   // the right of the VSI tape, with a fixed top at ~44% of display height (just
   // below the horizon / mid-altimeter) and grows downward toward the info panel
@@ -86,7 +105,11 @@ std::string formatInt(float value) {
 }
 
 std::string formatHeading(float headingDeg) {
-  int hdg = static_cast<int>(std::lround(std::fmod(headingDeg + 360.0f, 360.0f)));
+  // Round first, then wrap, so 359.7 and -0.2 both land on the same value. The
+  // G1000 displays north as 360, never 000 (WT NXi HSI formatter).
+  int hdg = static_cast<int>(std::lround(headingDeg)) % 360;
+  if (hdg < 0) hdg += 360;
+  if (hdg == 0) hdg = 360;
   char buf[8];
   std::snprintf(buf, sizeof(buf), "%03d", hdg);
   return std::string(buf);

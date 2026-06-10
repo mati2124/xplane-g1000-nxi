@@ -24,6 +24,9 @@ set(STANDALONE_SOURCES
   src/NavData.cpp
   src/FmsPlanStore.cpp
   src/AirspaceStore.cpp
+  src/ChecklistStore.cpp
+  src/XPlaneInstall.cpp
+  src/DsfTerrainStore.cpp
 )
 
 # The Web API client polls X-Plane on a background thread.
@@ -45,6 +48,11 @@ target_link_libraries(avionics-standalone PRIVATE
 )
 target_include_directories(avionics-standalone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(avionics-standalone PRIVATE cxx_std_17)
+
+# Bundled sample checklist file, used by the MFD Checklist page group when no
+# --checklist is given (so the page is populated during development).
+target_compile_definitions(avionics-standalone PRIVATE
+  AVIONICS_DEFAULT_CHECKLIST="${CMAKE_CURRENT_SOURCE_DIR}/assets/checklists.txt")
 
 if(APPLE)
   target_compile_definitions(avionics-standalone PRIVATE GL_SILENCE_DEPRECATION)

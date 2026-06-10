@@ -16,6 +16,17 @@ struct MapFeature {
   double lat = 0.0;
   double lon = 0.0;
   std::string id;
+
+  // Airport detail for the WPT/NRST information boxes (0 = unknown, so the page
+  // shows dashes the way a real unit does when data is unavailable). Ignored for
+  // non-airport features.
+  float elevationFt = 0.0f;
+  int longestRunwayFt = 0;
+  std::string region;  // FAA/ICAO region code (e.g. "K2")
+
+  // Navaid tuning frequency for the WPT/NRST information boxes: MHz for VORs
+  // (e.g. 113.90), kHz for NDBs (e.g. 362). 0 = unknown (shown dashed).
+  float frequency = 0.0f;
 };
 
 // One vertex of the active flight plan (FMS/GPS route).

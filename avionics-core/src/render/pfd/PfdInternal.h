@@ -24,6 +24,9 @@ struct Layout {
   float sx, sy, s;
 
   float topBarH, infoPanelH, infoPanelTop, bottomBarH;
+  // PFD Navigation Status Box: a strip just below the top NAV/COM bar (and the
+  // AFCS Status Box) carrying the active flight-plan leg and DIS/BRG.
+  float navStatusTop, navStatusH;
   float attTop, attBottom;
   float attCx, attCy;
   float attRegionH;
@@ -40,6 +43,11 @@ struct Layout {
   float casAnnunTop, casAnnunLeft, casAnnunW;
 
   float hsiCx, hsiCy, hsiRadius;
+
+  // Vertical deviation indicator (glideslope/glidepath/VNAV) scale just left of
+  // the altimeter, and the marker-beacon annunciation box above it.
+  float vdiX, vdiW;
+  float markerX, markerY, markerW, markerH;
 
   // PFD inset map (lower-left over the attitude window). The MFD MAP page will
   // reuse MapView with a full-screen rect instead of these layout constants.
@@ -79,14 +87,16 @@ constexpr float kVs1Kt = 48.0f;
 constexpr float kVnoKt = 129.0f;
 constexpr float kVneKt = 163.0f;
 
+// V-speed reference table, indexed by avionics::VspeedRef (the References
+// window row order). bugLabel is the letter on the tape bug; windowLabel is
+// the row label in the Timer/References window (Pilot's Guide Table 2-1).
 struct VSpeedRef {
-  const char* label;
+  const char* bugLabel;
+  const char* windowLabel;
   float kt;
 };
-extern const VSpeedRef kVSpeedRefs[4];
+extern const VSpeedRef kVSpeedRefs[kVspeedRefCount];
 extern const int kVSpeedRefCount;
-
-constexpr float kAltCapturedFt = 200.0f;
 
 // An autopilot selected altitude at/near 0 ft is treated as "unset": the
 // selected-altitude box shows dashes and no bug is drawn on the tape.
@@ -103,9 +113,8 @@ constexpr float kAltitudeMinFeet = -2000.0f;
 constexpr float kVsiMaxFpm = 2000.0f;
 constexpr float kVsiScaleHalfFraction = 0.45f;
 
-constexpr float kWtCanvasHeight = 768.0f;
 inline float fontPx(float wtPx, float displayH) {
-  return wtPx * (displayH / kWtCanvasHeight);
+  return wtPx * (displayH / kWtCanvasHeightPx);
 }
 
 namespace wt {
@@ -178,11 +187,15 @@ void drawFailureX(Renderer& r, float x, float y, float w, float h,
 void drawAttitude(Renderer& r, const Layout& L, const FlightData& d, float w,
                   float h);
 void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
-                      float h);
-void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d, float h);
+                      const SoftkeyController& ui, float h);
+void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
+                   const SoftkeyController& ui, float h);
 void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
                                 const FlightData& d, float h);
-void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d, float h);
+void drawVerticalDeviation(Renderer& r, const Layout& L, const FlightData& d,
+                           float h);
+void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
+                    const SoftkeyController& ui, float h);
 void drawInsetMap(Renderer& r, const Layout& L, const MapData& map,
                   const FlightData& d, const SoftkeyController& ui, float h);
 void drawChrome(Renderer& r, const Layout& L, const FlightData& d,

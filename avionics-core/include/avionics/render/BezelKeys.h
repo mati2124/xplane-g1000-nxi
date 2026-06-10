@@ -5,17 +5,22 @@
 namespace avionics {
 
 // Hardware keys that live on the right bezel of a G1000 GDU, emulated on-screen
-// so the unit is usable without a physical bezel. Only the range rocker is
-// wired to a function today; the rest mirror the real key column and give
-// press feedback. Order is top-to-bottom, which the hit-test relies on.
+// so the unit is usable without a physical bezel. The range rocker zooms the
+// active page's map, FPL opens the MFD Active Flight Plan page, and the FMS
+// rocker emulates the small FMS knob (cycles pages within the selected MFD
+// page group); the rest mirror the real key column and give press feedback.
+// Order is top-to-bottom, which the hit-test relies on.
 enum class BezelKey {
   DirectTo,
   Menu,
+  Fpl,
   Proc,
   Clr,
   Ent,
   RangeUp,
   RangeDown,
+  FmsPrev,
+  FmsNext,
   Count,
 };
 inline constexpr int kBezelKeyCount = static_cast<int>(BezelKey::Count);

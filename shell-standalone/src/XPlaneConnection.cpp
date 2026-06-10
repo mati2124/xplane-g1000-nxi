@@ -29,6 +29,16 @@ constexpr double kResubscribeIntervalSeconds = 3.0;
 constexpr float kMetersPerSecondToKnots = 1.943844f;
 // X-Plane radio frequency datarefs are MHz x 100 (11030 == 110.30 MHz).
 constexpr float kRadioHzToMhz = 0.01f;
+// Avgas mass-to-volume conversions for the EIS fuel readouts (6.01 lb/gal).
+constexpr float kKgPerGallonAvgas = 2.72155f;
+constexpr float kKgSecToGph = 3600.0f / kKgPerGallonAvgas;
+constexpr float kKgToGallons = 1.0f / kKgPerGallonAvgas;
+// Celsius -> Fahrenheit (the EIS oil/EGT readouts are in deg F).
+constexpr float kCToFScale = 1.8f;
+constexpr float kCToFOffset = 32.0f;
+// X-Plane's vacuum dataref is a 0..1 ratio of maximum pump output; a healthy
+// GA suction system reads ~5 inHg at the gauge.
+constexpr float kVacuumRatioToInHg = 5.0f;
 // X-Plane failure_enum value meaning the instrument is currently inoperative.
 constexpr int kFailureInop = 6;
 
@@ -83,14 +93,16 @@ enum class Smooth {
 
 // Binding from a subscription index -> X-Plane dataref -> FlightData field.
 // All bound fields are floats, so a member pointer keeps this data-driven (used
-// for both decoding and smoothing). `scale` converts the dataref's native units
-// to the field's units; the array position is the index sent to (and echoed
-// back by) X-Plane.
+// for both decoding and smoothing). `scale` and `offset` convert the dataref's
+// native units to the field's units (value * scale + offset, e.g. deg C ->
+// deg F); the array position is the index sent to (and echoed back by)
+// X-Plane.
 struct DatarefBinding {
   const char* path;
   float scale;
   float FlightData::* member;
   Smooth smooth;
+  float offset = 0.0f;
 };
 
 const DatarefBinding kBindings[] = {
@@ -148,6 +160,31 @@ const DatarefBinding kBindings[] = {
      Smooth::Snap},
     {datarefs::kCom2StandbyFrequencyHz, kRadioHzToMhz,
      &FlightData::com2StandbyMhz, Smooth::Snap},
+
+    // EIS engine/fuel/electrical indicators for the MFD engine strip.
+    {datarefs::kEngineRpm, 1.0f, &FlightData::engineRpm, Smooth::Linear},
+    {datarefs::kFuelFlowKgSec, kKgSecToGph, &FlightData::fuelFlowGph,
+     Smooth::Linear},
+    {datarefs::kOilPressurePsi, 1.0f, &FlightData::oilPressurePsi,
+     Smooth::Linear},
+    {datarefs::kOilTemperatureDegC, kCToFScale, &FlightData::oilTempDegF,
+     Smooth::Linear, kCToFOffset},
+    {datarefs::kEgtDegC, kCToFScale, &FlightData::egtDegF, Smooth::Linear,
+     kCToFOffset},
+    {datarefs::kVacuumRatio, kVacuumRatioToInHg, &FlightData::vacuumInHg,
+     Smooth::Linear},
+    {datarefs::kFuelQuantityLeftKg, kKgToGallons, &FlightData::fuelQtyLeftGal,
+     Smooth::Linear},
+    {datarefs::kFuelQuantityRightKg, kKgToGallons,
+     &FlightData::fuelQtyRightGal, Smooth::Linear},
+    {datarefs::kHobbsTimeHours, 1.0f, &FlightData::engineHours, Smooth::Snap},
+    {datarefs::kBusVoltsMain, 1.0f, &FlightData::busVoltsMain, Smooth::Linear},
+    {datarefs::kBusVoltsEssential, 1.0f, &FlightData::busVoltsEssential,
+     Smooth::Linear},
+    {datarefs::kBatteryAmpsMain, 1.0f, &FlightData::battAmpsMain,
+     Smooth::Linear},
+    {datarefs::kBatteryAmpsStandby, 1.0f, &FlightData::battAmpsStandby,
+     Smooth::Linear},
 };
 constexpr int kBindingCount =
     static_cast<int>(sizeof(kBindings) / sizeof(kBindings[0]));
@@ -424,9 +461,13 @@ float readLeFloat(const unsigned char* p) {
 }  // namespace
 
 XPlaneConnection::XPlaneConnection(std::string host, std::uint16_t port,
-                                   NavDataStore& navData, FmsPlanStore& fmsPlan)
+                                   NavDataStore& navData, FmsPlanStore& fmsPlan,
+                                   const TerrainSource* terrain,
+                                   const ChecklistSource* checklists)
     : navData_(navData),
       fmsPlan_(fmsPlan),
+      terrain_(terrain),
+      checklists_(checklists),
       host_(std::move(host)),
       port_(port),
       webApi_(host_, XPlaneWebApi::kDefaultPort) {
@@ -530,7 +571,8 @@ void XPlaneConnection::drainSocket() {
       // Decode into the target state; update() eases the displayed state toward
       // it so the gauges move smoothly between the ~20 Hz packets.
       if (index >= 0 && index < kBindingCount) {
-        target_.*(kBindings[index].member) = value * kBindings[index].scale;
+        target_.*(kBindings[index].member) =
+            value * kBindings[index].scale + kBindings[index].offset;
       } else if (index >= kBindingCount &&
                  index < kBindingCount + kDiscreteCount) {
         applyDiscrete(target_, index - kBindingCount, value);
@@ -667,6 +709,7 @@ void XPlaneConnection::updateZuluClock(double dtSeconds) {
 
 void XPlaneConnection::updateMap(double dtSeconds) {
   map_.rangeNm = kMapRangeNm;
+  map_.terrain = terrain_;
   map_.positionValid = haveLat_ && haveLon_;
   if (!map_.positionValid) return;
 

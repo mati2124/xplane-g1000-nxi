@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <vector>
 
+#include "avionics/NavMath.h"
+
 namespace avionics {
 namespace {
 
@@ -27,22 +29,24 @@ std::vector<GeoPoint> demoCircle(double lat, double lon, double radiusNm,
   return ring;
 }
 
-void seedDemoAirspace(MapData& map) {
-  // Demo only: ceilings are set well above the mock cruise altitude so all
-  // three rings stay visible through the altitude declutter.
+void seedDemoAirspace(MapData& map, double lat, double lon) {
+  // Demo only: rings are placed relative to the given center (the route
+  // start) so they stay in view whatever route is flown, and ceilings are set
+  // well above the mock cruise altitude so all three stay visible through the
+  // altitude declutter.
   MapAirspace classC;
   classC.airspaceClass = AirspaceClass::ClassC;
   classC.name = "DEMO-C";
   classC.floorFt = 0.0f;
   classC.ceilingFt = 8400.0f;
-  classC.boundary = demoCircle(kKpaoLat, kKpaoLon, 4.5);
+  classC.boundary = demoCircle(lat, lon, 4.5);
 
   MapAirspace classD;
   classD.airspaceClass = AirspaceClass::ClassD;
-  classD.name = "KSQL-D";
+  classD.name = "DEMO-D";
   classD.floorFt = 0.0f;
   classD.ceilingFt = 9000.0f;
-  classD.boundary = demoCircle(37.5111, -122.2495, 3.0);
+  classD.boundary = demoCircle(lat + 0.05, lon - 0.134, 3.0);
 
   MapAirspace classB;
   classB.airspaceClass = AirspaceClass::ClassB;
@@ -50,7 +54,10 @@ void seedDemoAirspace(MapData& map) {
   classB.floorFt = 0.0f;
   classB.ceilingFt = 10000.0f;
   classB.boundary = {
-      {37.40, -122.26}, {37.55, -122.26}, {37.56, -122.02}, {37.41, -122.00},
+      {lat - 0.061, lon - 0.145},
+      {lat + 0.089, lon - 0.145},
+      {lat + 0.099, lon + 0.095},
+      {lat - 0.051, lon + 0.115},
   };
 
   map.airspaces = {classB, classC, classD};
@@ -78,29 +85,6 @@ void seedDemoFeatures(MapData& map) {
       {MapFeatureType::Fix, 37.5300, -122.1700, "EDDYY"},
       {MapFeatureType::Airport, 37.6213, -122.3790, "KSFO"},
   };
-  seedDemoAirspace(map);
-}
-
-// Great-circle-ish bearing (deg true) from a->b over short distances.
-double bearingDeg(double fromLat, double fromLon, double toLat, double toLon) {
-  constexpr double kPi = 3.14159265358979323846;
-  constexpr double kDegToRad = kPi / 180.0;
-  const double cosLat = std::max(0.05, std::cos(fromLat * kDegToRad));
-  const double north = (toLat - fromLat);
-  const double east = (toLon - fromLon) * cosLat;
-  double deg = std::atan2(east, north) / kDegToRad;
-  if (deg < 0.0) deg += 360.0;
-  return deg;
-}
-
-double distanceNm(double fromLat, double fromLon, double toLat, double toLon) {
-  constexpr double kPi = 3.14159265358979323846;
-  constexpr double kDegToRad = kPi / 180.0;
-  constexpr double kNmPerDeg = 60.0;
-  const double cosLat = std::max(0.05, std::cos(fromLat * kDegToRad));
-  const double north = (toLat - fromLat) * kNmPerDeg;
-  const double east = (toLon - fromLon) * kNmPerDeg * cosLat;
-  return std::sqrt(north * north + east * east);
 }
 
 // Features are pulled within this radius (and capped) so both the small PFD
@@ -185,9 +169,40 @@ void MockDataSource::update(double dtSeconds) {
   data_.bearing1Valid = true;
   data_.bearing1Deg = std::fmod(data_.headingDeg + 65.0f, 360.0f);
   data_.bearing1DistanceNm = 12.4f;
+  data_.bearing1Source = "GPS";
+  data_.bearing1Ident = "OSI";
   data_.bearing2Valid = true;
   data_.bearing2Deg = std::fmod(data_.headingDeg - 40.0f + 360.0f, 360.0f);
   data_.bearing2DistanceNm = 23.7f;
+  data_.bearing2Source = "VOR2";
+  data_.bearing2Ident = "SFO";
+
+  // Vertical deviation: demo a GPS Glidepath that drifts gently around centre
+  // (magenta diamond), plus the matching VNAV required-VS chevron on the VSI.
+  data_.vdiKind = VerticalDeviationKind::Glidepath;
+  data_.vdiValid = true;
+  data_.vdiDeviationDots = 1.2f * std::sin(t * 0.12f);
+  data_.requiredVsValid = true;
+  data_.requiredVsFpm = -700.0f + 200.0f * std::sin(t * 0.09f);
+
+  // Marker beacons: sweep through outer -> middle -> inner so each annunciator
+  // colour is exercised in the demo.
+  const float markerPhase = std::fmod(t, 24.0f);
+  data_.markerBeacon = markerPhase < 3.0f    ? MarkerBeacon::Outer
+                       : markerPhase < 6.0f  ? MarkerBeacon::Middle
+                       : markerPhase < 9.0f  ? MarkerBeacon::Inner
+                                             : MarkerBeacon::None;
+
+  // DME information window.
+  data_.dmeValid = true;
+  data_.dmeMode = "NAV1";
+  data_.dmeFreqMhz = 113.70f;
+  data_.dmeDistanceNm = 18.2f + 2.0f * std::sin(t * 0.08f);
+
+  // Baro transition alert flashes intermittently (as it would crossing the
+  // transition altitude/level).
+  data_.baroTransitionAlert = std::fmod(t, 28.0f) > 22.0f;
+
   data_.transponderCode = 1200;
   data_.transponderMode = "ALT";
   data_.transponderReply = std::fmod(t, 9.0) < 0.4f;
@@ -201,6 +216,26 @@ void MockDataSource::update(double dtSeconds) {
   data_.casPitotHeatOff = std::fmod(t, 16.0f) > 9.0f;       // caution
   data_.casLowVoltage = std::fmod(t, 24.0f) > 16.0f;        // warning (red)
   data_.casOilPressureLow = std::fmod(t, 40.0f) > 33.0f;    // warning (red)
+  // EIS engine strip: cruise-power values with gentle drift so the gauges show
+  // life. Fuel burns down at the indicated fuel flow; the ammeter shows a
+  // small charging load.
+  data_.engineRpm = 2400.0f + 35.0f * std::sin(t * 0.18f) +
+                    8.0f * std::sin(t * 1.7f);
+  data_.fuelFlowGph = 9.8f + 0.5f * std::sin(t * 0.11f);
+  data_.oilPressurePsi = 61.0f + 2.0f * std::sin(t * 0.07f);
+  data_.oilTempDegF = 181.0f + 4.0f * std::sin(t * 0.03f);
+  data_.egtDegF = 1448.0f + 18.0f * std::sin(t * 0.09f);
+  data_.vacuumInHg = 4.9f + 0.15f * std::sin(t * 0.13f);
+  const float burnedGal =
+      data_.fuelFlowGph * static_cast<float>(elapsedSeconds_) / 3600.0f;
+  data_.fuelQtyLeftGal = std::max(0.0f, 21.5f - burnedGal * 0.5f);
+  data_.fuelQtyRightGal = std::max(0.0f, 22.5f - burnedGal * 0.5f);
+  data_.engineHours = 1234.5f;
+  data_.busVoltsMain = 27.9f + 0.1f * std::sin(t * 0.21f);
+  data_.busVoltsEssential = 27.8f + 0.1f * std::sin(t * 0.19f);
+  data_.battAmpsMain = 2.0f + 1.0f * std::sin(t * 0.15f);
+  data_.battAmpsStandby = 0.0f;
+
   data_.fmaVerticalValue = static_cast<int>(std::lround(data_.selectedAltitudeFt));
   data_.timerSeconds = static_cast<int>(t) % 36000;
   const int totalSec = 18 * 3600 + static_cast<int>(t) % 86400;
@@ -209,7 +244,7 @@ void MockDataSource::update(double dtSeconds) {
   data_.utcSecond = totalSec % 60;
 
   refreshFeatures(dtSeconds);
-  map_.terrain = &terrain_;  // synthetic topographic background
+  map_.terrain = terrainSource_ != nullptr ? terrainSource_ : &terrain_;
 }
 
 void MockDataSource::setRoute(std::vector<MapLeg> route) {
@@ -228,11 +263,15 @@ void MockDataSource::ensureRoute() {
   map_.positionValid = true;
   legIndex_ = 1;
   data_.headingDeg = static_cast<float>(
-      bearingDeg(route_[0].lat, route_[0].lon, route_[1].lat, route_[1].lon));
+      navBearingDeg(route_[0].lat, route_[0].lon, route_[1].lat, route_[1].lon));
 
-  // Hand-placed demo features/airspace only when no real nav source is wired in
-  // (with one, refreshFeatures fills in the actual nearby navaids/fixes).
+  // Hand-placed demo features only when no real nav source is wired in (with
+  // one, refreshFeatures fills in the actual nearby navaids/fixes). The demo
+  // airspace rings are always seeded: there is no offline airspace database in
+  // the mock path, and without them the airspace declutter, the NRST airspaces
+  // page, and the map boundary styles would never be exercised.
   if (navFeatures_ == nullptr) seedDemoFeatures(map_);
+  seedDemoAirspace(map_, map_.ownshipLat, map_.ownshipLon);
 
   routeInitialized_ = true;
 }
@@ -242,9 +281,9 @@ void MockDataSource::navigateRoute(double dt) {
 
   const MapLeg& target = route_[legIndex_];
   const double brg =
-      bearingDeg(map_.ownshipLat, map_.ownshipLon, target.lat, target.lon);
+      navBearingDeg(map_.ownshipLat, map_.ownshipLon, target.lat, target.lon);
   const double distNm =
-      distanceNm(map_.ownshipLat, map_.ownshipLon, target.lat, target.lon);
+      navDistanceNm(map_.ownshipLat, map_.ownshipLon, target.lat, target.lon);
 
   // Ease the heading toward the bearing (shortest direction) at a standard-rate
   // turn, so course changes at waypoints look like real turns, not snaps.

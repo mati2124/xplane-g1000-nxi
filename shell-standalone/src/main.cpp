@@ -19,6 +19,8 @@
 //   --fms-plan NAME           .fms flight plan for the inset map route
 //                             (name under Output/FMS plans/, or a full path;
 //                             default: most recently modified .fms in that dir)
+//   --checklist PATH          checklist file for the MFD Checklist page group
+//                             (default: the bundled sample)
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>  // GL_SILENCE_DEPRECATION is set by the build.
@@ -37,6 +39,8 @@
 #include <utility>
 #include <vector>
 
+#include "ChecklistStore.h"
+#include "DsfTerrainStore.h"
 #include "FmsPlanStore.h"
 #include "NavData.h"
 #include "XPlaneConnection.h"
@@ -46,6 +50,7 @@
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/BootScreen.h"
 #include "avionics/render/NanoVgRenderer.h"
+#include "avionics/render/SoftkeyBezel.h"
 
 #if defined(__APPLE__)
 #include "MacMenu.h"
@@ -55,42 +60,58 @@ namespace {
 
 constexpr int kWindowWidth = 1024;   // avionics "screen" region (4:3)
 constexpr int kWindowHeight = 768;
-// The hardware bezel strip is part of the window, to the right of the screen,
-// the way a GDU's physical keys frame the display. The window is screen + strip.
+// The hardware bezel strips are part of the window, the way a GDU's physical
+// keys frame the display: the key column on the right and the row of twelve
+// softkey selection keys below the screen. The window is screen + strips.
 constexpr int kBezelStripWidth = 112;
+constexpr int kSoftkeyStripHeight = 72;
 constexpr int kSuiteWidth = kWindowWidth + kBezelStripWidth;
+constexpr int kSuiteHeight = kWindowHeight + kSoftkeyStripHeight;
 constexpr const char* kWindowTitle = "XPlane Avionics - PFD";
 constexpr const char* kMfdWindowTitle = "XPlane Avionics - MFD";
 
 // Horizontal gap between the PFD and MFD windows when both open.
 constexpr int kWindowGap = 24;
 
-// Width of the bezel strip in framebuffer pixels for a given window framebuffer
-// width, scaled so the screen:strip ratio is fixed across HiDPI back buffers.
+// Size of the bezel strips in framebuffer pixels for a given window framebuffer
+// size, scaled so the screen:strip ratio is fixed across HiDPI back buffers.
 inline int BezelStripPx(int fbWidth) {
   return static_cast<int>(std::lround(static_cast<double>(fbWidth) *
                                       kBezelStripWidth / kSuiteWidth));
 }
+inline int SoftkeyStripPx(int fbHeight) {
+  return static_cast<int>(std::lround(static_cast<double>(fbHeight) *
+                                      kSoftkeyStripHeight / kSuiteHeight));
+}
 
-// Renders one engine into the left "screen" region of its window and draws the
-// hardware bezel strip on the right. The gauge code draws in screen pixels
-// (device-pixel-ratio 1.0); the bezel is drawn in full-window pixels. update()
-// is the caller's responsibility.
+// Renders one engine into the top-left "screen" region of its window and draws
+// the hardware bezel strips: the key column on the right (full height) and the
+// physical softkey row below the screen, aligned with the on-screen softkey
+// labels. The gauge code draws in screen pixels (device-pixel-ratio 1.0); the
+// bezel is drawn in full-window pixels. update() is the caller's
+// responsibility.
 inline void RenderSuite(avionics::NanoVgRenderer& renderer,
                         avionics::AvionicsEngine& eng, int fbWidth,
                         int fbHeight) {
   const int bezelPx = BezelStripPx(fbWidth);
+  const int softkeyPx = SoftkeyStripPx(fbHeight);
   const int screenW = std::max(1, fbWidth - bezelPx);
+  const int screenH = std::max(1, fbHeight - softkeyPx);
 
-  glViewport(0, 0, screenW, fbHeight);
-  eng.renderFrame(screenW, fbHeight, 1.0f);
+  // GL viewports are bottom-left anchored, so the screen's viewport is lifted
+  // by the softkey strip's height to sit at the top of the window.
+  glViewport(0, fbHeight - screenH, screenW, screenH);
+  eng.renderFrame(screenW, screenH, 1.0f);
 
   glViewport(0, 0, fbWidth, fbHeight);
   renderer.beginFrame(fbWidth, fbHeight, 1.0f);
   avionics::BezelKeyPanel::render(
       renderer, static_cast<float>(screenW), 0.0f,
       static_cast<float>(fbWidth - screenW), static_cast<float>(fbHeight),
-      static_cast<float>(fbHeight), eng.bezelPressLevels());
+      static_cast<float>(screenH), eng.bezelPressLevels());
+  avionics::SoftkeyBezelPanel::render(
+      renderer, 0.0f, static_cast<float>(screenH), static_cast<float>(screenW),
+      static_cast<float>(fbHeight - screenH), eng.softkeyPressLevels());
   renderer.endFrame();
 }
 
@@ -174,7 +195,7 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-  GLFWwindow* window = glfwCreateWindow(kSuiteWidth, kWindowHeight, kWindowTitle,
+  GLFWwindow* window = glfwCreateWindow(kSuiteWidth, kSuiteHeight, kWindowTitle,
                                         nullptr, nullptr);
   if (!window) {
     std::fprintf(stderr, "Failed to create window\n");
@@ -194,7 +215,11 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
   // built-in demo features otherwise); give the background loader a moment so
   // the captured frame shows the actual nearby navaids/fixes.
   avionics::NavDataStore navData;
+  avionics::DsfTerrainStore terrain;
+  avionics::ChecklistStore checklists;
   dataSource.setNavFeatureSource(&navData);
+  dataSource.setTerrainSource(&terrain);
+  dataSource.setChecklistSource(&checklists);
   for (int i = 0; i < 400 && !navData.ready(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
@@ -205,9 +230,8 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
   int fbHeight = 0;
   glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
 
-  // The avionics screen is the left region; the bezel strip is on the right.
-  // Softkey hit-testing happens in screen-pixel coordinates.
-  const int screenW = fbWidth - BezelStripPx(fbWidth);
+  // The avionics screen is the top-left region; the bezel key column is on the
+  // right and the physical softkey row is below the screen.
 
   glViewport(0, 0, fbWidth, fbHeight);
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -223,14 +247,11 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     avionics::BootScreen::render(renderer, kLabelMock, 0.6f, fbWidth, fbHeight);
     renderer.endFrame();
   } else if (state != nullptr && std::strcmp(state, "alerts") == 0) {
-    // Drive the real interaction path: bring up the live page, "click" the
+    // Drive the real interaction path: bring up the live page, press the
     // Alerts softkey, then run the open animation to completion before capture.
     engine.skipBoot();
     engine.update(seconds);
-    engine.renderFrame(screenW, fbHeight, 1.0f);  // establishes the click space
-    const double barH = fbHeight * (35.0 / 768.0);  // softkey row height
-    const double cellW = screenW / 12.0;
-    engine.onPointerDown(11.5 * cellW, fbHeight - barH * 0.5);  // Alerts cell
+    engine.pressSoftkey(11);  // Alerts key
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuite(renderer, engine, fbWidth, fbHeight);
   } else if (state != nullptr && std::strcmp(state, "menu") == 0) {
@@ -239,25 +260,57 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     // submenu (with its Back key) and the highlighted active cells.
     engine.skipBoot();
     engine.update(seconds);
-    engine.renderFrame(screenW, fbHeight, 1.0f);  // establishes the click space
-    const double barH = fbHeight * (35.0 / 768.0);
-    const double cellW = screenW / 12.0;
-    const double rowY = fbHeight - barH * 0.5;
-    engine.onPointerDown(3.5 * cellW, rowY);  // "PFD Opt" -> open submenu
-    engine.onPointerDown(1.5 * cellW, rowY);  // "SVT" toggle on
-    engine.onPointerDown(2.5 * cellW, rowY);  // "Wind" toggle on
+    engine.pressSoftkey(3);  // "PFD Opt" -> open submenu
+    engine.pressSoftkey(1);  // "SVT" toggle on
+    engine.pressSoftkey(2);  // "Wind" toggle on
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuite(renderer, engine, fbWidth, fbHeight);
+  } else if (state != nullptr && std::strcmp(state, "tmrref") == 0) {
+    // Timer/References window: open it, start the timer, run it for a bit,
+    // then set BARO minimums so the BARO MIN box and tape bug are captured.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(9);  // "Tmr/Ref" -> open the References window
+    engine.pressBezelKey(avionics::BezelKey::Ent);  // Start? -> timer runs
+    for (int i = 0; i < 90; ++i) engine.update(1.0 / 60.0);  // 1.5 s elapses
+    // Cursor down to MINS (over the four V-speed rows), select BARO, then
+    // step the altitude up with the FMS rocker (100 ft per click).
+    for (int i = 0; i < 5; ++i) {
+      engine.pressBezelKey(avionics::BezelKey::FmsNext);
+    }
+    engine.pressBezelKey(avionics::BezelKey::Ent);  // MINS Off -> BARO
+    for (int i = 0; i < 23; ++i) {
+      engine.pressBezelKey(avionics::BezelKey::FmsNext);  // 2300 ft
+    }
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuite(renderer, engine, fbWidth, fbHeight);
+  } else if (state != nullptr && std::strcmp(state, "nrst") == 0) {
+    // Nearest Airports window with the FMS cursor stepped to the second entry.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(10);  // "Nearest"
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsNext);
+    for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
+    RenderSuite(renderer, engine, fbWidth, fbHeight);
+  } else if (state != nullptr && std::strcmp(state, "ident") == 0) {
+    // Transponder code entry plus the IDNT annunciation: type two digits of a
+    // new squawk, then press Ident from the Code softkeys.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(7);  // "XPDR"
+    engine.pressSoftkey(5);  // "Code"
+    engine.pressSoftkey(4);  // digit 4
+    engine.pressSoftkey(5);  // digit 5
+    engine.pressSoftkey(8);  // "Ident"
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuite(renderer, engine, fbWidth, fbHeight);
   } else if (state != nullptr && std::strcmp(state, "map") == 0) {
     // Turn on the PFD inset map: open the Map/HSI submenu, then toggle "Inset".
     engine.skipBoot();
     engine.update(seconds);
-    engine.renderFrame(screenW, fbHeight, 1.0f);  // establishes the click space
-    const double barH = fbHeight * (35.0 / 768.0);
-    const double cellW = screenW / 12.0;
-    const double rowY = fbHeight - barH * 0.5;
-    engine.onPointerDown(1.5 * cellW, rowY);  // "Map/HSI" -> open submenu
-    engine.onPointerDown(2.5 * cellW, rowY);  // "Inset" toggle on
+    engine.pressSoftkey(1);  // "Map/HSI" -> open submenu
+    engine.pressSoftkey(2);  // "Inset" toggle on
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuite(renderer, engine, fbWidth, fbHeight);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
@@ -265,6 +318,40 @@ int RunScreenshot(const char* path, double seconds, const char* state) {
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
+    RenderSuite(renderer, engine, fbWidth, fbHeight);
+  } else if (state != nullptr && std::strncmp(state, "mfd", 3) == 0) {
+    // MFD page screenshots. The state encodes a page-group softkey plus an
+    // optional repeat count (pressing the active group's key again steps to
+    // the group's next page): "mfdwpt" = WPT page 1, "mfdwpt3" = WPT page 3.
+    // "mfdfpl" presses the FPL bezel key instead, and "mfdtrk" toggles
+    // track-up on the MAP page.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    const char* suffix = state + 3;
+    int cell = -1;
+    if (std::strncmp(suffix, "wpt", 3) == 0) cell = 1;
+    if (std::strncmp(suffix, "aux", 3) == 0) cell = 2;
+    if (std::strncmp(suffix, "nrst", 4) == 0) cell = 3;
+    if (std::strncmp(suffix, "trk", 3) == 0) cell = 4;
+    if (std::strncmp(suffix, "chklist", 7) == 0) cell = 7;
+    if (std::strncmp(suffix, "fpl", 3) == 0) {
+      engine.pressBezelKey(avionics::BezelKey::Fpl);
+    } else if (cell >= 0) {
+      const char* digits = suffix;
+      while (*digits != '\0' && (*digits < '0' || *digits > '9')) ++digits;
+      const int presses = *digits != '\0' ? std::atoi(digits) : 1;
+      for (int p = 0; p < presses; ++p) engine.pressSoftkey(cell);
+    }
+    // On the Checklist page, check off the first few items so the captured frame
+    // shows the cursor, the green checks, and the auto-advance flow.
+    if (std::strncmp(suffix, "chklist", 7) == 0) {
+      for (int i = 0; i < 400 && !checklists.ready(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      for (int p = 0; p < 3; ++p) engine.pressBezelKey(avionics::BezelKey::Ent);
+    }
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuite(renderer, engine, fbWidth, fbHeight);
   } else if (state != nullptr && std::strcmp(state, "failed") == 0) {
     // Capture the connection-lost display: populate believable live values from
@@ -352,18 +439,24 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
   const double fx = cursorX * sx;
   const double fy = cursorY * sy;
 
-  // Clicks on the right-hand bezel strip drive the hardware keys; clicks on the
-  // screen go to the softkey bar / pages (in screen-pixel coordinates).
+  // Only the physical bezel controls are clickable, like the real unit: the
+  // key column on the right and the softkey row below the screen. Clicks on
+  // the screen itself do nothing (it is just glass).
   const int bezelPx = BezelStripPx(fbW);
   const int screenW = fbW - bezelPx;
+  const int screenH = fbH - SoftkeyStripPx(fbH);
   if (fx >= screenW) {
     const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy),
         static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
         static_cast<float>(fbH));
     if (key != avionics::BezelKey::Count) engine->pressBezelKey(key);
-  } else {
-    engine->onPointerDown(fx, fy);
+  } else if (fy >= screenH) {
+    const int key = avionics::SoftkeyBezelPanel::hitTest(
+        static_cast<float>(fx), static_cast<float>(fy), 0.0f,
+        static_cast<float>(screenH), static_cast<float>(screenW),
+        static_cast<float>(fbH - screenH));
+    if (key >= 0) engine->pressSoftkey(key);
   }
 }
 
@@ -395,7 +488,7 @@ GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_FLOATING, alwaysOnTop ? GLFW_TRUE : GLFW_FALSE);
-  return glfwCreateWindow(kSuiteWidth, kWindowHeight, title, nullptr, share);
+  return glfwCreateWindow(kSuiteWidth, kSuiteHeight, title, nullptr, share);
 }
 
 }  // namespace
@@ -489,13 +582,21 @@ int main(int argc, char** argv) {
   // real navaids when an X-Plane install is present).
   avionics::NavDataStore navData;
   avionics::FmsPlanStore fmsPlan(fmsPlanArg ? fmsPlanArg : "");
+  avionics::DsfTerrainStore terrain;
+
+  // Author-supplied checklists for the MFD Checklist page group. --checklist
+  // selects a file; otherwise the build-time sample is used.
+  const char* checklistArg = FlagValue(argc, argv, "--checklist");
+  avionics::ChecklistStore checklists(checklistArg ? checklistArg : "");
 
   avionics::MockDataSource mock;
   mock.setNavFeatureSource(&navData);
+  mock.setTerrainSource(&terrain);
+  mock.setChecklistSource(&checklists);
   bool mockRouteSet = false;  // set once the .fms flight plan has loaded
 
   avionics::XPlaneConnection xplane(host ? host : kDefaultXPlaneHost, port,
-                                    navData, fmsPlan);
+                                    navData, fmsPlan, &terrain, &checklists);
 
   const char* sourceArg = FlagValue(argc, argv, "--source");
   const bool startWithXPlane =
@@ -571,6 +672,10 @@ int main(int argc, char** argv) {
       mock.setRoute(fmsPlan.flightPlan());
       mockRouteSet = true;
     }
+
+    // Pick up live edits to the checklist file so authors can iterate without
+    // restarting.
+    checklists.refreshIfChanged();
 
     // Auto-detect: while showing mock, keep the X-Plane link pumped (the engines
     // only update the active source) and switch over the instant it connects.

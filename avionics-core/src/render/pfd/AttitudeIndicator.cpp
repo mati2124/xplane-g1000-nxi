@@ -4,9 +4,11 @@ namespace avionics::pfd {
 namespace {
 
 void drawPitchLadder(Renderer& r, const Layout& L, float displayH) {
-  // Lines every 2.5 deg: full marks at 10 deg, medium at 5 deg, short at
-  // 2.5 deg, with numbers every 10 deg, per the NXi non-SVT ladder. Geometry is
-  // in Working Title pixel units scaled to the display.
+  // NXi non-SVT pitch ladder mark density (Pilot's Guide, Attitude Indicator):
+  // major 10 deg marks with numeric labels up to 90 deg; 5 deg minor marks up
+  // to 25 deg below and 45 deg above the horizon; 2.5 deg minor marks only
+  // between 20 deg below and 20 deg above the horizon. Geometry is in Working
+  // Title pixel units scaled to the display.
   const float travel = kPitchPxPerDegWt * L.s;
   const float half10 = kPitch10HalfWt * L.sx;
   const float half5 = kPitch5HalfWt * L.sx;
@@ -14,11 +16,18 @@ void drawPitchLadder(Renderer& r, const Layout& L, float displayH) {
   const float labelSize = fontPx(wt::kPitch, displayH);
   const float labelPad = 16.0f * L.sx;
 
-  for (int q = -34; q <= 34; ++q) {
+  // +deg is nose-up (above the horizon); -deg is nose-down (below it).
+  for (int q = -36; q <= 36; ++q) {
     if (q == 0) continue;
     const float deg = static_cast<float>(q) * 2.5f;
     const bool is10 = (q % 4) == 0;
     const bool is5 = (q % 2) == 0;
+
+    if (!is5) {
+      if (deg < -20.0f || deg > 20.0f) continue;  // 2.5 deg marks near horizon
+    } else if (!is10) {
+      if (deg < -25.0f || deg > 45.0f) continue;  // 5 deg marks
+    }
 
     const float y = -deg * travel;
     const float half = is10 ? half10 : (is5 ? half5 : half25);
@@ -55,7 +64,12 @@ void drawUnusualAttitudeChevrons(Renderer& r, float attVisW, float attRegionH,
   }
 }
 
-void drawRollScale(Renderer& r, float cx, float cy, float radius, float s) {
+// Roll scale: ticks plus the inverted zero-reference triangle. Per the G1000
+// NXi (WT AttitudeIndicator: the scale lives in the rotating bank container),
+// the whole scale rotates WITH the horizon so the zero-reference triangle stays
+// earth-referenced, while the roll pointer below it is fixed to the airframe.
+void drawRollScale(Renderer& r, float cx, float cy, float radius, float s,
+                   float rollDeg) {
   // The real G1000 roll-scale ticks sit directly on the sky (no dark band).
   struct Tick {
     float deg;
@@ -68,6 +82,7 @@ void drawRollScale(Renderer& r, float cx, float cy, float radius, float s) {
 
   r.save();
   r.translate(cx, cy);
+  r.rotateDegrees(-rollDeg);  // same transform as the horizon
   for (const Tick& t : ticks) {
     r.save();
     r.rotateDegrees(t.deg);
@@ -83,11 +98,14 @@ void drawRollScale(Renderer& r, float cx, float cy, float radius, float s) {
   r.restore();
 }
 
+// Roll pointer and slip/skid indicator, fixed at top center: the pointer stays
+// aircraft-referenced (the rotating scale's zero triangle indicates the bank
+// against it), and the slip/skid bar beneath it displaces laterally only
+// (G1000 Pilot's Guide, Attitude Indicator; WT NXi turn-coordinator element).
 void drawRollPointer(Renderer& r, float cx, float cy, float radius, float s,
-                     float rollDeg, float slipDeg) {
+                     float slipDeg) {
   r.save();
   r.translate(cx, cy);
-  r.rotateDegrees(rollDeg);
 
   const float tw = s * 0.030f;
   const float th = s * 0.045f;
@@ -248,8 +266,8 @@ void drawAttitude(Renderer& r, const Layout& L, const FlightData& d, float w,
   drawUnusualAttitudeChevrons(r, L.attVisW, L.attRegionH, travel);
   r.restore();
 
-  drawRollScale(r, L.attCx, L.attCy, L.rollRadius, L.attRegionH);
-  drawRollPointer(r, L.attCx, L.attCy, L.rollRadius, L.attRegionH, d.rollDeg,
+  drawRollScale(r, L.attCx, L.attCy, L.rollRadius, L.attRegionH, d.rollDeg);
+  drawRollPointer(r, L.attCx, L.attCy, L.rollRadius, L.attRegionH,
                   d.slipSkidDeg);
   drawFlightDirector(r, L.attCx, L.attCy, L.attVisW, L.attRegionH, travel, d);
   drawAircraftSymbol(r, L.attCx, L.attCy, L.attVisW, L.attRegionH);

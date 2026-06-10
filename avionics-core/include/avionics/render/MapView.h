@@ -21,6 +21,14 @@ struct MapViewStyle {
   // Border, range label, and orientation annunciation. The inset map shows
   // these; a full-screen MFD page may supply its own chrome instead.
   bool showChrome = true;
+  // Identifier labels next to nav features and flight-plan waypoints. Kept
+  // separate from showChrome so embedded windows (WPT/NRST airport maps) can
+  // drop the chrome but keep the idents.
+  bool showLabels = true;
+  // Intersections / VFR waypoints. The small embedded airport maps turn these
+  // off (like the G1000's detail declutter) -- at close range the fix class is
+  // dense enough to bury the airport the window is meant to show.
+  bool showFixes = true;
   float labelFontWt = 14.0f;
 };
 
@@ -36,6 +44,11 @@ struct MapViewConfig {
   // map instances (PFD inset vs. MFD MAP page) can show the same nav data at
   // independent zooms. Defaults to 0 = follow the shared MapData range.
   float rangeNm = 0.0f;
+  // Optional map center override (e.g. the WPT/NRST airport maps center on the
+  // selected airport rather than ownship). When false, centers on ownship.
+  bool hasCenterOverride = false;
+  double centerLat = 0.0;
+  double centerLon = 0.0;
   MapViewStyle style;
 };
 

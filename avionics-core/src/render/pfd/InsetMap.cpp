@@ -7,7 +7,7 @@ namespace avionics::pfd {
 void drawInsetMap(Renderer& r, const Layout& L, const MapData& map,
                   const FlightData& flight, const SoftkeyController& ui,
                   float displayH) {
-  if (!ui.displayToggle(DisplayToggle::Inset)) return;
+  if (!ui.insetMapVisible()) return;
 
   MapViewConfig config;
   config.x = L.insetMapX;

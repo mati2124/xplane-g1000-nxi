@@ -51,8 +51,12 @@ void AvionicsEngine::update(double dtSeconds) {
   // A secondary engine sharing the source (the MFD window) must not pump it a
   // second time; it still advances its own boot timer and UI animations.
   if (drivesDataSource_) dataSource_->update(dtSeconds);
-  softkeys_.update(dtSeconds, dataSource_->snapshot());
+  softkeys_.update(dtSeconds, dataSource_->snapshot(),
+                   dataSource_->mapSnapshot());
   mfd_.update(dtSeconds);
+  // Keep the MFD's checklist navigation in step with the loaded file (the data
+  // is owned by the source; the controller only holds the interactive state).
+  mfd_.syncChecklist(dataSource_->checklistSnapshot());
 }
 
 bool AvionicsEngine::isLivePageUp() const {
@@ -60,20 +64,21 @@ bool AvionicsEngine::isLivePageUp() const {
          dataSource_->connectionState() == ConnectionState::Connected;
 }
 
-void AvionicsEngine::onPointerDown(double xPx, double yPx) {
-  if (!isLivePageUp() || lastWidthPx_ <= 0 || lastHeightPx_ <= 0) return;
-  const float x = static_cast<float>(xPx);
-  const float y = static_cast<float>(yPx);
-  const float w = static_cast<float>(lastWidthPx_);
-  const float h = static_cast<float>(lastHeightPx_);
+void AvionicsEngine::pressSoftkey(int index) {
+  if (!isLivePageUp()) return;
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:
-      softkeys_.pointerDown(x, y, w, h);
+      softkeys_.pressKey(index);
       break;
     case DisplayPage::MultiFunctionDisplay:
-      mfd_.pointerDown(x, y, w, h);
+      mfd_.pressKey(index);
       break;
   }
+}
+
+const float* AvionicsEngine::softkeyPressLevels() const {
+  return page_ == DisplayPage::MultiFunctionDisplay ? mfd_.pressLevels()
+                                                    : softkeys_.pressLevels();
 }
 
 void AvionicsEngine::pressBezelKey(BezelKey key) {
@@ -94,8 +99,6 @@ const float* AvionicsEngine::bezelPressLevels() const {
 }
 
 void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
-  lastWidthPx_ = widthPx;
-  lastHeightPx_ = heightPx;
   renderer_.beginFrame(widthPx, heightPx, pixelRatio);
 
   if (bootElapsedSeconds_ < kBootDurationSeconds) {
@@ -120,7 +123,8 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
       break;
     case DisplayPage::MultiFunctionDisplay:
       MultiFunctionDisplay::render(renderer_, data, dataSource_->mapSnapshot(),
-                                   mfd_, widthPx, heightPx);
+                                   dataSource_->checklistSnapshot(), mfd_,
+                                   widthPx, heightPx);
       break;
   }
 

@@ -4,10 +4,13 @@ namespace avionics::pfd {
 namespace {
 
 void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
-                          float tapeH, float cy, float displayH,
-                          float altitudeFt, float selectedFt) {
-  const float ppu = tapeH / kAltitudeViewableFeet;
-  const float boxH = fontPx(wt::kSelectedAlt, displayH) * 1.5f;
+                          float stripTop, float stripH, float cy,
+                          float displayH, float altitudeFt, float selectedFt,
+                          const SelectedAltStyle& alert) {
+  // The Selected Altitude box fills the gap between the top of the altimeter
+  // instrument and the top of the scrolling tape, mirroring the BARO box at the
+  // bottom (G1000 NXi).
+  const float boxH = stripTop - tapeTop;
   const float boxW = tapeW;
   const float boxX = tapeX;
   const float boxY = tapeTop;
@@ -17,27 +20,36 @@ void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
   // altitude bug is drawn on the tape (matching the G1000 NXi / X-Plane PFD).
   const bool selected = std::fabs(selectedFt) > kAltSelectedEpsilonFt;
 
-  const bool captured =
-      selected && std::fabs(altitudeFt - selectedFt) <= kAltCapturedFt;
-  r.fillRect(boxX, boxY, boxW, boxH,
-             captured ? colors::kCyan : colors::kReadoutBox);
+  // Altitude Alerting (Pilot's Guide Fig. 2-32): during a phase transition the
+  // readout flashes -- black-on-cyan within 1000 ft, blinking cyan within 200
+  // ft, blinking amber on a post-capture deviation.
+  const Color plate = alert.cyanBackground ? colors::kCyan : colors::kReadoutBox;
+  Color text = alert.cyanBackground ? colors::kBlack
+               : alert.amberText    ? colors::kBandYellow
+                                    : colors::kCyan;
+  r.fillRect(boxX, boxY, boxW, boxH, plate);
   const Point outline[5] = {{boxX, boxY},
                             {boxX + boxW, boxY},
                             {boxX + boxW, boxY + boxH},
                             {boxX, boxY + boxH},
                             {boxX, boxY}};
   r.strokePolyline(outline, 5, 2.0f, colors::kCyan);
-  r.fillText(boxX + boxW * 0.5f, boxY + boxH * 0.5f,
-             selected ? formatInt(selectedFt) : std::string(kSelectedAltDashes),
-             fontPx(wt::kSelectedAlt, displayH), TextAlign::Center,
-             captured ? colors::kBlack : colors::kCyan);
+  if (!alert.hideText) {
+    r.fillText(boxX + boxW * 0.5f, boxY + boxH * 0.5f,
+               selected ? formatInt(selectedFt)
+                        : std::string(kSelectedAltDashes),
+               fontPx(wt::kSelectedAlt, displayH), TextAlign::Center, text);
+  }
 
   if (!selected) {
     return;
   }
 
+  // The bug rides the tape, so it shares the tape's feet-per-pixel scale and
+  // pins at the ends of the scroll strip when the selection is off-scale.
+  const float ppu = stripH / kAltitudeViewableFeet;
   float bugY = cy - (selectedFt - altitudeFt) * ppu;
-  bugY = std::max(tapeTop, std::min(tapeTop + tapeH, bugY));
+  bugY = std::max(stripTop, std::min(stripTop + stripH, bugY));
   const float bw = tapeW * 0.16f;
   const float bh = displayH * 0.020f;
   const float bx = tapeX;
@@ -51,26 +63,130 @@ void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
 
 void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float tapeTop,
                      float tapeH, float stripBottom, float displayH,
-                     float baroInHg) {
+                     float baroInHg, bool hpa, bool flashOff) {
   // The BARO box fills the gap between the bottom of the scrolling tape and the
   // bottom of the altimeter instrument, so it sits flush against the tape (G1000
-  // NXi), mirroring the selected-altitude box at the top.
+  // NXi), mirroring the selected-altitude box at the top. The Baro Transition
+  // Alert flashes the setting (handled by the caller's blink phase via flashOff).
   const float boxY = stripBottom;
   const float boxH = (tapeTop + tapeH) - stripBottom;
   r.fillRect(tapeX, boxY, tapeW, boxH, colors::kReadoutBox);
+  if (flashOff) return;  // blink-off half of the Baro Transition Alert cycle
+
   char buf[16];
-  std::snprintf(buf, sizeof(buf), "%.2f", baroInHg);
+  const char* unit;
+  if (hpa) {
+    std::snprintf(buf, sizeof(buf), "%d",
+                  static_cast<int>(std::lround(baroInHg * 33.8639f)));
+    unit = "HPA";
+  } else {
+    std::snprintf(buf, sizeof(buf), "%.2f", baroInHg);
+    unit = "IN";
+  }
   const float numSize = fontPx(wt::kBaro, displayH);
   const float unitSize = numSize * 0.72f;
   const float gap = numSize * 0.06f;
   const float numW = r.measureTextWidth(buf, numSize);
-  const float unitW = r.measureTextWidth("IN", unitSize);
+  const float unitW = r.measureTextWidth(unit, unitSize);
   const float startX = tapeX + tapeW * 0.5f - (numW + gap + unitW) * 0.5f;
   const float midY = boxY + boxH * 0.5f;
   r.fillText(startX, midY, std::string(buf), numSize, TextAlign::Left,
              colors::kCyan);
-  r.fillText(startX + numW + gap, midY, "IN", unitSize, TextAlign::Left,
+  r.fillText(startX + numW + gap, midY, unit, unitSize, TextAlign::Left,
              colors::kCyan);
+}
+
+// Metric altitude overlay (PFD Opt > ALT Units > Meters): the Selected Altitude
+// (meters) box sits just below the Selected Altitude box at the top, and the
+// Indicated Altitude (meters) box sits just below the altitude pointer.
+void drawMetricAltitude(Renderer& r, float tapeX, float tapeW,
+                        float selBoxBottom, float cy, float readoutH,
+                        float displayH, float altitudeFt, float selectedFt,
+                        bool selected) {
+  const float size = fontPx(wt::kSelectedAlt, displayH) * 0.8f;
+  const float boxH = size * 1.4f;
+  auto meters = [](float ft) { return ft * 0.3048f; };
+
+  // Selected altitude (meters) directly below the selected-altitude box.
+  const float selY = selBoxBottom;
+  r.fillRect(tapeX, selY, tapeW, boxH, colors::kReadoutBox);
+  r.fillText(tapeX + tapeW * 0.5f, selY + boxH * 0.5f,
+             (selected ? formatInt(meters(selectedFt)) : std::string("---")) +
+                 "M",
+             size, TextAlign::Center, colors::kCyan);
+
+  // Indicated altitude (meters) just below the indicated-altitude pointer box.
+  const float indY = cy + readoutH * 0.5f + boxH * 0.2f;
+  r.fillRect(tapeX, indY, tapeW, boxH, colors::kReadoutBox);
+  const Point border[5] = {{tapeX, indY},
+                           {tapeX + tapeW, indY},
+                           {tapeX + tapeW, indY + boxH},
+                           {tapeX, indY + boxH},
+                           {tapeX, indY}};
+  r.strokePolyline(border, 5, 1.5f, colors::kWhite);
+  r.fillText(tapeX + tapeW * 0.5f, indY + boxH * 0.5f,
+             formatInt(meters(altitudeFt)) + "M", size, TextAlign::Center,
+             colors::kWhite);
+}
+
+// Barometric minimums (MDA/DH) alerting, set in the Timer/References window
+// (Pilot's Guide, Minimum Descent Altitude/Decision Height Alerting). The BARO
+// MIN box sits at the bottom left of the altimeter and a bug rides the tape at
+// the minimums altitude. Both stage cyan -> white (within 100 ft) -> amber (at
+// or below minimums).
+void drawMinimums(Renderer& r, const Layout& L, const FlightData& d,
+                  const SoftkeyController& ui, float displayH) {
+  if (ui.minimumsMode() != MinimumsMode::Baro) return;
+  const float minsFt = ui.minimumsAltitudeFt();
+  const float aboveFt = d.altitudeFt - minsFt;
+
+  const Color stage = (aboveFt <= 0.0f)     ? colors::kBandYellow
+                      : (aboveFt <= 100.0f) ? colors::kWhite
+                                            : colors::kCyan;
+
+  // The box appears once the aircraft descends to within 2500 ft of the
+  // MDA/DH setting.
+  if (aboveFt <= 2500.0f) {
+    const float stripBottom = L.stripTop + L.stripH;
+    const float boxH = (L.altTop + L.altH) - stripBottom;
+    const float boxW = L.altW * 0.95f;
+    const float boxX = L.altX - boxW - 8.0f * L.sx;
+    const float boxY = stripBottom;
+    r.fillRect(boxX, boxY, boxW, boxH, colors::kReadoutBox);
+    const Point outline[5] = {{boxX, boxY},
+                              {boxX + boxW, boxY},
+                              {boxX + boxW, boxY + boxH},
+                              {boxX, boxY + boxH},
+                              {boxX, boxY}};
+    r.strokePolyline(outline, 5, 1.5f, colors::kPanelBorder);
+
+    const float labelSize = fontPx(wt::kInfoLabel, displayH) * 0.8f;
+    const float cx = boxX + boxW * 0.30f;
+    r.fillText(cx, boxY + boxH * 0.30f, "BARO", labelSize, TextAlign::Center,
+               stage);
+    r.fillText(cx, boxY + boxH * 0.72f, "MIN", labelSize, TextAlign::Center,
+               stage);
+    r.fillText(boxX + boxW * 0.95f, boxY + boxH * 0.5f, formatInt(minsFt),
+               fontPx(wt::kBaro, displayH), TextAlign::Right, stage);
+  }
+
+  // Minimums bug on the tape (left edge, opening toward the scale) once the
+  // setting is within the viewable range.
+  const float ppu = L.stripH / kAltitudeViewableFeet;
+  const float bugY = L.attCy - (minsFt - d.altitudeFt) * ppu;
+  if (bugY < L.stripTop || bugY > L.stripTop + L.stripH) return;
+  const float armLen = L.altW * 0.14f;
+  const float halfH = displayH * 0.011f;
+  const float lineW = std::max(2.0f, displayH * 0.004f);
+  r.save();
+  r.clip(L.altX, L.stripTop, L.altW, L.stripH);
+  r.strokeLine(L.altX + lineW * 0.5f, bugY - halfH, L.altX + lineW * 0.5f,
+               bugY + halfH, lineW * 1.6f, stage);
+  r.strokeLine(L.altX, bugY - halfH, L.altX + armLen, bugY - halfH, lineW,
+               stage);
+  r.strokeLine(L.altX, bugY + halfH, L.altX + armLen, bugY + halfH, lineW,
+               stage);
+  r.restore();
 }
 
 void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
@@ -125,8 +241,10 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
   const float residual =
       (altitudeFt - static_cast<float>(snapped)) / 20.0f;
 
-  std::string lead =
-      formatInt(static_cast<float>(snapped < 0 ? -leading : leading));
+  // Build the leading-digits string with an explicit sign so altitudes between
+  // -1 and -99 ft (leading == 0) still read negative.
+  std::string lead = formatInt(static_cast<float>(leading));
+  if (snapped < 0) lead.insert(lead.begin(), '-');
   r.fillText(drumX - w * 0.02f, midY, lead, textSize, TextAlign::Right,
              colors::kWhite);
 
@@ -147,7 +265,8 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
 
 }  // namespace
 
-void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d, float h) {
+void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
+                   const SoftkeyController& ui, float h) {
   // Air data computer failure: the altitude tape, readout, baro, and selected-
   // altitude column are replaced by a red X.
   if (!d.altitudeValid) {
@@ -164,12 +283,23 @@ void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d, float h) {
   const float readoutH = kAltReadoutHeightWt * L.s;
   const float readoutSize = fontPx(wt::kReadoutAlt, h);
   const float altOverhang = L.altW * kReadoutOverhangFraction;
+  drawMinimums(r, L, d, ui, h);
   drawAltitudeReadout(r, L.altX - altOverhang, L.attCy - readoutH * 0.5f,
                       L.altW + altOverhang, readoutH, d.altitudeFt, readoutSize);
-  drawSelectedAltitude(r, L.altX, L.altW, L.altTop, L.altH, L.attCy, h,
-                       d.altitudeFt, d.selectedAltitudeFt);
+  drawSelectedAltitude(r, L.altX, L.altW, L.altTop, L.stripTop, L.stripH,
+                       L.attCy, h, d.altitudeFt, d.selectedAltitudeFt,
+                       ui.selectedAltStyle());
+
+  const bool selected = std::fabs(d.selectedAltitudeFt) > kAltSelectedEpsilonFt;
+  if (ui.displayToggle(DisplayToggle::AltMeters)) {
+    drawMetricAltitude(r, L.altX, L.altW, L.stripTop, L.attCy, readoutH, h,
+                       d.altitudeFt, d.selectedAltitudeFt, selected);
+  }
+
+  const bool hpa = ui.displayToggle(DisplayToggle::BaroHpa);
+  const bool flashOff = d.baroTransitionAlert && !ui.blinkOn();
   drawBaroSetting(r, L.altX, L.altW, L.altTop, L.altH, L.stripTop + L.stripH, h,
-                  d.baroSettingInHg);
+                  d.baroSettingInHg, hpa, flashOff);
 }
 
 }  // namespace avionics::pfd

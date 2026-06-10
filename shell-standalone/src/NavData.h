@@ -18,8 +18,9 @@ namespace avionics {
 // X-Plane records its install paths in a text file (x-plane_install_12.txt /
 // _11.txt) under a per-OS preferences directory; each line is an install root.
 // Inside a root the nav data lives in "Custom Data/" (user-updated, preferred)
-// or "Resources/default data/". We parse earth_nav.dat (VORs + NDBs) and
-// earth_fix.dat (fixes) into flat feature lists.
+// or "Resources/default data/". We parse earth_nav.dat (VORs + NDBs),
+// earth_fix.dat (fixes), and earth_aptmeta.dat (airport ICAO/lat/lon) into flat
+// feature lists.
 //
 // Loading runs on a background thread so the ~tens-of-MB parse never stalls the
 // render loop. Once loaded the lists are immutable, so nearby() reads them
@@ -46,6 +47,7 @@ class NavDataStore : public NavFeatureSource {
  private:
   void load();  // background-thread entry point
 
+  std::vector<MapFeature> airports_;
   std::vector<MapFeature> navaids_;  // VORs + NDBs
   std::vector<MapFeature> fixes_;
   std::string sourceDir_;

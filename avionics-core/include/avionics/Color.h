@@ -79,6 +79,10 @@ inline constexpr Color kPanelBackground{0.016f, 0.016f, 0.047f, 1.0f};   // rgb(
 inline constexpr Color kPanelBackgroundBottom{0.094f, 0.110f, 0.169f, 1.0f};  // rgb(24,28,43)
 inline constexpr Color kInfoBoxTop{0.094f, 0.094f, 0.094f, 1.0f};  // rgb(24,24,24)
 inline constexpr Color kSoftkeyBackground{0.0f, 0.0f, 0.0f, 1.0f};
+// A selected softkey label changes to black text on a gray background and
+// stays that way until turned off (G1000 Pilot's Guide for the Diamond DA40,
+// "Softkey Function").
+inline constexpr Color kSoftkeySelected{0.62f, 0.62f, 0.62f, 1.0f};
 
 // Panel borders (rgb(133,133,133)) and groove separators; muted grey labels.
 inline constexpr Color kPanelBorder{0.522f, 0.522f, 0.522f, 1.0f};  // rgb(133,133,133)

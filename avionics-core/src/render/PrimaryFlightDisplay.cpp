@@ -16,10 +16,11 @@ void PrimaryFlightDisplay::render(Renderer& r, const FlightData& d,
 
   pfd::drawAttitude(r, L, d, w, h);
   pfd::drawInsetMap(r, L, map, d, ui, h);
-  pfd::drawAirspeedTape(r, L, d, h);
-  pfd::drawAltimeter(r, L, d, h);
+  pfd::drawAirspeedTape(r, L, d, ui, h);
+  pfd::drawAltimeter(r, L, d, ui, h);
   pfd::drawVerticalSpeedIndicator(r, L, d, h);
-  pfd::drawHsiSection(r, L, d, h);
+  pfd::drawVerticalDeviation(r, L, d, h);
+  pfd::drawHsiSection(r, L, d, ui, h);
   pfd::drawChrome(r, L, d, ui, w, h);
 }
 

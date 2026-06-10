@@ -79,6 +79,18 @@ std::vector<std::string> readInstallRoots() {
   return roots;
 }
 
+// Given an install root, return the path to earth_aptmeta.dat (airport
+// lat/lon/ICAO index), preferring Custom Data over Resources/default data.
+std::string aptMetaPathForRoot(const std::string& root) {
+  const std::string candidates[] = {join(root, "Custom Data/earth_aptmeta.dat"),
+                                      join(join(root, "Resources"),
+                                           "default data/earth_aptmeta.dat")};
+  for (const std::string& path : candidates) {
+    if (fileExists(path)) return path;
+  }
+  return std::string();
+}
+
 // Given an install root, return the directory that contains earth_nav.dat and
 // earth_fix.dat, preferring user-updated "Custom Data" over the bundled
 // "Resources/default data". Returns empty if neither has the files.
@@ -114,9 +126,53 @@ std::string readToken(const char*& p) {
   return std::string(start, static_cast<std::size_t>(p - start));
 }
 
-// earth_nav.dat: "<code> <lat> <lon> <elev> <freq> <range> <extra> <ident> ...".
-// We keep only NDB (2) and VOR (3); ident is the 8th token (4 numeric fields
-// follow the longitude before it).
+// earth_aptmeta.dat: "<icao> <region> <lat> <lon> <elev> ..." per airport.
+// XP12 no longer lists airports in earth_nav.dat; this compact index is the
+// practical source for nearest-airport queries.
+void parseAptMeta(const std::string& path, std::vector<MapFeature>& out) {
+  std::ifstream in(path);
+  if (!in.good()) return;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] == 'I') continue;  // header line
+    const char* p = line.c_str();
+    while (*p == ' ') ++p;
+    if (!*p) continue;
+
+    const std::string ident = readToken(p);
+    if (ident.empty()) continue;
+    const std::string region = readToken(p);  // FAA region code (e.g. "K2")
+    p = skipSpaces(p);
+    char* end = nullptr;
+    const double lat = std::strtod(p, &end);
+    if (end == p) continue;
+    p = end;
+    const double lon = std::strtod(p, &end);
+    if (end == p) continue;
+    if (std::fabs(lat) > 90.0 || std::fabs(lon) > 180.0) continue;
+    p = end;
+    // Remaining columns: elevation (ft), usage type, longest runway (ft), ...
+    const double elevFt = std::strtod(p, &end);
+    if (end != p) p = end;
+    p = skipToken(p);  // usage type letter
+    char* rwyEnd = nullptr;
+    const double longestRwyFt = std::strtod(p, &rwyEnd);
+
+    MapFeature apt;
+    apt.type = MapFeatureType::Airport;
+    apt.lat = lat;
+    apt.lon = lon;
+    apt.id = ident;
+    apt.region = region;
+    apt.elevationFt = static_cast<float>(elevFt);
+    apt.longestRunwayFt =
+        rwyEnd != p ? static_cast<int>(longestRwyFt) : 0;
+    out.push_back(apt);
+  }
+}
+
+// earth_nav.dat navaid rows: "<code> <lat> <lon> <elev> <freq> <range> <extra>
+// <ident> ...". We keep only NDB (2) and VOR (3); ident is the 8th token.
 void parseNav(const std::string& path, std::vector<MapFeature>& out) {
   std::ifstream in(path);
   if (!in.good()) return;
@@ -138,13 +194,24 @@ void parseNav(const std::string& path, std::vector<MapFeature>& out) {
     p = end;
     if (std::fabs(lat) > 90.0 || std::fabs(lon) > 180.0) continue;
 
-    // Skip elevation, frequency, range, and the bias/variation field.
-    for (int i = 0; i < 4; ++i) p = skipToken(p);
+    // Skip elevation, then read the frequency column: VOR rows carry it in
+    // 10 kHz units (11390 == 113.90 MHz), NDB rows directly in kHz.
+    p = skipToken(p);
+    const double rawFreq = std::strtod(skipSpaces(p), &end);
+    if (end != p) p = end;
+    // Skip range and the bias/variation field.
+    for (int i = 0; i < 2; ++i) p = skipToken(p);
     const std::string ident = readToken(p);
     if (ident.empty()) continue;
 
-    out.push_back({code == kRowVor ? MapFeatureType::Vor : MapFeatureType::Ndb,
-                   lat, lon, ident});
+    MapFeature navaid;
+    navaid.type = code == kRowVor ? MapFeatureType::Vor : MapFeatureType::Ndb;
+    navaid.lat = lat;
+    navaid.lon = lon;
+    navaid.id = ident;
+    navaid.frequency = code == kRowVor ? static_cast<float>(rawFreq / 100.0)
+                                       : static_cast<float>(rawFreq);
+    out.push_back(navaid);
   }
 }
 
@@ -181,20 +248,28 @@ NavDataStore::~NavDataStore() {
 }
 
 void NavDataStore::load() {
+  std::string root;
   std::string dir;
-  for (const std::string& root : readInstallRoots()) {
-    dir = navDataDirForRoot(root);
-    if (!dir.empty()) break;
+  for (const std::string& r : readInstallRoots()) {
+    dir = navDataDirForRoot(r);
+    if (!dir.empty()) {
+      root = r;
+      break;
+    }
   }
   if (dir.empty()) {
     loaded_.store(true, std::memory_order_release);  // nothing to load
     return;
   }
 
-  parseNav(join(dir, "earth_nav.dat"), navaids_);
+  const std::string navPath = join(dir, "earth_nav.dat");
+  parseNav(navPath, navaids_);
   parseFix(join(dir, "earth_fix.dat"), fixes_);
-  sourceDir_ = dir;
 
+  const std::string aptMeta = aptMetaPathForRoot(root);
+  if (!aptMeta.empty()) parseAptMeta(aptMeta, airports_);
+
+  sourceDir_ = dir;
   loaded_.store(true, std::memory_order_release);
 }
 
@@ -213,9 +288,9 @@ std::vector<MapFeature> NavDataStore::nearby(double lat, double lon,
     MapFeature feature;
     double distSq;
   };
-  std::vector<Scored> scored;
 
-  auto consider = [&](const std::vector<MapFeature>& src) {
+  auto collect = [&](const std::vector<MapFeature>& src) {
+    std::vector<Scored> scored;
     for (const MapFeature& f : src) {
       if (std::fabs(f.lat - lat) > dLat) continue;
       if (std::fabs(f.lon - lon) > dLon) continue;
@@ -223,16 +298,30 @@ std::vector<MapFeature> NavDataStore::nearby(double lat, double lon,
       const double east = (f.lon - lon) * kNmPerDeg * cosLat;
       scored.push_back({f, north * north + east * east});
     }
+    std::sort(scored.begin(), scored.end(),
+              [](const Scored& a, const Scored& b) { return a.distSq < b.distSq; });
+    return scored;
   };
-  consider(navaids_);
-  consider(fixes_);
 
-  std::sort(scored.begin(), scored.end(),
-            [](const Scored& a, const Scored& b) { return a.distSq < b.distSq; });
-  if (scored.size() > maxCount) scored.resize(maxCount);
+  // Reserve capacity for airports and navaids first so dense fix databases do
+  // not crowd them out of the map feature budget (important for NRST lists).
+  constexpr std::size_t kMaxAirports = 40;
+  constexpr std::size_t kMaxNavaids = 80;
+  auto append = [&](const std::vector<Scored>& scored, std::size_t cap) {
+    for (const Scored& s : scored) {
+      if (result.size() >= maxCount || cap == 0) return;
+      result.push_back(s.feature);
+      --cap;
+    }
+  };
 
-  result.reserve(scored.size());
-  for (const Scored& s : scored) result.push_back(s.feature);
+  append(collect(airports_), kMaxAirports);
+  append(collect(navaids_), kMaxNavaids);
+
+  for (const Scored& s : collect(fixes_)) {
+    if (result.size() >= maxCount) break;
+    result.push_back(s.feature);
+  }
   return result;
 }
 

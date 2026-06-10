@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "avionics/Checklist.h"
 #include "avionics/DataSource.h"
 #include "avionics/MapData.h"
 #include "avionics/NavFeatureSource.h"
@@ -24,6 +25,11 @@ class MockDataSource : public DataSource {
   void update(double dtSeconds) override;
   const FlightData& snapshot() const override { return data_; }
   const MapData& mapSnapshot() const override { return map_; }
+  const ChecklistData& checklistSnapshot() const override {
+    return (checklists_ != nullptr && checklists_->ready())
+               ? checklists_->checklists()
+               : emptyChecklists_;
+  }
 
   // Fly along this route (needs >= 2 waypoints), looping back to the start.
   // Replaces the built-in demo route. Safe to call at runtime (e.g. once a
@@ -34,6 +40,16 @@ class MockDataSource : public DataSource {
   // hand-placed demo features so the mock map matches the X-Plane database.
   void setNavFeatureSource(const NavFeatureSource* source) {
     navFeatures_ = source;
+  }
+
+  // Topographic map background. When unset the built-in procedural terrain is
+  // used; the standalone shell typically passes a DsfTerrainStore here.
+  void setTerrainSource(const TerrainSource* source) { terrainSource_ = source; }
+
+  // Author-supplied checklists for the MFD Checklist page group. Optional; when
+  // unset the Checklist page shows "no checklist available".
+  void setChecklistSource(const ChecklistSource* source) {
+    checklists_ = source;
   }
 
  private:
@@ -51,7 +67,11 @@ class MockDataSource : public DataSource {
   bool routeInitialized_ = false;
 
   const NavFeatureSource* navFeatures_ = nullptr;
+  const TerrainSource* terrainSource_ = nullptr;
+  const ChecklistSource* checklists_ = nullptr;
   double sinceFeatureRebuild_ = 0.0;
+
+  static inline const ChecklistData emptyChecklists_{};
 };
 
 }  // namespace avionics

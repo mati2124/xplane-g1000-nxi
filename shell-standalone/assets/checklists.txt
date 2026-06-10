@@ -1,0 +1,85 @@
+# Sample MFD checklist file for the G1000 Checklist page group.
+#
+# Format (whitespace/indentation is cosmetic; keywords drive the structure):
+#   GROUP <name>          starts a checklist group (e.g. NORMAL / EMERGENCY)
+#   CHECKLIST <name>      starts a checklist within the current group
+#   <text> : <response>   a checklist item; the response is optional
+#   # ...                 a comment line (ignored)
+#
+# Aircraft authors replace this file (or point --checklist / the per-aircraft
+# file at their own) to ship checklists specific to their aircraft.
+
+GROUP NORMAL PROCEDURES
+
+  CHECKLIST BEFORE STARTING ENGINE
+    Preflight Inspection : COMPLETE
+    Passenger Briefing : COMPLETE
+    Seats, Belts, Harnesses : ADJUST AND LOCK
+    Brakes : TEST AND SET
+    Circuit Breakers : CHECK IN
+    Avionics Switch : OFF
+    Fuel Selector : BOTH
+
+  CHECKLIST ENGINE START
+    Mixture : RICH
+    Throttle : OPEN 1/4 INCH
+    Beacon Light : ON
+    Master Switch (ALT and BAT) : ON
+    Fuel Pump : ON THEN OFF
+    Ignition Switch : START
+    Oil Pressure : CHECK
+    Avionics Switch : ON
+
+  CHECKLIST BEFORE TAKEOFF
+    Parking Brake : SET
+    Flight Controls : FREE AND CORRECT
+    Flight Instruments : CHECK
+    Fuel Quantity : CHECK
+    Mixture : RICH
+    Throttle : 1800 RPM
+    Magnetos : CHECK
+    Annunciator Panel : CHECK
+    Flaps : SET FOR TAKEOFF
+    Trim : SET FOR TAKEOFF
+
+  CHECKLIST CRUISE
+    Power : SET
+    Mixture : LEAN
+    Engine Instruments : MONITOR
+
+  CHECKLIST BEFORE LANDING
+    Seats, Belts : SECURE
+    Fuel Selector : BOTH
+    Mixture : RICH
+    Landing Light : ON
+    Autopilot : DISENGAGE
+
+  CHECKLIST AFTER LANDING
+    Flaps : UP
+    Landing Light : OFF
+    Transponder : STBY
+
+  CHECKLIST SHUTDOWN
+    Parking Brake : SET
+    Throttle : IDLE
+    Avionics Switch : OFF
+    Mixture : IDLE CUTOFF
+    Ignition Switch : OFF
+    Master Switch : OFF
+
+GROUP EMERGENCY PROCEDURES
+
+  CHECKLIST ENGINE FAILURE IN FLIGHT
+    Airspeed : 68 KIAS
+    Fuel Selector : BOTH
+    Fuel Pump : ON
+    Mixture : RICH
+    Ignition Switch : BOTH
+    Best Glide : ESTABLISH
+
+  CHECKLIST ENGINE FIRE IN FLIGHT
+    Mixture : IDLE CUTOFF
+    Fuel Selector : OFF
+    Master Switch : OFF
+    Cabin Heat/Air : OFF
+    Airspeed : 100 KIAS

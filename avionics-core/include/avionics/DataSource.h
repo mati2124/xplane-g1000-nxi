@@ -1,5 +1,6 @@
 #pragma once
 
+#include "avionics/Checklist.h"
 #include "avionics/ConnectionState.h"
 #include "avionics/FlightData.h"
 #include "avionics/MapData.h"
@@ -26,6 +27,12 @@ class DataSource {
   // page. Default is empty; shells that can populate nav data override this.
   virtual const MapData& mapSnapshot() const { return emptyMap_; }
 
+  // Author-supplied checklists for the MFD Checklist page group. Default is
+  // empty; shells that can locate the aircraft's checklist file override this.
+  virtual const ChecklistData& checklistSnapshot() const {
+    return emptyChecklist_;
+  }
+
   // Health of this source. Sources that are always available (the mock feed,
   // the in-process dataref reader) keep the default; network-backed sources
   // override it so the display can show the boot / connection-lost screens.
@@ -35,6 +42,7 @@ class DataSource {
 
  private:
   static inline const MapData emptyMap_{};
+  static inline const ChecklistData emptyChecklist_{};
 };
 
 }  // namespace avionics

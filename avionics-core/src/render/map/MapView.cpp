@@ -47,14 +47,16 @@ float orientationDeg(MapOrientation mode, const FlightData& flight) {
   return 0.0f;
 }
 
+// Map orientation annunciation, as on the real unit ("NORTH UP" / "TRK UP" /
+// "HDG UP", G1000 NXi Pilot's Guide, Navigation Map).
 const char* orientationLabel(MapOrientation mode) {
   switch (mode) {
     case MapOrientation::NorthUp:
-      return "NORTH";
+      return "NORTH UP";
     case MapOrientation::HeadingUp:
-      return "HDG";
+      return "HDG UP";
     case MapOrientation::TrackUp:
-      return "TRK";
+      return "TRK UP";
   }
   return "";
 }
@@ -150,13 +152,18 @@ void drawTerrain(Renderer& r, const TerrainSource& terrain, double centerLat,
   }
 }
 
-void drawOwnshipSymbol(Renderer& r, float cx, float cy, float size) {
+// Ownship symbol, rotated to the aircraft heading in screen space. On a
+// north-up map it turns with the aircraft; on a track-up map it shows the
+// crab angle (heading minus track).
+void drawOwnshipSymbol(Renderer& r, float cx, float cy, float size,
+                       float rotationDeg) {
   const Point nose{0.0f, -size};
   const Point left{-size * 0.55f, size * 0.45f};
   const Point right{size * 0.55f, size * 0.45f};
   const Point tri[3] = {nose, left, right};
   r.save();
   r.translate(cx, cy);
+  r.rotateDegrees(rotationDeg);
   r.fillPolygon(tri, 3, colors::kWhite);
   r.restore();
 }
@@ -310,6 +317,11 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   const float rotation = orientationDeg(config.orientation, flight);
   const float labelSize = fontPx(config.style.labelFontWt, displayH);
 
+  const double viewCenterLat =
+      config.hasCenterOverride ? config.centerLat : map.ownshipLat;
+  const double viewCenterLon =
+      config.hasCenterOverride ? config.centerLon : map.ownshipLon;
+
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
 
@@ -318,7 +330,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   const bool terrainDrawn = config.style.showTerrain &&
                             map.terrain != nullptr && map.positionValid;
   if (terrainDrawn) {
-    drawTerrain(r, *map.terrain, map.ownshipLat, map.ownshipLon, cx, cy,
+    drawTerrain(r, *map.terrain, viewCenterLat, viewCenterLon, cx, cy,
                 pixelsPerNm, rotation, rangeNm, config);
   }
 
@@ -351,8 +363,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     drawRangeRing(r, cx, cy, mapRadiusPx * 0.5f, colors::kLabelText);
   }
 
-  const double centerLat = map.ownshipLat;
-  const double centerLon = map.ownshipLon;
+  const double centerLat = viewCenterLat;
+  const double centerLon = viewCenterLon;
   const float symSize = std::max(5.0f, fontPx(kFeatureSymbolWt, displayH));
 
   // Airspace boundaries draw beneath the route and features. An altitude
@@ -384,6 +396,19 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   }
 
   if (config.style.showFlightPlan && map.flightPlan.size() >= 2) {
+    // Garmin route coloring: the whole flight plan is white except the active
+    // leg (and its TO waypoint), which is magenta. The active leg is located
+    // by matching the FMS active waypoint ident against the route.
+    int activeTo = -1;
+    if (!flight.fmaToWpt.empty()) {
+      for (std::size_t i = 0; i < map.flightPlan.size(); ++i) {
+        if (map.flightPlan[i].id == flight.fmaToWpt) {
+          activeTo = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+
     std::vector<Point> route;
     route.reserve(map.flightPlan.size());
     for (const MapLeg& leg : map.flightPlan) {
@@ -392,18 +417,21 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
                            pixelsPerNm, rotation, x, y);
       route.push_back({x, y});
     }
-    if (route.size() >= 2) {
-      r.strokePolyline(route.data(), static_cast<int>(route.size()), 2.0f,
-                       colors::kMagenta);
+    r.strokePolyline(route.data(), static_cast<int>(route.size()), 2.0f,
+                     colors::kWhite);
+    if (activeTo >= 1) {
+      const Point activeLeg[2] = {route[static_cast<size_t>(activeTo) - 1],
+                                  route[static_cast<size_t>(activeTo)]};
+      r.strokePolyline(activeLeg, 2, 2.0f, colors::kMagenta);
     }
-    for (const MapLeg& leg : map.flightPlan) {
-      float x = 0.0f, y = 0.0f;
-      map::latLonToLocalPx(leg.lat, leg.lon, centerLat, centerLon, cx, cy,
-                           pixelsPerNm, rotation, x, y);
-      r.fillCircle(x, y, symSize * 0.35f, colors::kMagenta);
-      if (config.style.showChrome && !leg.id.empty()) {
-        r.fillText(x + symSize, y - symSize * 0.3f, leg.id, labelSize * 0.85f,
-                   TextAlign::Left, colors::kMagenta);
+    for (std::size_t i = 0; i < map.flightPlan.size(); ++i) {
+      const Color c = static_cast<int>(i) == activeTo ? colors::kMagenta
+                                                      : colors::kWhite;
+      r.fillCircle(route[i].x, route[i].y, symSize * 0.35f, c);
+      if (config.style.showLabels && !map.flightPlan[i].id.empty()) {
+        r.fillText(route[i].x + symSize, route[i].y - symSize * 0.3f,
+                   map.flightPlan[i].id, labelSize * 0.85f, TextAlign::Left,
+                   c);
       }
     }
   }
@@ -433,7 +461,9 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
       if (!visibleAtRange(f.type)) continue;
       const bool isFix =
           f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
-      if (isFix && fixesDrawn >= kMaxFixesDrawn) continue;
+      if (isFix && (!config.style.showFixes || fixesDrawn >= kMaxFixesDrawn)) {
+        continue;
+      }
 
       float x = 0.0f, y = 0.0f;
       map::latLonToLocalPx(f.lat, f.lon, centerLat, centerLon, cx, cy,
@@ -445,14 +475,21 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
       if (isFix) ++fixesDrawn;
       const Color c = featureColor(f.type);
       drawFeature(r, f.type, x, y, symSize, c);
-      if (config.style.showChrome && !f.id.empty()) {
+      if (config.style.showLabels && !f.id.empty()) {
         r.fillText(x + symSize, y - symSize * 0.2f, f.id, labelSize * 0.85f,
                    TextAlign::Left, c);
       }
     }
   }
 
-  drawOwnshipSymbol(r, cx, cy, symSize);
+  // Ownship sits at the view center unless the center is overridden (the WPT/
+  // NRST airport maps center on the airport), in which case project it.
+  float ownX = cx, ownY = cy;
+  if (config.hasCenterOverride) {
+    map::latLonToLocalPx(map.ownshipLat, map.ownshipLon, centerLat, centerLon,
+                         cx, cy, pixelsPerNm, rotation, ownX, ownY);
+  }
+  drawOwnshipSymbol(r, ownX, ownY, symSize, flight.headingDeg - rotation);
 
   if (config.style.showChrome) {
     char rangeBuf[16];

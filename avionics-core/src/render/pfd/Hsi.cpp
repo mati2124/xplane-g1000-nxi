@@ -70,10 +70,12 @@ void drawTurnRateIndicator(Renderer& r, float cx, float cy, float radius,
 }
 
 void drawCourseNeedle(Renderer& r, float radius, float courseDeg, float devDots,
-                      bool toFlag, bool valid, const Color& c) {
+                      bool toFlag, bool valid, bool doubleLine, const Color& c) {
   // NXi CDI needle: a thin arrow whose head sits just inside the compass ring,
   // a short fixed shaft and tail, four deviation dots at 32 px (~0.21 r)
-  // spacing, and a moving deviation bar offset by the cross-track in dots.
+  // spacing, and a moving deviation bar offset by the cross-track in dots. The
+  // course pointer is a single-line arrow for GPS/VOR1/LOC1 and a double-line
+  // arrow for VOR2/LOC2 (Pilot's Guide, HSI).
   r.save();
   r.rotateDegrees(courseDeg);
 
@@ -90,8 +92,19 @@ void drawCourseNeedle(Renderer& r, float radius, float courseDeg, float devDots,
   const Point head[3] = {
       {0.0f, -tip}, {-headHalf, -tip + headLen}, {headHalf, -tip + headLen}};
   r.fillPolygon(head, 3, c);
-  r.strokeLine(0.0f, -tip + headLen, 0.0f, -barHalf, shaftW, c);
-  r.strokeLine(0.0f, tailInner, 0.0f, tailOuter, shaftW, c);
+  if (doubleLine) {
+    // Two parallel rails for the shaft and tail give the VOR2/LOC2 pointer its
+    // double-line look while sharing the single arrowhead and deviation bar.
+    const float off = radius * 0.028f;
+    for (int k = 0; k < 2; ++k) {
+      const float x = (k == 0 ? -off : off);
+      r.strokeLine(x, -tip + headLen, x, -barHalf, shaftW, c);
+      r.strokeLine(x, tailInner, x, tailOuter, shaftW, c);
+    }
+  } else {
+    r.strokeLine(0.0f, -tip + headLen, 0.0f, -barHalf, shaftW, c);
+    r.strokeLine(0.0f, tailInner, 0.0f, tailOuter, shaftW, c);
+  }
 
   for (int i = 1; i <= 2; ++i) {
     const float dx = static_cast<float>(i) * dotSpacing;
@@ -153,38 +166,87 @@ void drawBearingPointer(Renderer& r, float radius, float bearingDeg, bool dbl) {
   r.restore();
 }
 
-void drawWindBox(Renderer& r, float cx, float cy, float displayH,
-                 const FlightData& d) {
-  const float textSize = fontPx(wt::kHsiSource, displayH);
-  if (!d.windValid || d.windSpeedKts < 1.0f) {
-    r.fillText(cx, cy, "NO WIND DATA", textSize, TextAlign::Center,
-               colors::kLabelText);
-    return;
-  }
-  const float arrowR = displayH * 0.023f;
-  const float rel = d.windDirectionDeg + 180.0f - d.headingDeg;
+// Wind direction arrow (points the way the wind is blowing TO, relative to the
+// aircraft heading) used by Wind Options 2 and 3.
+void drawWindArrow(Renderer& r, float arrowR, float relDeg) {
   r.save();
-  r.translate(cx, cy);
-  r.save();
-  r.rotateDegrees(rel);
-  // Bolder shaft (scaled with the display so it doesn't go wispy at high DPI)
-  // and a filled arrowhead, matching the solid NXi wind-direction arrow.
-  const float shaftW = std::max(2.5f, displayH * 0.0045f);
+  r.rotateDegrees(relDeg);
+  const float shaftW = std::max(2.5f, arrowR * 0.20f);
   const float ah = arrowR * 0.62f;
   r.strokeLine(0.0f, arrowR, 0.0f, -arrowR + ah * 0.5f, shaftW, colors::kWhite);
   const Point head[3] = {
       {0.0f, -arrowR}, {-ah, -arrowR + ah}, {ah, -arrowR + ah}};
   r.fillPolygon(head, 3, colors::kWhite);
   r.restore();
+}
 
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%03d\u00b0",
-                static_cast<int>(std::lround(d.windDirectionDeg)) % 360);
-  r.fillText(arrowR * 1.6f, -textSize * 0.6f, std::string(buf), textSize,
-             TextAlign::Left, colors::kWhite);
-  r.fillText(arrowR * 1.6f, textSize * 0.6f,
-             formatInt(d.windSpeedKts) + "KT", textSize, TextAlign::Left,
-             colors::kWhite);
+void drawWindBox(Renderer& r, float cx, float cy, float displayH,
+                 const FlightData& d, WindOption option) {
+  if (option == WindOption::Off) return;
+
+  const float textSize = fontPx(wt::kHsiSource, displayH);
+  if (!d.windValid || d.windSpeedKts < 1.0f) {
+    r.fillText(cx, cy, "NO WIND DATA", textSize, TextAlign::Center,
+               colors::kLabelText);
+    return;
+  }
+
+  const float arrowR = displayH * 0.023f;
+  // Wind FROM direction; the arrow flies the way the wind blows TO (FROM+180).
+  const float rel = d.windDirectionDeg + 180.0f - d.headingDeg;
+
+  r.save();
+  r.translate(cx, cy);
+
+  if (option == WindOption::Option1) {
+    // Headwind/Tailwind and crosswind components with up/down and left/right
+    // arrows. Positive headwind = component on the nose; positive crosswind =
+    // wind from the right.
+    constexpr float kDeg2Rad = 3.14159265f / 180.0f;
+    const float relFromAhead = (d.windDirectionDeg - d.headingDeg) * kDeg2Rad;
+    const float headwind = d.windSpeedKts * std::cos(relFromAhead);
+    const float crosswind = d.windSpeedKts * std::sin(relFromAhead);
+    const float a = arrowR * 0.7f;
+
+    // Vertical (head/tail) arrow on the left, horizontal (cross) on the right.
+    const float vDir = headwind >= 0.0f ? 1.0f : -1.0f;  // down = headwind
+    const Point vArrow[3] = {{-a, vDir * a},
+                             {-a - a * 0.4f, vDir * a - vDir * a * 0.5f},
+                             {-a + a * 0.4f, vDir * a - vDir * a * 0.5f}};
+    r.strokeLine(-a, -vDir * a, -a, vDir * a, 2.0f, colors::kWhite);
+    r.fillPolygon(vArrow, 3, colors::kWhite);
+
+    const float hDir = crosswind >= 0.0f ? -1.0f : 1.0f;  // from right -> left
+    const Point hArrow[3] = {{a + hDir * a, 0.0f},
+                             {a + hDir * a - hDir * a * 0.5f, -a * 0.4f},
+                             {a + hDir * a - hDir * a * 0.5f, a * 0.4f}};
+    r.strokeLine(a - hDir * a, 0.0f, a + hDir * a, 0.0f, 2.0f, colors::kWhite);
+    r.fillPolygon(hArrow, 3, colors::kWhite);
+
+    r.fillText(-a, -arrowR - textSize * 0.6f, formatInt(std::fabs(headwind)),
+               textSize, TextAlign::Center, colors::kWhite);
+    r.fillText(a, arrowR + textSize * 0.6f, formatInt(std::fabs(crosswind)),
+               textSize, TextAlign::Center, colors::kWhite);
+    r.restore();
+    return;
+  }
+
+  drawWindArrow(r, arrowR, rel);
+  if (option == WindOption::Option2) {
+    // Wind direction arrow and speed only.
+    r.fillText(arrowR * 1.6f, 0.0f, formatInt(d.windSpeedKts) + "KT", textSize,
+               TextAlign::Left, colors::kWhite);
+  } else {
+    // Option 3: wind direction arrow with direction and speed.
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%03d\u00b0",
+                  static_cast<int>(std::lround(d.windDirectionDeg)) % 360);
+    r.fillText(arrowR * 1.6f, -textSize * 0.6f, std::string(buf), textSize,
+               TextAlign::Left, colors::kWhite);
+    r.fillText(arrowR * 1.6f, textSize * 0.6f,
+               formatInt(d.windSpeedKts) + "KT", textSize, TextAlign::Left,
+               colors::kWhite);
+  }
   r.restore();
 }
 
@@ -200,14 +262,6 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
   const float headingBoxY = cy - radius - displayH * 0.052f;
 
   drawTurnRateIndicator(r, cx, cy, radius, d.turnRateDegPerSec);
-
-  const float lubW = radius * 0.06f;
-  const float lubH = radius * 0.08f;
-  const float lubApexY = cy - radius + lubH * 0.15f;
-  const Point lubber[3] = {{cx, lubApexY},
-                           {cx - lubW, lubApexY - lubH},
-                           {cx + lubW, lubApexY - lubH}};
-  r.fillPolygon(lubber, 3, colors::kWhite);
 
   r.fillCircle(cx, cy, radius, colors::kRoseBackground);
 
@@ -246,7 +300,7 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
   if (d.bearing1Valid) drawBearingPointer(r, radius, d.bearing1Deg, false);
   if (d.bearing2Valid) drawBearingPointer(r, radius, d.bearing2Deg, true);
   drawCourseNeedle(r, radius, d.courseDeg, d.cdiDeviationDots, d.cdiToFlag,
-                   d.navSignalValid, navColor);
+                   d.navSignalValid, d.cdiSource == CdiSource::Nav2, navColor);
 
   {
     r.save();
@@ -278,8 +332,21 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
 
   drawHsiAircraftSymbol(r, cx, cy, radius);
 
+  // Lubber line: fixed white triangle at the top of the rose, drawn over the
+  // card and rose backing so it always reads at full brightness.
+  {
+    const float lubW = radius * 0.06f;
+    const float lubH = radius * 0.08f;
+    const float lubApexY = cy - radius + lubH * 0.15f;
+    const Point lubber[3] = {{cx, lubApexY},
+                             {cx - lubW, lubApexY - lubH},
+                             {cx + lubW, lubApexY - lubH}};
+    r.fillPolygon(lubber, 3, colors::kWhite);
+  }
+
+  // The heading box shows the degree symbol, e.g. "360°" at north (NXi).
   drawReadoutBox(r, cx - headingBoxW * 0.5f, headingBoxY, headingBoxW,
-                 headingBoxH, formatHeading(headingDeg),
+                 headingBoxH, formatHeading(headingDeg) + "\u00b0",
                  fontPx(wt::kHeadingBox, displayH), NotchSide::None);
 
   const float annSize = fontPx(wt::kHsiBug, displayH);
@@ -329,7 +396,7 @@ void drawCdiSource(Renderer& r, const Layout& L, const FlightData& d,
 }  // namespace
 
 void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
-                    float h) {
+                    const SoftkeyController& ui, float h) {
   // AHRS heading failure: the compass rose, CDI, and wind (all referenced to
   // heading) are replaced by a red X with an "HDG" annunciation.
   if (!d.headingValid) {
@@ -342,9 +409,9 @@ void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
   drawCdiSource(r, L, d, h);
   // Wind window: upper-left of the HSI rose, below the airspeed tape and right
   // of the inset map (G1000 NXi Pilot's Guide places it "to the upper left of
-  // the HSI").
+  // the HSI"). The format follows the PFD Opt > Wind option.
   drawWindBox(r, L.hsiCx - L.hsiRadius * 1.40f,
-              L.hsiCy - L.hsiRadius * 0.62f, h, d);
+              L.hsiCy - L.hsiRadius * 0.62f, h, d, ui.windOption());
 }
 
 }  // namespace avionics::pfd

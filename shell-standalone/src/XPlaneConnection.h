@@ -7,8 +7,10 @@
 #include "FmsPlanStore.h"
 #include "NavData.h"
 #include "XPlaneWebApi.h"
+#include "avionics/Checklist.h"
 #include "avionics/MapData.h"
 #include "avionics/SimulatorConnection.h"
+#include "avionics/Terrain.h"
 
 namespace avionics {
 
@@ -32,7 +34,8 @@ class XPlaneConnection : public SimulatorConnection {
   // navData and fmsPlan are owned by the caller and shared with the mock feed
   // so the (large) nav database and the flight plan are loaded only once.
   XPlaneConnection(std::string host, std::uint16_t port, NavDataStore& navData,
-                   FmsPlanStore& fmsPlan);
+                   FmsPlanStore& fmsPlan, const TerrainSource* terrain = nullptr,
+                   const ChecklistSource* checklists = nullptr);
   ~XPlaneConnection() override;
 
   XPlaneConnection(const XPlaneConnection&) = delete;
@@ -41,6 +44,11 @@ class XPlaneConnection : public SimulatorConnection {
   void update(double dtSeconds) override;
   const FlightData& snapshot() const override { return data_; }
   const MapData& mapSnapshot() const override { return map_; }
+  const ChecklistData& checklistSnapshot() const override {
+    return (checklists_ != nullptr && checklists_->ready())
+               ? checklists_->checklists()
+               : emptyChecklists_;
+  }
   ConnectionState connectionState() const override;
   const char* simulatorName() const override { return "X-PLANE"; }
 
@@ -101,9 +109,12 @@ class XPlaneConnection : public SimulatorConnection {
   // Moving-map snapshot and its nearby-feature rebuild timer. navData_ and
   // fmsPlan_ are shared (owned by the shell, also used by the mock feed).
   MapData map_;
+  const TerrainSource* terrain_ = nullptr;
   NavDataStore& navData_;
   AirspaceStore airspace_;
   FmsPlanStore& fmsPlan_;
+  const ChecklistSource* checklists_ = nullptr;
+  static inline const ChecklistData emptyChecklists_{};
   double sinceMapRebuildSeconds_ = 0.0;
 
   std::string host_;

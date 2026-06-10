@@ -178,6 +178,37 @@ inline constexpr const char* kFailAltimeter =
 inline constexpr const char* kFailVerticalSpeed =
     "sim/operation/failures/rel_ss_vvi";
 
+// Engine Indication System (EIS) sources for the MFD engine strip. The
+// per-engine indicators are float[8] arrays; we read element [0] (engine 1),
+// matching the single-engine Cessna Nav III fit this suite models. Fuel
+// quantity and flow are reported in kilograms (avgas ~2.72 kg/gal) and the
+// electrical buses/batteries are arrays indexed by bus/battery number.
+inline constexpr const char* kEngineRpm =
+    "sim/cockpit2/engine/indicators/engine_speed_rpm[0]";
+inline constexpr const char* kFuelFlowKgSec =
+    "sim/cockpit2/engine/indicators/fuel_flow_kg_sec[0]";
+inline constexpr const char* kOilPressurePsi =
+    "sim/cockpit2/engine/indicators/oil_pressure_psi[0]";
+inline constexpr const char* kOilTemperatureDegC =
+    "sim/cockpit2/engine/indicators/oil_temperature_deg_C[0]";
+inline constexpr const char* kEgtDegC =
+    "sim/cockpit2/engine/indicators/EGT_deg_C[0]";
+inline constexpr const char* kVacuumRatio = "sim/cockpit/misc/vacuum";
+inline constexpr const char* kFuelQuantityLeftKg =
+    "sim/cockpit2/fuel/fuel_quantity[0]";
+inline constexpr const char* kFuelQuantityRightKg =
+    "sim/cockpit2/fuel/fuel_quantity[1]";
+inline constexpr const char* kHobbsTimeHours =
+    "sim/cockpit2/clock_timer/hobbs_time_hours";
+inline constexpr const char* kBusVoltsMain =
+    "sim/cockpit2/electrical/bus_volts[0]";
+inline constexpr const char* kBusVoltsEssential =
+    "sim/cockpit2/electrical/bus_volts[1]";
+inline constexpr const char* kBatteryAmpsMain =
+    "sim/cockpit2/electrical/battery_amps[0]";
+inline constexpr const char* kBatteryAmpsStandby =
+    "sim/cockpit2/electrical/battery_amps[1]";
+
 // Crew Alerting System (CAS) sources. X-Plane lights its annunciators under
 // sim/cockpit2/annunciators/ as boolean ints (0 = off, 1 = lit). The per-engine
 // annunciators are int[8] arrays; we read element [0] (engine 1), which suits

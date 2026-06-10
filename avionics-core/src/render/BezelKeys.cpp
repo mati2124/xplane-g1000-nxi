@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "avionics/Color.h"
+#include "render/BezelStyle.h"
 
 namespace avionics {
 namespace {
@@ -21,11 +22,6 @@ constexpr float kCaptionWt = 12.0f;
 
 float fontPx(float wtPx, float displayH) {
   return wtPx * (displayH / kCanvasHeight);
-}
-
-Color withAlpha(Color c, float a) {
-  c.a *= a;
-  return c;
 }
 
 struct Cell {
@@ -48,6 +44,8 @@ const char* keyLabel(BezelKey key) {
       return "D";  // drawn with an arrow alongside
     case BezelKey::Menu:
       return "MENU";
+    case BezelKey::Fpl:
+      return "FPL";
     case BezelKey::Proc:
       return "PROC";
     case BezelKey::Clr:
@@ -58,6 +56,10 @@ const char* keyLabel(BezelKey key) {
       return "+";
     case BezelKey::RangeDown:
       return "\xE2\x88\x92";  // U+2212 minus sign
+    case BezelKey::FmsPrev:
+      return "<";
+    case BezelKey::FmsNext:
+      return ">";
     case BezelKey::Count:
       break;
   }
@@ -87,44 +89,27 @@ void BezelKeyPanel::render(Renderer& r, float x, float y, float w, float h,
                            float displayH, const float* pressLevels) {
   // Bezel face: a dark metallic vertical gradient with an inner border, so the
   // strip reads as the physical frame around the screen rather than an overlay.
-  r.fillRectVerticalGradient(x, y, w, h, y, y + h,
-                             Color{0.13f, 0.14f, 0.16f, 1.0f},
-                             Color{0.06f, 0.065f, 0.08f, 1.0f});
+  r.fillRectVerticalGradient(x, y, w, h, y, y + h, bezel::kFaceTop,
+                             bezel::kFaceBottom);
   r.strokeLine(x, y, x, y + h, 2.0f, colors::kPanelBorder);
 
   const float labelSize = fontPx(kLabelWt, displayH);
   const float symbolSize = fontPx(kSymbolWt, displayH);
   const float captionSize = fontPx(kCaptionWt, displayH);
 
-  const Color faceTop{0.20f, 0.21f, 0.24f, 1.0f};
-  const Color faceBottom{0.09f, 0.095f, 0.11f, 1.0f};
-
   for (int i = 0; i < kBezelKeyCount; ++i) {
     const Cell cell = cellRect(i, x, y, w, h);
     const BezelKey key = static_cast<BezelKey>(i);
     const float press = pressLevels ? std::max(0.0f, pressLevels[i]) : 0.0f;
 
-    // Raised key face with a light top edge and a 1 px border.
-    r.fillRectVerticalGradient(cell.x, cell.y, cell.w, cell.h, cell.y,
-                               cell.y + cell.h, faceTop, faceBottom);
-    const Point border[5] = {{cell.x, cell.y},
-                             {cell.x + cell.w, cell.y},
-                             {cell.x + cell.w, cell.y + cell.h},
-                             {cell.x, cell.y + cell.h},
-                             {cell.x, cell.y}};
-    r.strokePolyline(border, 5, 1.0f, colors::kPanelBorder);
-
-    // Press flash: cyan wash + brightened border, like the softkey feedback.
-    if (press > 0.0f) {
-      r.fillRect(cell.x, cell.y, cell.w, cell.h,
-                 withAlpha(colors::kCyan, press * 0.40f));
-      r.strokePolyline(border, 5, 2.0f, withAlpha(colors::kCyan, press));
-    }
+    // Molded key cap, brightening while pressed (shared with the softkey row).
+    bezel::drawKeyFace(r, cell.x, cell.y, cell.w, cell.h, press);
 
     const float cx = cell.x + cell.w * 0.5f;
     const float cy = cell.y + cell.h * 0.5f;
     const bool isRange =
         key == BezelKey::RangeUp || key == BezelKey::RangeDown;
+    const bool isFms = key == BezelKey::FmsPrev || key == BezelKey::FmsNext;
 
     if (key == BezelKey::DirectTo) {
       drawDirectToGlyph(r, cell, displayH, colors::kWhite);
@@ -134,7 +119,16 @@ void BezelKeyPanel::render(Renderer& r, float x, float y, float w, float h,
                    TextAlign::Center, colors::kLabelText);
       }
       r.fillText(cx, cy + cell.h * 0.06f, keyLabel(key), symbolSize,
-                 TextAlign::Center, colors::kCyan);
+                 TextAlign::Center, colors::kWhite);
+    } else if (isFms) {
+      // FMS page rocker: emulates the small FMS knob that steps through the
+      // pages of the selected MFD page group.
+      if (key == BezelKey::FmsPrev) {
+        r.fillText(cx, cell.y + cell.h * 0.24f, "FMS", captionSize,
+                   TextAlign::Center, colors::kLabelText);
+      }
+      r.fillText(cx, cy + cell.h * 0.10f, keyLabel(key), labelSize,
+                 TextAlign::Center, colors::kWhite);
     } else {
       r.fillText(cx, cy, keyLabel(key), labelSize, TextAlign::Center,
                  colors::kWhite);

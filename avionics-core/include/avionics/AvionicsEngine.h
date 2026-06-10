@@ -50,10 +50,14 @@ class AvionicsEngine {
   // deterministic screenshot path.
   void skipBoot() { bootElapsedSeconds_ = kBootDurationSeconds; }
 
-  // Forward a pointer press from the shell in display-pixel coordinates (same
-  // space as renderFrame's width/height). Used to interact with the softkey bar
-  // and the windows it opens. Ignored unless the live page is up.
-  void onPointerDown(double xPx, double yPx);
+  // ---- physical softkeys (the key row the shell draws below the screen) ----
+  // Apply a press of softkey `index` (0..kSoftkeyCount-1) to whichever page is
+  // active. The on-screen softkey bar is labels only, as on the real unit: all
+  // interaction goes through these keys. Ignored unless the live page is up.
+  void pressSoftkey(int index);
+  // Press-flash levels (0..1, kSoftkeyCount entries) for the active page, so
+  // the shell can animate the physical key row.
+  const float* softkeyPressLevels() const;
 
   // ---- window bezel keys (drawn by the standalone shell around the screen) ----
   // Apply a hardware bezel key press to whichever page is active (the range
@@ -76,8 +80,6 @@ class AvionicsEngine {
   bool drivesDataSource_ = true;
   SoftkeyController softkeys_;
   MfdController mfd_;
-  int lastWidthPx_ = 0;
-  int lastHeightPx_ = 0;
 };
 
 }  // namespace avionics
