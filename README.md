@@ -138,7 +138,7 @@ vector drawing.
 This project is licensed under the **GNU General Public License v3.0** — see
 the [LICENSE](LICENSE) file for the full text.
 
-> Copyright (C) 2026 Andywmm9
+> Copyright (C) 2026 Andrew Miller
 >
 > This program is free software: you can redistribute it and/or modify it under
 > the terms of the GNU General Public License as published by the Free Software
