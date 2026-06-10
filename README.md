@@ -7,6 +7,13 @@ A high-performance glass-cockpit (G1000-style PFD/MFD) for X-Plane, built as
 2. **As a standalone desktop program** — its own window + 60 fps loop, fed by
    X-Plane over the network.
 
+![Primary Flight Display with inset map](docs/screenshots/pfd.png)
+
+![Multi-Function Display — Navigation Map page](docs/screenshots/mfd.png)
+
+Screenshots from the standalone shell running on the built-in mock feed (PFD with
+inset map enabled; MFD on the Navigation Map page).
+
 ## Why C++ and this structure
 
 - Native in-cockpit rendering must run inside X-Plane's graphics context and
@@ -123,6 +130,26 @@ Still to wire up:
       bar indicators, per-tank FUEL QTY, ENG HRS, and the BUS VOLTS / BATT
       AMPS electrical rows — driven live from X-Plane's engine, fuel, and
       electrical datarefs (animated values on the mock feed).
+- [x] PFD pop-up windows in the lower right, one at a time like the real unit:
+      Timer/References (`Tmr/Ref`) with the generic timer (Start?/Stop?/Reset?
+      via ENT, shown as a `TMR` field in the bottom info bar while running),
+      V-speed reference bug On/Off toggles honored by the airspeed tape, and
+      barometric minimums; Nearest Airports (`Nearest`) listing distance-sorted
+      airports with bearing/distance, COM frequency, and longest runway,
+      scrolled with the FMS rocker. The FMS rocker moves the References cursor
+      (and steps the MINS altitude), ENT activates fields, and CLR closes the
+      window, per the Pilot's Guide.
+- [x] Altimeter alerting per the NXi Pilot's Guide: barometric minimums (BARO
+      MIN box at the bottom left of the altimeter plus a tape bug, staging
+      cyan -> white within 100 ft -> amber at minimums) and Selected Altitude
+      alerting (the readout flashes black-on-cyan within 1000 ft, cyan within
+      200 ft, and amber on a post-capture deviation).
+- [x] Transponder functions: `Ident` annunciates a green IDNT in the
+      transponder box for 18 seconds (inoperative in Standby, reverts the XPDR
+      softkeys to the top level), and the XPDR > Code digit keys show the
+      in-progress squawk entry in the data box with BKSP support. Committing
+      the completed code to the radio still needs a sim command channel, like
+      the VFR and STD Baro keys.
 - [ ] Bind the NanoVG renderer inside the plugin via the X-Plane Avionics
       Device API (`XPLMCreateAvionicsEx`), replacing the legacy draw callback.
 
