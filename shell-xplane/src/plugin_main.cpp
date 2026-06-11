@@ -22,6 +22,11 @@
 // render-to-texture cache uses. avionics::render::ensureGlLoaded() initializes
 // it once inside X-Plane's GL context. glew.h must precede any other GL header.
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #endif
 #include <GL/glew.h>

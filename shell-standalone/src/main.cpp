@@ -86,10 +86,7 @@
 #include "avionics/render/GlLoader.h"
 #include "avionics/render/NanoVgRenderer.h"
 #include "avionics/render/SoftkeyBezel.h"
-
-#if defined(__APPLE__)
-#include "MacMenu.h"
-#endif
+#include "MacMenu.h"  // DataSourceSelection enum; menu APIs are macOS-only.
 
 namespace {
 

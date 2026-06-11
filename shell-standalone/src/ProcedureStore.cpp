@@ -4,6 +4,7 @@
 #include "XPlaneInstall.h"
 
 #include <cmath>
+#include <algorithm>
 
 #include <fstream>
 

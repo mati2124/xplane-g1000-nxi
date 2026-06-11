@@ -71,6 +71,10 @@ elseif(WIN32)
   target_link_libraries(xplane-avionics PRIVATE
     ${XPLANE_SDK_DIR}/Libraries/Win/XPLM_64.lib
   )
+else()
+  target_link_libraries(xplane-avionics PRIVATE
+    ${XPLANE_SDK_DIR}/Libraries/Lin/XPLM_64.so
+  )
 endif()
 
 # --- Install / packaging ----------------------------------------------------
