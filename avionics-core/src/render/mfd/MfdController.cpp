@@ -7,6 +7,7 @@
 
 #include "avionics/NavMath.h"
 #include "avionics/render/BezelKeys.h"
+#include "render/mfd/MfdMapSettings.h"
 
 namespace avionics {
 namespace {
@@ -73,6 +74,22 @@ const char* terLabel(TerrainDisplay t) {
   return "TER Off";
 }
 
+// Declutter level as the Navigation Map Page Menu shows it: "Declutter
+// (Current Detail All)" / "...3)" / "...2)" / "...1)" (Pilot's Guide Fig. 5-6).
+const char* declutterLevelText(MapDetail d) {
+  switch (d) {
+    case MapDetail::Detail3:
+      return "3";
+    case MapDetail::Detail2:
+      return "2";
+    case MapDetail::Detail1:
+      return "1";
+    case MapDetail::All:
+      break;
+  }
+  return "All";
+}
+
 const char* awyLabel(AirwayDisplay a) {
   switch (a) {
     case AirwayDisplay::All:
@@ -137,10 +154,71 @@ bool legsEqual(const std::vector<MapLeg>& a, const std::vector<MapLeg>& b) {
 
 }  // namespace
 
-MfdController::MfdController() { rebuildLabels(); }
+MfdController::MfdController() {
+  // Map Settings defaults. The Map group matches Pilot's Guide Fig. 5-7; the
+  // other groups default to showing their symbols (the WT NXi defaults), out to
+  // a sensible declutter range. Shared controls (Orientation, Terrain, NEXRAD,
+  // Traffic) read the existing members, so they are not seeded here.
+  auto setRange = [&](MapSetting id, float nm) {
+    int best = 0;
+    for (int i = 0; i < kMapRangeLadderCount; ++i) {
+      if (kMapRangeLadderNm[i] <= nm + 0.01f) best = i;
+    }
+    msRange_[static_cast<std::size_t>(id)] = best;
+  };
+  auto setToggle = [&](MapSetting id, bool on) {
+    msToggle_[static_cast<std::size_t>(id)] = on;
+  };
+  // Map group (Fig. 5-7).
+  setToggle(MapSetting::ObstacleOn, true);
+  setToggle(MapSetting::WindVectorOn, true);
+  setRange(MapSetting::NorthUpAboveRange, 1000.0f);
+  setRange(MapSetting::TerrainRange, 1000.0f);
+  setRange(MapSetting::ObstacleRange, 10.0f);
+  // Weather group.
+  setRange(MapSetting::NexradRange, 1000.0f);
+  // Traffic group.
+  setToggle(MapSetting::TrafficLabelsOn, true);
+  setRange(MapSetting::TrafficSymbolsRange, 15.0f);
+  setRange(MapSetting::TrafficLabelsRange, 15.0f);
+  // Aviation group.
+  setToggle(MapSetting::LargeAirportOn, true);
+  setToggle(MapSetting::MediumAirportOn, true);
+  setToggle(MapSetting::SmallAirportOn, true);
+  setToggle(MapSetting::IntOn, true);
+  setToggle(MapSetting::NdbOn, true);
+  setToggle(MapSetting::VorOn, true);
+  setRange(MapSetting::LargeAirportRange, 1000.0f);
+  setRange(MapSetting::MediumAirportRange, 100.0f);
+  setRange(MapSetting::SmallAirportRange, 25.0f);
+  setRange(MapSetting::IntRange, 25.0f);
+  setRange(MapSetting::NdbRange, 25.0f);
+  setRange(MapSetting::VorRange, 150.0f);
+  // Airspace group.
+  setToggle(MapSetting::ClassBOn, true);
+  setToggle(MapSetting::ClassCOn, true);
+  setToggle(MapSetting::ClassDOn, true);
+  setToggle(MapSetting::RestrictedOn, true);
+  setToggle(MapSetting::MoaOn, true);
+  setToggle(MapSetting::OtherOn, true);
+  setRange(MapSetting::ClassBRange, 100.0f);
+  setRange(MapSetting::ClassCRange, 100.0f);
+  setRange(MapSetting::ClassDRange, 50.0f);
+  setRange(MapSetting::RestrictedRange, 100.0f);
+  setRange(MapSetting::MoaRange, 250.0f);
+  setRange(MapSetting::OtherRange, 250.0f);
+  // Land group.
+  setToggle(MapSetting::UserWaypointOn, true);
+  setRange(MapSetting::UserWaypointRange, 25.0f);
+
+  rebuildLabels();
+}
 
 void MfdController::rebuildLabels() {
   for (std::string& l : labels_) l.clear();
+  // The Map Settings window pushes an empty softkey menu on the real unit, so
+  // the bar is blank while it is open.
+  if (mapSettingsOpen_) return;
   if (simbriefIdEntry_) {
     // Pilot ID digit entry replaces the whole bar, like the XPDR Code menu on
     // the PFD: 0-9 with BKSP and Back on the right.
@@ -329,6 +407,19 @@ void MfdController::update(double dtSeconds, const FlightData& data) {
   displayRangeNm_ =
       animateMapRange(displayRangeNm_, mapRangeNmAt(rangeIndex_), dtSeconds);
 
+  // Pop-up windows ease toward their open/closed target at a constant rate, so
+  // they slide+fade in when opened and out when closed -- the same logic the
+  // PFD pop-ups use (SoftkeyController::windowAnim_).
+  const float animStep = static_cast<float>(dtSeconds) / kWindowAnimSeconds;
+  auto approachAnim = [animStep](float current, bool open) {
+    const float target = open ? 1.0f : 0.0f;
+    if (current < target) return std::min(target, current + animStep);
+    return std::max(target, current - animStep);
+  };
+  dtoAnim_ = approachAnim(dtoAnim_, dtoOpen_);
+  pageMenuAnim_ = approachAnim(pageMenuAnim_, pageMenuOpen_);
+  mapSettingsAnim_ = approachAnim(mapSettingsAnim_, mapSettingsOpen_);
+
   // ~1 Hz blink for highlight-select cursor fields: on for the first half of
   // each second (matches SoftkeyController::blinkOn_ and WT pulse).
   blinkSeconds_ += dtSeconds;
@@ -461,6 +552,22 @@ void MfdController::pressBezelKey(BezelKey key) {
     return;
   }
 
+  // The Map Settings window is modal over the navigation map: it owns the FMS
+  // knob / ENT / CLR until the FMS knob push or CLR closes it.
+  if (mapSettingsOpen_) {
+    mapSettingsBezelKey(key);
+    rebuildLabels();
+    return;
+  }
+
+  // The Page Menu (MENU key) is modal over the base page while it is up: it
+  // owns the FMS knob / ENT / CLR until an option is run or it is backed out.
+  if (pageMenuOpen_) {
+    pageMenuBezelKey(key);
+    rebuildLabels();
+    return;
+  }
+
   // The FPL page owns the FMS knob / ENT / CLR / MENU while it is up (cursor,
   // waypoint entry, remove confirmation); unconsumed keys fall through to the
   // common handling below (FPL toggle, range rocker).
@@ -544,6 +651,10 @@ void MfdController::pressBezelKey(BezelKey key) {
     case BezelKey::FmsOuterCcw:
       stepPageGroup(-1);
       break;
+    case BezelKey::Menu:
+      // MENU opens the current page's Page Menu (no-op on pages without one).
+      openPageMenu();
+      break;
     case BezelKey::Ent:
       if (pageGroup_ == MfdPageGroup::Checklist) checklistEnter();
       break;
@@ -589,9 +700,322 @@ void MfdController::clrDefaultMap() {
   dtoArmed_ = false;
   dtoEntry_ = FmsWaypointEntry{};
   menu_ = Menu::Root;
+  pageMenuOpen_ = false;
+  mapSettingsOpen_ = false;
   pageGroup_ = MfdPageGroup::Map;
   pageIndex_[static_cast<int>(MfdPageGroup::Map)] = 0;
   rebuildLabels();
+}
+
+// ---- Page menu (MENU bezel key) ----
+
+std::vector<MfdController::PageMenuItem> MfdController::buildPageMenu() const {
+  // Only the Navigation Map page defines a Page Menu in this suite for now
+  // (Pilot's Guide Fig. 5-6). Other pages return an empty list, so MENU is
+  // inert there, matching the real unit's pages that have no page menu.
+  if (pageGroup_ != MfdPageGroup::Map || page() != MfdPage::NavigationMap) {
+    return {};
+  }
+  // Verbatim from the figure, in on-unit order. Map Settings opens the Map
+  // Settings window (Fig. 5-7); Declutter cycles the map Detail level. Measure
+  // Bearing/Distance and Show VSD need tools this suite has not yet modeled,
+  // so they are listed disabled; Charts is greyed on the real unit too.
+  std::string declutter = "Declutter (Current Detail ";
+  declutter += declutterLevelText(detail_);
+  declutter += ")";
+  return {
+      {"Map Settings", PageMenuAction::OpenMapSettings},
+      {declutter, PageMenuAction::MapDeclutter},
+      {"Measure Bearing/Distance", PageMenuAction::Disabled},
+      {"Charts", PageMenuAction::Disabled},
+      {"Show VSD", PageMenuAction::Disabled},
+  };
+}
+
+void MfdController::openPageMenu() {
+  pageMenuItems_ = buildPageMenu();
+  if (pageMenuItems_.empty()) return;  // no page menu on this page
+  pageMenuOpen_ = true;
+  // Highlight the first enabled option (the cursor never parks on a disabled
+  // row, which the real unit skips).
+  pageMenuSel_ = 0;
+  for (int i = 0; i < static_cast<int>(pageMenuItems_.size()); ++i) {
+    if (pageMenuItems_[i].action != PageMenuAction::Disabled) {
+      pageMenuSel_ = i;
+      break;
+    }
+  }
+}
+
+const std::string& MfdController::pageMenuItemText(int i) const {
+  static const std::string kEmpty;
+  if (i < 0 || i >= static_cast<int>(pageMenuItems_.size())) return kEmpty;
+  return pageMenuItems_[static_cast<std::size_t>(i)].text;
+}
+
+bool MfdController::pageMenuItemEnabled(int i) const {
+  if (i < 0 || i >= static_cast<int>(pageMenuItems_.size())) return false;
+  return pageMenuItems_[static_cast<std::size_t>(i)].action !=
+         PageMenuAction::Disabled;
+}
+
+void MfdController::pageMenuStep(int direction) {
+  const int n = static_cast<int>(pageMenuItems_.size());
+  if (n == 0) return;
+  const int step = direction >= 0 ? 1 : -1;
+  // Walk in the requested direction to the next enabled option, wrapping.
+  for (int i = 0; i < n; ++i) {
+    pageMenuSel_ = (pageMenuSel_ + step + n) % n;
+    if (pageMenuItems_[static_cast<std::size_t>(pageMenuSel_)].action !=
+        PageMenuAction::Disabled) {
+      return;
+    }
+  }
+}
+
+void MfdController::pageMenuActivate() {
+  if (pageMenuSel_ < 0 ||
+      pageMenuSel_ >= static_cast<int>(pageMenuItems_.size())) {
+    return;
+  }
+  switch (pageMenuItems_[static_cast<std::size_t>(pageMenuSel_)].action) {
+    case PageMenuAction::MapDeclutter:
+      detail_ = nextMapDetail(detail_);
+      pageMenuOpen_ = false;  // the option runs and closes the menu
+      break;
+    case PageMenuAction::OpenMapSettings:
+      pageMenuOpen_ = false;  // the page menu closes as the window opens
+      openMapSettings();
+      break;
+    case PageMenuAction::Disabled:
+      break;  // inert: a disabled row is never highlighted, so this is a no-op
+  }
+}
+
+bool MfdController::pageMenuBezelKey(BezelKey key) {
+  switch (key) {
+    case BezelKey::Ent:
+      pageMenuActivate();
+      break;
+    case BezelKey::Clr:
+    case BezelKey::Menu:
+    case BezelKey::FmsPush:
+      pageMenuOpen_ = false;  // back out to the base page
+      break;
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsOuterCw:
+      pageMenuStep(1);
+      break;
+    case BezelKey::FmsInnerCcw:
+    case BezelKey::FmsOuterCcw:
+      pageMenuStep(-1);
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
+// ---- Map Settings window ----
+
+void MfdController::openMapSettings() {
+  mapSettingsOpen_ = true;
+  // The window opens with the cursor on the Group selector (Pilot's Guide:
+  // "Map Group Selection"), keeping the last-viewed group.
+  mapSettingsCursor_ = 0;
+}
+
+int MfdController::mapSettingsFieldCount() const {
+  MapSetting fields[static_cast<std::size_t>(MapSetting::Count)];
+  return mfd::msEditableFields(
+      mapSettingsGroup_, fields,
+      static_cast<int>(MapSetting::Count));
+}
+
+MapSetting MfdController::mapSettingAtCursor(int cursor) const {
+  if (cursor <= 0) return MapSetting::Count;
+  MapSetting fields[static_cast<std::size_t>(MapSetting::Count)];
+  const int n = mfd::msEditableFields(mapSettingsGroup_, fields,
+                                      static_cast<int>(MapSetting::Count));
+  if (cursor - 1 >= n) return MapSetting::Count;
+  return fields[cursor - 1];
+}
+
+void MfdController::mapSettingsStepCursor(int dir) {
+  const int total = 1 + mapSettingsFieldCount();  // Group selector + controls
+  const int step = dir >= 0 ? 1 : -1;
+  mapSettingsCursor_ = ((mapSettingsCursor_ + step) % total + total) % total;
+}
+
+void MfdController::mapSettingsEdit(int dir) {
+  // The Group selector: cycle the active group (Pilot's Guide: small FMS knob
+  // selects the group), and keep the cursor on the selector.
+  if (mapSettingsCursor_ == 0) {
+    constexpr int kGroupCount =
+        static_cast<int>(MapSettingsGroup::Land) + 1;
+    const int step = dir >= 0 ? 1 : -1;
+    int g = (static_cast<int>(mapSettingsGroup_) + step) % kGroupCount;
+    if (g < 0) g += kGroupCount;
+    mapSettingsGroup_ = static_cast<MapSettingsGroup>(g);
+    return;
+  }
+
+  const MapSetting id = mapSettingAtCursor(mapSettingsCursor_);
+  if (id == MapSetting::Count) return;
+
+  // Shared enums step the existing members, so the window and softkeys agree.
+  if (id == MapSetting::Orientation) {
+    static constexpr MapOrientation kCycle[] = {
+        MapOrientation::NorthUp, MapOrientation::TrackUp,
+        MapOrientation::HeadingUp};
+    const int step = dir >= 0 ? 1 : -1;
+    for (int i = 0; i < 3; ++i) {
+      if (kCycle[i] == mapOrientation_) {
+        mapOrientation_ = kCycle[((i + step) % 3 + 3) % 3];
+        return;
+      }
+    }
+    mapOrientation_ = MapOrientation::NorthUp;
+    return;
+  }
+  if (id == MapSetting::TerrainMode) {
+    // Off -> Topo -> REL, matching the TER softkey cycle.
+    if (dir >= 0) {
+      terrain_ = terrain_ == TerrainDisplay::Off   ? TerrainDisplay::Topo
+                 : terrain_ == TerrainDisplay::Topo ? TerrainDisplay::Rel
+                                                    : TerrainDisplay::Off;
+    } else {
+      terrain_ = terrain_ == TerrainDisplay::Off   ? TerrainDisplay::Rel
+                 : terrain_ == TerrainDisplay::Rel ? TerrainDisplay::Topo
+                                                   : TerrainDisplay::Off;
+    }
+    return;
+  }
+  if (id == MapSetting::TrafficMode) {
+    const int step = dir >= 0 ? 1 : -1;
+    msTrafficMode_ = ((msTrafficMode_ + step) % 3 + 3) % 3;
+    return;
+  }
+
+  switch (mfd::msControlKind(id)) {
+    case mfd::MsKind::Toggle:
+      if (id == MapSetting::NexradOn) {
+        showWeather_ = !showWeather_;
+      } else if (id == MapSetting::TrafficOn) {
+        showTraffic_ = !showTraffic_;
+      } else {
+        bool& v = msToggle_[static_cast<std::size_t>(id)];
+        v = !v;
+      }
+      break;
+    case mfd::MsKind::Range: {
+      int& idx = msRange_[static_cast<std::size_t>(id)];
+      idx = std::max(0, std::min(kMapRangeLadderCount - 1,
+                                 idx + (dir >= 0 ? 1 : -1)));
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+bool MfdController::mapSettingsBezelKey(BezelKey key) {
+  switch (key) {
+    case BezelKey::Clr:
+    case BezelKey::FmsPush:
+      // Pilot's Guide: "Press FMS Knob To Return"; CLR also backs out.
+      mapSettingsOpen_ = false;
+      break;
+    case BezelKey::FmsOuterCw:
+      mapSettingsStepCursor(1);
+      break;
+    case BezelKey::FmsOuterCcw:
+      mapSettingsStepCursor(-1);
+      break;
+    case BezelKey::FmsInnerCw:
+    case BezelKey::Ent:
+      mapSettingsEdit(1);
+      break;
+    case BezelKey::FmsInnerCcw:
+      mapSettingsEdit(-1);
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
+std::string MfdController::mapSettingText(MapSetting id) const {
+  switch (id) {
+    case MapSetting::Orientation:
+      switch (mapOrientation_) {
+        case MapOrientation::TrackUp:
+          return "Track up";
+        case MapOrientation::HeadingUp:
+          return "HDG up";
+        case MapOrientation::NorthUp:
+          break;
+      }
+      return "North up";
+    case MapSetting::TerrainMode:
+      switch (terrain_) {
+        case TerrainDisplay::Topo:
+          return "Topo";
+        case TerrainDisplay::Rel:
+          return "REL";
+        case TerrainDisplay::Off:
+          break;
+      }
+      return "Off";
+    case MapSetting::TrafficMode:
+      return msTrafficMode_ == 1   ? "TA/PA"
+             : msTrafficMode_ == 2 ? "TA Only"
+                                   : "All Traffic";
+    // Dependent read-outs shown without carets on the real unit (Fig. 5-7).
+    case MapSetting::AutoZoomMax:
+      return "All";
+    case MapSetting::MaxLookFwd:
+      return "30min";
+    case MapSetting::MinLookFwd:
+      return "5min";
+    case MapSetting::TimeOut:
+      return "0min";
+    case MapSetting::TrackVectorTime:
+      return "60 sec";
+    case MapSetting::FuelRangeRsv:
+      return "0+45";
+    default:
+      break;
+  }
+  switch (mfd::msControlKind(id)) {
+    case mfd::MsKind::Toggle:
+      return mapSettingOn(id) ? "On" : "Off";
+    case mfd::MsKind::Range: {
+      char buf[16];
+      formatMapRange(buf, sizeof(buf),
+                     mapRangeNmAt(msRange_[static_cast<std::size_t>(id)]));
+      return buf;
+    }
+    default:
+      break;
+  }
+  return "";
+}
+
+bool MfdController::mapSettingOn(MapSetting id) const {
+  switch (id) {
+    case MapSetting::NexradOn:
+      return showWeather_;
+    case MapSetting::TrafficOn:
+      return showTraffic_;
+    default:
+      break;
+  }
+  return msToggle_[static_cast<std::size_t>(id)];
+}
+
+float MfdController::mapSettingRangeNm(MapSetting id) const {
+  return mapRangeNmAt(msRange_[static_cast<std::size_t>(id)]);
 }
 
 void MfdController::checklistEnter() {
@@ -806,7 +1230,8 @@ bool MfdController::blocksRadioBezel() const {
   // active Map Pointer does not claim the knob here.
   return dtoOpen_ || dtoEntry_.active || fplEntry_.active ||
          fplAltEntry_.active || fplConfirm_ != FplConfirm::None ||
-         wptEntry_.active || simbriefIdEntry_ || procMenuOpen_;
+         wptEntry_.active || simbriefIdEntry_ || procMenuOpen_ ||
+         mapSettingsOpen_;
 }
 
 std::vector<MapApproach> MfdController::approachesForAirport(

@@ -17,6 +17,15 @@ namespace {
 constexpr double kKfmyLat = 26.5862;
 constexpr double kKfmyLon = -81.8632;
 
+// Runway 31 threshold at Page Field (KFMY) for the on-ground mock mode. The
+// threshold position and true runway heading are the published FAA values
+// (26-34.988253N / 081-51.406542W, 310 true); the field elevation matches the
+// airport's surveyed elevation.
+constexpr double kKfmyRwy31ThresholdLat = 26.583138;
+constexpr double kKfmyRwy31ThresholdLon = -81.856776;
+constexpr float kKfmyRwy31HeadingDeg = 310.0f;
+constexpr float kKfmyFieldElevationFt = 17.0f;
+
 // Build a tessellated circular airspace ring (radius in NM) for the demo map.
 std::vector<GeoPoint> demoCircle(double lat, double lon, double radiusNm,
                                  int segments = 48) {
@@ -216,6 +225,11 @@ constexpr std::size_t kMaxObstacles = 300;
 }  // namespace
 
 void MockDataSource::update(double dtSeconds) {
+  if (groundMode_) {
+    updateOnGround(dtSeconds);
+    return;
+  }
+
   elapsedSeconds_ += dtSeconds;
   const float t = static_cast<float>(elapsedSeconds_);
 
@@ -360,31 +374,8 @@ void MockDataSource::update(double dtSeconds) {
   data_.battAmpsMain = 2.0f + 1.0f * std::sin(t * 0.15f);
   data_.battAmpsStandby = 0.0f;
 
-  data_.eisChannels[eis_channels::kEngRpm] = data_.engineRpm;
-  data_.eisChannels[eis_channels::kFuelFlow] = data_.fuelFlowGph;
-  data_.eisChannels[eis_channels::kOilPres] = data_.oilPressurePsi;
-  data_.eisChannels[eis_channels::kOilTemp] = data_.oilTempDegF;
-  data_.eisChannels[eis_channels::kEgt] = data_.egtDegF;
-  data_.eisChannels[eis_channels::kVacuum] = data_.vacuumInHg;
-  data_.eisChannels[eis_channels::kFuelQtyLeft] = data_.fuelQtyLeftGal;
-  data_.eisChannels[eis_channels::kFuelQtyRight] = data_.fuelQtyRightGal;
-  data_.eisChannels[eis_channels::kEngHours] = data_.engineHours;
-  data_.eisChannels[eis_channels::kBusVoltsMain] = data_.busVoltsMain;
-  data_.eisChannels[eis_channels::kBusVoltsEss] = data_.busVoltsEssential;
-  data_.eisChannels[eis_channels::kBattAmpsMain] = data_.battAmpsMain;
-  data_.eisChannels[eis_channels::kBattAmpsStandby] = data_.battAmpsStandby;
-  syncEisLegacyFields(data_);
-
-  data_.fmaVerticalValue = static_cast<int>(std::lround(data_.selectedAltitudeFt));
-  data_.timerSeconds = static_cast<int>(t) % 36000;
-  const int totalSec = 18 * 3600 + static_cast<int>(t) % 86400;
-  data_.utcHour = (totalSec / 3600) % 24;
-  data_.utcMinute = (totalSec / 60) % 60;
-  data_.utcSecond = totalSec % 60;
-  // Fixed mid-June date for the Trip Planning sunrise/sunset rows (the mock
-  // clock starts at 18:00 UTC; any real date works, a constant keeps
-  // screenshots deterministic).
-  data_.utcDayOfYear = 167;
+  publishEisChannels();
+  advanceClockFields();
 
   refreshFeatures(dtSeconds);
 
@@ -409,6 +400,136 @@ void MockDataSource::update(double dtSeconds) {
     map_.traffic = {prox, ta};
   }
 
+  publishMapBackground(dtSeconds);
+}
+
+void MockDataSource::updateOnGround(double dtSeconds) {
+  elapsedSeconds_ += dtSeconds;
+
+  // Parked on KFMY runway 31 with the engine idling and the brakes set: every
+  // dynamic state is pinned to its stationary value so the PFD shows a
+  // believable on-ground picture (zero speeds, wings level, field elevation).
+  data_.airspeedKts = 0.0f;
+  data_.altitudeFt = kKfmyFieldElevationFt;
+  data_.pitchDeg = 0.0f;
+  data_.rollDeg = 0.0f;
+  data_.verticalSpeedFpm = 0.0f;
+  data_.slipSkidDeg = 0.0f;
+  data_.tasKts = 0.0f;
+  data_.groundSpeedKts = 0.0f;
+  data_.oatCelsius = 28.0f;  // typical Southwest Florida ramp temperature
+  data_.turnRateDegPerSec = 0.0f;
+  data_.airspeedTrendKts = 0.0f;
+  data_.altitudeTrendFt = 0.0f;
+
+  // Seed the flight plan / nearby nav data, then pin the position to the
+  // runway 31 threshold and the heading down the runway (ensureRoute starts
+  // the aircraft at the airport reference point pointed at the first leg, so
+  // these must be set after it on the first frame).
+  ensureRoute();
+  data_.headingDeg = kKfmyRwy31HeadingDeg;
+  data_.trackDeg = kKfmyRwy31HeadingDeg;
+  map_.ownshipLat = kKfmyRwy31ThresholdLat;
+  map_.ownshipLon = kKfmyRwy31ThresholdLon;
+  map_.positionValid = true;
+  map_.directToActive = false;
+  map_.traffic.clear();  // no orbiting demo traffic while parked
+
+  // Sitting in the departure runway environment: GPS in terminal mode with no
+  // active-leg guidance, and lateral/vertical deviation, flight director and
+  // autopilot references all stowed.
+  data_.gpsFlightPhase = "TERM";
+  data_.cdiDeviationDots = 0.0f;
+  data_.cdiToFlag = false;
+  data_.navSignalValid = false;
+  data_.flightDirectorActive = false;
+  data_.fmaFromWpt.clear();
+  data_.fmaToWpt.clear();
+  data_.fmaLegDistanceNm = 0.0f;
+  data_.fmaLegBearingDeg = 0.0f;
+  data_.vdiKind = VerticalDeviationKind::None;
+  data_.vdiValid = false;
+  data_.requiredVsValid = false;
+  data_.selectedVsValid = false;
+
+  // Surface wind still shows, but the nav bearing pointers, marker beacon and
+  // DME have nothing to track on the ground.
+  data_.windValid = true;
+  data_.windDirectionDeg = 290.0f;
+  data_.windSpeedKts = 7.0f;
+  data_.bearing1Valid = false;
+  data_.bearing2Valid = false;
+  data_.markerBeacon = MarkerBeacon::None;
+  data_.dmeValid = false;
+  data_.baroTransitionAlert = false;
+
+  data_.transponderCode = 1200;
+  data_.transponderMode = "GND";
+  data_.transponderReply = false;
+
+  // A healthy idling aircraft raises no CAS messages.
+  data_.casLowVacuum = false;
+  data_.casFuelLow = false;
+  data_.casPitotHeatOff = false;
+  data_.casLowVoltage = false;
+  data_.casOilPressureLow = false;
+
+  // Engine idling: low RPM and fuel flow, oil pressure / temperature in the
+  // normal idle band, alternator online and charging the battery.
+  data_.engineRpm = 1000.0f;
+  data_.fuelFlowGph = 2.6f;
+  data_.oilPressurePsi = 45.0f;
+  data_.oilTempDegF = 120.0f;
+  data_.egtDegF = 1150.0f;
+  data_.vacuumInHg = 5.0f;
+  data_.fuelQtyLeftGal = 21.5f;
+  data_.fuelQtyRightGal = 22.5f;
+  data_.engineHours = 1234.5f;
+  data_.busVoltsMain = 27.9f;
+  data_.busVoltsEssential = 27.8f;
+  data_.battAmpsMain = 2.0f;
+  data_.battAmpsStandby = 0.0f;
+
+  publishEisChannels();
+  advanceClockFields();
+
+  refreshFeatures(dtSeconds);
+  publishMapBackground(dtSeconds);
+}
+
+void MockDataSource::publishEisChannels() {
+  data_.eisChannels[eis_channels::kEngRpm] = data_.engineRpm;
+  data_.eisChannels[eis_channels::kFuelFlow] = data_.fuelFlowGph;
+  data_.eisChannels[eis_channels::kOilPres] = data_.oilPressurePsi;
+  data_.eisChannels[eis_channels::kOilTemp] = data_.oilTempDegF;
+  data_.eisChannels[eis_channels::kEgt] = data_.egtDegF;
+  data_.eisChannels[eis_channels::kVacuum] = data_.vacuumInHg;
+  data_.eisChannels[eis_channels::kFuelQtyLeft] = data_.fuelQtyLeftGal;
+  data_.eisChannels[eis_channels::kFuelQtyRight] = data_.fuelQtyRightGal;
+  data_.eisChannels[eis_channels::kEngHours] = data_.engineHours;
+  data_.eisChannels[eis_channels::kBusVoltsMain] = data_.busVoltsMain;
+  data_.eisChannels[eis_channels::kBusVoltsEss] = data_.busVoltsEssential;
+  data_.eisChannels[eis_channels::kBattAmpsMain] = data_.battAmpsMain;
+  data_.eisChannels[eis_channels::kBattAmpsStandby] = data_.battAmpsStandby;
+  syncEisLegacyFields(data_);
+}
+
+void MockDataSource::advanceClockFields() {
+  const float t = static_cast<float>(elapsedSeconds_);
+  data_.fmaVerticalValue =
+      static_cast<int>(std::lround(data_.selectedAltitudeFt));
+  data_.timerSeconds = static_cast<int>(t) % 36000;
+  const int totalSec = 18 * 3600 + static_cast<int>(t) % 86400;
+  data_.utcHour = (totalSec / 3600) % 24;
+  data_.utcMinute = (totalSec / 60) % 60;
+  data_.utcSecond = totalSec % 60;
+  // Fixed mid-June date for the Trip Planning sunrise/sunset rows (the mock
+  // clock starts at 18:00 UTC; any real date works, a constant keeps
+  // screenshots deterministic).
+  data_.utcDayOfYear = 167;
+}
+
+void MockDataSource::publishMapBackground(double dtSeconds) {
   map_.terrain = terrainSource_ != nullptr ? terrainSource_ : &terrain_;
   if (weatherSource_ != nullptr) {
     map_.weather = weatherSource_;

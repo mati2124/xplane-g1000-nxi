@@ -94,6 +94,12 @@ void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
                         const MfdController& ui, float x, float y, float w,
                         float h, float displayH);
 
+// The Map Settings window (MENU -> Map Settings on the Navigation Map page),
+// drawn over the current MFD page: the Group selector and the active group's
+// settings rows (Pilot's Guide Fig. 5-7).
+void drawMapSettingsWindow(Renderer& r, const MfdController& ui, float x,
+                           float y, float w, float h, float displayH);
+
 // Checklist group. Renders the currently selected checklist (one per "page")
 // from the author-supplied file, with the item cursor and checked state from
 // the controller.

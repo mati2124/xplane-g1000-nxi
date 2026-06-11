@@ -11,10 +11,56 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Release identity. AVIONICS_VERSION defaults to the project() version above and
+# is overridden by CI from the pushed git tag (release.yml passes
+# -DAVIONICS_VERSION=<tag without leading v>). The owner/repo feed the in-app
+# update checker that queries the GitHub Releases API.
+set(AVIONICS_VERSION "${PROJECT_VERSION}" CACHE STRING "Release version string")
+set(AVIONICS_RELEASES_OWNER "andywmm9-pixel" CACHE STRING "GitHub releases owner")
+set(AVIONICS_RELEASES_REPO "xplane-g1000-nxi" CACHE STRING "GitHub releases repo")
+
 # One engine, two shells. The core always builds; each shell is opt-in because
 # it pulls in heavier platform dependencies (X-Plane SDK / windowing + GPU).
 option(BUILD_XPLANE_SHELL "Build the X-Plane plugin shell (requires XPLM SDK)" OFF)
 option(BUILD_STANDALONE_SHELL "Build the standalone desktop shell" ON)
+
+# --- Packaging: bundled runtime assets -------------------------------------
+# The binaries resolve these at runtime relative to the install location (see
+# avionics/AssetPaths.h). The install rules below stage them next to each shell
+# so a release archive is self-contained; CI installs per-component into a
+# staging dir and the installers wrap that up.
+# Always-present (tracked) fonts shared by both shells.
+set(AVIONICS_FONT_FILES
+  ${CMAKE_SOURCE_DIR}/render-nanovg/assets/fonts/Roboto-Regular.ttf
+  ${CMAKE_SOURCE_DIR}/render-nanovg/assets/fonts/Roboto-Bold.ttf
+  ${CMAKE_SOURCE_DIR}/render-nanovg/assets/fonts/LICENSE_OFL.txt)
+# Optional fonts (the DejaVu secondary display face + its license). Installed
+# when present but not required, so a checkout without them still packages.
+set(AVIONICS_FONT_FILES_OPTIONAL
+  ${CMAKE_SOURCE_DIR}/render-nanovg/assets/fonts/DejaVuSans-SemiBold.ttf
+  ${CMAKE_SOURCE_DIR}/render-nanovg/assets/fonts/LICENSE_DejaVu.txt)
+set(AVIONICS_EIS_FILE ${CMAKE_SOURCE_DIR}/avionics-core/assets/eis/c172s.eis)
+set(AVIONICS_CHECKLIST_FILE ${CMAKE_SOURCE_DIR}/shell-standalone/assets/checklists.txt)
+# Generated map overlay (large, often gitignored); optional so the build/package
+# never fails when it has not been generated/committed.
+set(AVIONICS_LAND_FILE ${CMAKE_SOURCE_DIR}/shell-standalone/assets/land_data.bin)
+
+# X-Plane plugin platform subfolder (<plugin>/<platform>/<plugin>.xpl).
+if(APPLE)
+  set(AVIONICS_XPL_PLATFORM_DIR "mac_x64")
+elseif(WIN32)
+  set(AVIONICS_XPL_PLATFORM_DIR "win_x64")
+else()
+  set(AVIONICS_XPL_PLATFORM_DIR "lin_x64")
+endif()
+
+# Install the fonts + EIS sample shared by both shells into <dest>, under the
+# given install COMPONENT, mirroring the runtime "assets/" layout.
+function(avionics_install_shared_assets dest component)
+  install(FILES ${AVIONICS_FONT_FILES} DESTINATION ${dest}/fonts COMPONENT ${component})
+  install(FILES ${AVIONICS_FONT_FILES_OPTIONAL} DESTINATION ${dest}/fonts COMPONENT ${component} OPTIONAL)
+  install(FILES ${AVIONICS_EIS_FILE} DESTINATION ${dest}/eis COMPONENT ${component})
+endfunction()
 
 add_subdirectory(avionics-core)
 

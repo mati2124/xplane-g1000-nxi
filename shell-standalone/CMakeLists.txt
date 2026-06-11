@@ -94,3 +94,16 @@ endif()
 if(WIN32)
   target_link_libraries(avionics-standalone PRIVATE ws2_32)
 endif()
+
+# --- Install / packaging ----------------------------------------------------
+# Portable layout: the executable with an assets/ folder beside it (resolved at
+# runtime by avionics/AssetPaths.h). CI installs the "standalone" component into
+# a staging dir and the per-platform installer wraps it (.app/.dmg, Inno Setup,
+# AppImage). On macOS the installer relocates the binary into a .app bundle;
+# AssetPaths also searches ../Resources/assets to cover that case.
+install(TARGETS avionics-standalone
+  RUNTIME DESTINATION . COMPONENT standalone
+  BUNDLE DESTINATION . COMPONENT standalone)
+avionics_install_shared_assets("assets" standalone)
+install(FILES ${AVIONICS_CHECKLIST_FILE} DESTINATION assets COMPONENT standalone)
+install(FILES ${AVIONICS_LAND_FILE} DESTINATION assets COMPONENT standalone OPTIONAL)

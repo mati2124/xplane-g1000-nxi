@@ -58,10 +58,24 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
   config.style.airways = ui.airwayDisplay();
   config.style.showTraffic = ui.showTraffic();
   config.style.showWeather = ui.showWeather();
-  // Map Setup "Map" group items, on by default for the navigation map.
-  config.style.showTrackVector = true;
-  config.style.showWindVector = true;
-  config.style.showFuelRing = true;
+  // Map Setup "Map" group items, driven by the Map Settings window (Fig. 5-7).
+  config.style.showTrackVector = ui.mapSettingOn(MapSetting::TrackVectorOn);
+  config.style.showWindVector = ui.mapSettingOn(MapSetting::WindVectorOn);
+  config.style.showFuelRing = ui.mapSettingOn(MapSetting::FuelRangeOn);
+  config.style.showObstacles = ui.mapSettingOn(MapSetting::ObstacleOn);
+  config.style.showFixes = ui.mapSettingOn(MapSetting::IntOn);
+  // Map Setup "Aviation" group: per-size airport visibility + max display range
+  // (Fig. 5-7), so the wide view keeps the major airports as the small ones
+  // declutter off.
+  config.style.showLargeAirports = ui.mapSettingOn(MapSetting::LargeAirportOn);
+  config.style.showMediumAirports = ui.mapSettingOn(MapSetting::MediumAirportOn);
+  config.style.showSmallAirports = ui.mapSettingOn(MapSetting::SmallAirportOn);
+  config.style.largeAirportRangeNm =
+      ui.mapSettingRangeNm(MapSetting::LargeAirportRange);
+  config.style.mediumAirportRangeNm =
+      ui.mapSettingRangeNm(MapSetting::MediumAirportRange);
+  config.style.smallAirportRangeNm =
+      ui.mapSettingRangeNm(MapSetting::SmallAirportRange);
   config.style.labelFontWt = 16.0f;
   applyMapDetail(config.style, ui.mapDetail());
   if (ui.mapPointerActive()) {

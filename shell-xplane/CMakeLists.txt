@@ -72,3 +72,13 @@ elseif(WIN32)
     ${XPLANE_SDK_DIR}/Libraries/Win/XPLM_64.lib
   )
 endif()
+
+# --- Install / packaging ----------------------------------------------------
+# X-Plane plugin folder layout, ready to drop into <X-Plane>/Resources/plugins:
+#   xplane-avionics/<platform>/xplane-avionics.xpl
+#   xplane-avionics/assets/...   (shared fonts + EIS sample, resolved at runtime)
+# CI installs the "plugin" component into a staging dir; the installer copies the
+# xplane-avionics/ tree into the user's selected X-Plane install.
+install(TARGETS xplane-avionics
+  LIBRARY DESTINATION "xplane-avionics/${AVIONICS_XPL_PLATFORM_DIR}" COMPONENT plugin)
+avionics_install_shared_assets("xplane-avionics/assets" plugin)

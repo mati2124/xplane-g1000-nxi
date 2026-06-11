@@ -96,6 +96,13 @@ class MockDataSource : public DataSource {
   void setTurbulenceEnabled(bool enabled) { turbulenceEnabled_ = enabled; }
   bool turbulenceEnabled() const { return turbulenceEnabled_; }
 
+  // Freezes the feed on the ground at KFMY runway 31 -- stationary, wings
+  // level, at field elevation, with the engine idling -- instead of flying the
+  // demo route. Off by default; the standalone shell exposes this as a Data
+  // Source menu option.
+  void setGroundMode(bool onGround) { groundMode_ = onGround; }
+  bool groundMode() const { return groundMode_; }
+
   // Local stand-in for sim commands while the mock feed is active.
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
   void transferRadio(RadioUnit unit);
@@ -106,6 +113,10 @@ class MockDataSource : public DataSource {
   void ensureRoute();              // lazily seed route + initial position
   void navigateRoute(double dt);   // advance the aircraft along the route
   void refreshFeatures(double dt); // pull nearby features (real or demo)
+  void updateOnGround(double dt);  // parked-at-KFMY stationary state
+  void publishEisChannels();       // copy engine fields into the EIS channels
+  void advanceClockFields();       // tick the UTC clock / timer fields
+  void publishMapBackground(double dt);  // attach terrain + weather overlays
 
   FlightData data_;
   MapData map_;
@@ -117,6 +128,7 @@ class MockDataSource : public DataSource {
   std::size_t legIndex_ = 1;  // route_ index the aircraft is flying toward
   bool routeInitialized_ = false;
   bool turbulenceEnabled_ = false;  // chaotic bumps on top of the base motion
+  bool groundMode_ = false;         // parked at KFMY rwy 31 instead of flying
 
   // Active Direct-To: when set, navigateRoute flies straight to directToTarget_
   // instead of sequencing the route.

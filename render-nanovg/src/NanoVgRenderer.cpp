@@ -1,7 +1,10 @@
 #include "avionics/render/NanoVgRenderer.h"
 
 #include <array>
+#include <string>
+#include <vector>
 
+#include "avionics/AssetPaths.h"
 #include "nanovg.h"
 
 // Defined in the GL backend translation units (nanovg_gl_impl.c for GL3,
@@ -27,16 +30,34 @@ constexpr int kNvgStencilStrokes = 1 << 1;
 #ifndef AVIONICS_FONT_DIR
 #define AVIONICS_FONT_DIR "."
 #endif
-constexpr std::array<const char*, 6> kFontCandidates = {
-    AVIONICS_FONT_DIR "/Roboto-Regular.ttf",
-    AVIONICS_FONT_DIR "/Roboto-Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/System/Library/Fonts/SFNSMono.ttf",
-    "/System/Library/Fonts/Menlo.ttc",
-    "/System/Library/Fonts/Helvetica.ttc",
-};
+
+// Candidate fonts in priority order. The bundled Roboto faces are resolved at
+// runtime (next to the binary in a distributed build, or the compile-time
+// source path during development); the system fonts are last-ditch fallbacks.
+std::vector<std::string> fontCandidates() {
+  return {
+      assets::resolve("fonts/Roboto-Regular.ttf",
+                      AVIONICS_FONT_DIR "/Roboto-Regular.ttf"),
+      assets::resolve("fonts/Roboto-Bold.ttf",
+                      AVIONICS_FONT_DIR "/Roboto-Bold.ttf"),
+      "/System/Library/Fonts/Supplemental/Arial.ttf",
+      "/System/Library/Fonts/SFNSMono.ttf",
+      "/System/Library/Fonts/Menlo.ttc",
+      "/System/Library/Fonts/Helvetica.ttc",
+  };
+}
 
 constexpr const char* kFontName = "sans";
+
+// Secondary display face: DejaVu Sans SemiBold, the numeric/display typeface
+// the Working Title G1000 NXi bundles. Used where a closer match to the real
+// unit is wanted (e.g. the PFD Setup Menu); optional, so a missing file just
+// falls back to the primary font.
+constexpr const char* kDejavuFontName = "dejavu";
+std::string dejavuFontPath() {
+  return assets::resolve("fonts/DejaVuSans-SemiBold.ttf",
+                         AVIONICS_FONT_DIR "/DejaVuSans-SemiBold.ttf");
+}
 
 NVGcolor toNvg(const Color& c) { return nvgRGBAf(c.r, c.g, c.b, c.a); }
 
@@ -55,10 +76,36 @@ NanoVgRenderer::NanoVgRenderer(Backend backend) : backend_(backend) {
   }
   if (!vg_) return;
 
-  for (const char* path : kFontCandidates) {
-    fontId_ = nvgCreateFont(vg_, kFontName, path);
+  for (const std::string& path : fontCandidates()) {
+    if (path.empty()) continue;
+    fontId_ = nvgCreateFont(vg_, kFontName, path.c_str());
     if (fontId_ >= 0) break;
   }
+
+  const std::string dejavu = dejavuFontPath();
+  if (!dejavu.empty()) {
+    dejavuFontId_ = nvgCreateFont(vg_, kDejavuFontName, dejavu.c_str());
+  }
+}
+
+int NanoVgRenderer::fontIdFor(FontFace face) const {
+  // A Default request defers to the active override (if any); an explicit face
+  // always wins over the override.
+  if (face == FontFace::Default && !defaultFaceStack_.empty()) {
+    face = defaultFaceStack_.back();
+  }
+  if (face == FontFace::DejaVuSemiBold && dejavuFontId_ >= 0) {
+    return dejavuFontId_;
+  }
+  return fontId_;
+}
+
+void NanoVgRenderer::pushDefaultFontFace(FontFace face) {
+  defaultFaceStack_.push_back(face);
+}
+
+void NanoVgRenderer::popDefaultFontFace() {
+  if (!defaultFaceStack_.empty()) defaultFaceStack_.pop_back();
 }
 
 NanoVgRenderer::~NanoVgRenderer() {
@@ -100,6 +147,10 @@ void NanoVgRenderer::rotateDegrees(float degrees) {
 
 void NanoVgRenderer::clip(float x, float y, float w, float h) {
   if (vg_) nvgScissor(vg_, x, y, w, h);
+}
+
+void NanoVgRenderer::globalAlpha(float alpha) {
+  if (vg_) nvgGlobalAlpha(vg_, alpha);
 }
 
 void NanoVgRenderer::fillRect(float x, float y, float w, float h,
@@ -149,6 +200,28 @@ void NanoVgRenderer::fillCircle(float cx, float cy, float radius,
   nvgCircle(vg_, cx, cy, radius);
   nvgFillColor(vg_, toNvg(c));
   nvgFill(vg_);
+}
+
+void NanoVgRenderer::fillRoundedRect(float x, float y, float w, float h,
+                                     float radius, const Color& c) {
+  if (!vg_) return;
+  ++stats_.fills;
+  nvgBeginPath(vg_);
+  nvgRoundedRect(vg_, x, y, w, h, radius);
+  nvgFillColor(vg_, toNvg(c));
+  nvgFill(vg_);
+}
+
+void NanoVgRenderer::strokeRoundedRect(float x, float y, float w, float h,
+                                       float radius, float widthPx,
+                                       const Color& c) {
+  if (!vg_) return;
+  ++stats_.strokes;
+  nvgBeginPath(vg_);
+  nvgRoundedRect(vg_, x, y, w, h, radius);
+  nvgStrokeWidth(vg_, widthPx);
+  nvgStrokeColor(vg_, toNvg(c));
+  nvgStroke(vg_);
 }
 
 void NanoVgRenderer::fillPolygon(const Point* points, int count,
@@ -225,7 +298,8 @@ void NanoVgRenderer::drawImage(int imageId, float x, float y, float w, float h,
 }
 
 void NanoVgRenderer::fillText(float x, float y, const std::string& text,
-                              float sizePx, TextAlign align, const Color& c) {
+                              float sizePx, TextAlign align, const Color& c,
+                              FontFace face) {
   if (!vg_ || fontId_ < 0) return;
   ++stats_.texts;
 
@@ -243,20 +317,21 @@ void NanoVgRenderer::fillText(float x, float y, const std::string& text,
   }
 
   nvgFontSize(vg_, sizePx);
-  nvgFontFaceId(vg_, fontId_);
+  nvgFontFaceId(vg_, fontIdFor(face));
   nvgTextAlign(vg_, hAlign | NVG_ALIGN_MIDDLE);
   nvgFillColor(vg_, toNvg(c));
   nvgText(vg_, x, y, text.c_str(), nullptr);
 }
 
-float NanoVgRenderer::measureTextWidth(const std::string& text, float sizePx) {
+float NanoVgRenderer::measureTextWidth(const std::string& text, float sizePx,
+                                       FontFace face) {
   if (!vg_ || fontId_ < 0) {
     // No font: fall back to a rough monospace-ish estimate so layout still
     // advances sensibly.
     return static_cast<float>(text.size()) * sizePx * 0.55f;
   }
   nvgFontSize(vg_, sizePx);
-  nvgFontFaceId(vg_, fontId_);
+  nvgFontFaceId(vg_, fontIdFor(face));
   nvgTextAlign(vg_, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
   float bounds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   return nvgTextBounds(vg_, 0.0f, 0.0f, text.c_str(), nullptr, bounds);

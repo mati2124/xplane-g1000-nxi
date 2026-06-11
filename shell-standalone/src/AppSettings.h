@@ -30,6 +30,10 @@ struct AppSettings {
   // Whether the mock data feed adds simulated turbulence (chaotic bumps on the
   // attitude/airspeed/etc.). Only affects the mock feed, not live X-Plane.
   bool simulateTurbulence = false;
+  // Whether the mock feed is frozen on the ground at KFMY runway 31 (engine
+  // idling, stationary) instead of flying the demo route. Only affects the
+  // mock feed, not live X-Plane.
+  bool mockOnGround = false;
   // Whether the window positions are captured at exit and restored on the
   // next launch.
   bool rememberWindowPos = false;

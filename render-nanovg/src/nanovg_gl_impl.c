@@ -7,13 +7,15 @@
 #if defined(__APPLE__)
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl3.h>
-#elif defined(_WIN32)
-#include <windows.h>
-#include <GL/gl.h>
-// On Windows/Linux a loader (glad/GLEW) must provide GL3 entry points; wire one
-// in alongside this file when those platforms are brought up.
 #else
-#include <GL/gl.h>
+// Windows/Linux: GLEW supplies the GL3 entry points NanoVG calls (opengl32 /
+// libGL don't export them directly). avionics::render::ensureGlLoaded() must run
+// after the context is current and before nvgCreateGL3. glew.h must precede any
+// other GL header.
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+#include <GL/glew.h>
 #endif
 
 #include "nanovg.h"

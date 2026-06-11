@@ -482,8 +482,11 @@ std::vector<MapFeature> NavDataStore::nearby(double lat, double lon,
 
   // Reserve capacity for airports and navaids first so dense fix databases do
   // not crowd them out of the map feature budget (important for NRST lists).
-  constexpr std::size_t kMaxAirports = 40;
-  constexpr std::size_t kMaxNavaids = 80;
+  // The airport reserve must be deep enough that a wide MFD MAP view (out to
+  // 150 NM) still receives the far airports, not just the nearest cluster --
+  // the renderer then declutters them per-size against the Map Setup ranges.
+  constexpr std::size_t kMaxAirports = 200;
+  constexpr std::size_t kMaxNavaids = 100;
   auto append = [&](const std::vector<Scored>& scored, std::size_t cap) {
     for (const Scored& s : scored) {
       if (result.size() >= maxCount || cap == 0) return;

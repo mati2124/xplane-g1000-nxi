@@ -69,6 +69,17 @@ struct MapViewStyle {
   // off (like the G1000's detail declutter) -- at close range the fix class is
   // dense enough to bury the airport the window is meant to show.
   bool showFixes = true;
+  // Airport declutter by Garmin size class (Map Setup "Aviation" group): each
+  // size shows only at/below its own max map range. The renderer classifies an
+  // airport from its longest runway (>= 8100 ft Large, >= 5000 ft or towered
+  // Medium, else Small). Defaults mirror MfdController's Aviation defaults so
+  // callers that don't drive Map Settings (the PFD inset) still show airports.
+  bool showLargeAirports = true;
+  bool showMediumAirports = true;
+  bool showSmallAirports = true;
+  float largeAirportRangeNm = 1000.0f;
+  float mediumAirportRangeNm = 100.0f;
+  float smallAirportRangeNm = 25.0f;
   float labelFontWt = 14.0f;
 };
 

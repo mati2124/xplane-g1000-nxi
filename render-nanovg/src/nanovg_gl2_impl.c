@@ -13,11 +13,13 @@
 #if defined(__APPLE__)
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl.h>
-#elif defined(_WIN32)
-#include <windows.h>
-#include <GL/gl.h>
 #else
-#include <GL/gl.h>
+// Windows/Linux: GLEW supplies the GL2 + extension entry points NanoVG calls.
+// glew.h must precede any other GL header.
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+#include <GL/glew.h>
 #endif
 
 #include "nanovg.h"

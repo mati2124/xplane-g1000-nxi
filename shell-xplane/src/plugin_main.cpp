@@ -17,11 +17,14 @@
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>  // EXT_framebuffer_object (render-to-texture cache)
-#elif defined(_WIN32)
-#include <windows.h>
-#include <GL/gl.h>
 #else
-#include <GL/gl.h>
+// Windows/Linux: GLEW provides the GL2 + EXT_framebuffer_object entry points the
+// render-to-texture cache uses. avionics::render::ensureGlLoaded() initializes
+// it once inside X-Plane's GL context. glew.h must precede any other GL header.
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+#include <GL/glew.h>
 #endif
 
 #include <chrono>
@@ -29,12 +32,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "DatarefDataSource.h"
 #include "FlightPlanBridge.h"
+#include "avionics/AssetPaths.h"
 #include "avionics/EisStore.h"
 #include "XPLMDisplay.h"
 #include "XPLMGraphics.h"
@@ -46,6 +51,7 @@
 #include "avionics/FlightPlanBridgeProtocol.h"
 #include "avionics/PersistentState.h"
 #include "avionics/render/BezelKeys.h"
+#include "avionics/render/GlLoader.h"
 #include "avionics/render/NanoVgRenderer.h"
 
 namespace {
@@ -184,6 +190,10 @@ RatePreset g_preset = kDefaultPreset;
 XPLMMenuID g_rateMenu = nullptr;
 int g_rateMenuParentItem = -1;
 
+// When false the stock G1000 renders untouched and only the FMS bridge runs for
+// the networked standalone shell.
+bool g_replaceDisplays = true;
+
 // Durable PFD/MFD display preferences (the softkey-selectable options that
 // survive between flights, e.g. the PFD inset map on/off). Loaded at startup,
 // applied to each device engine when it is created, and rewritten whenever a
@@ -213,6 +223,7 @@ void ApplyPreset(RatePreset preset) {
 // declutter, etc.).
 constexpr const char* kConfigFileName = "g1000nxi.prf";
 constexpr const char* kKeyRate = "rate";
+constexpr const char* kKeyReplaceDisplays = "replace_displays";
 
 std::string ConfigFilePath() {
   char prefs[512] = {0};
@@ -229,6 +240,7 @@ void SaveConfig() {
   std::FILE* f = std::fopen(ConfigFilePath().c_str(), "w");
   if (f == nullptr) return;
   std::fprintf(f, "%s=%s\n", kKeyRate, kPresets[static_cast<int>(g_preset)].name);
+  std::fprintf(f, "%s=%d\n", kKeyReplaceDisplays, g_replaceDisplays ? 1 : 0);
   std::string stateLines;
   avionics::appendStateLines(g_avionicsState, stateLines);
   std::fwrite(stateLines.data(), 1, stateLines.size(), f);
@@ -255,6 +267,8 @@ void LoadConfig() {
           break;
         }
       }
+    } else if (key == kKeyReplaceDisplays) {
+      g_replaceDisplays = (value == "1");
     } else {
       // Durable display preferences are parsed by the shared core.
       avionics::applyStateLine(key, value, g_avionicsState);
@@ -397,6 +411,8 @@ int DrawDevice(AvionicsDevice& dev) {
   if (!dev.engine) {
     // NanoVG's GL backend is created here, where X-Plane has made the device's
     // GL context current. The bridge is OpenGL 2.1, so use the GL2 backend.
+    // Resolve GL entry points first (no-op on macOS; GLEW on Windows/Linux).
+    avionics::render::ensureGlLoaded();
     dev.renderer = std::make_unique<avionics::NanoVgRenderer>(
         avionics::NanoVgRenderer::Backend::GL2);
     if (!dev.renderer->valid()) {
@@ -887,7 +903,14 @@ void UnregisterG1000Commands() {
   g_radioBindings.clear();
 }
 
+void EnableGlassTakeover();
+void DisableGlassTakeover();
+
 // ---- rate-preset menu --------------------------------------------------------
+// itemRef -1 toggles in-sim display replacement; 0..kPresetCount-1 pick a preset.
+constexpr int kReplaceDisplaysMenuRef = -1;
+constexpr int kReplaceDisplaysMenuIndex = kPresetCount + 1;
+
 // Puts a check mark beside the active preset and clears the others.
 void RefreshRateMenuChecks() {
   if (g_rateMenu == nullptr) return;
@@ -897,11 +920,23 @@ void RefreshRateMenuChecks() {
                           ? xplm_Menu_Checked
                           : xplm_Menu_Unchecked);
   }
+  XPLMCheckMenuItem(g_rateMenu, kReplaceDisplaysMenuIndex,
+                    g_replaceDisplays ? xplm_Menu_Checked : xplm_Menu_Unchecked);
 }
 
 void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
-  // itemRef carries the preset index (stuffed into the pointer at append time).
   const int idx = static_cast<int>(reinterpret_cast<intptr_t>(itemRef));
+  if (idx == kReplaceDisplaysMenuRef) {
+    g_replaceDisplays = !g_replaceDisplays;
+    if (g_replaceDisplays) {
+      EnableGlassTakeover();
+    } else {
+      DisableGlassTakeover();
+    }
+    SaveConfig();
+    RefreshRateMenuChecks();
+    return;
+  }
   if (idx < 0 || idx >= kPresetCount) return;
   ApplyPreset(static_cast<RatePreset>(idx));
   SaveConfig();
@@ -918,6 +953,10 @@ void BuildRateMenu() {
     XPLMAppendMenuItem(g_rateMenu, kPresets[i].name,
                        reinterpret_cast<void*>(static_cast<intptr_t>(i)), 1);
   }
+  XPLMAppendMenuSeparator(g_rateMenu);
+  XPLMAppendMenuItem(
+      g_rateMenu, "Replace in-sim G1000 displays",
+      reinterpret_cast<void*>(static_cast<intptr_t>(kReplaceDisplaysMenuRef)), 1);
   RefreshRateMenuChecks();
 }
 
@@ -952,6 +991,24 @@ void ShutdownDevice(AvionicsDevice& dev) {
   dev.cacheReady = false;
 }
 
+// Take over the built-in G1000 PFD (pilot) + MFD and grab the GDU keys.
+void EnableGlassTakeover() {
+  if (g_pfd.handle == nullptr) {
+    RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
+  }
+  if (g_mfd.handle == nullptr) {
+    RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
+  }
+  RegisterG1000Commands();
+}
+
+// Hand the screens and GDU keys back to the stock G1000.
+void DisableGlassTakeover() {
+  UnregisterG1000Commands();
+  ShutdownDevice(g_pfd);
+  ShutdownDevice(g_mfd);
+}
+
 }  // namespace
 
 PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
@@ -965,6 +1022,21 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   // before any path-returning SDK call (map data discovery, config load).
   XPLMEnableFeature("XPLM_USE_NATIVE_PATHS", 1);
 
+  // Find assets bundled with the plugin. The plugin loads from
+  // <plugins>/xplane-avionics/<platform>/xplane-avionics.xpl; the installer puts
+  // the shared fonts/EIS sample at <plugins>/xplane-avionics/assets. Must run
+  // after enabling native paths so the SDK returns a POSIX path we can split.
+  {
+    char pluginPath[512] = {0};
+    XPLMGetPluginInfo(XPLMGetMyID(), nullptr, pluginPath, nullptr, nullptr);
+    if (pluginPath[0] != '\0') {
+      // .../xplane-avionics/<platform>/xplane-avionics.xpl -> .../xplane-avionics
+      const std::filesystem::path pluginRoot =
+          std::filesystem::path(pluginPath).parent_path().parent_path();
+      avionics::assets::addSearchDir((pluginRoot / "assets").string());
+    }
+  }
+
   g_eisStore = std::make_unique<avionics::EisStore>();
   g_dataSource = std::make_unique<avionics::DatarefDataSource>(g_eisStore.get());
 
@@ -977,10 +1049,10 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   LoadConfig();
   BuildRateMenu();
 
-  // Take over the built-in G1000 PFD (pilot side) and MFD: our before-callbacks
-  // draw our own glass and return 0 to suppress X-Plane's stock rendering.
-  RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
-  RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
+  if (g_replaceDisplays) {
+    RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
+    RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
+  }
   return 1;
 }
 
@@ -997,10 +1069,7 @@ PLUGIN_API void XPluginStop(void) {
 // it follows X-Plane's enable/disable lifecycle rather than start/stop.
 PLUGIN_API int XPluginEnable(void) {
   if (g_flightPlanBridge) g_flightPlanBridge->start();
-  // Take over the GDU bezel/softkey commands so they drive our display. Done on
-  // enable (not start) so disabling the plugin cleanly returns the keys to the
-  // stock G1000.
-  RegisterG1000Commands();
+  if (g_replaceDisplays) RegisterG1000Commands();
   return 1;
 }
 PLUGIN_API void XPluginDisable(void) {

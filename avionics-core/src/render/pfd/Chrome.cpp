@@ -487,46 +487,49 @@ WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
   const float slide = (1.0f - a) * panelH * 0.22f;
   const float panelTop = panelBottom - panelH + slide;
 
-  // Panel body and cyan window border.
-  r.fillRect(panelX, panelTop, panelW, panelH,
-             withAlpha(Color{0.04f, 0.05f, 0.08f, 1.0f}, 0.96f * a));
-  const Point border[5] = {{panelX, panelTop},
-                           {panelX + panelW, panelTop},
-                           {panelX + panelW, panelTop + panelH},
-                           {panelX, panelTop + panelH},
-                           {panelX, panelTop}};
-  r.strokePolyline(border, 5, 2.0f, withAlpha(colors::kCyan, a));
+  // Shared menu chrome (matches the PFD Setup Menu / real unit, Fig. 1-18):
+  // opaque black rounded body with a thick light-grey rounded border drawn
+  // inset by half its width so the stroke sits fully inside the panel.
+  const float radius = panelH * 0.06f;
+  const float borderW = 3.0f * (h / 768.0f);
+  r.fillRoundedRect(panelX, panelTop, panelW, panelH, radius,
+                    withAlpha(colors::kBlack, a));
+  r.strokeRoundedRect(panelX + borderW * 0.5f, panelTop + borderW * 0.5f,
+                      panelW - borderW, panelH - borderW, radius, borderW,
+                      withAlpha(colors::kMenuBorderGray, a));
 
-  // Title bar.
-  const float titleSize = fontPx(wt::kInfoValue, h);
-  const float titleH = titleSize * 1.7f;
-  r.fillRect(panelX, panelTop, panelW, titleH,
-             withAlpha(colors::kCyan, 0.18f * a));
-  r.strokeLine(panelX, panelTop + titleH, panelX + panelW, panelTop + titleH,
-               1.5f, withAlpha(colors::kPanelSeparator, a));
-  r.fillText(panelX + panelW * 0.5f, panelTop + titleH * 0.5f, title,
+  // Cyan centered title with a white separator rule beneath it. Sized to match
+  // the PFD Setup Menu's title/text (wt::kInfoLabel) so every pop-up shares the
+  // same type size.
+  const float titleSize = fontPx(wt::kInfoLabel, h);
+  const float sepY = panelTop + titleSize * 1.5f;
+  r.fillText(panelX + panelW * 0.5f, panelTop + titleSize * 0.85f, title,
              titleSize, TextAlign::Center, withAlpha(colors::kCyan, a));
+  const float sepInset = borderW + panelW * 0.01f;
+  r.strokeLine(panelX + sepInset, sepY, panelX + panelW - sepInset, sepY, 1.5f,
+               withAlpha(colors::kWhitesmoke, a));
 
   f.a = a;
   f.x = panelX;
   f.top = panelTop;
   f.w = panelW;
   f.h = panelH;
-  f.contentTop = panelTop + titleH;
+  f.contentTop = sepY + titleSize * 0.35f;
   return f;
 }
 
 // Pop-up Alerts/messages window (under the "Alerts" key).
 void drawAlertsWindow(Renderer& r, float w, float h, const Layout& L,
                       const SoftkeyController& ui) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::Alerts), "ALERTS",
                       w * 0.42f, h * 0.42f);
   if (f.a <= 0.0f) return;
   const float a = f.a;
 
-  // Message list (or an empty-state line).
-  const float msgSize = fontPx(wt::kInfoValue, h) * 0.9f;
+  // Message list (or an empty-state line). Matches the PFD Setup Menu text size.
+  const float msgSize = fontPx(wt::kInfoLabel, h);
   const float lineH = msgSize * 1.6f;
   const float textX = f.x + f.w * 0.04f;
   float y = f.contentTop + lineH * 0.75f;
@@ -552,8 +555,9 @@ void drawAlertsWindow(Renderer& r, float w, float h, const Layout& L,
 // just past the field.
 float putField(Renderer& r, float x, float cy, const std::string& text,
                float size, const Color& color, bool highlighted, float alpha,
-               bool blinkOn, float trailingGapFrac = 0.6f) {
-  const float tw = r.measureTextWidth(text, size);
+               bool blinkOn, float trailingGapFrac = 0.6f,
+               FontFace face = FontFace::Default) {
+  const float tw = r.measureTextWidth(text, size, face);
   if (highlighted && blinkOn) {
     const float padX = size * 0.25f;
     const float padY = size * 0.18f;
@@ -563,7 +567,8 @@ float putField(Renderer& r, float x, float cy, const std::string& text,
   const Color textColor = highlighted
                               ? (blinkOn ? colors::kBlack : colors::kCyan)
                               : color;
-  r.fillText(x, cy, text, size, TextAlign::Left, withAlpha(textColor, alpha));
+  r.fillText(x, cy, text, size, TextAlign::Left, withAlpha(textColor, alpha),
+             face);
   return x + tw + size * trailingGapFrac;
 }
 
@@ -572,6 +577,7 @@ float putField(Renderer& r, float x, float cy, const std::string& text,
 // moves the cursor between fields; ENT activates the highlighted field.
 void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
                           const SoftkeyController& ui) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::References),
                       "REFERENCES", w * 0.34f, h * 0.46f);
@@ -580,7 +586,7 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
   const RefField cursor = ui.referencesCursor();
   const bool blinkOn = ui.blinkOn();
 
-  const float size = fontPx(wt::kInfoValue, h) * 0.9f;
+  const float size = fontPx(wt::kInfoLabel, h);
   // Up to seven rows (TIMER, four V-speeds, MINS, and the TEMP-COMP row).
   const float lineH = (f.top + f.h - f.contentTop) / 7.5f;
   const float labelX = f.x + f.w * 0.05f;
@@ -650,6 +656,7 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
 // runway (Pilot's Guide Fig. 5-28). Three entries are visible at a time.
 void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
                        const SoftkeyController& ui) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::Nearest),
                       "NEAREST AIRPORTS", w * 0.42f, h * 0.42f);
@@ -657,7 +664,7 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
   const float a = f.a;
 
   const auto& list = ui.nearestAirports();
-  const float size = fontPx(wt::kInfoValue, h) * 0.9f;
+  const float size = fontPx(wt::kInfoLabel, h);
   if (list.empty()) {
     r.fillText(f.x + f.w * 0.5f, f.top + f.h * 0.55f, "None Within 200nm",
                size, TextAlign::Center, withAlpha(colors::kWhite, a));
@@ -712,6 +719,145 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
       r.strokeLine(f.x + f.w * 0.03f, top, f.x + f.w * 0.97f, top, 1.0f,
                    withAlpha(colors::kPanelSeparator, a));
     }
+  }
+}
+
+// PFD Setup Menu (PFD MENU key, Pilot's Guide Fig. 1-18): a lower-right popout
+// with a backlighting row for each display. Each row is an arrow-toggle target
+// (Display / Key), a mode (Auto / Manual), and an intensity percentage. The
+// large FMS knob moves the cursor between fields, the small knob edits the
+// highlighted one (the green arrowhead shows the way the target can still
+// toggle), and ENT steps onto the intensity once Manual is selected.
+//
+// Unlike the softkey-opened PFD windows, this one is drawn with the real unit's
+// own chrome (Fig. 1-18): a near-black grey panel with a grey bevel border, a
+// cyan title over a white separator rule, and the two rows packed into the top
+// third over an otherwise empty panel -- not the cyan window frame.
+void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
+                        const SoftkeyController& ui) {
+  const float rawAnim = ui.windowAnim(PfdWindow::Setup);
+  if (rawAnim <= 0.0f) return;
+  const float a = smoothstep(rawAnim);
+  const bool blinkOn = ui.blinkOn();
+  const PfdSetupField cursor = ui.pfdSetupCursor();
+
+  // Lower-right anchor with the shared slide-up + fade. The real menu's box is
+  // ~1.43:1 (w:h) per Fig. 1-18 and fairly compact; keep the aspect but make it
+  // small so the two rows sit tightly under the title.
+  const float panelW = w * 0.28f;
+  const float panelH = h * 0.26f;
+  const float margin = w * 0.012f;
+  const float panelX = w - panelW - margin;
+  const float panelBottom = (h - L.bottomBarH) - h * 0.012f;
+  const float panelTop = panelBottom - panelH + (1.0f - a) * panelH * 0.22f;
+
+  // Body: near-black with rounded corners and a thick light-grey border, as on
+  // the real unit (Fig. 1-18). The border is drawn inset by half its width so
+  // the stroke sits fully inside the panel rather than straddling the edge.
+  const float radius = panelH * 0.07f;
+  const float borderW = 3.0f * (h / 768.0f);
+  r.fillRoundedRect(panelX, panelTop, panelW, panelH, radius,
+                    withAlpha(colors::kBlack, a));
+  r.strokeRoundedRect(panelX + borderW * 0.5f, panelTop + borderW * 0.5f,
+                      panelW - borderW, panelH - borderW, radius, borderW,
+                      withAlpha(colors::kMenuBorderGray, a));
+
+  // Title bar: cyan title near the top with a white separator rule beneath it.
+  // The whole menu uses the bundled DejaVu Sans SemiBold display face to match
+  // the real unit more closely than the primary Roboto UI font.
+  const FontFace kMenuFace = FontFace::DejaVuSemiBold;
+  const float titleSize = fontPx(wt::kInfoLabel, h);
+  // Title and separator are anchored to the font size (not the panel height) so
+  // they stay tight to the top regardless of panel size.
+  const float sepY = panelTop + titleSize * 1.85f;
+  r.fillText(panelX + panelW * 0.5f, panelTop + titleSize * 1.0f, "PFD Setup Menu",
+             titleSize, TextAlign::Center, withAlpha(colors::kCyan, a),
+             kMenuFace);
+  const float sepInset = borderW + panelW * 0.01f;
+  r.strokeLine(panelX + sepInset, sepY, panelX + panelW - sepInset, sepY, 1.5f,
+               withAlpha(colors::kWhitesmoke, a));
+
+  // Rows packed directly under the separator with single-line spacing (the
+  // empty lower panel below matches the figure). Spacing keys off the font size
+  // so the two rows never drift apart as the panel scales.
+  const float size = fontPx(wt::kInfoLabel, h);
+  const float labelX = panelX + panelW * 0.06f;
+  const float modeX = panelX + panelW * 0.50f;
+  const float valueRight = panelX + panelW * 0.96f;
+  const float row0Cy = sepY + size * 1.35f;
+  const float rowGap = size * 1.6f;
+  const float rowCy[kPfdSetupRowCount] = {row0Cy, row0Cy + rowGap};
+
+  // Small left/right-pointing arrowhead next to a target label.
+  const auto arrow = [&](float ax, float acy, bool pointRight, const Color& c) {
+    const float aw = size * 0.30f;
+    const float ah = size * 0.46f;
+    if (pointRight) {
+      const Point t[3] = {{ax, acy - ah * 0.5f},
+                          {ax + aw, acy},
+                          {ax, acy + ah * 0.5f}};
+      r.fillPolygon(t, 3, withAlpha(c, a));
+    } else {
+      const Point t[3] = {{ax + aw, acy - ah * 0.5f},
+                          {ax, acy},
+                          {ax + aw, acy + ah * 0.5f}};
+      r.fillPolygon(t, 3, withAlpha(c, a));
+    }
+  };
+
+  struct Row {
+    const char* name;
+    PfdSetupRow row;
+    PfdSetupField target, mode, value;
+  };
+  const Row rows[kPfdSetupRowCount] = {
+      {"PFD", PfdSetupRow::Pfd, PfdSetupField::PfdTarget, PfdSetupField::PfdMode,
+       PfdSetupField::PfdValue},
+      {"MFD", PfdSetupRow::Mfd, PfdSetupField::MfdTarget, PfdSetupField::MfdMode,
+       PfdSetupField::MfdValue},
+  };
+
+  // The right-pointing carrot sits in a fixed column so both rows' carrots line
+  // up vertically (as on the real unit) regardless of each label's width. Anchor
+  // it just past the widest label among the rows.
+  float maxLabelW = 0.0f;
+  for (const Row& row : rows) {
+    const bool isKey = ui.pfdSetupTarget(row.row) == BacklightTarget::Key;
+    const std::string t =
+        std::string(row.name) + (isKey ? " Key" : " Display");
+    maxLabelW = std::max(maxLabelW, r.measureTextWidth(t, size, kMenuFace));
+  }
+  const float rightArrowX = labelX + maxLabelW + size * 0.30f;
+
+  for (int i = 0; i < kPfdSetupRowCount; ++i) {
+    const Row& row = rows[i];
+    const float cy = rowCy[i];
+    const bool isKey = ui.pfdSetupTarget(row.row) == BacklightTarget::Key;
+    const std::string targetText =
+        std::string(row.name) + (isKey ? " Key" : " Display");
+
+    // Green arrowhead shows where the small knob can still toggle: right toward
+    // Key when on Display, left back toward Display when on Key.
+    arrow(labelX - size * 0.55f, cy, /*pointRight=*/false,
+          isKey ? colors::kActiveGreen : colors::kLabelText);
+    putField(r, labelX, cy, targetText, size, colors::kCyan,
+             cursor == row.target, a, blinkOn, 0.0f, kMenuFace);
+    arrow(rightArrowX, cy, /*pointRight=*/true,
+          isKey ? colors::kLabelText : colors::kActiveGreen);
+
+    // Mode (Auto / Manual).
+    const std::string modeText =
+        ui.pfdSetupMode(row.row) == BacklightMode::Manual ? "Manual" : "Auto";
+    putField(r, modeX, cy, modeText, size, colors::kCyan, cursor == row.mode, a,
+             blinkOn, 0.0f, kMenuFace);
+
+    // Intensity percentage, right-aligned.
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%.2f%%", ui.pfdSetupIntensityPct(row.row));
+    const std::string valueText(buf);
+    const float vx = valueRight - r.measureTextWidth(valueText, size, kMenuFace);
+    putField(r, vx, cy, valueText, size, colors::kWhite, cursor == row.value, a,
+             blinkOn, 0.0f, kMenuFace);
   }
 }
 
@@ -776,6 +922,7 @@ void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
   drawAlertsWindow(r, w, h, L, ui);
   drawReferencesWindow(r, w, h, L, ui);
   drawNearestWindow(r, w, h, L, ui);
+  drawPfdSetupWindow(r, w, h, L, ui);
   drawSoftkeyBar(r, w, h, L, ui);
 }
 

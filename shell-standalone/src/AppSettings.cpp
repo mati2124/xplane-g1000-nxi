@@ -16,6 +16,7 @@ constexpr const char* kKeySimbriefPilotId = "simbriefPilotId";
 constexpr const char* kKeyShowWindowChrome = "showWindowChrome";
 constexpr const char* kKeyAlwaysOnTop = "alwaysOnTop";
 constexpr const char* kKeySimulateTurbulence = "simulateTurbulence";
+constexpr const char* kKeyMockOnGround = "mockOnGround";
 constexpr const char* kKeyRememberWindowPos = "rememberWindowPos";
 constexpr const char* kKeyPfdWindowX = "pfdWindowX";
 constexpr const char* kKeyPfdWindowY = "pfdWindowY";
@@ -101,6 +102,8 @@ AppSettings LoadAppSettings() {
     } else if (key == kKeySimulateTurbulence) {
       settings.simulateTurbulence =
           ParseBool(value, settings.simulateTurbulence);
+    } else if (key == kKeyMockOnGround) {
+      settings.mockOnGround = ParseBool(value, settings.mockOnGround);
     } else if (key == kKeyRememberWindowPos) {
       settings.rememberWindowPos =
           ParseBool(value, settings.rememberWindowPos);
@@ -144,6 +147,7 @@ void SaveAppSettings(const AppSettings& settings) {
   out << kKeyAlwaysOnTop << '=' << (settings.alwaysOnTop ? '1' : '0') << '\n';
   out << kKeySimulateTurbulence << '='
       << (settings.simulateTurbulence ? '1' : '0') << '\n';
+  out << kKeyMockOnGround << '=' << (settings.mockOnGround ? '1' : '0') << '\n';
   out << kKeyRememberWindowPos << '='
       << (settings.rememberWindowPos ? '1' : '0') << '\n';
   // Window coordinates are only written once a position has been captured, so

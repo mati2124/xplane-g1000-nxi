@@ -63,10 +63,44 @@ enum class SoftkeyMenu {
 enum class XpdrMode { Standby, On, Alt, Ground };
 
 // Pop-up windows in the lower-right of the PFD. The real unit shows one at a
-// time in that region (Alerts, Timer/References, Nearest Airports); opening
-// one replaces any other.
-enum class PfdWindow { None, Alerts, References, Nearest };
-inline constexpr int kPfdWindowCount = 4;  // including None
+// time in that region (Alerts, Timer/References, Nearest Airports, PFD Setup
+// Menu); opening one replaces any other.
+enum class PfdWindow { None, Alerts, References, Nearest, Setup };
+inline constexpr int kPfdWindowCount = 5;  // including None
+
+// PFD Setup Menu (PFD MENU key, Pilot's Guide Fig. 1-18). Adjusts the PFD and
+// MFD display/key backlighting. The two rows the menu shows -- indexed by this
+// in the controller and renderer.
+enum class PfdSetupRow { Pfd, Mfd, Count };
+inline constexpr int kPfdSetupRowCount = static_cast<int>(PfdSetupRow::Count);
+
+// Backlight control mode (Pilot's Guide: 'Auto' tracks the photocell, 'Manual'
+// holds a pilot-set intensity). The key backlight is Auto-only on the real unit.
+enum class BacklightMode { Auto, Manual };
+
+// The backlight target a row's arrow-toggle selects: the display screen or the
+// bezel keys (turn the small FMS knob "in the direction of the green
+// arrowhead" to switch 'PFD Display' to 'PFD Key').
+enum class BacklightTarget { Display, Key };
+
+// Fields the FMS cursor can highlight in the PFD Setup Menu. The large FMS knob
+// moves between fields (skipping a row's intensity unless that row is in
+// Manual); the small knob changes the highlighted field; ENT confirms. Two
+// rows (PFD, MFD), each a target toggle, a mode, and an intensity value.
+enum class PfdSetupField {
+  PfdTarget,  // 'PFD Display' / 'PFD Key' arrow-toggle
+  PfdMode,    // Auto / Manual
+  PfdValue,   // intensity %
+  MfdTarget,
+  MfdMode,
+  MfdValue,
+  Count,
+};
+
+// Backlight intensity entry range and small-knob step (percent).
+inline constexpr float kBacklightMinPct = 0.0f;
+inline constexpr float kBacklightMaxPct = 100.0f;
+inline constexpr float kBacklightStepPct = 1.0f;
 
 // Pilot-selectable V-speed reference bugs, in the row order of the NXi
 // Timer/References window (Pilot's Guide Fig. 2-6 / Table 2-1).
@@ -250,6 +284,21 @@ class SoftkeyController {
   // Index of the FMS-cursor-selected entry in nearestAirports().
   int nearestCursor() const { return nearestCursor_; }
 
+  // ---- PFD Setup Menu state ----
+  // FMS-cursor field currently highlighted in the PFD Setup Menu.
+  PfdSetupField pfdSetupCursor() const { return setupCursor_; }
+  // Per-row backlight target (Display / Key), mode (Auto / Manual), and the
+  // stored intensity percentage. Row is a PfdSetupRow (Pfd / Mfd).
+  BacklightTarget pfdSetupTarget(PfdSetupRow row) const {
+    return setupTarget_[static_cast<int>(row)];
+  }
+  BacklightMode pfdSetupMode(PfdSetupRow row) const {
+    return setupMode_[static_cast<int>(row)];
+  }
+  float pfdSetupIntensityPct(PfdSetupRow row) const {
+    return setupIntensity_[static_cast<int>(row)];
+  }
+
   // ---- Transponder ----
   // True while the 18-second IDNT annunciation is active in the Transponder
   // Data Box (Pilot's Guide, Ident Function).
@@ -386,6 +435,14 @@ class SoftkeyController {
   void moveReferencesCursor(int step);
   void adjustReferencesValue(int step);
   void activateReferencesField();
+  // PFD Setup Menu (MENU key): large knob moves the cursor (skipping a row's
+  // intensity field unless that row is in Manual), small knob edits the
+  // highlighted field, ENT confirms (advancing onto a row's intensity once it
+  // is set to Manual). Mirrors the Pilot's Guide backlighting procedures.
+  bool pfdSetupFieldReachable(PfdSetupField field) const;
+  void movePfdSetupCursor(int step);
+  void adjustPfdSetupValue(int step);
+  void activatePfdSetupField();
   // Start the 18-second IDNT annunciation; from the XPDR menus this also
   // reverts to the top-level softkeys, like the real unit.
   void startIdent();
@@ -453,6 +510,18 @@ class SoftkeyController {
   // Nearest Airports window: distance-sorted list and the FMS cursor index.
   std::vector<NearestAirport> nearest_;
   int nearestCursor_ = 0;
+
+  // PFD Setup Menu state: the highlighted field plus each row's backlight
+  // target, mode, and intensity. Backlighting has no visible effect in this
+  // suite (the rendered display is not dimmed), so the intensities are stored
+  // display-only; the menu reproduces the real layout and FMS-knob behavior.
+  // Opens in Auto, with the cursor on the PFD mode field, like the real unit.
+  PfdSetupField setupCursor_ = PfdSetupField::PfdMode;
+  std::array<BacklightTarget, kPfdSetupRowCount> setupTarget_{
+      BacklightTarget::Display, BacklightTarget::Display};
+  std::array<BacklightMode, kPfdSetupRowCount> setupMode_{BacklightMode::Auto,
+                                                          BacklightMode::Auto};
+  std::array<float, kPfdSetupRowCount> setupIntensity_{85.0f, 85.0f};
 
   // Transponder: remaining IDNT annunciation time and the in-progress code
   // entry digits.

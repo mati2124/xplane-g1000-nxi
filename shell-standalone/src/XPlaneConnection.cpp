@@ -299,7 +299,9 @@ constexpr float kMapRangeNm = 10.0f;
 // Query radius for the nearby-data scans: must cover the longest MFD range,
 // not just the inset default.
 constexpr float kMapQueryRangeNm = 160.0f;
-constexpr std::size_t kMaxMapFeatures = 250;
+// Deep enough for the per-type reserves in NavDataStore::nearby (airports +
+// navaids) to fully populate a wide MFD MAP view before fixes fill the rest.
+constexpr std::size_t kMaxMapFeatures = 500;
 constexpr std::size_t kMaxMapAirspaces = 60;
 constexpr std::size_t kMaxMapAirways = 500;
 // Runway diagrams only draw at short ranges, so their query stays tight.

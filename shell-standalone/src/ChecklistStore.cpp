@@ -7,6 +7,8 @@
 #include <sstream>
 #include <system_error>
 
+#include "avionics/AssetPaths.h"
+
 #ifndef AVIONICS_DEFAULT_CHECKLIST
 #define AVIONICS_DEFAULT_CHECKLIST ""
 #endif
@@ -22,9 +24,10 @@ std::string resolvePath(const std::string& selector) {
     if (fs::is_regular_file(selector, ec)) return selector;
     return std::string();
   }
-  // No selector: fall back to the build-time sample so the page is populated in
+  // No selector: fall back to the bundled sample so the page is populated in
   // development. (The X-Plane plugin shell resolves a per-aircraft file.)
-  const std::string sample = AVIONICS_DEFAULT_CHECKLIST;
+  const std::string sample =
+      assets::resolve("checklists.txt", AVIONICS_DEFAULT_CHECKLIST);
   if (!sample.empty() && fs::is_regular_file(sample, ec)) return sample;
   return std::string();
 }

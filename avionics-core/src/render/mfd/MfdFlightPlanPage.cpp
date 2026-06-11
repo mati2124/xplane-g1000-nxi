@@ -140,6 +140,7 @@ float drawWaypointMatchInfo(Renderer& r, const Rect& inner, float fy,
 void drawFplEntryWindow(Renderer& r, const MfdController& ui,
                         const MapData& map, float x, float y, float w, float h,
                         float displayH) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
   const float rowH = mfdFontPx(kWtFieldValue, displayH) * 1.9f;
   const float boxW = w * 0.40f;
   const float boxH = rowH * 4.6f;
@@ -164,6 +165,7 @@ void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
   // MFD"): a tall right-side popup of stacked, labelled group boxes -- Ident/
   // Facility/City, VNV, Map, Location (bearing/distance), Course -- over the
   // Activate? / Hold? buttons.
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
   auto P = [&](float v) { return mfdFontPx(v, displayH); };
   const float boxH = h - P(18.0f);
   const float boxW = boxH / 2.17f;  // real window aspect (Fig 5-44 ~2.17:1)
@@ -328,6 +330,7 @@ namespace {
 // "Delete all waypoints in flight plan?" from the page menu).
 void drawFplConfirmWindow(Renderer& r, const MfdController& ui, float x,
                           float y, float w, float h, float displayH) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
   const float rowH = mfdFontPx(kWtFieldValue, displayH) * 1.9f;
   const float boxW = w * 0.36f;
   const float boxH = rowH * 3.6f;
@@ -370,6 +373,7 @@ void drawFplConfirmWindow(Renderer& r, const MfdController& ui, float x,
 // The FPL page menu (MENU key): its one supported option, Delete Flight Plan.
 void drawFplMenuWindow(Renderer& r, const MfdController& ui, float x, float y,
                        float w, float h, float displayH) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
   const float rowH = mfdFontPx(kWtFieldValue, displayH) * 1.9f;
   const float boxW = w * 0.40f;
   const float boxH = rowH * 4.0f;
@@ -657,6 +661,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
   } else if (ui.fplMenuOpen()) {
     drawFplMenuWindow(r, ui, x, y, w, h, displayH);
   } else if (ui.procMenuOpen()) {
+    const FontScope fs(r, FontFace::DejaVuSemiBold);
     const float rowH = mfdFontPx(kWtFieldValue, displayH) * 1.9f;
     const float boxW = w * 0.48f;
     const float boxH = rowH * 7.0f;

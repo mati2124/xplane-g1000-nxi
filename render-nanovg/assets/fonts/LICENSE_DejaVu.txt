@@ -1,0 +1,19 @@
+DejaVuSans-SemiBold.ttf is part of the DejaVu Fonts project
+(https://dejavu-fonts.github.io/), which is distributed under the permissive
+DejaVu Fonts License (a Bitstream Vera / Arev Fonts derivative). The license
+allows the fonts and derivatives to be used, embedded, and redistributed freely,
+including bundled with software, provided the copyright/license notice travels
+with the font files.
+
+Upstream copyright notices:
+  Bitstream Vera Fonts Copyright (c) 2003 Bitstream, Inc. All Rights Reserved.
+  Arev Fonts Copyright (c) 2006 Tavmjong Bah. All Rights Reserved.
+  DejaVu changes are in the public domain.
+
+For the full, authoritative license text, see the upstream project's LICENSE
+file at https://dejavu-fonts.github.io/ (also shipped with the DejaVu release
+archives). Keep this notice alongside the .ttf when redistributing.
+
+This font matches the numeric/display typeface used by the Working Title G1000
+NXi (its Assets/Fonts/DejaVuSans-SemiBold.ttf); it is used here as the secondary
+display face (e.g. the PFD Setup Menu) while Roboto remains the primary UI font.

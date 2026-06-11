@@ -29,7 +29,9 @@ constexpr float kMapRangeNm = 10.0f;
 // the standalone shell's kMapQueryRangeNm). Using the 10 NM display range here
 // left zoomed-out and panned views empty.
 constexpr float kMapQueryRangeNm = 160.0f;
-constexpr std::size_t kMaxMapFeatures = 250;
+// Deep enough for the per-type reserves in filterNearby (airports + navaids) to
+// fully populate a wide MFD MAP view before fixes fill the remaining budget.
+constexpr std::size_t kMaxMapFeatures = 500;
 constexpr std::size_t kMaxMapAirspaces = 60;
 constexpr float kRunwayQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxMapRunways = 120;
@@ -143,9 +145,37 @@ std::vector<MapFeature> filterNearby(const std::vector<MapFeature>& src,
   }
   std::sort(scored.begin(), scored.end(),
             [](const Scored& a, const Scored& b) { return a.distSq < b.distSq; });
-  if (scored.size() > maxCount) scored.resize(maxCount);
-  result.reserve(scored.size());
-  for (const Scored& s : scored) result.push_back(s.feature);
+
+  // Reserve airports and navaids before fixes (mirrors NavDataStore::nearby) so
+  // a wide MFD MAP view keeps the far airports instead of letting the dense fix
+  // class fill the whole budget with the nearest cluster. The map renderer then
+  // declutters airports per-size against the Map Setup "Aviation" ranges.
+  constexpr std::size_t kMaxAirports = 200;
+  constexpr std::size_t kMaxNavaids = 100;
+  result.reserve(std::min(scored.size(), maxCount));
+  std::size_t airports = 0;
+  std::size_t navaids = 0;
+  for (const Scored& s : scored) {
+    if (result.size() >= maxCount) break;
+    const MapFeatureType t = s.feature.type;
+    if (t == MapFeatureType::Airport) {
+      if (airports >= kMaxAirports) continue;
+      ++airports;
+    } else if (t == MapFeatureType::Vor || t == MapFeatureType::Ndb) {
+      if (navaids >= kMaxNavaids) continue;
+      ++navaids;
+    } else {
+      continue;  // fixes/waypoints fill the remaining budget below
+    }
+    result.push_back(s.feature);
+  }
+  for (const Scored& s : scored) {
+    if (result.size() >= maxCount) break;
+    const MapFeatureType t = s.feature.type;
+    if (t == MapFeatureType::Fix || t == MapFeatureType::Waypoint) {
+      result.push_back(s.feature);
+    }
+  }
   return result;
 }
 

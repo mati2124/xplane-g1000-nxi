@@ -107,6 +107,9 @@ inline constexpr Color kSoftkeySelected{0.62f, 0.62f, 0.62f, 1.0f};
 inline constexpr Color kPanelBorder{0.522f, 0.522f, 0.522f, 1.0f};  // rgb(133,133,133)
 inline constexpr Color kPanelSeparator{0.35f, 0.35f, 0.35f, 1.0f};
 inline constexpr Color kLabelText{0.78f, 0.78f, 0.78f, 1.0f};
+// Thick light-grey border around the menu/dialog pop-ups (matches the real
+// unit's bevelled window frame, e.g. the PFD Setup Menu in Fig. 1-18).
+inline constexpr Color kMenuBorderGray{0.62f, 0.66f, 0.66f, 1.0f};
 
 // MFD page chrome, exact values from the Working Title G1000 NXi CSS: the
 // gray data panel behind the group boxes (.mfd-dark-background / WT
@@ -116,6 +119,9 @@ inline constexpr Color kLabelText{0.78f, 0.78f, 0.78f, 1.0f};
 inline constexpr Color kMfdPanelGray{0.196f, 0.196f, 0.196f, 1.0f};   // rgb(50,50,50)
 inline constexpr Color kGroupBoxBorder{0.471f, 0.471f, 0.471f, 1.0f};  // rgb(120,120,120)
 inline constexpr Color kTitleGray{0.718f, 0.718f, 0.718f, 1.0f};       // #b7b7b7
+// Disabled / unavailable text (WT --disabled-gray): dim grey for menu options
+// the unit greys out (e.g. an unsupported page-menu entry).
+inline constexpr Color kDisabledGray{0.275f, 0.275f, 0.275f, 1.0f};    // #464646
 inline constexpr Color kWhitesmoke{0.961f, 0.961f, 0.961f, 1.0f};      // #f5f5f5
 // Faint steel-blue tint at the top edge of a group box body
 // (rgba(152,159,174,0.1) fading to black over the first 10px).

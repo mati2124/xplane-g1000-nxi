@@ -246,6 +246,7 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
   const float secs = ui.pageSelectSecondsLeft();
   if (secs <= 0.0f) return;
   const float alpha = std::min(1.0f, secs / 0.25f);  // quick fade-out
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
 
   struct GroupTab {
     const char* label;
@@ -301,14 +302,14 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
   const float bx = w - boxW - w * 0.004f;
   const float by = bottomBarTop - boxH - h * 0.006f;
 
-  r.fillRect(bx, by, boxW, boxH, mfdAlpha(colors::kBlack, 0.95f * alpha));
-  const Point border[5] = {{bx, by},
-                           {bx + boxW, by},
-                           {bx + boxW, by + boxH},
-                           {bx, by + boxH},
-                           {bx, by}};
-  r.strokePolyline(border, 5, 1.0f,
-                   mfdAlpha(colors::kGroupBoxBorder, alpha));
+  // Shared menu chrome: black rounded body with a thick light-grey rounded
+  // border (matches the dialog/pop-up look).
+  const float radius = itemSize * 0.5f;
+  const float borderW = 2.5f * (h / 768.0f);
+  r.fillRoundedRect(bx, by, boxW, boxH, radius, mfdAlpha(colors::kBlack, alpha));
+  r.strokeRoundedRect(bx + borderW * 0.5f, by + borderW * 0.5f, boxW - borderW,
+                      boxH - borderW, radius, borderW,
+                      mfdAlpha(colors::kMenuBorderGray, alpha));
 
   // Page list: gray entries, the current page cyan. Long checklist groups
   // scroll the window around the current page.
@@ -396,6 +397,78 @@ void drawSoftkeyBar(Renderer& r, float w, float h, float barH,
                  level > 0.5f ? colors::kBlack : colors::kWhite);
     }
   }
+}
+
+// The Page Menu popout (MENU bezel key, Pilot's Guide Fig. 5-6): a "Page Menu"
+// dialog holding an "Options" group box with the current page's option list and
+// a footer hint. The highlighted option pulses with the highlight-select
+// cursor; disabled options (features not yet modeled) are greyed, like the real
+// unit. Drawn over the page body, under the top/bottom chrome bars.
+void drawPageMenu(Renderer& r, const MfdController& ui, float x, float y,
+                  float w, float h, float displayH) {
+  const int n = ui.pageMenuItemCount();
+  if (n <= 0) return;
+
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
+  using mfd::drawDialog;
+  using mfd::drawGroupBox;
+  using mfd::Rect;
+
+  // Option rows match the PFD Setup Menu's row size (pfd::wt::kInfoLabel, 16px
+  // on the 768 canvas) so every pop-up menu reads at the same scale.
+  const float rowSize = mfd::mfdFontPx(16.0f, displayH);
+  const float rowH = rowSize * 1.55f;
+  const float footSize = mfd::mfdFontPx(13.0f, displayH);
+  const float titleSize = mfd::mfdFontPx(16.0f, displayH);
+  const float pad = mfd::mfdFontPx(10.0f, displayH);
+
+  // Group-box slot height: the title overhang, top/bottom padding, plus a row
+  // per option (drawGroupBox's own insets are folded in here).
+  const float groupSlotH = titleSize * 0.55f + pad + n * rowH + pad * 0.8f;
+  const float footH = footSize * 3.4f;
+  const float boxW = w * 0.40f;
+  const float boxH =
+      titleSize * 1.6f + mfd::mfdFontPx(6.0f, displayH) + groupSlotH + footH +
+      pad * 2.0f;
+
+  // Anchored to the top-right corner of the display, flush under the top bar,
+  // matching the real unit (Pilot's Guide Fig. 5-6) rather than centered.
+  const float margin = mfd::mfdFontPx(6.0f, displayH);
+  const Rect inner = drawDialog(
+      r, Rect{x + w - boxW - margin, y + margin, boxW, boxH}, "Page Menu",
+      displayH);
+
+  const Rect group = drawGroupBox(
+      r, Rect{inner.x, inner.y, inner.w, groupSlotH}, "Options", displayH);
+
+  float fy = group.y;
+  for (int i = 0; i < n; ++i) {
+    const float cy = fy + rowH * 0.5f;
+    const std::string& text = ui.pageMenuItemText(i);
+    const bool enabled = ui.pageMenuItemEnabled(i);
+    if (i == ui.pageMenuSelected() && enabled) {
+      // Full-width highlight bar with black text (pulses ~1 Hz), matching the
+      // figure's selected option.
+      if (ui.blinkOn()) {
+        r.fillRect(group.x - pad * 0.4f, cy - rowSize * 0.62f, group.w,
+                   rowSize * 1.24f, colors::kCyan);
+        r.fillText(group.x, cy, text, rowSize, TextAlign::Left, colors::kBlack);
+      } else {
+        r.fillText(group.x, cy, text, rowSize, TextAlign::Left, colors::kCyan);
+      }
+    } else {
+      r.fillText(group.x, cy, text, rowSize, TextAlign::Left,
+                 enabled ? colors::kWhite : colors::kDisabledGray);
+    }
+    fy += rowH;
+  }
+
+  const float footCx = inner.x + inner.w * 0.5f;
+  const float footY = group.y + n * rowH + footSize * 1.2f;
+  r.fillText(footCx, footY, "Press the FMS CRSR knob to return", footSize,
+             TextAlign::Center, colors::kTitleGray);
+  r.fillText(footCx, footY + footSize * 1.3f, "to base page", footSize,
+             TextAlign::Center, colors::kTitleGray);
 }
 
 }  // namespace
@@ -509,8 +582,35 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
   // The Direct-To window overlays whatever page is up (it is opened by the
   // Direct-To bezel key from anywhere), drawn over the body but under the
   // top/bottom chrome bars.
-  if (ui.directToWindowOpen()) {
+  // Both pop-ups slide up and fade in/out with the shared window animation
+  // (the same logic as the PFD menus), so they are drawn whenever their open
+  // progress is nonzero rather than only while strictly open.
+  const float dtoAnim = ui.directToWindowAnim();
+  if (dtoAnim > 0.0f) {
+    r.save();
+    r.globalAlpha(mfd::mfdSmoothstep(dtoAnim));
+    r.translate(0.0f, mfd::mfdWindowSlide(dtoAnim, h));
     mfd::drawDirectToWindow(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+    r.restore();
+  }
+  // The Page Menu (MENU key) overlays the base page, like the Direct-To window.
+  const float pageMenuAnim = ui.pageMenuAnim();
+  if (pageMenuAnim > 0.0f) {
+    r.save();
+    r.globalAlpha(mfd::mfdSmoothstep(pageMenuAnim));
+    r.translate(0.0f, mfd::mfdWindowSlide(pageMenuAnim, h));
+    drawPageMenu(r, ui, bodyX, bodyY, bodyW, bodyH, h);
+    r.restore();
+  }
+  // The Map Settings window (MENU -> Map Settings) overlays the navigation map,
+  // animating in like the Page Menu.
+  const float mapSettingsAnim = ui.mapSettingsAnim();
+  if (mapSettingsAnim > 0.0f) {
+    r.save();
+    r.globalAlpha(mfd::mfdSmoothstep(mapSettingsAnim));
+    r.translate(0.0f, mfd::mfdWindowSlide(mapSettingsAnim, h));
+    mfd::drawMapSettingsWindow(r, ui, bodyX, bodyY, bodyW, bodyH, h);
+    r.restore();
   }
   drawPageIndicator(r, w, h, h - bottomBarH, ui, checklist.totalChecklists());
   drawNavComBar(r, w, h, topBarH, d, title);

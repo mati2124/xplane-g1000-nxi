@@ -1,0 +1,149 @@
+name: Release
+
+# Push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to build
+# all three platforms and publish a GitHub Release with the artifacts attached.
+# `workflow_dispatch` runs the same build for testing without publishing.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for a manual test build (no leading v)"
+        required: false
+        default: "0.0.0-dev"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # Release version, no leading "v". From the tag on a tag push, otherwise
+      # the workflow_dispatch input.
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ github.event.inputs.version }}"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${V}"
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libcurl4-openssl-dev libglew-dev xorg-dev libgl1-mesa-dev
+
+      # libcurl (standalone SimBrief fetch) + GLEW (GL loader) via vcpkg, built
+      # statically so the shipped binaries need no extra DLLs.
+      - name: Install Windows dependencies (vcpkg)
+        if: matrix.platform == 'windows'
+        run: |
+          /c/vcpkg/vcpkg install curl:x64-windows-static glew:x64-windows-static
+
+      # The X-Plane SDK is not committed (it is third-party and gitignored), so
+      # fetch the published 4.3.0 zip (XPLM420, which the plugin build defines).
+      # Override the URL with the XPLANE_SDK_URL repo variable if needed.
+      - name: Download X-Plane SDK
+        run: |
+          URL="${{ vars.XPLANE_SDK_URL }}"
+          if [ -z "$URL" ]; then
+            URL="https://developer.x-plane.com/wp-content/plugins/code-sample-generation/sdk_zip_files/XPSDK430.zip"
+          fi
+          curl -fsSL "$URL" -o sdk.zip
+          cmake -E tar xf sdk.zip
+          # The zip extracts to a top-level "SDK" folder containing CHeaders/ and
+          # Libraries/. Expose its path for the configure step.
+          echo "XPLANE_SDK_DIR=${GITHUB_WORKSPACE}/SDK" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          EXTRA=()
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            EXTRA+=(-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake)
+            EXTRA+=(-DVCPKG_TARGET_TRIPLET=x64-windows-static)
+            EXTRA+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded)
+          fi
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_STANDALONE_SHELL=ON \
+            -DBUILD_XPLANE_SHELL=ON \
+            -DXPLANE_SDK_DIR="${XPLANE_SDK_DIR}" \
+            -DAVIONICS_VERSION="${{ steps.ver.outputs.version }}" \
+            "${EXTRA[@]}"
+
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Stage install components
+        run: |
+          cmake --install build --config Release \
+            --component plugin --prefix stage/plugin
+          cmake --install build --config Release \
+            --component standalone --prefix stage/standalone
+
+      # Zip each component with `cmake -E tar` so packaging is identical on every
+      # runner. Names carry the platform + version for the release assets.
+      - name: Package
+        id: pkg
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          P="${{ matrix.platform }}"
+          mkdir -p dist
+          PLUGIN_ZIP="g1000nxi-plugin-${P}-${V}.zip"
+          STANDALONE_ZIP="g1000nxi-standalone-${P}-${V}.zip"
+          ( cd stage/plugin && cmake -E tar cf "../../dist/${PLUGIN_ZIP}" --format=zip . )
+          ( cd stage/standalone && cmake -E tar cf "../../dist/${STANDALONE_ZIP}" --format=zip . )
+          ls -la dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -6,6 +6,8 @@
 #include <fstream>
 #include <sstream>
 
+#include "avionics/AssetPaths.h"
+
 #ifndef AVIONICS_DEFAULT_EIS
 #define AVIONICS_DEFAULT_EIS ""
 #endif
@@ -45,7 +47,8 @@ EisStore::~EisStore() {
 
 std::string EisStore::resolvePath(const std::string& acfRelativePath) const {
   const std::vector<std::string> candidates = candidateEisPaths(
-      selector_, acfRelativePath, AVIONICS_DEFAULT_EIS);
+      selector_, acfRelativePath,
+      assets::resolve("eis/c172s.eis", AVIONICS_DEFAULT_EIS));
   if (candidates.empty()) return std::string();
   return candidates.front();
 }

@@ -2,6 +2,7 @@
 # Builds cleanly on its own so the shared code can be developed and tested
 # without the X-Plane SDK or a windowing/GPU stack present.
 add_library(avionics-core STATIC
+  src/AssetPaths.cpp
   src/AvionicsEngine.cpp
   src/ChecklistParser.cpp
   src/EisParser.cpp
@@ -21,6 +22,7 @@ add_library(avionics-core STATIC
   src/render/mfd/MfdController.cpp
   src/render/mfd/MfdPageSupport.cpp
   src/render/mfd/MfdMapPage.cpp
+  src/render/mfd/MfdMapSettingsPage.cpp
   src/render/mfd/MfdWeatherRadarPage.cpp
   src/render/mfd/MfdWaypointPages.cpp
   src/render/mfd/MfdAuxPages.cpp
@@ -50,7 +52,16 @@ add_library(avionics-core STATIC
   src/render/pfd/Chrome.cpp
 )
 
-target_include_directories(avionics-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# Generate avionics/Version.h from the release identity cache variables so the
+# version is baked into the binaries (used by the update checker and UI).
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/avionics/Version.h.in
+  ${CMAKE_CURRENT_BINARY_DIR}/generated/avionics/Version.h
+  @ONLY)
+
+target_include_directories(avionics-core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_include_directories(avionics-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(avionics-core PUBLIC cxx_std_17)
 target_compile_definitions(avionics-core PRIVATE

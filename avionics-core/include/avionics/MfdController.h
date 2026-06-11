@@ -58,6 +58,81 @@ enum class MfdPage {
   ActiveFlightPlan,
 };
 
+// Map Settings window groups (Navigation Map -> MENU -> Map Settings, Pilot's
+// Guide Fig. 5-7). The real unit also lists Airways and VSD, but greys them
+// out (no data source / not modeled), so only the selectable groups are here,
+// in on-unit order (WT NXi MFDMapSettings GROUP_ITEMS).
+enum class MapSettingsGroup { Map, Weather, Traffic, Aviation, Airspace, Land };
+
+// Every control shown in the Map Settings window, kept in one contiguous range
+// so the controller can key its value arrays by the id. The Map group is taken
+// verbatim from Fig. 5-7; the other groups from the WT NXi setting groups.
+// Some controls (Orientation, Terrain Display, NEXRAD Data, Traffic) share
+// state with the existing softkey options so the window and the softkeys stay
+// in sync, like the real unit.
+enum class MapSetting {
+  // Map group.
+  Orientation,
+  NorthUpAboveOn,
+  NorthUpAboveRange,
+  TerrainMode,
+  TerrainRange,
+  TopoScaleOn,
+  ObstacleOn,
+  ObstacleRange,
+  AutoZoomOn,
+  AutoZoomMax,
+  MaxLookFwd,
+  MinLookFwd,
+  TimeOut,
+  TrackVectorOn,
+  TrackVectorTime,
+  AltArcOn,
+  WindVectorOn,
+  FuelRangeOn,
+  FuelRangeRsv,
+  FieldOfViewOn,
+  // Weather group.
+  NexradOn,
+  NexradRange,
+  // Traffic group.
+  TrafficOn,
+  TrafficMode,
+  TrafficSymbolsRange,
+  TrafficLabelsOn,
+  TrafficLabelsRange,
+  // Aviation group.
+  LargeAirportOn,
+  LargeAirportRange,
+  MediumAirportOn,
+  MediumAirportRange,
+  SmallAirportOn,
+  SmallAirportRange,
+  IntOn,
+  IntRange,
+  NdbOn,
+  NdbRange,
+  VorOn,
+  VorRange,
+  // Airspace group.
+  ClassBOn,
+  ClassBRange,
+  ClassCOn,
+  ClassCRange,
+  ClassDOn,
+  ClassDRange,
+  RestrictedOn,
+  RestrictedRange,
+  MoaOn,
+  MoaRange,
+  OtherOn,
+  OtherRange,
+  // Land group.
+  UserWaypointOn,
+  UserWaypointRange,
+  Count,
+};
+
 // Airborne color weather-radar (GWX) controls for the MAP - Weather Radar page
 // (G1000 NXi Pilot's Guide, Hazard Avoidance - Airborne Color Weather Radar).
 // The radar mode annunciation in the page's upper-left reads from RadarMode;
@@ -119,6 +194,11 @@ class MfdController {
   // How long the page-select popup stays up after a group/page change before
   // auto-closing (the WT NXi page-select dialog closes after 3 s idle).
   static constexpr float kPageSelectSeconds = 3.0f;
+
+  // Open/close slide+fade duration for the pop-up windows (Direct-To, Page
+  // Menu), matching the PFD pop-ups (SoftkeyController::kWindowAnimSeconds) so
+  // every menu animates in with the same feel.
+  static constexpr float kWindowAnimSeconds = 0.22f;
 
   MfdController();
 
@@ -327,6 +407,9 @@ class MfdController {
   // confirms the waypoint and arms ACTIVATE?, the second ENT engages the
   // direct course. CLR (or the knob push) cancels the window.
   bool directToWindowOpen() const { return dtoOpen_; }
+  // 0..1 open progress for the slide+fade animation (1 fully open, eases back
+  // to 0 on close so the window animates out as well as in).
+  float directToWindowAnim() const { return dtoAnim_; }
   bool directToEntryActive() const { return dtoEntry_.active; }
   std::string directToIdent() const { return dtoEntry_.ident(); }
   int directToCursor() const { return dtoEntry_.pos; }
@@ -395,6 +478,54 @@ class MfdController {
   // Returns true once per ENT on a highlighted procedure; clears the latch.
   bool consumeProcLoadRequest(MapProcedure& out);
 
+  // ---- Page menu (MENU bezel key, Pilot's Guide Fig. 5-6) ----
+  // The context "Page Menu" popout, opened by the MENU key on pages that
+  // define one (currently the Navigation Map). It lists the page's options;
+  // the FMS knob moves the highlight, ENT runs the highlighted option and
+  // closes the menu, and CLR / MENU / the FMS knob push back out to the base
+  // page. Options this suite does not yet model are listed but disabled
+  // (greyed), the way the real unit greys options that are unavailable
+  // (e.g. Charts in the figure).
+  enum class PageMenuAction {
+    Disabled,        // listed but inert (the underlying feature is not modeled)
+    MapDeclutter,    // cycle the Navigation Map declutter (Detail) level
+    OpenMapSettings, // open the Map Settings window (Fig. 5-7)
+  };
+  struct PageMenuItem {
+    std::string text;
+    PageMenuAction action = PageMenuAction::Disabled;
+  };
+
+  bool pageMenuOpen() const { return pageMenuOpen_; }
+  // 0..1 open progress for the slide+fade animation, like directToWindowAnim().
+  float pageMenuAnim() const { return pageMenuAnim_; }
+  int pageMenuItemCount() const {
+    return static_cast<int>(pageMenuItems_.size());
+  }
+  const std::string& pageMenuItemText(int i) const;
+  bool pageMenuItemEnabled(int i) const;
+  int pageMenuSelected() const { return pageMenuSel_; }
+
+  // ---- Map Settings window (MENU -> Map Settings on the Navigation Map) ----
+  // A popout dialog (Pilot's Guide Fig. 5-7) with a Group selector and the
+  // active group's settings rows. The large FMS knob moves the field cursor,
+  // the small knob edits the highlighted control, and the FMS knob push / CLR
+  // close the window.
+  bool mapSettingsOpen() const { return mapSettingsOpen_; }
+  // 0..1 open progress for the slide+fade animation, like directToWindowAnim().
+  float mapSettingsAnim() const { return mapSettingsAnim_; }
+  MapSettingsGroup mapSettingsGroup() const { return mapSettingsGroup_; }
+  // Cursor position: 0 = the Group selector, 1..N = the active group's editable
+  // controls in row order (see the field walk in MfdMapSettings.h).
+  int mapSettingsCursor() const { return mapSettingsCursor_; }
+  // Display string for a control (the value the page renders in cyan).
+  std::string mapSettingText(MapSetting id) const;
+  // Toggle value (for the show/hide controls).
+  bool mapSettingOn(MapSetting id) const;
+  // The map range threshold (NM) above which a range-gated control hides its
+  // symbols, read by the navigation-map renderer for the controls it models.
+  float mapSettingRangeNm(MapSetting id) const;
+
   // ---- read by the renderer ----
   const std::string& label(int i) const { return labels_[i]; }
   float pressLevel(int i) const { return press_[i]; }
@@ -451,6 +582,35 @@ class MfdController {
   // common handling (FPL toggle, range rocker).
   bool fplBezelKey(BezelKey key);
   bool procBezelKey(BezelKey key);
+  // ---- Page menu (MENU key) ----
+  // Build the option list for the current page (empty when the page has no
+  // page menu, so MENU is inert there, like the real unit).
+  std::vector<PageMenuItem> buildPageMenu() const;
+  // Open the page menu for the current page, highlighting the first enabled
+  // option (no-op when the page defines no menu).
+  void openPageMenu();
+  // Route a bezel key while the page menu is open; always consumes the key.
+  bool pageMenuBezelKey(BezelKey key);
+  // Move the highlight to the next/previous enabled option, wrapping.
+  void pageMenuStep(int direction);
+  // ENT on the highlighted option: run its action and close the menu.
+  void pageMenuActivate();
+  // ---- Map Settings window ----
+  // Open the window (from the page menu), reset the cursor to the Group field.
+  void openMapSettings();
+  // Route a bezel key while the window is open; always consumes the key.
+  bool mapSettingsBezelKey(BezelKey key);
+  // Move the field cursor by +/-1, wrapping over [Group selector + the active
+  // group's editable controls].
+  void mapSettingsStepCursor(int dir);
+  // Edit the control under the cursor (small knob): cycle the group on the
+  // Group selector, flip a toggle, cycle an enum, or step a range threshold.
+  void mapSettingsEdit(int dir);
+  // Number of editable controls in the active group (cursor stops 1..N).
+  int mapSettingsFieldCount() const;
+  // The MapSetting at cursor position `cursor` (1..N), or MapSetting::Count for
+  // the Group selector / an out-of-range cursor.
+  MapSetting mapSettingAtCursor(int cursor) const;
   // Reset every FPL interaction state (cursor, entry, menu, confirmation).
   void fplResetInteraction();
   // ENT in the FPL entry window: insert the matched waypoint before the cursor
@@ -583,6 +743,25 @@ class MfdController {
   std::string fplRemoveIdent_;
   bool fplMenuOpen_ = false;
 
+  // Page menu (MENU key) state: the option list built for the current page,
+  // the highlighted row, and whether the popout is up.
+  std::vector<PageMenuItem> pageMenuItems_;
+  int pageMenuSel_ = 0;
+  bool pageMenuOpen_ = false;
+  float pageMenuAnim_ = 0.0f;  // 0..1 open progress, eased by update()
+
+  // Map Settings window state. The show/hide toggles and the range thresholds
+  // not already owned by a softkey option live here, keyed by MapSetting; the
+  // shared controls (Orientation, Terrain, NEXRAD, Traffic) read/write the
+  // existing members so the window and softkeys stay in sync.
+  bool mapSettingsOpen_ = false;
+  float mapSettingsAnim_ = 0.0f;  // 0..1 open progress, eased by update()
+  MapSettingsGroup mapSettingsGroup_ = MapSettingsGroup::Map;
+  int mapSettingsCursor_ = 0;  // 0 = Group selector, 1..N = a setting control
+  std::array<bool, static_cast<std::size_t>(MapSetting::Count)> msToggle_{};
+  std::array<int, static_cast<std::size_t>(MapSetting::Count)> msRange_{};
+  int msTrafficMode_ = 0;  // 0 All Traffic / 1 TA/PA / 2 TA Only
+
   // PROC menu: departures / arrivals / approaches for the flight-plan airport.
   bool procMenuOpen_ = false;
   ProcMenuStep procStep_ = ProcMenuStep::ProcedureList;
@@ -594,6 +773,7 @@ class MfdController {
 
   // Direct-To window state.
   bool dtoOpen_ = false;
+  float dtoAnim_ = 0.0f;   // 0..1 open progress, eased by update()
   bool dtoArmed_ = false;  // waypoint confirmed, ACTIVATE? highlighted
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;

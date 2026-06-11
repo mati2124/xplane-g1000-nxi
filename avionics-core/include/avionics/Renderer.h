@@ -8,6 +8,12 @@ namespace avionics {
 
 enum class TextAlign { Left, Center, Right };
 
+// Selectable text face. Default is the primary UI font (Roboto, matching the
+// Working Title G1000 NXi). DejaVuSemiBold is the bundled secondary face used
+// where a closer match to the real unit's display typeface is wanted (e.g. the
+// PFD Setup Menu); backends without that face loaded fall back to the default.
+enum class FontFace { Default, DejaVuSemiBold };
+
 // A 2D point in renderer (display-pixel) coordinates, origin top-left, +y down.
 struct Point {
   float x = 0.0f;
@@ -36,6 +42,13 @@ class Renderer {
   virtual void rotateDegrees(float degrees) = 0;
   virtual void clip(float x, float y, float w, float h) = 0;
 
+  // Multiplies the alpha of every subsequent draw by `alpha` (0..1). It is part
+  // of the saved transform state, so wrap it in save()/restore() to scope it to
+  // a subtree. Used to fade whole pop-up windows/menus in and out uniformly
+  // without threading an alpha through every draw call. Backends that don't
+  // override this leave drawing fully opaque.
+  virtual void globalAlpha(float /*alpha*/) {}
+
   // Primitives.
   virtual void fillRect(float x, float y, float w, float h, const Color& c) = 0;
 
@@ -52,6 +65,21 @@ class Renderer {
   virtual void strokeLine(float x1, float y1, float x2, float y2,
                           float widthPx, const Color& c) = 0;
   virtual void fillCircle(float cx, float cy, float radius, const Color& c) = 0;
+
+  // Rounded rectangle fill/outline (corner radius in the same units as the
+  // rect). Used for pop-up window chrome that has rounded corners on the real
+  // unit. Backends that don't override these fall back to square equivalents so
+  // existing output is unchanged.
+  virtual void fillRoundedRect(float x, float y, float w, float h, float radius,
+                               const Color& c) {
+    fillRect(x, y, w, h, c);
+  }
+  virtual void strokeRoundedRect(float x, float y, float w, float h,
+                                 float radius, float widthPx, const Color& c) {
+    const Point p[5] = {{x, y},     {x + w, y}, {x + w, y + h},
+                        {x, y + h}, {x, y}};
+    strokePolyline(p, 5, widthPx, c);
+  }
 
   // Filled, implicitly-closed polygon through `count` points (count >= 3).
   // Used for pointers, chevrons, slip/skid markers, and tape-box notches.
@@ -91,14 +119,39 @@ class Renderer {
   virtual void drawImage(int imageId, float x, float y, float w, float h,
                          float alpha) = 0;
 
+  // Temporarily remaps text drawn with FontFace::Default to `face` until the
+  // matching pop. Lets a whole menu/dialog subtree render in an alternate face
+  // without threading a FontFace through every draw call. Calls nest (LIFO);
+  // an explicit non-Default `face` argument to fillText still wins. Backends
+  // that don't override these ignore the override (text stays Default).
+  virtual void pushDefaultFontFace(FontFace /*face*/) {}
+  virtual void popDefaultFontFace() {}
+
   virtual void fillText(float x, float y, const std::string& text, float sizePx,
-                        TextAlign align, const Color& c) = 0;
+                        TextAlign align, const Color& c,
+                        FontFace face = FontFace::Default) = 0;
 
   // Horizontal advance width (px) that fillText would use for `text` at
   // `sizePx`, in the current transform's units. Lets the gauge code lay text
   // out by measured width so adjacent fields never overlap. Backends without a
-  // loaded font may return an approximation.
-  virtual float measureTextWidth(const std::string& text, float sizePx) = 0;
+  // loaded font may return an approximation. `face` must match the face the
+  // text will be drawn with so the measured width and the draw agree.
+  virtual float measureTextWidth(const std::string& text, float sizePx,
+                                 FontFace face = FontFace::Default) = 0;
+};
+
+// RAII guard that pushes a default-font-face override for its lifetime, so all
+// FontFace::Default text drawn within a scope (including early returns) uses the
+// given face. Used to render a whole menu/dialog in DejaVu SemiBold.
+class FontScope {
+ public:
+  FontScope(Renderer& r, FontFace face) : r_(r) { r_.pushDefaultFontFace(face); }
+  ~FontScope() { r_.popDefaultFontFace(); }
+  FontScope(const FontScope&) = delete;
+  FontScope& operator=(const FontScope&) = delete;
+
+ private:
+  Renderer& r_;
 };
 
 }  // namespace avionics

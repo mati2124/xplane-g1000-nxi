@@ -10,27 +10,36 @@
 
 namespace avionics {
 
+// Which feed (and, for the mock feed, which sub-mode) the user picked from the
+// Data Source menu.
+enum class DataSourceSelection {
+  MockFlying,  // animated mock feed flying the demo route
+  MockGround,  // mock feed parked on KFMY runway 31 with the engine idling
+  XPlane,      // live X-Plane connection
+};
+
 // Invoked on the main thread when the user picks a data source from the menu.
-// useXPlane == true selects the live X-Plane connection, false selects mock.
-using DataSourceMenuCallback = void (*)(void* context, bool useXPlane);
+using DataSourceMenuCallback = void (*)(void* context,
+                                        DataSourceSelection selection);
 
 // Invoked on the main thread when the user flips the "Simulate Turbulence"
 // item. enabled is the item's new (post-toggle) state.
 using TurbulenceMenuToggleCallback = void (*)(void* context, bool enabled);
 
-// Adds the "Data Source" menu to the application menu bar. initiallyXPlane sets
-// which feed item starts checked; initiallyTurbulent sets the "Simulate
+// Adds the "Data Source" menu to the application menu bar. initialSelection
+// sets which feed item starts checked; initiallyTurbulent sets the "Simulate
 // Turbulence" checkmark. sourceCallback fires when the user changes the feed;
 // turbulenceCallback fires when the turbulence toggle flips (it only affects
 // the mock feed).
-void InstallDataSourceMenu(bool initiallyXPlane, bool initiallyTurbulent,
+void InstallDataSourceMenu(DataSourceSelection initialSelection,
+                           bool initiallyTurbulent,
                            DataSourceMenuCallback sourceCallback,
                            TurbulenceMenuToggleCallback turbulenceCallback,
                            void* context);
 
 // Updates the menu checkmarks to reflect the current selection (e.g. after the
 // source was toggled with the keyboard rather than the menu).
-void SetDataSourceMenuSelection(bool useXPlane);
+void SetDataSourceMenuSelection(DataSourceSelection selection);
 
 // Invoked on the main thread when the user flips one of the checkable View
 // menu items. enabled is the item's new (post-toggle) state.

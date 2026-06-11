@@ -10,12 +10,14 @@
     avionics::TurbulenceMenuToggleCallback turbulenceCallback;
 @property(nonatomic, assign) void* context;
 @property(nonatomic, strong) NSMenuItem* mockItem;
+@property(nonatomic, strong) NSMenuItem* mockGroundItem;
 @property(nonatomic, strong) NSMenuItem* xplaneItem;
 @property(nonatomic, strong) NSMenuItem* turbulenceItem;
 - (void)selectMock:(id)sender;
+- (void)selectMockGround:(id)sender;
 - (void)selectXPlane:(id)sender;
 - (void)toggleTurbulence:(id)sender;
-- (void)syncSelection:(BOOL)useXPlane;
+- (void)syncSelection:(avionics::DataSourceSelection)selection;
 @end
 
 static AvDataSourceMenuController* gController = nil;
@@ -55,11 +57,21 @@ static BOOL FlipMenuItemState(NSMenuItem* item) {
 @implementation AvDataSourceMenuController
 
 - (void)selectMock:(id)sender {
-  if (self.callback) self.callback(self.context, false);
+  if (self.callback) {
+    self.callback(self.context, avionics::DataSourceSelection::MockFlying);
+  }
+}
+
+- (void)selectMockGround:(id)sender {
+  if (self.callback) {
+    self.callback(self.context, avionics::DataSourceSelection::MockGround);
+  }
 }
 
 - (void)selectXPlane:(id)sender {
-  if (self.callback) self.callback(self.context, true);
+  if (self.callback) {
+    self.callback(self.context, avionics::DataSourceSelection::XPlane);
+  }
 }
 
 - (void)toggleTurbulence:(id)sender {
@@ -69,11 +81,19 @@ static BOOL FlipMenuItemState(NSMenuItem* item) {
   }
 }
 
-- (void)syncSelection:(BOOL)useXPlane {
+- (void)syncSelection:(avionics::DataSourceSelection)selection {
   self.mockItem.state =
-      useXPlane ? NSControlStateValueOff : NSControlStateValueOn;
+      selection == avionics::DataSourceSelection::MockFlying
+          ? NSControlStateValueOn
+          : NSControlStateValueOff;
+  self.mockGroundItem.state =
+      selection == avionics::DataSourceSelection::MockGround
+          ? NSControlStateValueOn
+          : NSControlStateValueOff;
   self.xplaneItem.state =
-      useXPlane ? NSControlStateValueOn : NSControlStateValueOff;
+      selection == avionics::DataSourceSelection::XPlane
+          ? NSControlStateValueOn
+          : NSControlStateValueOff;
 }
 
 @end
@@ -117,7 +137,8 @@ static BOOL FlipMenuItemState(NSMenuItem* item) {
 
 namespace avionics {
 
-void InstallDataSourceMenu(bool initiallyXPlane, bool initiallyTurbulent,
+void InstallDataSourceMenu(DataSourceSelection initialSelection,
+                           bool initiallyTurbulent,
                            DataSourceMenuCallback sourceCallback,
                            TurbulenceMenuToggleCallback turbulenceCallback,
                            void* context) {
@@ -138,18 +159,25 @@ void InstallDataSourceMenu(bool initiallyXPlane, bool initiallyTurbulent,
     [dataMenuItem setSubmenu:dataMenu];
 
     NSMenuItem* mockItem =
-        [[NSMenuItem alloc] initWithTitle:@"Mock Data"
+        [[NSMenuItem alloc] initWithTitle:@"Mock Data (Flying)"
                                    action:@selector(selectMock:)
                             keyEquivalent:@"1"];
     [mockItem setTarget:gController];
 
+    NSMenuItem* mockGroundItem =
+        [[NSMenuItem alloc] initWithTitle:@"Mock Data (On Ground at KFMY)"
+                                   action:@selector(selectMockGround:)
+                            keyEquivalent:@"2"];
+    [mockGroundItem setTarget:gController];
+
     NSMenuItem* xplaneItem =
         [[NSMenuItem alloc] initWithTitle:@"X-Plane"
                                    action:@selector(selectXPlane:)
-                            keyEquivalent:@"2"];
+                            keyEquivalent:@"3"];
     [xplaneItem setTarget:gController];
 
     [dataMenu addItem:mockItem];
+    [dataMenu addItem:mockGroundItem];
     [dataMenu addItem:xplaneItem];
 
     [dataMenu addItem:[NSMenuItem separatorItem]];
@@ -164,17 +192,18 @@ void InstallDataSourceMenu(bool initiallyXPlane, bool initiallyTurbulent,
     [dataMenu addItem:turbulenceItem];
 
     gController.mockItem = mockItem;
+    gController.mockGroundItem = mockGroundItem;
     gController.xplaneItem = xplaneItem;
     gController.turbulenceItem = turbulenceItem;
-    [gController syncSelection:(initiallyXPlane ? YES : NO)];
+    [gController syncSelection:initialSelection];
 
     [mainMenu addItem:dataMenuItem];
   }
 }
 
-void SetDataSourceMenuSelection(bool useXPlane) {
+void SetDataSourceMenuSelection(DataSourceSelection selection) {
   if (gController != nil) {
-    [gController syncSelection:(useXPlane ? YES : NO)];
+    [gController syncSelection:selection];
   }
 }
 

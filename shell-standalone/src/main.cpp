@@ -40,6 +40,13 @@
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>  // GL_SILENCE_DEPRECATION is set by the build.
+#include <mach-o/dyld.h>  // _NSGetExecutablePath, to locate bundled assets.
+#endif
+#if defined(_WIN32)
+#include <windows.h>  // GetModuleFileNameW, to locate bundled assets.
+#endif
+#if !defined(__APPLE__)
+#include <GL/glew.h>  // GL3 entry points on Windows/Linux (must precede gl.h).
 #endif
 
 #define GLFW_INCLUDE_NONE
@@ -51,6 +58,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -66,6 +75,7 @@
 #include "ShellNavMapData.h"
 #include "SimBriefStore.h"
 #include "XPlaneConnection.h"
+#include "avionics/AssetPaths.h"
 #include "avionics/AvionicsEngine.h"
 #include "avionics/ConnectionState.h"
 #include "avionics/MockDataSource.h"
@@ -73,6 +83,7 @@
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/BootScreen.h"
 #include "avionics/Terrain.h"
+#include "avionics/render/GlLoader.h"
 #include "avionics/render/NanoVgRenderer.h"
 #include "avionics/render/SoftkeyBezel.h"
 
@@ -81,6 +92,51 @@
 #endif
 
 namespace {
+
+// Absolute directory containing the running executable, used to find bundled
+// assets in a distributed build. Returns empty on failure (the asset resolver
+// then falls back to the compile-time development paths).
+std::string ExecutableDir() {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+#if defined(__APPLE__)
+  std::uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::string buf(size, '\0');
+  if (_NSGetExecutablePath(buf.data(), &size) != 0) return std::string();
+  const fs::path exe = fs::weakly_canonical(fs::path(buf), ec);
+#elif defined(_WIN32)
+  std::wstring buf(MAX_PATH, L'\0');
+  DWORD len = GetModuleFileNameW(nullptr, buf.data(),
+                                 static_cast<DWORD>(buf.size()));
+  if (len == 0) return std::string();
+  buf.resize(len);
+  const fs::path exe = fs::weakly_canonical(fs::path(buf), ec);
+#else
+  const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+#endif
+  if (ec) return std::string();
+  return exe.parent_path().string();
+}
+
+// Register the locations where bundled runtime assets may live, relative to the
+// installed executable, so a distributed build finds its fonts/EIS/map data/
+// checklists. Harmless during development (none of these exist when running
+// from the build tree, so the resolver falls back to the source paths).
+void RegisterAssetSearchDirs() {
+  namespace fs = std::filesystem;
+  const std::string dir = ExecutableDir();
+  if (dir.empty()) return;
+  const fs::path exeDir(dir);
+  // Layout next to the binary (Windows/Linux portable, and the dev convention).
+  avionics::assets::addSearchDir((exeDir / "assets").string());
+  // macOS .app bundle: Contents/MacOS/<exe> -> Contents/Resources/assets.
+  avionics::assets::addSearchDir(
+      (exeDir.parent_path() / "Resources" / "assets").string());
+  // Linux FHS install: bin/<exe> -> share/g1000-nxi/assets.
+  avionics::assets::addSearchDir(
+      (exeDir.parent_path() / "share" / "g1000-nxi" / "assets").string());
+}
 
 constexpr int kWindowWidth = 1024;   // avionics "screen" region (4:3)
 constexpr int kWindowHeight = 768;
@@ -279,6 +335,17 @@ void ApplyBezelWindowSize(AppState& app) {
   }
 }
 
+#if defined(__APPLE__)
+// Maps the current feed (and mock sub-mode) to the menu's radio selection so
+// the checkmarks stay in sync however the source was changed.
+avionics::DataSourceSelection CurrentSelection(const AppState& app) {
+  if (app.usingXPlane) return avionics::DataSourceSelection::XPlane;
+  return (app.mock != nullptr && app.mock->groundMode())
+             ? avionics::DataSourceSelection::MockGround
+             : avionics::DataSourceSelection::MockFlying;
+}
+#endif
+
 // Point both displays at the same feed so the MFD and PFD never diverge.
 void SwitchSource(AppState& app, bool useXPlane) {
   if (useXPlane == app.usingXPlane) return;
@@ -290,7 +357,7 @@ void SwitchSource(AppState& app, bool useXPlane) {
   if (app.pfdEngine != nullptr) app.pfdEngine->setDataSource(*source, label);
   if (app.mfdEngine != nullptr) app.mfdEngine->setDataSource(*source, label);
 #if defined(__APPLE__)
-  avionics::SetDataSourceMenuSelection(useXPlane);  // keep the menu in sync
+  avionics::SetDataSourceMenuSelection(CurrentSelection(app));  // keep in sync
 #endif
 }
 
@@ -315,10 +382,26 @@ void PersistDataSource(AppState& app) {
 }
 
 // Menu-bar action target: switches the feed when the user picks from the menu.
-void OnMenuSelectSource(void* context, bool useXPlane) {
+// The two mock entries share the mock feed and differ only in its sub-mode
+// (flying the demo route vs. parked on the ground at KFMY).
+void OnMenuSelectSource(void* context,
+                        avionics::DataSourceSelection selection) {
   auto* app = static_cast<AppState*>(context);
   app->autoDetectXPlane = false;  // explicit user choice wins from here on
-  SwitchSource(*app, useXPlane);
+  if (selection == avionics::DataSourceSelection::XPlane) {
+    SwitchSource(*app, true);
+  } else {
+    const bool onGround =
+        selection == avionics::DataSourceSelection::MockGround;
+    if (app->mock != nullptr) app->mock->setGroundMode(onGround);
+    app->settings.mockOnGround = onGround;
+    SwitchSource(*app, false);
+#if defined(__APPLE__)
+    // SwitchSource is a no-op when already on the mock feed, so refresh the
+    // checkmarks here to reflect the new sub-mode.
+    avionics::SetDataSourceMenuSelection(CurrentSelection(*app));
+#endif
+  }
   PersistDataSource(*app);
 }
 
@@ -421,6 +504,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     return 1;
   }
   glfwMakeContextCurrent(window);
+  avionics::render::ensureGlLoaded();
 
   avionics::NanoVgRenderer renderer;
   if (!renderer.valid()) {
@@ -439,7 +523,8 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   avionics::AirspaceStore airspace;
   avionics::AirwayStore airways;
   avionics::AptDatStore aptData;
-  avionics::LandDataStore landData(kLandDataAssetPath);
+  avionics::LandDataStore landData(
+      avionics::assets::resolve("land_data.bin", kLandDataAssetPath));
   avionics::ObstacleStore obstacles("");
   avionics::ProcedureStore procedures(navData);
   avionics::ShellNavMapData navMapData(navData, airspace, airways, aptData,
@@ -586,6 +671,14 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(1);  // "Map/HSI" -> open submenu
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdmenu") == 0) {
+    // The PFD Setup Menu (MENU bezel key, Pilot's Guide Fig. 1-18): MENU opens
+    // the backlighting popout; the cursor opens on 'Auto' next to PFD Display.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Menu);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
     // The MFD full-screen MAP page (its own window in normal operation).
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
@@ -708,6 +801,35 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::Clr);         // Remove <wpt>?
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdmenu") == 0) {
+    // The Navigation Map Page Menu (MENU bezel key, Pilot's Guide Fig. 5-6):
+    // open the page menu on the default MAP page so the option list and the
+    // highlighted (live) Declutter option are captured.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 200; ++i) engine.update(1.0 / 60.0);  // popup fades out
+    engine.pressBezelKey(avionics::BezelKey::Menu);
+    // Let the open slide+fade finish (kWindowAnimSeconds) so the capture shows
+    // the menu fully in place rather than mid-animation.
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdmapset") == 0) {
+    // The Map Settings window (Pilot's Guide Fig. 5-7): open the Navigation Map
+    // Page Menu, ENT on the highlighted 'Map Settings' option to open the
+    // window (cursor on the Group selector), then let the slide+fade finish.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 200; ++i) engine.update(1.0 / 60.0);  // popup fades out
+    // Fig. 5-7 shows Terrain Display = Topo; cycle once from the suite default
+    // (Off) via the Map Opt softkey submenu.
+    engine.pressSoftkey(5);  // Map Opt
+    engine.pressSoftkey(2);  // Terrain -> Topo
+    engine.pressBezelKey(avionics::BezelKey::Menu);
+    engine.pressBezelKey(avionics::BezelKey::Ent);  // open Map Settings
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strncmp(state, "mfd", 3) == 0) {
     // MFD page screenshots. The state encodes a page-group softkey plus an
     // optional repeat count (pressing the active group's key again steps to
@@ -761,6 +883,13 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     failedEngine.skipBoot();
     failedEngine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, failedEngine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "ground") == 0) {
+    // The PFD parked on the ground at KFMY runway 31 with the engine idling
+    // (mock on-ground mode): stationary, wings level, at field elevation.
+    dataSource.setGroundMode(true);
+    engine.skipBoot();
+    engine.update(seconds);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else {
     engine.skipBoot();
     engine.update(seconds);
@@ -1144,6 +1273,11 @@ GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Locate bundled assets relative to the installed binary before anything that
+  // loads them (renderer fonts, land data, EIS, checklists), including the
+  // offscreen --screenshot path below.
+  RegisterAssetSearchDirs();
+
   const bool cliAlwaysOnTop = WantsAlwaysOnTop(argc, argv);
 
   if (!glfwInit()) {
@@ -1207,6 +1341,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   glfwMakeContextCurrent(pfdWindow);
+  avionics::render::ensureGlLoaded();
   glfwSwapInterval(1);  // vsync on the PFD paces the loop to the display refresh
   glfwSetKeyCallback(pfdWindow, OnKey);
   glfwSetMouseButtonCallback(pfdWindow, OnMouseButton);
@@ -1231,6 +1366,7 @@ int main(int argc, char** argv) {
                                      showWindowChrome, nullptr, winW, winH);
     if (mfdWindow) {
       glfwMakeContextCurrent(mfdWindow);
+      avionics::render::ensureGlLoaded();
       glfwSwapInterval(0);
       glfwSetKeyCallback(mfdWindow, OnKey);
       glfwSetMouseButtonCallback(mfdWindow, OnMouseButton);
@@ -1296,7 +1432,8 @@ int main(int argc, char** argv) {
   avionics::AirspaceStore airspace;
   avionics::AirwayStore airways;
   avionics::AptDatStore aptData;
-  avionics::LandDataStore landData(kLandDataAssetPath);
+  avionics::LandDataStore landData(
+      avionics::assets::resolve("land_data.bin", kLandDataAssetPath));
   avionics::FmsPlanStore fmsPlan(fmsPlanArg ? fmsPlanArg : "");
   avionics::DsfTerrainStore terrain;
 
@@ -1324,6 +1461,7 @@ int main(int argc, char** argv) {
   mock.setChecklistSource(&checklists);
   mock.setEisSource(&eisStore);
   mock.setTurbulenceEnabled(savedSettings.simulateTurbulence);
+  mock.setGroundMode(savedSettings.mockOnGround);
   bool mockRouteSet = false;  // set once the .fms flight plan has loaded
 
   avionics::XPlaneConnection xplane(host ? host : kDefaultXPlaneHost, port,
@@ -1408,7 +1546,12 @@ int main(int argc, char** argv) {
 #if defined(__APPLE__)
   // macOS menu bar: data feed plus the View toggles (all persisted). The
   // Data Source menu also carries the mock-only "Simulate Turbulence" toggle.
-  avionics::InstallDataSourceMenu(startWithXPlane,
+  const avionics::DataSourceSelection initialSelection =
+      startWithXPlane ? avionics::DataSourceSelection::XPlane
+      : savedSettings.mockOnGround
+          ? avionics::DataSourceSelection::MockGround
+          : avionics::DataSourceSelection::MockFlying;
+  avionics::InstallDataSourceMenu(initialSelection,
                                   app.settings.simulateTurbulence,
                                   &OnMenuSelectSource, &OnMenuToggleTurbulence,
                                   &app);

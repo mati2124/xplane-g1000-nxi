@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -40,6 +41,21 @@ inline float mfdFontPx(float wtPx, float displayH) {
 inline Color mfdAlpha(Color c, float a) {
   c.a *= a;
   return c;
+}
+
+// Smooth Hermite ease (0..1) for pop-up window slide/fade, matching the PFD
+// pop-ups (pfd::smoothstep) so every menu animates in with the same feel.
+inline float mfdSmoothstep(float t) {
+  t = std::max(0.0f, std::min(1.0f, t));
+  return t * t * (3.0f - 2.0f * t);
+}
+
+// Vertical slide-up offset (px) for a pop-up window at open progress `anim`:
+// the window starts a little below its resting place and rises in as it fades.
+// Keyed off the display height (not the box) so all menus slide the same
+// distance regardless of size.
+inline float mfdWindowSlide(float anim, float displayH) {
+  return (1.0f - mfdSmoothstep(anim)) * displayH * 0.05f;
 }
 
 struct Rect {
@@ -139,23 +155,30 @@ inline Rect drawGroupBox(Renderer& r, const Rect& slot, const char* title,
 
 // ---- dialogs (page menu / entry / confirmation popouts) ----
 
-// WT .popout-dialog: 10px radius, 4px rgb(150,150,150) border, gray #323232
-// body, centered title. Returns the inner content rect.
+// Shared menu/dialog chrome, matching the PFD Setup Menu and the real unit
+// (Fig. 1-18): opaque black rounded body with a thick light-grey rounded border
+// (drawn inset by half its width), a cyan centered title, and a white separator
+// rule beneath the title. Returns the inner content rect. Callers that want the
+// menu in DejaVu SemiBold push a FontScope around this and their content.
 inline Rect drawDialog(Renderer& r, const Rect& box, const char* title,
                        float displayH) {
   const float radius = mfdFontPx(10.0f, displayH);
-  Point pts[kRoundedRectPoints + 1];
-  const int closed = buildRoundedRect(pts, box, radius);
-  r.fillPolygon(pts, kRoundedRectPoints, colors::kMfdPanelGray);
-  r.strokePolyline(pts, closed, mfdFontPx(4.0f, displayH),
-                   colors::kPanelBorder);
+  const float borderW = mfdFontPx(3.0f, displayH);
+  r.fillRoundedRect(box.x, box.y, box.w, box.h, radius, colors::kBlack);
+  r.strokeRoundedRect(box.x + borderW * 0.5f, box.y + borderW * 0.5f,
+                      box.w - borderW, box.h - borderW, radius, borderW,
+                      colors::kMenuBorderGray);
 
   const float titleSize = mfdFontPx(16.0f, displayH);
   float top = box.y + mfdFontPx(6.0f, displayH);
   if (title != nullptr && title[0] != '\0') {
     r.fillText(box.x + box.w * 0.5f, top + titleSize * 0.7f, title, titleSize,
-               TextAlign::Center, colors::kWhite);
-    top += titleSize * 1.6f;
+               TextAlign::Center, colors::kCyan);
+    const float sepY = top + titleSize * 1.35f;
+    const float sepInset = borderW + box.w * 0.01f;
+    r.strokeLine(box.x + sepInset, sepY, box.x + box.w - sepInset, sepY, 1.5f,
+                 colors::kWhitesmoke);
+    top = sepY + titleSize * 0.35f;
   }
   const float pad = mfdFontPx(10.0f, displayH);
   return Rect{box.x + pad, top, box.w - 2.0f * pad,

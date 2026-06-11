@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "avionics/Renderer.h"
 
@@ -54,6 +55,7 @@ class NanoVgRenderer : public Renderer {
   void translate(float x, float y) override;
   void rotateDegrees(float degrees) override;
   void clip(float x, float y, float w, float h) override;
+  void globalAlpha(float alpha) override;
 
   void fillRect(float x, float y, float w, float h, const Color& c) override;
   void fillRectVerticalGradient(float x, float y, float w, float h,
@@ -63,6 +65,10 @@ class NanoVgRenderer : public Renderer {
   void strokeLine(float x1, float y1, float x2, float y2, float widthPx,
                   const Color& c) override;
   void fillCircle(float cx, float cy, float radius, const Color& c) override;
+  void fillRoundedRect(float x, float y, float w, float h, float radius,
+                       const Color& c) override;
+  void strokeRoundedRect(float x, float y, float w, float h, float radius,
+                         float widthPx, const Color& c) override;
   void fillPolygon(const Point* points, int count, const Color& c) override;
   void strokePolyline(const Point* points, int count, float widthPx,
                       const Color& c) override;
@@ -74,14 +80,24 @@ class NanoVgRenderer : public Renderer {
   void deleteImage(int imageId) override;
   void drawImage(int imageId, float x, float y, float w, float h,
                  float alpha) override;
+  void pushDefaultFontFace(FontFace face) override;
+  void popDefaultFontFace() override;
   void fillText(float x, float y, const std::string& text, float sizePx,
-                TextAlign align, const Color& c) override;
-  float measureTextWidth(const std::string& text, float sizePx) override;
+                TextAlign align, const Color& c,
+                FontFace face = FontFace::Default) override;
+  float measureTextWidth(const std::string& text, float sizePx,
+                         FontFace face = FontFace::Default) override;
 
  private:
+  // Resolve a requested face to a loaded NanoVG font id, falling back to the
+  // primary font when the secondary face is unavailable.
+  int fontIdFor(FontFace face) const;
+
   Backend backend_;
   NVGcontext* vg_ = nullptr;
-  int fontId_ = -1;
+  int fontId_ = -1;         // primary UI font (Roboto)
+  int dejavuFontId_ = -1;   // secondary display face (DejaVu Sans SemiBold)
+  std::vector<FontFace> defaultFaceStack_;  // active Default-face overrides
   DrawStats stats_;
 };
 

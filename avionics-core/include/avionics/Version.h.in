@@ -1,0 +1,18 @@
+#pragma once
+
+// Generated from Version.h.in by CMake (configure_file). The single source of
+// truth for the release version is the CMake variable AVIONICS_VERSION, which
+// defaults to the project() version and is overridden in CI from the pushed git
+// tag (e.g. -DAVIONICS_VERSION=0.2.0 for tag v0.2.0). Consumed by the
+// auto-updater (to compare against the latest GitHub release) and shown in the
+// UI / plugin description.
+namespace avionics {
+
+// Release version, no leading "v" (e.g. "0.1.0").
+inline constexpr const char* kVersion = "@AVIONICS_VERSION@";
+
+// GitHub repository hosting releases, used by the update checker.
+inline constexpr const char* kReleasesOwner = "@AVIONICS_RELEASES_OWNER@";
+inline constexpr const char* kReleasesRepo = "@AVIONICS_RELEASES_REPO@";
+
+}  // namespace avionics

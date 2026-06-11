@@ -24,14 +24,26 @@ add_library(nanovg STATIC
 )
 target_include_directories(nanovg PUBLIC ${nanovg_SOURCE_DIR}/src)
 
+# OpenGL linkage + the GL3/GL2 loader. macOS exposes every entry point through
+# the system framework, so no loader is needed there. Windows/Linux resolve the
+# >1.1 entry points NanoVG uses via GLEW at runtime (see GlLoader.cpp). PUBLIC so
+# the shells that link this also pick up GL (they call glViewport/glClear etc.).
 if(APPLE)
   target_compile_definitions(nanovg PRIVATE GL_SILENCE_DEPRECATION)
   target_link_libraries(nanovg PUBLIC "-framework OpenGL")
+elseif(WIN32)
+  find_package(GLEW REQUIRED)
+  target_link_libraries(nanovg PUBLIC GLEW::GLEW opengl32)
+else()
+  find_package(OpenGL REQUIRED)
+  find_package(GLEW REQUIRED)
+  target_link_libraries(nanovg PUBLIC GLEW::GLEW OpenGL::GL)
 endif()
 
 # C++ renderer that drives NanoVG from the gauge code's vector commands.
 add_library(render-nanovg STATIC
   src/NanoVgRenderer.cpp
+  src/GlLoader.cpp
 )
 target_include_directories(render-nanovg PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(render-nanovg PUBLIC cxx_std_17)

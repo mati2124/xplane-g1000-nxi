@@ -29,12 +29,20 @@ constexpr float kFeatureSymbolWt = 8.0f;
 // Range-based feature declutter (NM): each class is hidden once the map range
 // exceeds its threshold, matching the G1000's progressive decluttering. Fixes
 // (intersections) are the densest, so they only appear when zoomed well in, and
-// at most kMaxFixesDrawn of the nearest ones are drawn.
-constexpr float kFeatureRangeAirportNm = 150.0f;
+// at most kMaxFixesDrawn of the nearest ones are drawn. Airports are not listed
+// here: they declutter per-size against the Map Setup "Aviation" ranges carried
+// in MapViewStyle (see kLargeAirportRunwayFt below).
 constexpr float kFeatureRangeVorNm = 100.0f;
 constexpr float kFeatureRangeNdbNm = 40.0f;
 constexpr float kFeatureRangeFixNm = 7.5f;
 constexpr int kMaxFixesDrawn = 40;
+
+// Airport size classification by longest runway, mirroring Garmin's
+// AirportWaypoint: a hard-surface runway >= 8100 ft is a Large airport, >= 5000
+// ft (or any towered field) is Medium, and everything else is Small. Each size
+// then declutters against its own Map Setup "Aviation" max range.
+constexpr int kLargeAirportRunwayFt = 8100;
+constexpr int kMediumAirportRunwayFt = 5000;
 
 // Layer range declutter (NM), mirroring the G1000 Map Setup maximum-range
 // defaults: each layer disappears once the range opens past its threshold.
@@ -1359,7 +1367,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     auto visibleAtRange = [&](MapFeatureType type) {
       switch (type) {
         case MapFeatureType::Airport:
-          return rangeNm <= kFeatureRangeAirportNm;
+          return true;  // airports declutter by size (airportVisible)
         case MapFeatureType::Vor:
           return rangeNm <= kFeatureRangeVorNm;
         case MapFeatureType::Ndb:
@@ -1371,9 +1379,28 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
       return true;
     };
 
+    // Airports declutter per-size against the Map Setup "Aviation" ranges, so a
+    // wide view keeps the major (Large) fields long after the small ones drop.
+    auto airportVisible = [&](const MapFeature& f) {
+      if (f.longestRunwayFt >= kLargeAirportRunwayFt) {
+        return config.style.showLargeAirports &&
+               rangeNm <= config.style.largeAirportRangeNm;
+      }
+      if (f.longestRunwayFt >= kMediumAirportRunwayFt || f.airportTowered) {
+        return config.style.showMediumAirports &&
+               rangeNm <= config.style.mediumAirportRangeNm;
+      }
+      return config.style.showSmallAirports &&
+             rangeNm <= config.style.smallAirportRangeNm;
+    };
+
     int fixesDrawn = 0;
     for (const MapFeature& f : map.features) {
-      if (!visibleAtRange(f.type)) continue;
+      if (f.type == MapFeatureType::Airport) {
+        if (!airportVisible(f)) continue;
+      } else if (!visibleAtRange(f.type)) {
+        continue;
+      }
       const bool isFix =
           f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
       if (isFix && (!config.style.showFixes || fixesDrawn >= kMaxFixesDrawn)) {
