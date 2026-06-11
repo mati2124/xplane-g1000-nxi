@@ -70,9 +70,9 @@ constexpr float kTrackVectorSeconds = 60.0f;
 constexpr float kFuelReserveHours = 0.75f;
 
 // Land-data styling to sit under the white/cyan/magenta symbology like the
-// Garmin base map: lake fill matches the TOPO shoreline water (Fig 5-14),
+// Garmin base map: hydro features are medium blue (Fig 5-13/5-14, ~35/61/137),
 // roads dark brown, borders gray.
-constexpr Color kWaterFill{0.286f, 0.604f, 0.573f, 1.0f};
+constexpr Color kWaterFill{0.137f, 0.239f, 0.537f, 1.0f};
 constexpr Color kRiverStroke{0.22f, 0.42f, 0.68f, 1.0f};
 constexpr Color kRoadStroke{0.38f, 0.30f, 0.20f, 1.0f};
 constexpr Color kBorderStroke{0.55f, 0.55f, 0.55f, 0.8f};
@@ -908,6 +908,23 @@ AirspaceRenderStyle airspaceStyle(AirspaceClass cls) {
   }
 }
 
+// Largest map range (NM) at which an airspace boundary is still drawn, mirroring
+// the NXi Map Setup "Airspace" group default range per class (Working Title
+// MapUserSettings: Class D defaults to the 10 NM ladder step, every other class
+// to the 50 NM step). Above the class's range the boundary declutters off so a
+// zoomed-out map isn't buried in outlines.
+constexpr float kAirspaceClassDMaxRangeNm = 10.0f;
+constexpr float kAirspaceDefaultMaxRangeNm = 50.0f;
+
+float airspaceMaxDisplayRangeNm(AirspaceClass cls) {
+  switch (cls) {
+    case AirspaceClass::ClassD:
+      return kAirspaceClassDMaxRangeNm;
+    default:
+      return kAirspaceDefaultMaxRangeNm;
+  }
+}
+
 // Draws a closed polyline through pre-projected boundary points (connecting the
 // last point back to the first). Dashed mode walks each edge emitting fixed
 // pixel-length dashes so arcs and straight segments dash consistently.
@@ -1194,9 +1211,11 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     drawRangeRing(r, cx, cy, mapRadiusPx * 0.5f, colors::kLabelText);
   }
 
-  // Airspace boundaries draw beneath the route and features. An altitude
-  // declutter hides airspace whose vertical band is far from ownship, matching
-  // the G1000's behavior so distant overlying/underlying airspace isn't drawn.
+  // Airspace boundaries draw beneath the route and features. Two declutters
+  // match the G1000: a per-class map-range cap hides each airspace once zoomed
+  // out past its Map Setup range, and an altitude declutter hides airspace
+  // whose vertical band is far from ownship so distant overlying/underlying
+  // airspace isn't drawn.
   if (config.style.showAirspace && !map.airspaces.empty()) {
     constexpr float kAltMarginFt = 2000.0f;
     const float ownAlt = flight.altitudeValid ? flight.altitudeFt : 0.0f;
@@ -1205,6 +1224,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
       if (as.boundary.size() < 2) continue;
       const AirspaceRenderStyle style = airspaceStyle(as.airspaceClass);
       if (style.stroke == AirspaceStroke::None) continue;
+      if (rangeNm > airspaceMaxDisplayRangeNm(as.airspaceClass)) continue;
       if (flight.altitudeValid &&
           (as.floorFt > ownAlt + kAltMarginFt ||
            as.ceilingFt < ownAlt - kAltMarginFt)) {

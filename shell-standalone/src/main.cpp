@@ -220,10 +220,18 @@ struct AppState {
   avionics::AvionicsEngine* clrHoldEngine = nullptr;
   double clrHoldStart = 0.0;
   // Hover cursors for the on-screen bezel: a left-right cursor over the
-  // rotatable rings (FMS knob / RANGE joystick zoom), a hand over the other
-  // clickable controls. Created at startup, freed at shutdown.
+  // rotatable FMS knob rings, circular rotate cursors over the RANGE joystick's
+  // zoom ring (a clockwise arrow on the zoom-out side, a counter-clockwise
+  // arrow on the zoom-in side), and a hand over the other clickable controls.
+  // Created at startup, freed at shutdown.
   GLFWcursor* rotateCursor = nullptr;
   GLFWcursor* handCursor = nullptr;
+  GLFWcursor* rangeCwCursor = nullptr;
+  GLFWcursor* rangeCcwCursor = nullptr;
+  // Accumulated scroll-wheel delta over the RANGE joystick, so a high-resolution
+  // trackpad steps the map range one ladder stop per whole notch instead of
+  // racing through the ladder. Reset whenever the wheel turns off the knob.
+  double rangeScrollAccum = 0.0;
 };
 
 // Window dimensions for the two bezel states: the full suite (screen + strips)
@@ -876,10 +884,126 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
   }
 }
 
-// Hover feedback over the on-screen bezel: a left-right (rotate) cursor over
-// the FMS knob / RANGE joystick rings, a hand over the other clickable keys and
-// softkeys, and the default arrow over the glass screen. Uses the same hit-test
-// and pixel scaling as OnMouseButton so the cursor matches what a click does.
+// Builds a circular "rotate" cursor: a near-complete ring broken by a small
+// wedge, with a single arrowhead on one open end pointing tangentially in the
+// `clockwise` direction of travel (the other end is blunt), so it reads as
+// "turn this clockwise" or, mirrored, "turn this counter-clockwise". Shown
+// while the pointer is over the RANGE joystick's zoom ring -- the clockwise
+// side zooms the map out, the counter-clockwise side zooms it in -- matching
+// the rotation affordance X-Plane uses for its turnable knobs. Drawn white with
+// a dark outline so it reads on both the dark bezel and lighter backgrounds.
+// Returns null on failure; callers then fall back to the left-right cursor.
+GLFWcursor* MakeRotateCursor(bool clockwise) {
+  constexpr int kSize = 32;
+  constexpr float kCx = 15.5f;        // ring center
+  constexpr float kCy = 15.5f;
+  constexpr float kR = 8.5f;          // ring centerline radius
+  constexpr float kRingHalf = 1.6f;   // half the ring thickness
+  constexpr float kGapHalf = 0.62f;   // half-angle of the open wedge (rad)
+  constexpr float kArrow = 4.6f;      // arrowhead reach past the ring end
+  constexpr float kArrowHalfW = 3.6f;  // arrowhead half-width
+
+  const auto clamp01 = [](float v) {
+    return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+  };
+  const auto segDist = [](float px, float py, float ax, float ay, float bx,
+                          float by) {
+    const float vx = bx - ax, vy = by - ay;
+    const float wx = px - ax, wy = py - ay;
+    const float len2 = vx * vx + vy * vy;
+    float t = len2 > 0.0f ? (wx * vx + wy * vy) / len2 : 0.0f;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float dx = px - (ax + t * vx);
+    const float dy = py - (ay + t * vy);
+    return std::sqrt(dx * dx + dy * dy);
+  };
+  const auto cross = [](float ax, float ay, float bx, float by) {
+    return ax * by - ay * bx;
+  };
+  // Signed distance to a filled triangle: negative inside, positive outside.
+  const auto triDist = [&](float px, float py, float ax, float ay, float bx,
+                           float by, float cxv, float cyv) {
+    const float d = std::min({segDist(px, py, ax, ay, bx, by),
+                              segDist(px, py, bx, by, cxv, cyv),
+                              segDist(px, py, cxv, cyv, ax, ay)});
+    const float e1 = cross(bx - ax, by - ay, px - ax, py - ay);
+    const float e2 = cross(cxv - bx, cyv - by, px - bx, py - by);
+    const float e3 = cross(ax - cxv, ay - cyv, px - cxv, py - cyv);
+    const bool hasNeg = e1 < 0.0f || e2 < 0.0f || e3 < 0.0f;
+    const bool hasPos = e1 > 0.0f || e2 > 0.0f || e3 > 0.0f;
+    return (hasNeg && hasPos) ? d : -d;  // mixed signs -> outside
+  };
+
+  // The ring ends sit at +/-kGapHalf (the open wedge faces +x). The single
+  // arrowhead caps the end that leads in the travel direction (+theta is
+  // clockwise on screen, since y points down): the upper-right end for CW, the
+  // lower-right end for CCW, pointing into the gap. The two cursors are thus
+  // vertical mirrors of each other.
+  struct Arrow {
+    float tx, ty, b1x, b1y, b2x, b2y;
+  };
+  const auto makeArrow = [&](float ang, float dirSign) {
+    const float ex = kCx + std::cos(ang) * kR;
+    const float ey = kCy + std::sin(ang) * kR;
+    // Unit tangent at this angle, oriented along the travel direction.
+    const float ax = dirSign * -std::sin(ang);
+    const float ay = dirSign * std::cos(ang);
+    const float px = -ay, py = ax;  // perpendicular (unit)
+    const float tipx = ex + ax * kArrow;
+    const float tipy = ey + ay * kArrow;
+    const float basex = ex - ax * (kArrow * 0.5f);
+    const float basey = ey - ay * (kArrow * 0.5f);
+    return Arrow{tipx,
+                 tipy,
+                 basex + px * kArrowHalfW,
+                 basey + py * kArrowHalfW,
+                 basex - px * kArrowHalfW,
+                 basey - py * kArrowHalfW};
+  };
+  const Arrow arrow = clockwise ? makeArrow(-kGapHalf, 1.0f)
+                                : makeArrow(kGapHalf, -1.0f);
+
+  std::vector<unsigned char> pixels(static_cast<size_t>(kSize) * kSize * 4, 0);
+  for (int y = 0; y < kSize; ++y) {
+    for (int x = 0; x < kSize; ++x) {
+      const float px = static_cast<float>(x) + 0.5f;
+      const float py = static_cast<float>(y) + 0.5f;
+
+      const float dx = px - kCx;
+      const float dy = py - kCy;
+      float d = std::fabs(std::sqrt(dx * dx + dy * dy) - kR) - kRingHalf;
+      if (std::fabs(std::atan2(dy, dx)) < kGapHalf) d = 1.0e9f;  // open wedge
+      d = std::min(d, triDist(px, py, arrow.tx, arrow.ty, arrow.b1x, arrow.b1y,
+                              arrow.b2x, arrow.b2y));
+
+      const float inkA = clamp01(0.5f - d);            // white shape
+      const float outA = clamp01(0.5f - (d - 1.3f));   // dark outline, expanded
+      const float whiteA = inkA;
+      const float blackA = outA * (1.0f - inkA);
+      const float a = whiteA + blackA;
+      const unsigned char lum = static_cast<unsigned char>(
+          (a > 0.0f ? whiteA / a : 0.0f) * 255.0f + 0.5f);
+      const size_t i = (static_cast<size_t>(y) * kSize + x) * 4;
+      pixels[i + 0] = lum;
+      pixels[i + 1] = lum;
+      pixels[i + 2] = lum;
+      pixels[i + 3] = static_cast<unsigned char>(clamp01(a) * 255.0f + 0.5f);
+    }
+  }
+
+  GLFWimage image;
+  image.width = kSize;
+  image.height = kSize;
+  image.pixels = pixels.data();
+  return glfwCreateCursor(&image, kSize / 2, kSize / 2);
+}
+
+// Hover feedback over the on-screen bezel: a left-right cursor over the FMS
+// knob rings, a circular rotate cursor over the RANGE joystick's zoom ring
+// (which turns to zoom the map in/out), a hand over the other clickable keys
+// and softkeys, and the default arrow over the glass screen. Uses the same
+// hit-test and pixel scaling as OnMouseButton so the cursor matches what a
+// click does.
 void OnCursorPos(GLFWwindow* window, double cursorX, double cursorY) {
   auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
   if (app == nullptr) return;
@@ -906,7 +1030,13 @@ void OnCursorPos(GLFWwindow* window, double cursorX, double cursorY) {
         static_cast<float>(fx), static_cast<float>(fy),
         static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
         static_cast<float>(fbH));
-    if (key != avionics::BezelKey::Count) {
+    if (key == avionics::BezelKey::RangeDown) {
+      // Counter-clockwise side of the zoom ring (zoom in).
+      cursor = app->rangeCcwCursor ? app->rangeCcwCursor : app->rotateCursor;
+    } else if (key == avionics::BezelKey::RangeUp) {
+      // Clockwise side of the zoom ring (zoom out).
+      cursor = app->rangeCwCursor ? app->rangeCwCursor : app->rotateCursor;
+    } else if (key != avionics::BezelKey::Count) {
       cursor = avionics::isRotatableBezelKey(key) ? app->rotateCursor
                                                   : app->handCursor;
     }
@@ -918,6 +1048,61 @@ void OnCursorPos(GLFWwindow* window, double cursorX, double cursorY) {
     if (key >= 0) cursor = app->handCursor;
   }
   glfwSetCursor(window, cursor);
+}
+
+// Scroll-wheel over the on-screen RANGE joystick zooms the map, the way you'd
+// spin the real knob (which is what the rotate hover cursor advertises): wheel
+// up zooms in (range down), wheel down zooms out (range up). Reliable where a
+// click is fiddly -- it doesn't depend on which window has focus, and you can
+// rest the pointer anywhere on the knob. Uses the same hit-test and pixel
+// scaling as the click/hover handlers so it triggers exactly where the rotate
+// cursor shows. The delta is accumulated so a trackpad's many small ticks step
+// the range ladder one stop per whole notch.
+void OnScroll(GLFWwindow* window, double /*xoffset*/, double yoffset) {
+  auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
+  if (app == nullptr || !app->showBezel || yoffset == 0.0) return;
+
+  avionics::AvionicsEngine* engine =
+      (window == app->mfdWindow) ? app->mfdEngine : app->pfdEngine;
+  if (engine == nullptr) return;
+
+  double cursorX = 0.0, cursorY = 0.0;
+  glfwGetCursorPos(window, &cursorX, &cursorY);
+  int winW = 0, winH = 0, fbW = 0, fbH = 0;
+  glfwGetWindowSize(window, &winW, &winH);
+  glfwGetFramebufferSize(window, &fbW, &fbH);
+  const double sx = winW > 0 ? static_cast<double>(fbW) / winW : 1.0;
+  const double sy = winH > 0 ? static_cast<double>(fbH) / winH : 1.0;
+  const double fx = cursorX * sx;
+  const double fy = cursorY * sy;
+
+  const int bezelPx = BezelStripPx(fbW);
+  const int screenW = fbW - bezelPx;
+  bool overRange = false;
+  if (fx >= screenW) {
+    const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
+        static_cast<float>(fx), static_cast<float>(fy),
+        static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
+        static_cast<float>(fbH));
+    // Anywhere on the RANGE joystick cluster (zoom ring or the pan center)
+    // scrolls the range, so the gesture is forgiving about exact placement.
+    const int ki = static_cast<int>(key);
+    overRange = ki >= avionics::kRangeJoyFirst && ki < avionics::kFmsKnobFirst;
+  }
+  if (!overRange) {
+    app->rangeScrollAccum = 0.0;
+    return;
+  }
+
+  app->rangeScrollAccum += yoffset;
+  while (app->rangeScrollAccum >= 1.0) {
+    engine->pressBezelKey(avionics::BezelKey::RangeDown);  // wheel up: zoom in
+    app->rangeScrollAccum -= 1.0;
+  }
+  while (app->rangeScrollAccum <= -1.0) {
+    engine->pressBezelKey(avionics::BezelKey::RangeUp);  // wheel down: zoom out
+    app->rangeScrollAccum += 1.0;
+  }
 }
 
 // Keep the window floating above other windows when requested via the
@@ -1026,6 +1211,7 @@ int main(int argc, char** argv) {
   glfwSetKeyCallback(pfdWindow, OnKey);
   glfwSetMouseButtonCallback(pfdWindow, OnMouseButton);
   glfwSetCursorPosCallback(pfdWindow, OnCursorPos);
+  glfwSetScrollCallback(pfdWindow, OnScroll);
 
   avionics::NanoVgRenderer pfdRenderer;
   if (!pfdRenderer.valid()) {
@@ -1049,6 +1235,7 @@ int main(int argc, char** argv) {
       glfwSetKeyCallback(mfdWindow, OnKey);
       glfwSetMouseButtonCallback(mfdWindow, OnMouseButton);
       glfwSetCursorPosCallback(mfdWindow, OnCursorPos);
+      glfwSetScrollCallback(mfdWindow, OnScroll);
       mfdRenderer = new avionics::NanoVgRenderer();
       if (!mfdRenderer->valid()) {
         std::fprintf(stderr, "Failed to create MFD renderer; running PFD only\n");
@@ -1213,6 +1400,8 @@ int main(int argc, char** argv) {
   // the other clickable controls (a null handle falls back to the arrow).
   app.rotateCursor = glfwCreateStandardCursor(GLFW_RESIZE_EW_CURSOR);
   app.handCursor = glfwCreateStandardCursor(GLFW_POINTING_HAND_CURSOR);
+  app.rangeCwCursor = MakeRotateCursor(true);
+  app.rangeCcwCursor = MakeRotateCursor(false);
   glfwSetWindowUserPointer(pfdWindow, &app);
   if (mfdWindow != nullptr) glfwSetWindowUserPointer(mfdWindow, &app);
 
@@ -1500,6 +1689,8 @@ int main(int argc, char** argv) {
   glfwDestroyWindow(pfdWindow);
   if (app.rotateCursor != nullptr) glfwDestroyCursor(app.rotateCursor);
   if (app.handCursor != nullptr) glfwDestroyCursor(app.handCursor);
+  if (app.rangeCwCursor != nullptr) glfwDestroyCursor(app.rangeCwCursor);
+  if (app.rangeCcwCursor != nullptr) glfwDestroyCursor(app.rangeCcwCursor);
   avionics::map::setAsyncTerrainBuilds(false);
   glfwTerminate();
   return 0;
