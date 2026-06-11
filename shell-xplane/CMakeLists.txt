@@ -77,6 +77,12 @@ else()
   )
 endif()
 
+if(WIN32)
+  # Every translation unit must see winsock2.h before windows.h (XPLM headers
+  # include the latter). WinSockFirst.h is force-included for the whole target.
+  target_compile_options(xplane-avionics PRIVATE /FI"WinSockFirst.h")
+endif()
+
 # --- Install / packaging ----------------------------------------------------
 # X-Plane plugin folder layout, ready to drop into <X-Plane>/Resources/plugins:
 #   xplane-avionics/<platform>/xplane-avionics.xpl
