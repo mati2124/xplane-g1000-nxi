@@ -609,6 +609,22 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(3);  // "AWY" Off -> On
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdawy") == 0) {
+    // The MAP page zoomed to 50 NM with low/high airways enabled (AWY On),
+    // then back on the root bar so the view matches the standard MAP capture
+    // with the airway network drawn.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int p = 0; p < 3; ++p) {  // RNG+ -> 50 NM
+      engine.pressBezelKey(avionics::BezelKey::RangeUp);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
+    engine.pressSoftkey(5);   // "Map Opt" -> open submenu
+    engine.pressSoftkey(3);   // "AWY" Off -> On
+    engine.pressSoftkey(11);  // "Back" -> root bar
+    for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdwx") == 0) {
     // The MAP page with the NEXRAD precipitation overlay enabled, zoomed out
     // so the (forward-range) mock weather cells are on screen. Zoom first on
