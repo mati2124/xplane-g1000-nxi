@@ -8,19 +8,21 @@ PLUGIN_SRC="${SCRIPT_DIR}/plugin/xplane-avionics"
 STANDALONE_SRC="${SCRIPT_DIR}/standalone"
 
 usage() {
-  echo "Usage: $0 [--xplane DIR] [--standalone] [--desktop-icon]"
+  echo "Usage: $0 [--xplane DIR] [--standalone] [--desktop-icon] [--startup]"
   exit 1
 }
 
 XPLANE_DIR=""
 INSTALL_STANDALONE=0
 DESKTOP_ICON=0
+START_AT_LOGIN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --xplane) XPLANE_DIR="$2"; shift 2 ;;
     --standalone) INSTALL_STANDALONE=1; shift ;;
     --desktop-icon) DESKTOP_ICON=1; shift ;;
+    --startup) START_AT_LOGIN=1; shift ;;
     -h|--help) usage ;;
     *) echo "Unknown option: $1" >&2; usage ;;
   esac
@@ -72,10 +74,27 @@ if [[ "${INSTALL_STANDALONE}" -eq 1 ]]; then
     fi
     echo "Wrote ${DESKTOP_FILE}"
   fi
+
+  if [[ "${START_AT_LOGIN}" -eq 0 ]]; then
+    read -r -p "Start the standalone app automatically at login? [y/N] " REPLY
+    [[ "${REPLY}" =~ ^[Yy]$ ]] && START_AT_LOGIN=1
+  fi
+  if [[ "${START_AT_LOGIN}" -eq 1 ]]; then
+    # XDG autostart: a .desktop file in ~/.config/autostart launches at login.
+    AUTOSTART_DIR="${HOME}/.config/autostart"
+    AUTOSTART_FILE="${AUTOSTART_DIR}/g1000-nxi.desktop"
+    mkdir -p "${AUTOSTART_DIR}"
+    sed "s|Exec=avionics-standalone|Exec=${STANDALONE_DEST}/avionics-standalone|" \
+      "${SCRIPT_DIR}/g1000-nxi.desktop" > "${AUTOSTART_FILE}"
+    chmod +x "${AUTOSTART_FILE}"
+    echo "Enabled start at login (${AUTOSTART_FILE})"
+  fi
 else
   read -r -p "Install standalone app too? [y/N] " REPLY
   if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
-    exec "$0" --xplane "${XPLANE_DIR}" --standalone $([[ "${DESKTOP_ICON}" -eq 1 ]] && echo --desktop-icon)
+    exec "$0" --xplane "${XPLANE_DIR}" --standalone \
+      $([[ "${DESKTOP_ICON}" -eq 1 ]] && echo --desktop-icon) \
+      $([[ "${START_AT_LOGIN}" -eq 1 ]] && echo --startup)
   fi
 fi
 

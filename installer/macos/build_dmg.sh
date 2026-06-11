@@ -60,6 +60,25 @@ chmod +x "${WORK}/payload/Install Plugin.command"
 # Optional desktop alias for the standalone app.
 ln -sf "${APP_NAME}" "${WORK}/payload/Drag G1000 NXi to Applications"
 
+# Optional "start at login" helper: registers the installed app as a macOS Login
+# Item (the user-visible, removable kind under System Settings → General → Login
+# Items). Expects the app to have been copied to /Applications first.
+cat > "${WORK}/payload/Start at Login.command" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+APP="/Applications/${APP_NAME}"
+if [[ ! -d "\${APP}" ]]; then
+  echo "Drag \"${APP_NAME}\" to /Applications first, then run this again." >&2
+  read -r -p "Press Enter to close."
+  exit 1
+fi
+osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"\${APP}\", hidden:false}" >/dev/null
+echo "G1000 NXi will now start automatically when you log in."
+echo "Remove it later in System Settings → General → Login Items."
+read -r -p "Press Enter to close."
+EOF
+chmod +x "${WORK}/payload/Start at Login.command"
+
 cat > "${WORK}/payload/README.txt" <<EOF
 G1000 NXi ${VERSION}
 
@@ -69,6 +88,10 @@ G1000 NXi ${VERSION}
 
 2. Standalone app:
    Drag "${APP_NAME}" to /Applications (or run it from this disk image).
+
+3. Start at login (optional):
+   After copying the app to /Applications, double-click "Start at Login.command".
+   Remove it later in System Settings → General → Login Items.
 
 Unsigned build: if macOS blocks the app, right-click → Open once.
 EOF

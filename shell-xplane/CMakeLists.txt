@@ -21,6 +21,7 @@ add_library(xplane-avionics MODULE
   src/DatarefDataSource.cpp
   src/DatarefWeatherRadar.cpp
   src/FlightPlanBridge.cpp
+  src/CommandBridge.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/DsfTerrainStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/XPlaneInstall.cpp
 )

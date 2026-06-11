@@ -16,8 +16,8 @@ A high-performance glass-cockpit (G1000-style PFD/MFD) for X-Plane, built as
 
 ![Multi-Function Display — Navigation Map page](docs/screenshots/mfd.png)
 
-Screenshots from the standalone shell running on the built-in mock feed (PFD with
-inset map enabled; MFD on the Navigation Map page).
+Screenshots from the standalone shell (PFD with inset map enabled; MFD on the
+Navigation Map page), captured with the offscreen `--screenshot` tool.
 
 ## Why C++ and this structure
 
@@ -35,7 +35,7 @@ avionics-core/      C++ static lib: logic + rendering, zero platform deps
   src/              engine + sample PrimaryFlightDisplay + MockDataSource
 render-nanovg/      shared NanoVG Renderer backend used by both shells
 shell-xplane/       XPLM plugin: DatarefDataSource + sim draw callback
-shell-standalone/   GLFW window + 60 fps loop; mock or live X-Plane (UDP RREF)
+shell-standalone/   GLFW window + 60 fps loop; live X-Plane (UDP RREF)
 ```
 
 The two seams that vary per platform are the abstract interfaces
@@ -44,7 +44,7 @@ The two seams that vary per platform are the abstract interfaces
 | Concern        | X-Plane shell                          | Standalone shell                                   |
 | -------------- | -------------------------------------- | -------------------------------------------------- |
 | Frame loop     | Sim calls our draw callback            | We own a 60 fps loop                               |
-| Data source    | `XPLMGetDataf` datarefs (in-process)   | X-Plane over UDP (RREF) or built-in mock feed       |
+| Data source    | `XPLMGetDataf` datarefs (in-process)   | X-Plane over UDP (RREF)                            |
 | Renderer       | NanoVG over the sim's GL/Vulkan/Metal  | NanoVG over our GLFW/SDL window                     |
 
 ## Build
@@ -59,22 +59,36 @@ cmake --build build
 ./build/shell-standalone/avionics-standalone   # opens a window rendering the PFD (Esc to quit)
 ```
 
-By default the standalone shell runs on the built-in mock feed. To connect to a
-running X-Plane instance over its UDP data interface, or to switch feeds at
-runtime:
+The standalone shell always connects to a running X-Plane over its UDP data
+interface (default host `127.0.0.1`, port `49000`). Point it at another host or
+port with:
 
 ```bash
-# Start on the live X-Plane connection (default host 127.0.0.1, port 49000):
-./build/shell-standalone/avionics-standalone --source xplane
-./build/shell-standalone/avionics-standalone --source xplane --xplane-host 192.168.1.50 --xplane-port 49000
-
-# Press M at any time to toggle between MOCK DATA and X-PLANE.
+./build/shell-standalone/avionics-standalone --xplane-host 192.168.1.50 --xplane-port 49000
 ```
 
 The display shows a power-on **boot screen** for a few seconds, then the live
-PFD. If no data is arriving (e.g. X-Plane isn't running), it shows a large red
-**X** — the same failure annunciation real glass cockpits use when a display
-loses its data source.
+PFD. Until X-Plane starts sending data (e.g. it isn't running yet), each
+instrument shows a large red **X** — the same failure annunciation real glass
+cockpits use when a display loses its data source.
+
+#### Standalone keyboard shortcuts
+
+The standalone window has no menu bar; these keys control it (each toggle is
+saved and restored on the next launch, and applies to both the PFD and MFD
+windows):
+
+| Key       | Action                                                              |
+| --------- | ------------------------------------------------------------------ |
+| `B`       | Show/hide the hardware **bezel** strips (keys + softkey row)        |
+| `T`       | Show/hide the OS window **title bar** (close / minimize / maximize) |
+| `P`       | Keep the windows **always on top** of other windows                |
+| `Enter`   | Acknowledge the power-up page (same as the bezel **ENT** key)       |
+| `Esc`     | Quit                                                                |
+
+Window positions are always remembered between runs. The installers can also set
+the standalone to start automatically when you sign in (Windows task, macOS
+"Start at Login.command", Linux `--startup`).
 
 The connection is written against a generic `SimulatorConnection` interface, so
 a future Microsoft Flight Simulator (SimConnect) backend can drop in behind the
@@ -91,6 +105,28 @@ cmake --build build
 
 This produces `build/shell-xplane/xplane-avionics.xpl`. Install it into X-Plane
 under `Resources/plugins/xplane-avionics/<platform>/` (e.g. `mac.xpl` on macOS).
+
+#### Binding the physical bezel keys
+
+Every PFD/MFD bezel key, softkey, knob detent, and the RANGE/pan joystick is
+bindable from X-Plane's **Settings → Keyboard** and **Joystick** screens, so you
+can drive the glass from a keyboard, a HOTAS, or a hardware G1000 panel:
+
+- **Stock G1000 commands** (`sim/GPS/g1000n1_*`, `sim/GPS/g1000n3_*`) are
+  intercepted, so an aircraft or controller already bound to X-Plane's built-in
+  G1000 keeps working with no changes.
+- **Dedicated commands** are also created under the **`xplane_avionics/`**
+  namespace (search "G1000 NXi" in the bindings list) so every key is bindable
+  even in aircraft that don't expose the full stock command set:
+  - `xplane_avionics/pfd/*` and `xplane_avionics/mfd/*` — `softkey1`…`softkey12`,
+    `direct`, `menu`, `fpl`, `proc`, `clr`, `ent`, `cursor`, the FMS knob detents
+    (`fms_outer_up/down`, `fms_inner_up/down`), `range_up/down`, and the map
+    `pan_*` directions.
+  - `xplane_avionics/radio/*` — COM/NAV select, flip-flop, and the inner/outer
+    tuning detents.
+
+Both routes drive the same on-screen avionics, so bind whichever your hardware
+already sends. (Holding `clr` still triggers CLR → Default Map.)
 
 #### Live flight-plan bridge
 
@@ -115,6 +151,27 @@ Direct-To uses X-Plane's present-position direct leg). The shell sends each edit
 with an acknowledgement + retry so a dropped UDP packet doesn't lose the write.
 Pass `--no-fms-write` to keep edits display-only while still reading the live
 route.
+
+#### Command bridge (cockpit keys → standalone)
+
+Physical G1000 bezel keys, softkeys, and COM/NAV knobs only fire X-Plane
+commands inside the sim process. When you run the **standalone** windows on a
+second monitor, the plugin also forwards those commands over UDP so the external
+displays respond to cockpit hardware:
+
+1. Install and enable the in-sim plugin (it listens for registration on UDP port
+   **49102**).
+2. Start the standalone shell as usual. It binds UDP port **49101** by default,
+   registers with the plugin every few seconds, and applies forwarded events on
+   the next frame.
+3. Press a cockpit key (or a joystick binding to `sim/GPS/g1000n*` /
+   `xplane_avionics/*`) — the standalone PFD/MFD receives the same softkey or
+   bezel press.
+
+Override the listen port with `--command-bridge-port` if 49101 is in use. The
+plugin intercepts GDU commands whenever it is enabled, even when the in-sim
+glass takeover is turned off in the Plugins menu — so you can run **standalone
+only** for the displays and still drive them from the cockpit.
 
 ## Per-aircraft checklists & engine display (EIS)
 

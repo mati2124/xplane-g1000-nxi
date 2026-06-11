@@ -46,6 +46,10 @@ Name: "standalone"; Description: "Standalone desktop app (connects to X-Plane ov
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut for the standalone app"; GroupDescription: "Standalone shortcuts:"; Components: standalone
 Name: "startmenu"; Description: "Create a &Start Menu shortcut"; GroupDescription: "Standalone shortcuts:"; Components: standalone; Flags: checkedonce
+Name: "startup"; Description: "Start the standalone app &automatically when I sign in to Windows"; GroupDescription: "Standalone shortcuts:"; Components: standalone; Flags: unchecked
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\avionics-standalone.exe"""; Components: standalone; Tasks: startup; Flags: uninsdeletevalue
 
 [Files]
 Source: "{#RepoRoot}\stage\plugin\xplane-avionics\win_x64\*"; DestDir: "{code:GetXPlanePluginsDir}\xplane-avionics\win_x64"; Components: plugin; Flags: ignoreversion

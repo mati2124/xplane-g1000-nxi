@@ -35,6 +35,7 @@ set(STANDALONE_SOURCES
   src/XPlaneConnection.cpp
   src/XPlaneWebApi.cpp
   src/FlightPlanBridgeClient.cpp
+  src/CommandBridgeClient.cpp
   src/NavData.cpp
   src/FmsPlanStore.cpp
   src/AirspaceStore.cpp

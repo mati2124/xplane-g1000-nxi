@@ -17,6 +17,10 @@
 //   --fms-bridge-port PORT    UDP port of the in-sim flight-plan bridge
 //                             (shell-xplane plugin) that serves the live FMS
 //                             route over the network (default: 49100)
+//   --command-bridge-port PORT
+//                             UDP port the standalone listens on for G1000
+//                             bezel/softkey events forwarded by the plugin
+//                             (default: 49101)
 //   --no-fms-write            don't program FPL/SimBrief/Direct-To edits back
 //                             into X-Plane's FMS (display-only; the live route
 //                             is still read from the bridge)
@@ -64,6 +68,7 @@
 
 #include "AppSettings.h"
 #include "ChecklistStore.h"
+#include "CommandBridgeClient.h"
 #include "avionics/EisStore.h"
 #include "DsfTerrainStore.h"
 #include "FmsPlanStore.h"
@@ -75,6 +80,7 @@
 #include "UpdateNotify.h"
 #include "XPlaneConnection.h"
 #include "avionics/AssetPaths.h"
+#include "avionics/CommandBridgeProtocol.h"
 #include "avionics/AvionicsEngine.h"
 #include "avionics/ConnectionState.h"
 #include "avionics/MockDataSource.h"
@@ -338,6 +344,109 @@ void AcknowledgeBoot(AppState& app) {
 bool AwaitingBootAck(const AppState& app) {
   return (app.pfdEngine != nullptr && app.pfdEngine->awaitingPowerUpAck()) ||
          (app.mfdEngine != nullptr && app.mfdEngine->awaitingPowerUpAck());
+}
+
+void ApplyRadioBridgeAction(avionics::AvionicsEngine& engine,
+                            avionics::cmdbridge::RadioAction action) {
+  switch (action) {
+    case avionics::cmdbridge::RadioAction::ComToggle:
+      engine.selectComRadio();
+      break;
+    case avionics::cmdbridge::RadioAction::ComFlip:
+      engine.transferComRadio();
+      break;
+    case avionics::cmdbridge::RadioAction::ComOuterUp:
+      engine.tuneComRadio(+1, /*coarse=*/true);
+      break;
+    case avionics::cmdbridge::RadioAction::ComOuterDown:
+      engine.tuneComRadio(-1, /*coarse=*/true);
+      break;
+    case avionics::cmdbridge::RadioAction::ComInnerUp:
+      engine.tuneComRadio(+1, /*coarse=*/false);
+      break;
+    case avionics::cmdbridge::RadioAction::ComInnerDown:
+      engine.tuneComRadio(-1, /*coarse=*/false);
+      break;
+    case avionics::cmdbridge::RadioAction::NavToggle:
+      engine.selectNavRadio();
+      break;
+    case avionics::cmdbridge::RadioAction::NavFlip:
+      engine.transferNavRadio();
+      break;
+    case avionics::cmdbridge::RadioAction::NavOuterUp:
+      engine.tuneNavRadio(+1, /*coarse=*/true);
+      break;
+    case avionics::cmdbridge::RadioAction::NavOuterDown:
+      engine.tuneNavRadio(-1, /*coarse=*/true);
+      break;
+    case avionics::cmdbridge::RadioAction::NavInnerUp:
+      engine.tuneNavRadio(+1, /*coarse=*/false);
+      break;
+    case avionics::cmdbridge::RadioAction::NavInnerDown:
+      engine.tuneNavRadio(-1, /*coarse=*/false);
+      break;
+  }
+}
+
+// Applies bezel / softkey / radio events forwarded from the in-sim plugin.
+void ApplyBridgeEvents(AppState& app,
+                       const std::vector<avionics::cmdbridge::Event>& events) {
+  for (const avionics::cmdbridge::Event& ev : events) {
+    if (ev.kind == avionics::cmdbridge::Kind::Radio) {
+      if (ev.phase != avionics::cmdbridge::Phase::Begin ||
+          app.pfdEngine == nullptr) {
+        continue;
+      }
+      ApplyRadioBridgeAction(
+          *app.pfdEngine,
+          static_cast<avionics::cmdbridge::RadioAction>(ev.value));
+      continue;
+    }
+
+    avionics::AvionicsEngine* engine =
+        ev.device == avionics::cmdbridge::Device::Mfd ? app.mfdEngine
+                                                      : app.pfdEngine;
+    if (engine == nullptr) continue;
+
+    if (ev.kind == avionics::cmdbridge::Kind::Softkey) {
+      if (ev.phase == avionics::cmdbridge::Phase::Begin) {
+        engine->pressSoftkey(ev.value);
+      }
+      continue;
+    }
+
+    if (ev.kind == avionics::cmdbridge::Kind::BezelDiagonal) {
+      if (ev.phase == avionics::cmdbridge::Phase::Begin) {
+        engine->pressBezelKey(static_cast<avionics::BezelKey>(ev.value));
+        if (ev.value2 >= 0) {
+          engine->pressBezelKey(static_cast<avionics::BezelKey>(ev.value2));
+        }
+      }
+      continue;
+    }
+
+    if (ev.kind != avionics::cmdbridge::Kind::Bezel) continue;
+
+    const auto key = static_cast<avionics::BezelKey>(ev.value);
+    if (ev.phase == avionics::cmdbridge::Phase::Begin) {
+      if (key == avionics::BezelKey::Ent && AwaitingBootAck(app)) {
+        AcknowledgeBoot(app);
+      } else if (key != avionics::BezelKey::Count) {
+        engine->pressBezelKey(key);
+      }
+      if (key == avionics::BezelKey::Clr) {
+        app.clrHoldEngine = engine;
+        app.clrHoldStart = glfwGetTime();
+      }
+    } else if (ev.phase == avionics::cmdbridge::Phase::Continue &&
+               key == avionics::BezelKey::Clr) {
+      engine->holdBezelKey(avionics::BezelKey::Clr);
+      app.clrHoldEngine = nullptr;
+    } else if (ev.phase == avionics::cmdbridge::Phase::End &&
+               key == avionics::BezelKey::Clr) {
+      app.clrHoldEngine = nullptr;
+    }
+  }
 }
 
 // B-key action: shows/hides the hardware bezel strips and remembers the choice
@@ -1332,6 +1441,15 @@ int main(int argc, char** argv) {
       bridgePortStr ? static_cast<std::uint16_t>(std::atoi(bridgePortStr))
                     : avionics::fpbridge::kDefaultPort;
 
+  const char* cmdBridgePortStr = FlagValue(argc, argv, "--command-bridge-port");
+  const std::uint16_t cmdBridgePort =
+      cmdBridgePortStr
+          ? static_cast<std::uint16_t>(std::atoi(cmdBridgePortStr))
+          : avionics::cmdbridge::kDefaultListenPort;
+
+  avionics::CommandBridgeClient commandBridge(host ? host : kDefaultXPlaneHost,
+                                              cmdBridgePort);
+
   // FPL/SimBrief/Direct-To edits are programmed back into X-Plane's FMS through
   // the bridge by default; --no-fms-write keeps them display-only.
   const bool fmsWriteEnabled = !HasFlag(argc, argv, "--no-fms-write");
@@ -1579,6 +1697,13 @@ int main(int argc, char** argv) {
       const avionics::MfdController& mapUi = mfdEngine->mfdController();
       xplane.setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
                              mapUi.mapPointerLon());
+    }
+
+    // Cockpit bezel / softkey / radio events forwarded from the in-sim plugin.
+    {
+      std::vector<avionics::cmdbridge::Event> bridgeEvents;
+      commandBridge.drainEvents(bridgeEvents);
+      ApplyBridgeEvents(app, bridgeEvents);
     }
 
     // PFD radio / transponder commands from the bezel and XPDR softkeys.

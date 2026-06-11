@@ -37,11 +37,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "CommandBridge.h"
 #include "DatarefDataSource.h"
 #include "FlightPlanBridge.h"
 #include "UpdateNotify.h"
@@ -54,6 +56,7 @@
 #include "XPLMProcessing.h"
 #include "XPLMUtilities.h"
 #include "avionics/AvionicsEngine.h"
+#include "avionics/CommandBridgeProtocol.h"
 #include "avionics/FlightPlanBridgeProtocol.h"
 #include "avionics/PersistentState.h"
 #include "avionics/render/BezelKeys.h"
@@ -83,6 +86,7 @@ std::uint32_t g_mapGeometryEpoch = 0;
 // Serves the live FMS flight plan to the networked standalone shell over UDP
 // (the standalone shell cannot read the FMS itself; see FlightPlanBridge.h).
 std::unique_ptr<avionics::FlightPlanBridge> g_flightPlanBridge;
+std::unique_ptr<avionics::CommandBridge> g_commandBridge;
 
 // Redraw divisors. The heavy work (NanoVG re-tessellates the whole vector scene
 // on every draw, on the CPU in the GL2 backend) runs only every Nth time our
@@ -577,39 +581,53 @@ void RegisterDevice(AvionicsDevice& dev, XPLMDeviceID deviceId,
 
 // ---- G1000 bezel / softkey commands ------------------------------------------
 //
-// The physical GDU keys in the 3D cockpit fire X-Plane commands
-// (sim/GPS/g1000nN_*) that drive X-Plane's stock G1000. Since we've taken over
-// the screen, we intercept those commands and route them to our own engine
-// instead, consuming them so the hidden stock G1000 doesn't diverge. n1 is the
-// pilot PFD, n3 is the MFD (n2 is the copilot PFD, which we don't drive).
+// Two ways to drive the bezel from hardware/keyboard:
+//
+//  1. We intercept X-Plane's stock GDU commands (sim/GPS/g1000nN_*) so a cockpit
+//     or controller already bound to the stock G1000 keeps working. Since we've
+//     taken over the screen, we consume them so the hidden stock G1000 doesn't
+//     diverge. n1 is the pilot PFD, n3 is the MFD (n2 is the copilot PFD, which
+//     we don't drive).
+//  2. We also CREATE our own commands (xplane_avionics/pfd|mfd/*) so every key
+//     is bindable from X-Plane's Keyboard/Joystick UI even in aircraft that
+//     don't expose the full stock G1000 command set. These appear under
+//     "G1000 NXi" and behave identically to the intercepted stock keys.
 
-// Named GDU key -> our BezelKey. Softkeys 1..12 are handled separately as a
-// numeric range (softkeyN -> pressSoftkey(N-1)).
+// Custom command namespace + UI category for the commands we create. X-Plane
+// shows the category text beside each binding in its settings list.
+constexpr const char* kCmdPrefix = "xplane_avionics";
+
+// Named GDU key -> our BezelKey. `suffix` is the stock command suffix; `label`
+// is shown in X-Plane's binding UI for the custom command. Softkeys 1..12 are
+// handled separately as a numeric range (softkeyN -> pressSoftkey(N-1)).
 struct NamedKey {
   const char* suffix;
   avionics::BezelKey key;
+  const char* label;
 };
 const NamedKey kNamedKeys[] = {
-    {"direct", avionics::BezelKey::DirectTo},
-    {"menu", avionics::BezelKey::Menu},
-    {"fpl", avionics::BezelKey::Fpl},
-    {"proc", avionics::BezelKey::Proc},
-    {"clr", avionics::BezelKey::Clr},
-    {"ent", avionics::BezelKey::Ent},
-    {"cursor", avionics::BezelKey::FmsPush},
-    {"fms_outer_up", avionics::BezelKey::FmsOuterCw},
-    {"fms_outer_down", avionics::BezelKey::FmsOuterCcw},
-    {"fms_inner_up", avionics::BezelKey::FmsInnerCw},
-    {"fms_inner_down", avionics::BezelKey::FmsInnerCcw},
-    {"range_up", avionics::BezelKey::RangeUp},
-    {"range_down", avionics::BezelKey::RangeDown},
+    {"direct", avionics::BezelKey::DirectTo, "Direct-To"},
+    {"menu", avionics::BezelKey::Menu, "MENU key"},
+    {"fpl", avionics::BezelKey::Fpl, "FPL key"},
+    {"proc", avionics::BezelKey::Proc, "PROC key"},
+    {"clr", avionics::BezelKey::Clr, "CLR key (hold for Default Map)"},
+    {"ent", avionics::BezelKey::Ent, "ENT key"},
+    {"cursor", avionics::BezelKey::FmsPush, "FMS knob push (cursor)"},
+    {"fms_outer_up", avionics::BezelKey::FmsOuterCw, "FMS outer knob clockwise"},
+    {"fms_outer_down", avionics::BezelKey::FmsOuterCcw,
+     "FMS outer knob counter-clockwise"},
+    {"fms_inner_up", avionics::BezelKey::FmsInnerCw, "FMS inner knob clockwise"},
+    {"fms_inner_down", avionics::BezelKey::FmsInnerCcw,
+     "FMS inner knob counter-clockwise"},
+    {"range_up", avionics::BezelKey::RangeUp, "RANGE knob out (zoom out)"},
+    {"range_down", avionics::BezelKey::RangeDown, "RANGE knob in (zoom in)"},
     // RANGE joystick map panning (X-Plane g1000nN_pan_*). The center push
     // activates the Map Pointer; the cardinal moves pan it.
-    {"pan_push", avionics::BezelKey::PanPush},
-    {"pan_up", avionics::BezelKey::PanUp},
-    {"pan_down", avionics::BezelKey::PanDown},
-    {"pan_left", avionics::BezelKey::PanLeft},
-    {"pan_right", avionics::BezelKey::PanRight},
+    {"pan_push", avionics::BezelKey::PanPush, "RANGE joystick push (pan)"},
+    {"pan_up", avionics::BezelKey::PanUp, "Map pan up"},
+    {"pan_down", avionics::BezelKey::PanDown, "Map pan down"},
+    {"pan_left", avionics::BezelKey::PanLeft, "Map pan left"},
+    {"pan_right", avionics::BezelKey::PanRight, "Map pan right"},
 };
 
 // Diagonal joystick pushes (X-Plane g1000nN_pan_up_left, etc.) have no single
@@ -618,13 +636,17 @@ struct DiagonalKey {
   const char* suffix;
   avionics::BezelKey a;
   avionics::BezelKey b;
+  const char* label;
 };
 const DiagonalKey kDiagonalKeys[] = {
-    {"pan_up_left", avionics::BezelKey::PanUp, avionics::BezelKey::PanLeft},
-    {"pan_up_right", avionics::BezelKey::PanUp, avionics::BezelKey::PanRight},
-    {"pan_down_left", avionics::BezelKey::PanDown, avionics::BezelKey::PanLeft},
-    {"pan_down_right", avionics::BezelKey::PanDown,
-     avionics::BezelKey::PanRight},
+    {"pan_up_left", avionics::BezelKey::PanUp, avionics::BezelKey::PanLeft,
+     "Map pan up-left"},
+    {"pan_up_right", avionics::BezelKey::PanUp, avionics::BezelKey::PanRight,
+     "Map pan up-right"},
+    {"pan_down_left", avionics::BezelKey::PanDown, avionics::BezelKey::PanLeft,
+     "Map pan down-left"},
+    {"pan_down_right", avionics::BezelKey::PanDown, avionics::BezelKey::PanRight,
+     "Map pan down-right"},
 };
 
 // ---- dedicated NAV/COM knob commands ----
@@ -632,38 +654,26 @@ const DiagonalKey kDiagonalKeys[] = {
 // nav12 toggle, com/nav inner/outer tuning rings, com/nav flip-flop) rather
 // than the FMS knob set above. We route every GDU's knobs (PFD n1 and MFD n3)
 // to the PFD engine, which owns the NAV/COM bar state.
-enum class RadioAction {
-  ComToggle,
-  ComFlip,
-  ComOuterUp,
-  ComOuterDown,
-  ComInnerUp,
-  ComInnerDown,
-  NavToggle,
-  NavFlip,
-  NavOuterUp,
-  NavOuterDown,
-  NavInnerUp,
-  NavInnerDown,
-};
+using RadioAction = avionics::cmdbridge::RadioAction;
 
 struct RadioCommand {
   const char* suffix;
   RadioAction action;
+  const char* label;
 };
 const RadioCommand kRadioCommands[] = {
-    {"com12", RadioAction::ComToggle},
-    {"com_ff", RadioAction::ComFlip},
-    {"com_outer_up", RadioAction::ComOuterUp},
-    {"com_outer_down", RadioAction::ComOuterDown},
-    {"com_inner_up", RadioAction::ComInnerUp},
-    {"com_inner_down", RadioAction::ComInnerDown},
-    {"nav12", RadioAction::NavToggle},
-    {"nav_ff", RadioAction::NavFlip},
-    {"nav_outer_up", RadioAction::NavOuterUp},
-    {"nav_outer_down", RadioAction::NavOuterDown},
-    {"nav_inner_up", RadioAction::NavInnerUp},
-    {"nav_inner_down", RadioAction::NavInnerDown},
+    {"com12", RadioAction::ComToggle, "COM select (COM1/COM2)"},
+    {"com_ff", RadioAction::ComFlip, "COM flip-flop"},
+    {"com_outer_up", RadioAction::ComOuterUp, "COM outer knob up (MHz)"},
+    {"com_outer_down", RadioAction::ComOuterDown, "COM outer knob down (MHz)"},
+    {"com_inner_up", RadioAction::ComInnerUp, "COM inner knob up (kHz)"},
+    {"com_inner_down", RadioAction::ComInnerDown, "COM inner knob down (kHz)"},
+    {"nav12", RadioAction::NavToggle, "NAV select (NAV1/NAV2)"},
+    {"nav_ff", RadioAction::NavFlip, "NAV flip-flop"},
+    {"nav_outer_up", RadioAction::NavOuterUp, "NAV outer knob up (MHz)"},
+    {"nav_outer_down", RadioAction::NavOuterDown, "NAV outer knob down (MHz)"},
+    {"nav_inner_up", RadioAction::NavInnerUp, "NAV inner knob up (kHz)"},
+    {"nav_inner_down", RadioAction::NavInnerDown, "NAV inner knob down (kHz)"},
 };
 
 struct RadioCommandBinding {
@@ -736,46 +746,91 @@ void ApplyQueuedRadioCommands() {
   }
 }
 
+bool ForwardG1000Event(const CommandBinding& b, avionics::cmdbridge::Phase phase) {
+  if (!g_commandBridge) return false;
+  avionics::cmdbridge::Event ev;
+  ev.device = (b.dev == &g_mfd) ? avionics::cmdbridge::Device::Mfd
+                                : avionics::cmdbridge::Device::Pfd;
+  ev.phase = phase;
+  if (b.isSoftkey) {
+    ev.kind = avionics::cmdbridge::Kind::Softkey;
+    ev.value = b.value;
+  } else if (b.value2 >= 0) {
+    ev.kind = avionics::cmdbridge::Kind::BezelDiagonal;
+    ev.value = b.value;
+    ev.value2 = b.value2;
+  } else {
+    ev.kind = avionics::cmdbridge::Kind::Bezel;
+    ev.value = b.value;
+  }
+  return g_commandBridge->sendEvent(ev);
+}
+
+bool ForwardRadioEvent(RadioAction action) {
+  if (!g_commandBridge) return false;
+  avionics::cmdbridge::Event ev;
+  ev.kind = avionics::cmdbridge::Kind::Radio;
+  ev.value = static_cast<std::int32_t>(action);
+  return g_commandBridge->sendEvent(ev);
+}
+
 int G1000CommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
                         void* ref) {
-  // Consume every phase so the stock G1000 never sees these keys. Most keys act
-  // on the key-down edge; CLR also has a press-and-hold function (CLR DFLT MAP),
-  // which fires from the Continue phase once the button has been held.
+  // Route GDU keys to our in-sim engines when active and/or forward them to the
+  // networked standalone shell. Consume when we handle or forward the key so
+  // the stock G1000 does not diverge; pass through when neither applies.
   auto* b = static_cast<CommandBinding*>(ref);
-  if (b == nullptr || !b->dev->engine) return 0;
+  if (b == nullptr) return 1;
   const bool isClr =
       !b->isSoftkey && b->value == static_cast<int>(avionics::BezelKey::Clr);
+  const bool hasEngine = b->dev->engine != nullptr;
+  bool forwarded = false;
+  bool applied = false;
 
   if (phase == xplm_CommandBegin) {
-    if (b->isSoftkey) {
-      b->dev->engine->pressSoftkey(b->value);
-    } else {
-      b->dev->engine->pressBezelKey(static_cast<avionics::BezelKey>(b->value));
-      if (b->value2 >= 0) {
+    forwarded = ForwardG1000Event(*b, avionics::cmdbridge::Phase::Begin);
+    if (hasEngine) {
+      if (b->isSoftkey) {
+        b->dev->engine->pressSoftkey(b->value);
+      } else {
         b->dev->engine->pressBezelKey(
-            static_cast<avionics::BezelKey>(b->value2));
+            static_cast<avionics::BezelKey>(b->value));
+        if (b->value2 >= 0) {
+          b->dev->engine->pressBezelKey(
+              static_cast<avionics::BezelKey>(b->value2));
+        }
       }
+      if (isClr) {
+        b->holdStart = XPLMGetElapsedTime();
+        b->holdFired = false;
+      }
+      ApplyQueuedRadioCommands();
+      PersistStateIfChanged();
+      applied = true;
     }
-    if (isClr) {
-      b->holdStart = XPLMGetElapsedTime();
-      b->holdFired = false;
-    }
-    ApplyQueuedRadioCommands();
-    PersistStateIfChanged();
   } else if (phase == xplm_CommandContinue) {
     // CLR held past the threshold acts as CLR (DFLT MAP): jump to the MFD
     // Navigation Map page. Fire once per hold.
     if (isClr && !b->holdFired &&
         XPLMGetElapsedTime() - b->holdStart >=
             static_cast<float>(avionics::kClrDefaultMapHoldSeconds)) {
-      b->dev->engine->holdBezelKey(avionics::BezelKey::Clr);
-      b->holdFired = true;
-      PersistStateIfChanged();
+      forwarded =
+          ForwardG1000Event(*b, avionics::cmdbridge::Phase::Continue);
+      if (hasEngine) {
+        b->dev->engine->holdBezelKey(avionics::BezelKey::Clr);
+        b->holdFired = true;
+        PersistStateIfChanged();
+        applied = true;
+      }
     }
   } else if (phase == xplm_CommandEnd) {
-    if (isClr) b->holdFired = false;
+    if (isClr) {
+      forwarded = ForwardG1000Event(*b, avionics::cmdbridge::Phase::End);
+      b->holdFired = false;
+    }
   }
-  return 0;  // consume: these GDU keys drive our display, not the stock G1000
+
+  return (forwarded || applied) ? 0 : 1;
 }
 
 // Dispatches a NAV/COM knob command to the PFD engine (which owns the bar) and
@@ -783,54 +838,68 @@ int G1000CommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
 // outer ring steps whole MHz (coarse); the inner ring steps one channel.
 int RadioCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
                         void* ref) {
-  if (phase == xplm_CommandBegin) {
-    auto* b = static_cast<RadioCommandBinding*>(ref);
-    if (b != nullptr && g_pfd.engine) {
-      avionics::AvionicsEngine& e = *g_pfd.engine;
-      switch (b->action) {
-        case RadioAction::ComToggle:
-          e.selectComRadio();
-          break;
-        case RadioAction::ComFlip:
-          e.transferComRadio();
-          break;
-        case RadioAction::ComOuterUp:
-          e.tuneComRadio(+1, /*coarse=*/true);
-          break;
-        case RadioAction::ComOuterDown:
-          e.tuneComRadio(-1, /*coarse=*/true);
-          break;
-        case RadioAction::ComInnerUp:
-          e.tuneComRadio(+1, /*coarse=*/false);
-          break;
-        case RadioAction::ComInnerDown:
-          e.tuneComRadio(-1, /*coarse=*/false);
-          break;
-        case RadioAction::NavToggle:
-          e.selectNavRadio();
-          break;
-        case RadioAction::NavFlip:
-          e.transferNavRadio();
-          break;
-        case RadioAction::NavOuterUp:
-          e.tuneNavRadio(+1, /*coarse=*/true);
-          break;
-        case RadioAction::NavOuterDown:
-          e.tuneNavRadio(-1, /*coarse=*/true);
-          break;
-        case RadioAction::NavInnerUp:
-          e.tuneNavRadio(+1, /*coarse=*/false);
-          break;
-        case RadioAction::NavInnerDown:
-          e.tuneNavRadio(-1, /*coarse=*/false);
-          break;
-      }
-      ApplyQueuedRadioCommands();
+  if (phase != xplm_CommandBegin) return 1;
+  auto* b = static_cast<RadioCommandBinding*>(ref);
+  if (b == nullptr) return 1;
+
+  const bool forwarded = ForwardRadioEvent(b->action);
+  bool applied = false;
+  if (g_pfd.engine) {
+    avionics::AvionicsEngine& e = *g_pfd.engine;
+    switch (b->action) {
+      case RadioAction::ComToggle:
+        e.selectComRadio();
+        break;
+      case RadioAction::ComFlip:
+        e.transferComRadio();
+        break;
+      case RadioAction::ComOuterUp:
+        e.tuneComRadio(+1, /*coarse=*/true);
+        break;
+      case RadioAction::ComOuterDown:
+        e.tuneComRadio(-1, /*coarse=*/true);
+        break;
+      case RadioAction::ComInnerUp:
+        e.tuneComRadio(+1, /*coarse=*/false);
+        break;
+      case RadioAction::ComInnerDown:
+        e.tuneComRadio(-1, /*coarse=*/false);
+        break;
+      case RadioAction::NavToggle:
+        e.selectNavRadio();
+        break;
+      case RadioAction::NavFlip:
+        e.transferNavRadio();
+        break;
+      case RadioAction::NavOuterUp:
+        e.tuneNavRadio(+1, /*coarse=*/true);
+        break;
+      case RadioAction::NavOuterDown:
+        e.tuneNavRadio(-1, /*coarse=*/true);
+        break;
+      case RadioAction::NavInnerUp:
+        e.tuneNavRadio(+1, /*coarse=*/false);
+        break;
+      case RadioAction::NavInnerDown:
+        e.tuneNavRadio(-1, /*coarse=*/false);
+        break;
     }
+    ApplyQueuedRadioCommands();
+    applied = true;
   }
-  return 0;  // consume: the knobs drive our radios, not the stock G1000
+  return (forwarded || applied) ? 0 : 1;
 }
 
+// Stable backing store for the names/descriptions of the commands we create, so
+// the pointers handed to XPLMCreateCommand stay valid. A deque never relocates
+// its elements, so c_str() stays good (a vector would invalidate on growth).
+std::deque<std::string> g_customStrings;
+const char* StoreStr(const std::string& s) {
+  g_customStrings.push_back(s);
+  return g_customStrings.back().c_str();
+}
+
+// Binds an existing stock command (intercept) if X-Plane has it.
 void BindCommand(AvionicsDevice& dev, const char* name, bool isSoftkey,
                  int value) {
   XPLMCommandRef cmd = XPLMFindCommand(name);
@@ -846,22 +915,60 @@ void BindDiagonal(AvionicsDevice& dev, const char* name, avionics::BezelKey a,
       {&dev, false, static_cast<int>(a), static_cast<int>(b), cmd});
 }
 
-// Builds the binding list for one device (prefix "g1000n1" / "g1000n3"). The
-// list is filled completely before any handler is registered so the refcon
-// pointers stay valid.
-void CollectDeviceCommands(AvionicsDevice& dev, const char* prefix) {
-  char name[64];
+// Creates one of our own commands (always present, so it's bindable from the
+// X-Plane Keyboard/Joystick UI) and binds it to the same action.
+void BindCreatedCommand(AvionicsDevice& dev, const std::string& name,
+                        const std::string& desc, bool isSoftkey, int value,
+                        int value2) {
+  XPLMCommandRef cmd = XPLMCreateCommand(StoreStr(name), StoreStr(desc));
+  if (cmd == nullptr) return;
+  g_commandBindings.push_back({&dev, isSoftkey, value, value2, cmd});
+}
+
+// Builds the binding list for one device. `stockPrefix` is the X-Plane stock
+// command prefix we intercept ("g1000n1" / "g1000n3"); `customId`/`label` name
+// the parallel commands we create ("pfd"/"PFD"). Every key gets both, so it
+// works whether the user binds the stock cockpit command or our own. The list
+// is filled completely before any handler is registered so the refcon pointers
+// stay valid.
+void CollectDeviceCommands(AvionicsDevice& dev, const char* stockPrefix,
+                           const char* customId, const char* label) {
+  char name[96];
+  char desc[128];
+
+  // 1) Intercept the aircraft's stock G1000 commands when present.
   for (int i = 1; i <= avionics::kSoftkeyCount; ++i) {
-    std::snprintf(name, sizeof(name), "sim/GPS/%s_softkey%d", prefix, i);
+    std::snprintf(name, sizeof(name), "sim/GPS/%s_softkey%d", stockPrefix, i);
     BindCommand(dev, name, /*isSoftkey=*/true, i - 1);
   }
   for (const NamedKey& nk : kNamedKeys) {
-    std::snprintf(name, sizeof(name), "sim/GPS/%s_%s", prefix, nk.suffix);
+    std::snprintf(name, sizeof(name), "sim/GPS/%s_%s", stockPrefix, nk.suffix);
     BindCommand(dev, name, /*isSoftkey=*/false, static_cast<int>(nk.key));
   }
   for (const DiagonalKey& dk : kDiagonalKeys) {
-    std::snprintf(name, sizeof(name), "sim/GPS/%s_%s", prefix, dk.suffix);
+    std::snprintf(name, sizeof(name), "sim/GPS/%s_%s", stockPrefix, dk.suffix);
     BindDiagonal(dev, name, dk.a, dk.b);
+  }
+
+  // 2) Create our own commands so every key is always bindable.
+  for (int i = 1; i <= avionics::kSoftkeyCount; ++i) {
+    std::snprintf(name, sizeof(name), "%s/%s/softkey%d", kCmdPrefix, customId, i);
+    std::snprintf(desc, sizeof(desc), "G1000 NXi %s: Softkey %d", label, i);
+    BindCreatedCommand(dev, name, desc, /*isSoftkey=*/true, i - 1, -1);
+  }
+  for (const NamedKey& nk : kNamedKeys) {
+    std::snprintf(name, sizeof(name), "%s/%s/%s", kCmdPrefix, customId,
+                  nk.suffix);
+    std::snprintf(desc, sizeof(desc), "G1000 NXi %s: %s", label, nk.label);
+    BindCreatedCommand(dev, name, desc, /*isSoftkey=*/false,
+                       static_cast<int>(nk.key), -1);
+  }
+  for (const DiagonalKey& dk : kDiagonalKeys) {
+    std::snprintf(name, sizeof(name), "%s/%s/%s", kCmdPrefix, customId,
+                  dk.suffix);
+    std::snprintf(desc, sizeof(desc), "G1000 NXi %s: %s", label, dk.label);
+    BindCreatedCommand(dev, name, desc, /*isSoftkey=*/false,
+                       static_cast<int>(dk.a), static_cast<int>(dk.b));
   }
 }
 
@@ -869,7 +976,7 @@ void CollectDeviceCommands(AvionicsDevice& dev, const char* prefix) {
 // the same radios, so they all route through RadioCommandHandler to the PFD
 // engine; the binding only needs the action.
 void CollectRadioCommands(const char* prefix) {
-  char name[64];
+  char name[96];
   for (const RadioCommand& rc : kRadioCommands) {
     std::snprintf(name, sizeof(name), "sim/GPS/%s_%s", prefix, rc.suffix);
     XPLMCommandRef cmd = XPLMFindCommand(name);
@@ -878,21 +985,38 @@ void CollectRadioCommands(const char* prefix) {
   }
 }
 
+// Creates our own NAV/COM knob commands (one set, since both GDUs tune the same
+// radios) so the radios are bindable even without stock G1000 commands.
+void CreateRadioCommands() {
+  char name[96];
+  char desc[128];
+  for (const RadioCommand& rc : kRadioCommands) {
+    std::snprintf(name, sizeof(name), "%s/radio/%s", kCmdPrefix, rc.suffix);
+    std::snprintf(desc, sizeof(desc), "G1000 NXi: %s", rc.label);
+    XPLMCommandRef cmd = XPLMCreateCommand(StoreStr(name), StoreStr(desc));
+    if (cmd == nullptr) continue;
+    g_radioBindings.push_back({rc.action, cmd});
+  }
+}
+
 void RegisterG1000Commands() {
   g_commandBindings.clear();
-  // 2 devices x (12 softkeys + named keys + diagonal pans).
-  g_commandBindings.reserve(96);
-  CollectDeviceCommands(g_pfd, "g1000n1");
-  CollectDeviceCommands(g_mfd, "g1000n3");
+  g_customStrings.clear();
+  // 2 devices x (12 softkeys + 18 named + 4 diagonal) stock + the same created.
+  g_commandBindings.reserve(256);
+  CollectDeviceCommands(g_pfd, "g1000n1", "pfd", "PFD");
+  CollectDeviceCommands(g_mfd, "g1000n3", "mfd", "MFD");
   for (CommandBinding& b : g_commandBindings) {
     XPLMRegisterCommandHandler(b.cmd, &G1000CommandHandler, /*before=*/1, &b);
   }
 
-  // NAV/COM knobs on both GDUs, all routed to the PFD engine's bar.
+  // NAV/COM knobs: intercept both GDUs' stock commands plus our own set, all
+  // routed to the PFD engine's bar.
   g_radioBindings.clear();
-  g_radioBindings.reserve(2 * (sizeof(kRadioCommands) / sizeof(kRadioCommands[0])));
+  g_radioBindings.reserve(64);
   CollectRadioCommands("g1000n1");
   CollectRadioCommands("g1000n3");
+  CreateRadioCommands();
   for (RadioCommandBinding& b : g_radioBindings) {
     XPLMRegisterCommandHandler(b.cmd, &RadioCommandHandler, /*before=*/1, &b);
   }
@@ -1048,6 +1172,7 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
 
   g_flightPlanBridge = std::make_unique<avionics::FlightPlanBridge>(
       avionics::fpbridge::kDefaultPort);
+  g_commandBridge = std::make_unique<avionics::CommandBridge>();
 
   // Restore the saved config (refresh-rate preset + durable display
   // preferences) before building the menu, so the right item starts checked
@@ -1068,6 +1193,7 @@ PLUGIN_API void XPluginStop(void) {
   DestroyRateMenu();
   ShutdownDevice(g_pfd);
   ShutdownDevice(g_mfd);
+  g_commandBridge.reset();
   g_flightPlanBridge.reset();
   g_dataSource.reset();
   g_eisStore.reset();
@@ -1077,11 +1203,15 @@ PLUGIN_API void XPluginStop(void) {
 // it follows X-Plane's enable/disable lifecycle rather than start/stop.
 PLUGIN_API int XPluginEnable(void) {
   if (g_flightPlanBridge) g_flightPlanBridge->start();
-  if (g_replaceDisplays) RegisterG1000Commands();
+  if (g_commandBridge) g_commandBridge->start();
+  // Always intercept GDU keys so cockpit hardware can drive the standalone
+  // shell over the command bridge, even when the in-sim displays are off.
+  RegisterG1000Commands();
   return 1;
 }
 PLUGIN_API void XPluginDisable(void) {
   UnregisterG1000Commands();
+  if (g_commandBridge) g_commandBridge->stop();
   if (g_flightPlanBridge) g_flightPlanBridge->stop();
 }
 PLUGIN_API void XPluginReceiveMessage(XPLMPluginID, int, void*) {}
