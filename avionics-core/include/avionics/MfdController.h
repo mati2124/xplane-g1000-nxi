@@ -6,11 +6,18 @@
 #include <vector>
 
 #include "avionics/Checklist.h"
+#include "avionics/FlightData.h"
+#include "avionics/MapData.h"
 #include "avionics/MapRange.h"
+#include "avionics/NavFeatureSource.h"
+#include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/MapView.h"
 
 namespace avionics {
+
+// Persisted-preferences view of this controller (avionics/PersistentState.h).
+struct MfdPersistentState;
 
 // The MFD page groups (G1000 Pilot's Guide for Cessna Nav III, Section 1.4).
 // MAP/WPT/AUX/NRST and Checklist are selected from the bottom softkey bar
@@ -26,6 +33,8 @@ enum class MfdPageGroup { Map, Waypoint, Aux, Nearest, FlightPlan, Checklist };
 enum class MfdPage {
   // MAP group.
   NavigationMap,
+  TrafficMap,
+  WeatherRadar,
   // WPT group.
   AirportInformation,
   IntersectionInformation,
@@ -33,17 +42,64 @@ enum class MfdPage {
   VorInformation,
   // AUX group.
   TripPlanning,
+  Utility,
   GpsStatus,
+  SystemSetup,
   SystemStatus,
+  SimBrief,
   // NRST group.
   NearestAirports,
   NearestIntersections,
   NearestNdb,
   NearestVor,
+  NearestFrequencies,
   NearestAirspaces,
   // FPL group.
   ActiveFlightPlan,
 };
+
+// Airborne color weather-radar (GWX) controls for the MAP - Weather Radar page
+// (G1000 NXi Pilot's Guide, Hazard Avoidance - Airborne Color Weather Radar).
+// The radar mode annunciation in the page's upper-left reads from RadarMode;
+// the scan toggle (Horizon / Vertical Softkeys) from RadarScan.
+enum class RadarMode { Standby, Weather, Ground };
+enum class RadarScan { Horizontal, Vertical };
+// Sector-scan width about the bearing line; Full is the 90-degree scan.
+enum class RadarSector { Full, Sixty, Forty, Twenty };
+
+// Accumulated flight-session statistics for the AUX - Utility page's Timers
+// and Trip Statistics boxes (G1000 Pilot's Guide for Cessna Nav III,
+// Section 5.10). Accumulated since power-on from the live data, the way the
+// real unit runs its timers and odometers (this suite has no cross-session
+// persistence source, so totals are per power cycle).
+struct FlightSessionStats {
+  // Generic up timer: counts from power-on (the page's GENERIC row).
+  double genericTimerSec = 0.0;
+  // Flight timer: starts at the first in-air detection and runs from there
+  // (the unit's default "In-Air" flight-timer criterion).
+  bool airborneSeen = false;
+  double flightTimerSec = 0.0;
+  // UTC clock captured at the first in-air detection (DEPARTURE TIME row);
+  // hour is -1 until liftoff, shown dashed.
+  int departureHour = -1;
+  int departureMinute = 0;
+  // Distance traveled since power-on; ODOMETER and TRIP ODOMETER both read
+  // this session total (no persisted lifetime odometer source).
+  double odometerNm = 0.0;
+  // Average groundspeed counts only time spent moving, like the real trip
+  // average that excludes stationary time.
+  double movingTimeSec = 0.0;
+  float maxGroundSpeedKts = 0.0f;
+};
+
+// Discrete antenna-tilt and bearing-line step sizes (degrees) and their limits
+// (GWX 70: manual tilt +/-15 deg; the horizontal scan spans +/-45 deg).
+inline constexpr float kRadarTiltStepDeg = 0.25f;
+inline constexpr float kRadarTiltLimitDeg = 15.0f;
+inline constexpr float kRadarBearingStepDeg = 1.0f;
+inline constexpr float kRadarBearingLimitDeg = 45.0f;
+// One antenna look (sweep across the sector), in seconds (GWX: 12 looks/min).
+inline constexpr float kRadarSweepSeconds = 5.0f;
 
 // Owns the interactive state of the MFD's softkey bar: the selected page group
 // and the moving-map range. It mirrors SoftkeyController's shape (label /
@@ -60,10 +116,22 @@ class MfdController {
   // Press-flash decay, in seconds (matches the PFD softkey feel).
   static constexpr float kPressFlashSeconds = 0.18f;
 
+  // How long the page-select popup stays up after a group/page change before
+  // auto-closing (the WT NXi page-select dialog closes after 3 s idle).
+  static constexpr float kPageSelectSeconds = 3.0f;
+
   MfdController();
 
-  // Advance the key-press flash animations.
-  void update(double dtSeconds);
+  // Advance the key-press flash animations, the ~1 Hz cursor-blink phase, and
+  // the flight-session timers/odometers (from the live data snapshot).
+  void update(double dtSeconds, const FlightData& data);
+
+  // Session timers and trip statistics for the AUX - Utility page.
+  const FlightSessionStats& flightStats() const { return flightStats_; }
+
+  // ~1 Hz blink phase (true for the first half of each second) used to pulse
+  // highlight-select cursor fields (WT .highlight-select @keyframes pulse).
+  bool blinkOn() const { return blinkOn_; }
 
   // Apply a press of physical softkey `key` (0..kSoftkeyCount-1, the hardware
   // keys below the display; the on-screen bar is labels only, like the real
@@ -80,14 +148,78 @@ class MfdController {
   // The specific page on screen, resolved from the group + page index.
   MfdPage page() const;
 
-  // Current map range, in NM (a discrete G1000-style range ladder).
+  // Current map range, in NM (a discrete G1000-style range ladder). This is
+  // the selected step: it labels the range readout and gates symbol declutter.
   float rangeNm() const;
 
-  // Whether the topographic terrain background is enabled (TERR softkey).
-  bool showTerrain() const { return showTerrain_; }
+  // Animated zoom scale, in NM, easing toward rangeNm() each update(). Passed
+  // to the map renderer as the on-screen scale so zooming glides between ladder
+  // steps (Working Title G1000 NXi smooth zoom) rather than snapping.
+  float displayRangeNm() const { return displayRangeNm_; }
+
+  // Navigation Map display options, set from the Map Opt softkey submenu and
+  // the Detail (declutter) softkey, mirroring the NXi MFD softkey map.
+  TerrainDisplay terrainDisplay() const { return terrain_; }
+  AirwayDisplay airwayDisplay() const { return airways_; }
+  bool showTraffic() const { return showTraffic_; }
+  bool showWeather() const { return showWeather_; }
+  MapDetail mapDetail() const { return detail_; }
 
   // MAP page orientation (TRK softkey toggles north-up vs track-up).
   MapOrientation mapOrientation() const { return mapOrientation_; }
+
+  // ---- MAP - Weather Radar page (airborne GWX radar) ----
+  // Read by the page renderer to draw the mode annunciation, scan geometry,
+  // bearing line, antenna-tilt/gain/sector readouts, and feature status, and
+  // by the shell to drive X-Plane's EFIS weather-radar datarefs.
+  RadarMode radarMode() const { return radarMode_; }
+  RadarScan radarScan() const { return radarScan_; }
+  bool radarBearingLineOn() const { return radarBearingLineOn_; }
+  float radarBearingDeg() const { return radarBearingDeg_; }
+  float radarTiltDeg() const { return radarTiltDeg_; }
+  bool radarGainCalibrated() const { return radarGainCalibrated_; }
+  // Manual-gain offset (-1..+1) shown as the movable bar relative to the
+  // calibrated reference; 0 at the calibrated position.
+  float radarGainManual() const { return radarGainManual_; }
+  RadarSector radarSector() const { return radarSector_; }
+  bool radarStab() const { return radarStab_; }
+  bool radarAct() const { return radarAct_; }
+  // Antenna sweep position, 0..1 across one look, for the animated scan line.
+  float radarSweepPhase() const { return static_cast<float>(radarSweepPhase_); }
+
+  // Navigation Map pointer / pan mode (Pilot's Guide, Map Panning): push the
+  // RANGE joystick on the MAP page to place a pan cursor; moving the joystick
+  // then pans the map center. While active, the navigation map centers on the
+  // pointer rather than ownship. ENT on a highlighted waypoint opens its
+  // Waypoint Information page; Direct-To opens on the waypoint under the
+  // pointer.
+  bool mapPointerActive() const { return mapPointerActive_; }
+  double mapPointerLat() const { return mapPointerLat_; }
+  double mapPointerLon() const { return mapPointerLon_; }
+  // The map feature under the pan pointer (within a small, range-scaled snap
+  // radius), or nullptr. The page highlights it and fills the Map Pointer
+  // information box with its ident, like the real unit selecting a waypoint as
+  // the pointer passes over it.
+  const MapFeature* mapPointerFeature() const;
+
+  // WPT facility ident entry (Pilot's Guide, Waypoint Pages). ENT on a
+  // resolved ident selects that waypoint for the page.
+  bool wptEntryActive() const { return wptEntry_.active; }
+  std::string wptEntryIdent() const { return wptEntry_.ident(); }
+  int wptEntryCursor() const { return wptEntry_.pos; }
+  int wptEntryTypedCount() const { return wptEntry_.typedCount(); }
+  bool wptEntryNotFound() const { return wptEntry_.notFound; }
+  bool wptHasSelection() const { return wptHasSelection_; }
+  const MapFeature& wptSelectedFeature() const { return wptFeature_; }
+
+  // NRST nearest-list cursor (Pilot's Guide, Nearest pages).
+  bool nrstCursorOn() const { return nrstCursorOn_; }
+  int nrstSelected() const { return nrstSelected_; }
+
+  // Seconds the page-select popup (group tabs + page list, bottom right)
+  // remains visible; 0 = hidden. Refreshed by any group/page change and run
+  // down by update(), like the real popup's idle auto-close.
+  float pageSelectSecondsLeft() const { return pageSelectSec_; }
 
   // ---- checklists (Checklist page group) ----
   // Cache the latest loaded checklists each frame so item navigation tracks the
@@ -102,6 +234,167 @@ class MfdController {
   int checklistCount() const;
   bool checklistItemChecked(int checklistIndex, int itemIndex) const;
 
+  // ---- FMS waypoint identifier entry ----
+  // Shared character-entry state for the FPL insert window and the Direct-To
+  // window (Pilot's Guide, "Using the FMS Knob to enter data"): the small knob
+  // selects the character under the cursor, the large knob moves the cursor,
+  // and the database spell-ahead completes the typed prefix.
+  struct FmsWaypointEntry {
+    bool active = false;
+    std::string chars;     // typed characters, contiguous from cell 0
+    int pos = 0;           // cell under the entry cursor
+    std::string autofill;  // full database ident completing the prefix
+    MapFeature match;
+    bool hasMatch = false;
+    bool notFound = false;
+
+    // The displayed identifier: the spell-ahead completion when present, else
+    // the typed prefix.
+    std::string ident() const { return autofill.empty() ? chars : autofill; }
+    int typedCount() const { return static_cast<int>(chars.size()); }
+  };
+
+  // Longest identifier enterable (covers ICAO airports, navaids, fixes).
+  static constexpr int kFplEntryMaxChars = 6;
+
+  // ---- Active Flight Plan page (FPL group) ----
+  // The G1000 flight-plan editing flow (Pilot's Guide for Cessna Nav III,
+  // Section 5.6): push the FMS knob to turn the cursor on, large knob selects
+  // a leg row, small knob opens the Waypoint Information window and spells an
+  // identifier (ENT inserts it before the selected row), CLR on a row opens
+  // the "Remove <wpt>?" confirmation, and MENU offers Delete Flight Plan.
+
+  // Confirmation window opened by CLR on a waypoint row or the page menu's
+  // Delete Flight Plan option. ENT executes the highlighted OK/CANCEL choice.
+  enum class FplConfirm { None, RemoveWaypoint, DeleteFlightPlan };
+
+  // Editable field within a flight-plan row. The large FMS knob steps the cursor
+  // through the identifier and the VNAV altitude-constraint column (Pilot's
+  // Guide, Section 6 "Vertical Navigation": altitude constraints are entered in
+  // the FPL page ALT column).
+  enum class FplCursorCol { Ident, Altitude };
+
+  // Cache the latest flight plan + ownship each frame (called by the engine).
+  // External plan changes (a SimBrief fetch, an .fms reload) are adopted; the
+  // locally edited plan stays authoritative while the shell applies it.
+  // `activeWaypoint` is the FMS active leg's TO ident (Direct-To default).
+  void syncFlightPlan(const MapData& map, const std::string& activeWaypoint);
+  // Ident lookups for waypoint entry (the shell wires its nav database in;
+  // without one, entry falls back to the nearby map features).
+  void setNavFeatureSource(const NavFeatureSource* source) {
+    navSource_ = source;
+  }
+  // Edited-plan latch for the shell: true once after each edit, copying the
+  // new plan out so the shell can push it to the data sources.
+  bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
+
+  // ---- read by the FPL page renderer ----
+  // The plan as the page shows it (mirrors the map plan plus pending edits).
+  const std::vector<MapLeg>& fplLegs() const { return fplLegs_; }
+  // Selection cursor over the leg list. The cursor ranges [0, legCount]:
+  // legCount selects the blank slot after the last waypoint (append).
+  bool fplCursorOn() const { return fplCursorOn_; }
+  int fplCursorRow() const { return fplCursorRow_; }
+  // Waypoint Information entry window state. The displayed ident is the typed
+  // prefix completed by the database spell-ahead match (no padding).
+  bool fplEntryActive() const { return fplEntry_.active; }
+  std::string fplEntryIdent() const { return fplEntry_.ident(); }
+  int fplEntryCursor() const { return fplEntry_.pos; }
+  int fplEntryTypedCount() const { return fplEntry_.typedCount(); }
+  bool fplEntryNotFound() const { return fplEntry_.notFound; }
+  // The waypoint the current entry resolves to (valid when hasMatch).
+  bool fplEntryHasMatch() const { return fplEntry_.hasMatch; }
+  const MapFeature& fplEntryMatch() const { return fplEntry_.match; }
+  // Which column the FPL cursor is on (drives the row highlight + which field
+  // the small knob edits).
+  FplCursorCol fplCursorCol() const { return fplCursorCol_; }
+  // VNAV altitude-constraint entry window state (small knob on the ALT column).
+  bool fplAltEntryActive() const { return fplAltEntry_.active; }
+  int fplAltEntryRow() const { return fplAltEntry_.row; }
+  const std::string& fplAltEntryDigits() const { return fplAltEntry_.digits; }
+  int fplAltEntryCursor() const { return fplAltEntry_.pos; }
+  // Remove / delete confirmation window.
+  FplConfirm fplConfirm() const { return fplConfirm_; }
+  bool fplConfirmOk() const { return fplConfirmOk_; }
+  const std::string& fplRemoveIdent() const { return fplRemoveIdent_; }
+  // FPL page menu (Delete Flight Plan).
+  bool fplMenuOpen() const { return fplMenuOpen_; }
+
+  // ---- Direct-To window (Direct-To bezel key) ----
+  // The GPS Direct-To window (Pilot's Guide, Section 5.5): the Direct-To key
+  // opens it over any MFD page, pre-filled with the active (or FPL-selected)
+  // waypoint. The FMS knob spells the destination ident; the first ENT
+  // confirms the waypoint and arms ACTIVATE?, the second ENT engages the
+  // direct course. CLR (or the knob push) cancels the window.
+  bool directToWindowOpen() const { return dtoOpen_; }
+  bool directToEntryActive() const { return dtoEntry_.active; }
+  std::string directToIdent() const { return dtoEntry_.ident(); }
+  int directToCursor() const { return dtoEntry_.pos; }
+  int directToTypedCount() const { return dtoEntry_.typedCount(); }
+  bool directToNotFound() const { return dtoEntry_.notFound; }
+  bool directToHasMatch() const { return dtoEntry_.hasMatch; }
+  const MapFeature& directToMatch() const { return dtoEntry_.match; }
+  // True once the waypoint is confirmed and the ACTIVATE? prompt is armed.
+  bool directToArmed() const { return dtoArmed_; }
+  // Activation latch for the shell: true once after ENT on ACTIVATE?, copying
+  // out the target waypoint so the shell engages the direct course.
+  bool consumeDirectToRequest(MapLeg& out);
+
+  // ---- SimBrief (AUX - SIMBRIEF page) ----
+  // Latest fetch status, published by the shell each frame (the shell owns the
+  // network client) and read back by the page renderer.
+  void setSimbriefState(const SimBriefState& state) { simbriefState_ = state; }
+  const SimBriefState& simbriefState() const { return simbriefState_; }
+  // Committed Pilot ID (digits only). The shell seeds it from settings at
+  // startup and persists it when the user commits a new one on the page.
+  void setSimbriefPilotId(const std::string& id) { simbriefPilotId_ = id; }
+  const std::string& simbriefPilotId() const { return simbriefPilotId_; }
+  // True while the softkey bar is in Pilot ID digit-entry mode (the page shows
+  // the in-progress digits with the edit cursor instead of the committed ID).
+  bool simbriefIdEntryActive() const { return simbriefIdEntry_; }
+  const std::string& simbriefPendingId() const { return simbriefPendingId_; }
+  // FETCH softkey latch: returns true once per press and clears it, so the
+  // shell can kick off the OFP download.
+  bool consumeSimbriefFetchRequest();
+
+  // True when a modal MFD interaction owns the FMS knob (Direct-To, FPL edit,
+  // WPT ident entry, map pointer, SimBrief ID entry).
+  bool blocksRadioBezel() const;
+
+  // Published approaches for an airport ICAO (from the nav database).
+  std::vector<MapApproach> approachesForAirport(
+      const std::string& icao) const;
+
+  // Terminal procedures for an airport (WPT/NRST approach boxes).
+  std::vector<MapProcedure> proceduresForAirport(const std::string& icao,
+                                                 ProcedureType type) const;
+  // Procedures for the PROC menu at the active flight-plan airport.
+  std::vector<MapProcedure> proceduresFor(ProcedureType type) const;
+
+  // Airport comm frequencies (apt.dat rows 50–56).
+  std::vector<MapAirportFrequency> airportFrequencies(
+      const std::string& icao) const;
+
+  // Airport runways (apt.dat row 100) for the WPT/NRST Runways boxes.
+  std::vector<AirportRunwayInfo> airportRunways(const std::string& icao) const;
+
+  // ---- PROC menu (PROC bezel key on the FPL page, Pilot's Guide 5.8) ----
+  enum class ProcMenuStep { ProcedureList, TransitionList };
+
+  bool procMenuOpen() const { return procMenuOpen_; }
+  ProcMenuStep procStep() const { return procStep_; }
+  ProcedureType procCategory() const { return procCategory_; }
+  int procSelected() const { return procSelected_; }
+  const std::string& procSelectedName() const { return procSelectedName_; }
+  std::string procAirportIcao() const;
+  std::vector<std::string> procProcedureNames(ProcedureType type) const;
+  std::vector<std::string> procTransitions(ProcedureType type,
+                                           const std::string& name) const;
+  // Preview legs for the current PROC selection (drawn on the FPL map).
+  std::vector<MapLeg> procPreviewLegs() const;
+  // Returns true once per ENT on a highlighted procedure; clears the latch.
+  bool consumeProcLoadRequest(MapProcedure& out);
+
   // ---- read by the renderer ----
   const std::string& label(int i) const { return labels_[i]; }
   float pressLevel(int i) const { return press_[i]; }
@@ -115,8 +408,24 @@ class MfdController {
   // rocker, steps the MFD map range.
   void pressBezelKey(BezelKey key);
   const float* bezelPressLevels() const { return bezelPress_.data(); }
+  // CLR (DFLT MAP) held: abandon any in-progress entry or submenu and display
+  // the Navigation Map page immediately (Pilot's Guide: "press and hold CLR
+  // (MFD only)"). The shell calls this after kClrDefaultMapHoldSeconds.
+  void clrDefaultMap();
 
  private:
+  // The persistence helpers read/write the durable display options directly.
+  friend void captureMfdState(const MfdController&, MfdPersistentState&);
+  friend void applyMfdState(MfdController&, const MfdPersistentState&);
+
+  // The MFD softkey bar is a small menu stack like the PFD's: the root bar
+  // can open the Map Opt submenu (Traffic / TER / AWY), which carries a Back
+  // key (NXi Pilot's Guide, MFD softkey map).
+  enum class Menu { Root, MapOpt, RadarMode };
+
+  // Refresh the visible cell labels for the current menu, including the
+  // state-carrying labels (TER / AWY / Detail show their selection).
+  void rebuildLabels();
   // Step the active group's page index by +/-1, wrapping (small FMS knob).
   void stepPage(int direction);
   void selectGroup(MfdPageGroup group);
@@ -129,6 +438,62 @@ class MfdController {
   void checklistEnter();
   // CLR on the Checklist page: uncheck the cursor item.
   void checklistClear();
+  // Apply a softkey press while SimBrief Pilot ID digit entry is active
+  // (digits append, BKSP erases, Back abandons the entry).
+  void simbriefEntryKey(int key);
+
+  // Step the page group with the large FMS knob, cycling MAP/WPT/AUX/NRST
+  // (the FPL and Checklist groups are entered with their own keys, as on the
+  // real unit, so the knob steps out of them to MAP).
+  void stepPageGroup(int direction);
+  // Bezel keys while the FPL page is displayed. Returns true when consumed
+  // (cursor/entry/menu interactions); unconsumed keys fall through to the
+  // common handling (FPL toggle, range rocker).
+  bool fplBezelKey(BezelKey key);
+  bool procBezelKey(BezelKey key);
+  // Reset every FPL interaction state (cursor, entry, menu, confirmation).
+  void fplResetInteraction();
+  // ENT in the FPL entry window: insert the matched waypoint before the cursor
+  // row (append on the blank end slot) and advance the cursor.
+  void fplCommitEntry();
+  // Mark the edited plan for the shell to pick up.
+  void fplPublishEdit();
+  // ---- VNAV altitude-constraint entry (ALT column) ----
+  // Open the 5-digit entry over the given row, seeded with its constraint.
+  void fplAltEntryOpen(int row);
+  // ENT: parse the digits and set (or clear, when 0) the leg's constraint.
+  void fplAltEntryCommit();
+
+  // ---- shared FMS waypoint entry helpers (FPL insert + Direct-To) ----
+  // Open a fresh entry, optionally seeded with an initial identifier.
+  void entryOpen(FmsWaypointEntry& e, const std::string& initial = "");
+  // Small knob: step the character under the cursor (blank starts at K).
+  void entryTurnChar(FmsWaypointEntry& e, int step);
+  // Large knob: move the character cursor, adopting the auto-filled character
+  // into the typed prefix when stepping right.
+  void entryMoveCursor(FmsWaypointEntry& e, int step);
+  // Recompute the spell-ahead auto-fill + matched waypoint for the typed
+  // prefix, from the nav database (or the nearby map features without one).
+  void entryUpdateAutofill(FmsWaypointEntry& e);
+
+  // ---- Direct-To ----
+  // Direct-To bezel-key handling (open the window, route keys while open).
+  // Returns true when the key was consumed by the Direct-To window.
+  bool directToBezelKey(BezelKey key);
+  void directToOpen();
+
+  // Bezel keys while a WPT / NRST / MAP page owns the FMS knob.
+  bool wptBezelKey(BezelKey key);
+  bool nrstBezelKey(BezelKey key);
+  bool mapBezelKey(BezelKey key);
+  // FMS knob handling while the Weather Radar page is up: the small knob trims
+  // antenna tilt, or the bearing line when it is displayed (Pilot's Guide,
+  // Radar Controls). The large knob falls through to page-group selection.
+  bool radarBezelKey(BezelKey key);
+  void wptResetInteraction();
+  void nrstResetInteraction();
+  void mapResetPointer();
+  void wptCommitEntry();
 
   MfdPageGroup pageGroup_ = MfdPageGroup::Map;
   // Per-group selected page, remembered across group switches like the real
@@ -139,8 +504,46 @@ class MfdController {
   // again (the FPL page is a toggle overlaid on normal page navigation).
   MfdPageGroup groupBeforeFpl_ = MfdPageGroup::Map;
   int rangeIndex_ = kMapRangeDefaultIndex;  // ladder index (defaults to 10 NM)
-  bool showTerrain_ = true;  // topographic background on by default
+  // Animated scale eased toward mapRangeNmAt(rangeIndex_) by update(); seeded
+  // to the default so the first frame is already at the right zoom.
+  float displayRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
+  Menu menu_ = Menu::Root;
+  TerrainDisplay terrain_ = TerrainDisplay::Topo;  // topo on by default
+  AirwayDisplay airways_ = AirwayDisplay::Off;
+  bool showTraffic_ = false;
+  bool showWeather_ = false;
+  MapDetail detail_ = MapDetail::All;
   MapOrientation mapOrientation_ = MapOrientation::NorthUp;
+
+  // Weather Radar page state. The radar powers up in Standby (antenna parked);
+  // the Mode submenu selects Weather/Ground. Tilt/gain/bearing/sector mirror
+  // the GWX controls.
+  RadarMode radarMode_ = RadarMode::Standby;
+  RadarScan radarScan_ = RadarScan::Horizontal;
+  bool radarBearingLineOn_ = false;
+  float radarBearingDeg_ = 0.0f;
+  float radarTiltDeg_ = 0.0f;
+  bool radarGainCalibrated_ = true;
+  float radarGainManual_ = 0.0f;
+  RadarSector radarSector_ = RadarSector::Full;
+  bool radarStab_ = true;
+  bool radarAct_ = false;
+  double radarSweepPhase_ = 0.0;
+
+  bool mapPointerActive_ = false;
+  double mapPointerLat_ = 0.0;
+  double mapPointerLon_ = 0.0;
+
+  // WPT ident search state.
+  FmsWaypointEntry wptEntry_;
+  MapFeature wptFeature_{};
+  bool wptHasSelection_ = false;
+
+  // NRST list cursor state.
+  bool nrstCursorOn_ = false;
+  int nrstSelected_ = 0;
+
+  float pageSelectSec_ = 0.0f;  // page-select popup time remaining
 
   // Checklist page group state. checklist_ is the latest data cached by
   // syncChecklist (owned by the DataSource, not this controller). The checked
@@ -150,9 +553,71 @@ class MfdController {
   int cursorItem_ = 0;
   std::vector<std::vector<std::uint8_t>> checked_;
 
+  // FPL page state. fplLegs_ mirrors the map's flight plan and carries local
+  // edits until the shell applies them to the data sources; fplLastMapPlan_
+  // detects external plan changes, fplLastPublished_ keeps the source catching
+  // up with our own edit from being mistaken for one.
+  const NavFeatureSource* navSource_ = nullptr;
+  const MapData* mapData_ = nullptr;  // latest synced map (ownship, features)
+  std::string activeWaypoint_;        // FMS active leg TO ident (DTO default)
+  std::vector<MapLeg> fplLegs_;
+  std::vector<MapLeg> fplLastMapPlan_;
+  std::vector<MapLeg> fplLastPublished_;
+  bool fplEditPending_ = false;
+  bool fplCursorOn_ = false;
+  int fplCursorRow_ = 0;
+  FplCursorCol fplCursorCol_ = FplCursorCol::Ident;
+  FmsWaypointEntry fplEntry_;
+
+  // VNAV altitude-constraint entry: a fixed 5-digit field (feet) edited with the
+  // FMS knob, seeded from the row's existing constraint.
+  struct FplAltEntry {
+    bool active = false;
+    int row = 0;
+    std::string digits = "00000";  // exactly 5 cells, '0'-'9'
+    int pos = 0;                   // cell under the entry cursor
+  };
+  FplAltEntry fplAltEntry_;
+  FplConfirm fplConfirm_ = FplConfirm::None;
+  bool fplConfirmOk_ = true;
+  std::string fplRemoveIdent_;
+  bool fplMenuOpen_ = false;
+
+  // PROC menu: departures / arrivals / approaches for the flight-plan airport.
+  bool procMenuOpen_ = false;
+  ProcMenuStep procStep_ = ProcMenuStep::ProcedureList;
+  ProcedureType procCategory_ = ProcedureType::Approach;
+  std::string procSelectedName_;
+  int procSelected_ = 0;
+  bool procLoadPending_ = false;
+  MapProcedure procLoadTarget_{};
+
+  // Direct-To window state.
+  bool dtoOpen_ = false;
+  bool dtoArmed_ = false;  // waypoint confirmed, ACTIVATE? highlighted
+  FmsWaypointEntry dtoEntry_;
+  bool dtoRequestPending_ = false;
+  MapLeg dtoRequestTarget_;
+
+  // SimBrief page state. The pending ID is UI-only until ENT commits it; the
+  // fetch state itself lives in the shell (which owns the HTTPS client) and is
+  // mirrored here for rendering.
+  SimBriefState simbriefState_;
+  std::string simbriefPilotId_;
+  std::string simbriefPendingId_;
+  bool simbriefIdEntry_ = false;
+  bool simbriefFetchRequested_ = false;
+
   std::array<std::string, kSoftkeyCount> labels_;
   std::array<float, kSoftkeyCount> press_{};
   std::array<float, kBezelKeyCount> bezelPress_{};
+
+  // ~1 Hz blink phase for pulsing highlight-select cursor fields.
+  double blinkSeconds_ = 0.0;
+  bool blinkOn_ = true;
+
+  // AUX Utility timers / trip statistics, accumulated by update().
+  FlightSessionStats flightStats_;
 };
 
 }  // namespace avionics

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -339,8 +340,12 @@ struct DemTile {
     if (w < 2 || h < 2) return 0.0;
     const double colF =
         (lon - west) / (east - west) * static_cast<double>(w - 1);
+    // DSF raster rows are stored south-to-north (row 0 is the tile's southern
+    // edge), so map increasing latitude to increasing row. Using (north - lat)
+    // here flips the DEM N-S about the tile center and lands points on the
+    // wrong elevation (e.g. KFMY reads 0 m and renders as water).
     const double rowF =
-        (north - lat) / (north - south) * static_cast<double>(h - 1);
+        (lat - south) / (north - south) * static_cast<double>(h - 1);
     const int c0 = static_cast<int>(std::floor(colF));
     const int r0 = static_cast<int>(std::floor(rowF));
     const int c1 = std::min(c0 + 1, static_cast<int>(w) - 1);
@@ -444,38 +449,96 @@ struct DsfTerrainStore::TileCacheEntry {
   DemTile dem;
 };
 
-DsfTerrainStore::DsfTerrainStore() {
-  earthNavDir_ = xplane_install::earthNavDataDir();
+DsfTerrainStore::DsfTerrainStore()
+    : DsfTerrainStore(xplane_install::earthNavDataDir()) {}
+
+DsfTerrainStore::DsfTerrainStore(std::string earthNavDir)
+    : earthNavDir_(std::move(earthNavDir)) {
   cache_.reserve(kMaxCachedTiles);
+  if (!earthNavDir_.empty()) {
+    worker_ = std::thread([this] { workerMain(); });
+  }
 }
 
 DsfTerrainStore::~DsfTerrainStore() {
+  if (worker_.joinable()) {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    worker_.join();
+  }
   for (TileCacheEntry* e : cache_) delete e;
 }
 
-std::string DsfTerrainStore::tilePath(double lat, double lon) const {
+std::string DsfTerrainStore::tilePath(int southLat, int lonIndex, double lat,
+                                      double lon) const {
   if (earthNavDir_.empty()) return {};
-  const int south = floorLatSouth(lat);
-  const int lonIdx = tileLonIndex(lon);
   const std::string folder =
       joinPath(earthNavDir_, formatTileFolder(latBucket(lat), lonBucket(lon)));
-  return joinPath(folder, formatTileFile(south, lonIdx));
+  return joinPath(folder, formatTileFile(southLat, lonIndex));
 }
 
-const DsfTerrainStore::TileCacheEntry* DsfTerrainStore::tileFor(
-    double lat, double lon) const {
-  if (earthNavDir_.empty()) return nullptr;
+void DsfTerrainStore::workerMain() {
+  for (;;) {
+    PendingLoad job{};
+    {
+      std::unique_lock<std::mutex> lock(mu_);
+      cv_.wait(lock, [this] { return stop_ || !pending_.empty(); });
+      if (stop_) return;
+      // The job stays in pending_ during the load so the render thread does
+      // not re-enqueue it; it is removed once the result lands.
+      job = pending_.front();
+    }
 
-  const int south = floorLatSouth(lat);
-  const int lonIdx = tileLonIndex(lon);
+    std::unique_ptr<::avionics::DemTile> loaded;
+    const std::string path =
+        tilePath(job.southLat, job.lonIndex, job.lat, job.lon);
+    if (!path.empty()) {
+      const std::vector<std::uint8_t> bytes = loadDsfBytes(path);
+      if (!bytes.empty()) loaded = loadTileFromDsf(bytes);
+    }
 
-  const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      for (std::size_t i = 0; i < pending_.size(); ++i) {
+        if (pending_[i].southLat == job.southLat &&
+            pending_[i].lonIndex == job.lonIndex) {
+          pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(i));
+          break;
+        }
+      }
+      if (loaded) {
+        auto* slot = new TileCacheEntry{};
+        slot->southLat = job.southLat;
+        slot->lonIndex = job.lonIndex;
+        slot->lastHit = std::chrono::steady_clock::now();
+        slot->dem = std::move(*loaded);
+        if (cache_.size() >= static_cast<std::size_t>(kMaxCachedTiles)) {
+          delete cache_.back();
+          cache_.pop_back();
+        }
+        cache_.insert(cache_.begin(), slot);
+        revision_.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        if (misses_.size() >= static_cast<std::size_t>(kMaxMissEntries)) {
+          misses_.erase(misses_.begin());
+        }
+        misses_.push_back({job.southLat, job.lonIndex});
+      }
+    }
+  }
+}
 
+DsfTerrainStore::TileCacheEntry* DsfTerrainStore::findResidentTileLocked(
+    int southLat, int lonIndex,
+    std::chrono::steady_clock::time_point now) const {
   // LRU hit: move the entry to the front so wide rasters that touch many tiles
   // keep their working set resident.
   for (std::size_t i = 0; i < cache_.size(); ++i) {
     TileCacheEntry* e = cache_[i];
-    if (e->southLat == south && e->lonIndex == lonIdx) {
+    if (e->southLat == southLat && e->lonIndex == lonIndex) {
       e->lastHit = now;
       if (i != 0) {
         cache_.erase(cache_.begin() + static_cast<std::ptrdiff_t>(i));
@@ -484,61 +547,84 @@ const DsfTerrainStore::TileCacheEntry* DsfTerrainStore::tileFor(
       return e;
     }
   }
+  return nullptr;
+}
 
+void DsfTerrainStore::queueTileLocked(
+    int southLat, int lonIndex, double lat, double lon,
+    std::chrono::steady_clock::time_point now) const {
   // Known-absent tile (ocean / not installed): don't touch the filesystem
   // again for it.
   for (const std::pair<int, int>& m : misses_) {
-    if (m.first == south && m.second == lonIdx) return nullptr;
+    if (m.first == southLat && m.second == lonIndex) return;
   }
-
-  // Throttle loads: tile loads can take long (7z decompress via subprocess),
-  // and one raster pass can request many uncached tiles. Allow one load per
-  // cooldown window; everything else falls back and retries on a later frame.
-  if (now - lastLoad_ < std::chrono::milliseconds(20)) return nullptr;
 
   // With the cache full of tiles that were all hit within the last frame or
   // two, the visible footprint is bigger than the cache. Evicting would just
   // thrash (reload the same tiles every frame), so leave the working set
   // resident and let out-of-cache areas keep the procedural fallback.
-  if (cache_.size() >= static_cast<std::size_t>(kMaxCachedTiles) &&
-      now - cache_.back()->lastHit < std::chrono::milliseconds(250)) {
-    return nullptr;
-  }
+  const bool cacheSaturated =
+      cache_.size() >= static_cast<std::size_t>(kMaxCachedTiles) &&
+      now - cache_.back()->lastHit < std::chrono::milliseconds(250);
+  if (cacheSaturated || pending_.size() >= kMaxPendingLoads) return;
 
-  lastLoad_ = now;
-
-  const std::string path = tilePath(lat, lon);
-  std::unique_ptr<::avionics::DemTile> loaded;
-  if (!path.empty()) {
-    const std::vector<std::uint8_t> bytes = loadDsfBytes(path);
-    if (!bytes.empty()) loaded = loadTileFromDsf(bytes);
+  for (const PendingLoad& p : pending_) {
+    if (p.southLat == southLat && p.lonIndex == lonIndex) return;
   }
-  if (!loaded) {
-    if (misses_.size() >= static_cast<std::size_t>(kMaxMissEntries)) {
-      misses_.erase(misses_.begin());
-    }
-    misses_.push_back({south, lonIdx});
-    return nullptr;
-  }
-
-  auto* slot = new TileCacheEntry{};
-  slot->southLat = south;
-  slot->lonIndex = lonIdx;
-  slot->lastHit = now;
-  slot->dem = std::move(*loaded);
-
-  if (cache_.size() >= static_cast<std::size_t>(kMaxCachedTiles)) {
-    delete cache_.back();
-    cache_.pop_back();
-  }
-  cache_.insert(cache_.begin(), slot);
-  return slot;
+  pending_.push_back({southLat, lonIndex, lat, lon});
+  cv_.notify_one();
 }
 
 float DsfTerrainStore::elevationFt(double lat, double lon) const {
-  const TileCacheEntry* tile = tileFor(lat, lon);
-  if (tile == nullptr) return fallback_.elevationFt(lat, lon);
-  return static_cast<float>(tile->dem.elevationMeters(lat, lon) * kMetersToFeet);
+  if (earthNavDir_.empty()) return fallback_.elevationFt(lat, lon);
+
+  const int south = floorLatSouth(lat);
+  const int lonIdx = tileLonIndex(lon);
+
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto now = std::chrono::steady_clock::now();
+  if (TileCacheEntry* e = findResidentTileLocked(south, lonIdx, now)) {
+    return static_cast<float>(e->dem.elevationMeters(lat, lon) * kMetersToFeet);
+  }
+  queueTileLocked(south, lonIdx, lat, lon, now);
+  return fallback_.elevationFt(lat, lon);
+}
+
+void DsfTerrainStore::elevationFtRow(double lat, double lonStart,
+                                     double lonStep, int count,
+                                     float* out) const {
+  if (count <= 0) return;
+  if (earthNavDir_.empty()) {
+    for (int i = 0; i < count; ++i) {
+      out[i] = fallback_.elevationFt(
+          lat, lonStart + lonStep * static_cast<double>(i));
+    }
+    return;
+  }
+
+  // Take the lock once for the whole row. Latitude is constant, so the tile
+  // changes only when longitude crosses a 1-degree boundary; we re-resolve the
+  // serving tile (or fallback) only at those crossings instead of per sample,
+  // which removes the per-pixel lock + cache scan that dominated rebuilds.
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto now = std::chrono::steady_clock::now();
+  const int south = floorLatSouth(lat);
+
+  int resolvedLonIdx = INT_MIN;
+  TileCacheEntry* tile = nullptr;  // nullptr => serve from fallback
+  for (int i = 0; i < count; ++i) {
+    const double lon = lonStart + lonStep * static_cast<double>(i);
+    const int lonIdx = tileLonIndex(lon);
+    if (lonIdx != resolvedLonIdx) {
+      resolvedLonIdx = lonIdx;
+      tile = findResidentTileLocked(south, lonIdx, now);
+      if (tile == nullptr) queueTileLocked(south, lonIdx, lat, lon, now);
+    }
+    out[i] = tile != nullptr
+                 ? static_cast<float>(tile->dem.elevationMeters(lat, lon) *
+                                      kMetersToFeet)
+                 : fallback_.elevationFt(lat, lon);
+  }
 }
 
 }  // namespace avionics

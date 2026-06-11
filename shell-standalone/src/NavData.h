@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "avionics/MapData.h"
+#include "avionics/NavDatabase.h"
 #include "avionics/NavFeatureSource.h"
 
 namespace avionics {
@@ -39,10 +41,27 @@ class NavDataStore : public NavFeatureSource {
   // Directory the nav data was loaded from, for diagnostics (empty if none).
   const std::string& sourceDir() const { return sourceDir_; }
 
+  // AIRAC cycle / currency of the loaded data, parsed from the earth_nav.dat
+  // header ("... data cycle 2506 ..."). Unavailable until loaded() or if the
+  // header carries no cycle.
+  NavDatabaseInfo navDatabaseInfo() const override {
+    return loaded() ? dbInfo_ : NavDatabaseInfo{};
+  }
+
   // Features within rangeNm of (lat, lon), nearest first, capped at maxCount.
   // Returns empty until loaded().
   std::vector<MapFeature> nearby(double lat, double lon, float rangeNm,
                                  std::size_t maxCount) const override;
+
+  // FMS waypoint entry lookups, backed by an ident-sorted index built during
+  // load: all features matching an exact identifier, and the alphabetically
+  // first identifier with a given prefix (the G1000 spell-ahead fill-in).
+  std::vector<MapFeature> lookupIdent(const std::string& ident,
+                                      std::size_t maxCount) const override;
+  std::string firstIdentWithPrefix(const std::string& prefix) const override;
+
+  std::vector<MapApproach> approachesForAirport(
+      const std::string& icao) const override;
 
  private:
   void load();  // background-thread entry point
@@ -50,7 +69,13 @@ class NavDataStore : public NavFeatureSource {
   std::vector<MapFeature> airports_;
   std::vector<MapFeature> navaids_;  // VORs + NDBs
   std::vector<MapFeature> fixes_;
+  // ILS/LOC approaches keyed by airport ICAO (earth_nav row codes 4 and 5).
+  std::unordered_map<std::string, std::vector<MapApproach>> approachesByAirport_;
+  // Every feature above, sorted by ident (airports/navaids before fixes for
+  // equal idents). Built on the loader thread, immutable afterwards.
+  std::vector<const MapFeature*> identIndex_;
   std::string sourceDir_;
+  NavDatabaseInfo dbInfo_;
 
   std::atomic<bool> loaded_{false};
   std::thread thread_;

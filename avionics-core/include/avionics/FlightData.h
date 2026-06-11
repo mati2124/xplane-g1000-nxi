@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 
 namespace avionics {
 
@@ -17,6 +18,24 @@ enum class VerticalDeviationKind { None, Glideslope, Glidepath, Vnav };
 // Marker beacon receiver state, annunciated to the left of the altimeter:
 // outer (cyan "O"), middle (amber "M"), inner (white "I").
 enum class MarkerBeacon { None, Outer, Middle, Inner };
+
+// Active VNAV profile (G1000 NXi Pilot's Guide, Section 6 "Vertical
+// Navigation"). The FMS builds a descent path to the active altitude constraint
+// at the default flight-path angle, computing the required vertical speed to
+// track it, the top-of-descent point, and the deviation from the path. Drives
+// the FPL page "Active VNV Profile" box and the PFD vertical deviation pointer.
+struct VnvProfile {
+  bool active = false;               // a valid VNAV target exists ahead
+  std::string targetWpt;             // ident of the constrained waypoint
+  int targetAltFt = 0;               // its altitude constraint
+  float vsTargetFpm = 0.0f;          // path descent rate at current GS (down<0)
+  float vsRequiredFpm = 0.0f;        // VS needed now to make the constraint
+  float fpaDeg = 0.0f;               // path flight-path angle
+  float distanceToTodNm = 0.0f;      // distance to top of descent (<=0 past TOD)
+  int timeToTodSec = 0;              // time to TOD at current ground speed
+  bool capturing = false;            // past TOD: descending on the path
+  float verticalDeviationFt = 0.0f;  // current altitude minus path altitude
+};
 
 // Decoded, platform-agnostic flight state consumed by the gauges.
 // Units are chosen to match what the displays render directly, so neither
@@ -139,8 +158,17 @@ struct FlightData {
   bool requiredVsValid = false;
   float requiredVsFpm = 0.0f;
 
+  // Autopilot Selected Vertical Speed (fpm), drawn as a cyan bug on the VSI
+  // scale when the VS reference is active (G1000 NXi Pilot's Guide, VSI).
+  bool selectedVsValid = false;
+  float selectedVerticalSpeedFpm = 0.0f;
+
   // Marker beacon receiver annunciation (left of the altimeter).
   MarkerBeacon markerBeacon = MarkerBeacon::None;
+
+  // Active VNAV profile, computed each frame from the flight plan's altitude
+  // constraints, ownship position, and ground speed.
+  VnvProfile vnv;
 
   // DME Information Window (PFD Opt > DME), shown above the BRG1 window when the
   // DME display option is on: tuned source/mode, frequency, and slant-range.
@@ -168,7 +196,7 @@ struct FlightData {
 
   // FMA (center of the top NAV/COM bar): active leg, lateral/vertical modes.
   std::string fmaFromWpt;
-  std::string fmaToWpt = "KPAO";
+  std::string fmaToWpt = "KFMY";
   float fmaLegDistanceNm = 12.4f;
   float fmaLegBearingDeg = 315.0f;
   std::string fmaLateralActive = "GPS";
@@ -190,6 +218,9 @@ struct FlightData {
   int utcMinute = 42;
   int utcSecond = 15;
   bool clockIsUtc = true;
+  // UTC day of year (1..366), for the Trip Planning sunrise/sunset
+  // computation; 0 = unknown (those rows dash).
+  int utcDayOfYear = 0;
 
   // Engine Indication System (EIS) strip on the left edge of the MFD, modeled
   // on the single-engine Cessna Nav III fit (G1000 Pilot's Guide for Cessna
@@ -209,6 +240,11 @@ struct FlightData {
   float busVoltsEssential = 27.8f;
   float battAmpsMain = 2.0f;
   float battAmpsStandby = 0.0f;
+
+  // Generic EIS channel bag populated from the active layout's BIND lines.
+  // Gauges reference channels by id; syncEisLegacyFields() mirrors well-known
+  // channels into the scalar fields above for CAS and trip-planning consumers.
+  std::unordered_map<std::string, float> eisChannels;
 };
 
 }  // namespace avionics

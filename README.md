@@ -84,6 +84,150 @@ cmake -S . -B build -DBUILD_XPLANE_SHELL=ON -DXPLANE_SDK_DIR=/path/to/X-Plane-SD
 cmake --build build
 ```
 
+This produces `build/shell-xplane/xplane-avionics.xpl`. Install it into X-Plane
+under `Resources/plugins/xplane-avionics/<platform>/` (e.g. `mac.xpl` on macOS).
+
+#### Live flight-plan bridge
+
+X-Plane exposes the active **FMS flight plan only through the plugin SDK** — it
+is not on the UDP RREF telemetry stream or the Web API — so the standalone shell
+cannot read an in-cockpit route on its own. The plugin therefore runs a small
+**flight-plan bridge**: it reads the live FMS on the sim thread and serves the
+route over UDP (default port **49100**) to the standalone shell, which requests
+it on a background thread and draws it on the map and FPL page automatically.
+
+Install the plugin (above) on the machine running X-Plane and the standalone
+shell picks up the live route with no manual save. Override the port with
+`--fms-bridge-port` if 49100 is in use. When the plugin isn't installed (or
+X-Plane is on another host without it), the shell falls back to a loaded/exported
+`.fms` file (`--fms-plan`) or a SimBrief OFP, exactly as before.
+
+The bridge is **bidirectional**: edits made in the shell are programmed back into
+X-Plane's FMS over the same channel. Building or editing a plan on the FPL page,
+loading a SimBrief OFP, and activating Direct-To all push to the real FMS (route
+waypoints resolve to database navaids where possible, otherwise lat/lon, and
+Direct-To uses X-Plane's present-position direct leg). The shell sends each edit
+with an acknowledgement + retry so a dropped UDP packet doesn't lose the write.
+Pass `--no-fms-write` to keep edits display-only while still reading the live
+route.
+
+## Per-aircraft checklists & engine display (EIS)
+
+Neither the MFD **Checklist** page group nor the **EIS** engine strip is
+hardcoded: both are plain-text files that an aircraft author ships with the
+airframe, so the displayed checklists and the engine gauges change with the
+aircraft without rebuilding the avionics. Both files are line-oriented, ignore
+blank lines and `#` comments, and **hot-reload** — edit the file while the
+display is running and it re-parses on the next frame (the store watches the
+file's modification time), so you can iterate without a restart.
+
+The bundled samples double as the format reference:
+
+| Concern   | Sample file                          | Parser / keywords                          |
+| --------- | ------------------------------------ | ------------------------------------------ |
+| Checklist | `shell-standalone/assets/checklists.txt` | `avionics-core/include/avionics/Checklist.h` |
+| EIS       | `avionics-core/assets/eis/c172s.eis`     | `avionics-core/include/avionics/Eis.h`       |
+
+### Checklists
+
+A checklist file is a set of named **groups** (e.g. `NORMAL PROCEDURES`), each
+holding named **checklists** (e.g. `BEFORE TAKEOFF`), each a list of **items**.
+The MFD pages a flat sequence of every checklist across all groups, with the
+owning group name shown in the page header.
+
+```
+# Lines beginning with # are comments.
+GROUP NORMAL PROCEDURES
+
+  CHECKLIST BEFORE STARTING ENGINE
+    Preflight Inspection : COMPLETE        # "<description> : <response>"
+    Fuel Selector : BOTH
+    Avionics Switch : OFF
+    A note with no response and no colon   # renders as a plain line
+```
+
+- `GROUP <name>` starts a new group.
+- `CHECKLIST <name>` starts a new checklist in the current group (a default
+  unnamed group is created if none has been declared yet).
+- Any other non-empty line is an **item**: the description and the expected
+  response are split on the first ` : ` (space-colon-space). A line with no
+  ` : ` becomes an item with an empty response (a note).
+
+**Selecting the file (standalone shell):** pass `--checklist PATH`; with no
+flag the bundled sample (`shell-standalone/assets/checklists.txt`) is used so
+the page is populated during development.
+
+```bash
+./build/shell-standalone/avionics-standalone --checklist /path/to/my_aircraft_checklists.txt
+```
+
+### Engine display (EIS strip)
+
+The EIS file describes the engine strip drawn on the left edge of every MFD
+page: a title, an ordered list of **sections**, each holding **gauges**, plus a
+`BIND` block that maps each logical channel to a simulator dataref.
+
+```
+TITLE ENGINE                 # strip heading
+
+GAUGE RPM_DIAL               # gauge types: RPM_DIAL, BAR, READOUT, ELECTRICAL
+  CHANNEL eng.rpm            # logical channel id (see below)
+  MIN 0 MAX 3000
+  REDLINE 2700
+  BAND GREEN 2100 2500       # BAND <GREEN|YELLOW|RED> <lo> <hi>
+  BAND RED 2700 3000
+
+SECTION FUEL QTY GAL         # SECTION [title] starts a new group of gauges
+GAUGE BAR
+  LABEL L                    # text shown next to the gauge
+  CHANNEL fuel.qty_left
+  MIN 0 MAX 24
+  BAND RED 0 1.5
+  BAND GREEN 1.5 24
+
+GAUGE READOUT                # numeric readout
+  LABEL ENG HRS
+  CHANNEL eng.hours
+  FORMAT %.1f                # printf-style format for the value
+
+GAUGE ELECTRICAL            # paired left/right readout (e.g. main/ess bus)
+  LABEL BUS VOLTS
+  LEFT M elec.bus_main       # LEFT  <tag> <channel>
+  RIGHT E elec.bus_ess       # RIGHT <tag> <channel>
+  FORMAT %.1f
+
+# BIND <channel> <dataref> <scale> <offset>: display = raw * scale + offset.
+BIND eng.rpm sim/cockpit2/engine/indicators/engine_speed_rpm[0] 1 0
+BIND eng.oil_temp sim/cockpit2/engine/indicators/oil_temperature_deg_C[0] 1.8 32
+```
+
+Gauge keys: `LABEL`, `CHANNEL`, `MIN [MAX <n>]`, `MAX`, `REDLINE`, `BAND`,
+`FORMAT`, and `LEFT`/`RIGHT` (for `ELECTRICAL`). The **channel** ids are the
+logical names the gauges and `BIND` lines agree on (the canonical set lives in
+`eis_channels` in `Eis.h`: `eng.rpm`, `eng.fuel_flow`, `eng.oil_pres`,
+`eng.oil_temp`, `eng.egt`, `eng.vacuum`, `fuel.qty_left`, `fuel.qty_right`,
+`eng.hours`, `elec.bus_main`, `elec.bus_ess`, `elec.batt_main`,
+`elec.batt_standby`). Each `BIND` line converts a sim dataref's native units to
+the gauge's display units with a `scale` and `offset` (e.g. `1.8`/`32` for
+°C → °F).
+
+**Where the EIS file is loaded from** (first match wins):
+
+1. An explicit selector — `--eis PATH` on the standalone shell.
+2. `g1000_eis.txt` next to the loaded `.acf` (in-sim plugin only).
+3. `<acf_stem>_eis.txt` next to the loaded `.acf` (in-sim plugin only).
+4. The build-time bundled default (`avionics-core/assets/eis/c172s.eis`).
+
+The **in-sim X-Plane plugin** resolves the per-aircraft file automatically from
+`sim/aircraft/view/acf_relative_path`, so dropping a `g1000_eis.txt` (or
+`<acfname>_eis.txt`) beside the aircraft's `.acf` is enough — the strip switches
+when you change aircraft. The **standalone shell over UDP** has no aircraft path
+to key off, so point it at the file explicitly:
+
+```bash
+./build/shell-standalone/avionics-standalone --eis /path/to/MyAircraft/g1000_eis.txt
+```
+
 ## Status / next steps
 
 The shared core renders a basic PFD (attitude indicator,
@@ -116,9 +260,10 @@ Still to wire up:
       and the XPDR submenu is a radio group (STBY/ON/ALT/GND).
 - [x] MFD page groups (MAP / WPT / AUX / NRST / FPL) with per-group page
       memory, modeled on the G1000 Pilot's Guide for Cessna Nav III. The
-      group softkeys stand in for the large FMS knob (pressing the active
-      group's key again steps to its next page, like the small knob), the
-      on-screen FMS rocker steps pages directly, and the FPL bezel key
+      on-screen dual FMS knob works like the real one (large knob selects the
+      page group, small knob steps pages within it), the group softkeys also
+      select groups (pressing the active group's key again steps to its next
+      page), and the FPL bezel key
       toggles the Active Flight Plan page. Pages: Navigation Map; Airport /
       Intersection / NDB / VOR Information; Trip Planning, GPS Status,
       System Status; Nearest Airports / Intersections / NDB / VOR /
@@ -136,9 +281,9 @@ Still to wire up:
       V-speed reference bug On/Off toggles honored by the airspeed tape, and
       barometric minimums; Nearest Airports (`Nearest`) listing distance-sorted
       airports with bearing/distance, COM frequency, and longest runway,
-      scrolled with the FMS rocker. The FMS rocker moves the References cursor
-      (and steps the MINS altitude), ENT activates fields, and CLR closes the
-      window, per the Pilot's Guide.
+      scrolled with the FMS knob. The large FMS knob moves the References
+      cursor, the small knob steps the MINS altitude, ENT activates fields,
+      and CLR closes the window, per the Pilot's Guide.
 - [x] Altimeter alerting per the NXi Pilot's Guide: barometric minimums (BARO
       MIN box at the bottom left of the altimeter plus a tape bug, staging
       cyan -> white within 100 ft -> amber at minimums) and Selected Altitude
@@ -150,6 +295,49 @@ Still to wire up:
       in-progress squawk entry in the data box with BKSP support. Committing
       the completed code to the radio still needs a sim command channel, like
       the VFR and STD Baro keys.
+- [x] SimBrief integration (standalone shell): the MFD AUX – SIMBRIEF page
+      fetches the account's latest OFP over HTTPS (SimBrief's public fetcher,
+      JSON v2) and loads its geocoded navlog as the active flight plan on both
+      feeds. The numeric Pilot ID is typed on XPDR-style digit softkeys (`ID`
+      key; ENT commits) and persists across runs; `FETCH` re-downloads on
+      demand, and a saved ID auto-fetches at startup (`--simbrief-id` to
+      override). The page shows fetch status plus the OFP's origin/destination,
+      generation time, and filed route. Needs libcurl (bundled with macOS) and
+      nlohmann/json (fetched at configure time).
+- [x] Flight plan editing on the FPL – Active Flight Plan page with the dual
+      FMS knob, following the Pilot's Guide procedures: push the knob for the
+      selection cursor, the large knob highlights a leg, and turning the small
+      knob opens the Waypoint Information window where identifiers are spelled
+      character by character (small knob selects the character starting at K,
+      large knob moves the cursor) with database spell-ahead auto-fill; ENT
+      inserts the waypoint ahead of the highlighted row (or appends on the
+      blank slot, building a plan from scratch). CLR on a leg opens the
+      `REMOVE <wpt>?` OK/CANCEL confirmation, and MENU offers Delete Flight
+      Plan. Idents resolve against the parsed nav database (airports, VORs,
+      NDBs, fixes; nearest wins on duplicates), and edits become the active
+      plan on both feeds — the mock keeps flying toward the same waypoint, and
+      on the X-Plane feed the edit is programmed into the sim's FMS through the
+      flight-plan bridge (display-only override under `--no-fms-write`).
+- [x] GPS Direct-To: the Direct-To bezel key opens the Direct To window over
+      any MFD page, pre-filled with the active waypoint (or the highlighted
+      flight-plan leg). The FMS knob spells the destination with the same
+      database spell-ahead entry; the first ENT confirms the waypoint and arms
+      the `ACTIVATE?` prompt, the second ENT engages the direct course. The map
+      then draws the magenta direct-to leg from the aircraft straight to the
+      waypoint (over the white flight plan); the mock flies it and sequences
+      back onto the route on arrival; on the X-Plane feed the flight-plan bridge
+      engages a present-position Direct-To in the sim's own FMS (or shows the
+      course only under `--no-fms-write`).
+- [x] Live FMS flight-plan bridge: the in-sim plugin reads the active FMS route
+      (reachable only through the plugin SDK, not the UDP/Web API transports)
+      and serves it over UDP to the standalone shell, which draws the real
+      in-cockpit route on the map and FPL page automatically. Falls back to a
+      `.fms` file or SimBrief OFP when the plugin isn't installed.
+- [x] FMS write-back over the same bridge: FPL-page edits, SimBrief OFP loads,
+      and Direct-To activations are programmed into X-Plane's FMS (navaid or
+      lat/lon entries, present-position Direct-To), applied on the sim thread
+      with an acknowledgement + retry. `--no-fms-write` keeps edits
+      display-only.
 - [ ] Bind the NanoVG renderer inside the plugin via the X-Plane Avionics
       Device API (`XPLMCreateAvionicsEx`), replacing the legacy draw callback.
 

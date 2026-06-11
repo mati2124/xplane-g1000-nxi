@@ -17,21 +17,40 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw)
 
+# JSON parser for the SimBrief OFP fetch (header-only, fetched like GLFW).
+FetchContent_Declare(
+  nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 set(STANDALONE_SOURCES
   src/main.cpp
   src/AppSettings.cpp
   src/XPlaneConnection.cpp
   src/XPlaneWebApi.cpp
+  src/FlightPlanBridgeClient.cpp
   src/NavData.cpp
   src/FmsPlanStore.cpp
   src/AirspaceStore.cpp
+  src/AirwayStore.cpp
+  src/AptDatStore.cpp
+  src/ProcedureStore.cpp
+  src/LandDataStore.cpp
+  src/ObstacleStore.cpp
   src/ChecklistStore.cpp
   src/XPlaneInstall.cpp
   src/DsfTerrainStore.cpp
+  src/SimBriefClient.cpp
+  src/SimBriefStore.cpp
 )
 
 # The Web API client polls X-Plane on a background thread.
 find_package(Threads REQUIRED)
+
+# HTTPS client for the SimBrief OFP fetch. libcurl ships with macOS and most
+# Linux distributions; on Windows install it via vcpkg or similar.
+find_package(CURL REQUIRED)
 
 # Native macOS menu-bar integration (Objective-C++, Cocoa).
 if(APPLE)
@@ -46,6 +65,8 @@ target_link_libraries(avionics-standalone PRIVATE
   render-nanovg
   glfw
   Threads::Threads
+  CURL::libcurl
+  nlohmann_json::nlohmann_json
 )
 target_include_directories(avionics-standalone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(avionics-standalone PRIVATE cxx_std_17)
@@ -54,6 +75,15 @@ target_compile_features(avionics-standalone PRIVATE cxx_std_17)
 # --checklist is given (so the page is populated during development).
 target_compile_definitions(avionics-standalone PRIVATE
   AVIONICS_DEFAULT_CHECKLIST="${CMAKE_CURRENT_SOURCE_DIR}/assets/checklists.txt")
+
+target_compile_definitions(avionics-standalone PRIVATE
+  AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/../avionics-core/assets/eis/c172s.eis")
+
+# Bundled Natural Earth land-data asset for the map's rivers/roads/cities/
+# borders overlay (built by tools/convert_natural_earth.py; loading fails
+# gracefully when the file is absent).
+target_compile_definitions(avionics-standalone PRIVATE
+  AVIONICS_LAND_DATA="${CMAKE_CURRENT_SOURCE_DIR}/assets/land_data.bin")
 
 if(APPLE)
   target_compile_definitions(avionics-standalone PRIVATE GL_SILENCE_DEPRECATION)

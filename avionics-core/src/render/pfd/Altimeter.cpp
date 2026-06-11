@@ -136,8 +136,11 @@ void drawMetricAltitude(Renderer& r, float tapeX, float tapeW,
 // or below minimums).
 void drawMinimums(Renderer& r, const Layout& L, const FlightData& d,
                   const SoftkeyController& ui, float displayH) {
-  if (ui.minimumsMode() != MinimumsMode::Baro) return;
-  const float minsFt = ui.minimumsAltitudeFt();
+  if (ui.minimumsMode() == MinimumsMode::Off) return;
+  // In TEMP COMP the alert references the temperature-corrected minimum.
+  const float minsFt = ui.effectiveMinimumsFt();
+  const char* minsLabel =
+      ui.minimumsMode() == MinimumsMode::Temp ? "TEMP" : "BARO";
   const float aboveFt = d.altitudeFt - minsFt;
 
   const Color stage = (aboveFt <= 0.0f)     ? colors::kBandYellow
@@ -162,7 +165,7 @@ void drawMinimums(Renderer& r, const Layout& L, const FlightData& d,
 
     const float labelSize = fontPx(wt::kInfoLabel, displayH) * 0.8f;
     const float cx = boxX + boxW * 0.30f;
-    r.fillText(cx, boxY + boxH * 0.30f, "BARO", labelSize, TextAlign::Center,
+    r.fillText(cx, boxY + boxH * 0.30f, minsLabel, labelSize, TextAlign::Center,
                stage);
     r.fillText(cx, boxY + boxH * 0.72f, "MIN", labelSize, TextAlign::Center,
                stage);

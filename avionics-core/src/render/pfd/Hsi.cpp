@@ -251,7 +251,8 @@ void drawWindBox(Renderer& r, float cx, float cy, float displayH,
 }
 
 void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
-             const FlightData& d) {
+             const FlightData& d, const SoftkeyController& ui,
+             bool transparentRose) {
   const float headingDeg = d.headingDeg;
   const float selectedHeadingDeg = d.selectedHeadingDeg;
   const Color navColor =
@@ -263,7 +264,15 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
 
   drawTurnRateIndicator(r, cx, cy, radius, d.turnRateDegPerSec);
 
-  r.fillCircle(cx, cy, radius, colors::kRoseBackground);
+  // In HSI Map mode the moving map is drawn behind the rose, so the backing is
+  // translucent to let the map show through; otherwise it is the solid NXi rose.
+  if (transparentRose) {
+    Color backing = colors::kRoseBackground;
+    backing.a *= 0.45f;
+    r.fillCircle(cx, cy, radius, backing);
+  } else {
+    r.fillCircle(cx, cy, radius, colors::kRoseBackground);
+  }
 
   const float clipPad = radius * 0.10f;
   r.save();
@@ -297,8 +306,14 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
     r.restore();
   }
 
-  if (d.bearing1Valid) drawBearingPointer(r, radius, d.bearing1Deg, false);
-  if (d.bearing2Valid) drawBearingPointer(r, radius, d.bearing2Deg, true);
+  // Bearing pointers are shown only when enabled by the PFD Opt > Bearing 1/2
+  // softkeys (G1000 NXi: the needles are off by default).
+  if (d.bearing1Valid && ui.displayToggle(DisplayToggle::Bearing1)) {
+    drawBearingPointer(r, radius, d.bearing1Deg, false);
+  }
+  if (d.bearing2Valid && ui.displayToggle(DisplayToggle::Bearing2)) {
+    drawBearingPointer(r, radius, d.bearing2Deg, true);
+  }
   drawCourseNeedle(r, radius, d.courseDeg, d.cdiDeviationDots, d.cdiToFlag,
                    d.navSignalValid, d.cdiSource == CdiSource::Nav2, navColor);
 
@@ -365,14 +380,17 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
 }
 
 void drawCdiSource(Renderer& r, const Layout& L, const FlightData& d,
-                   float displayH) {
+                   const SoftkeyController& ui, float displayH) {
   // Nav source and (for GPS) the flight phase are annunciated inside the upper
-  // half of the rose, straddling the course pointer (e.g. "GPS   TERM").
+  // half of the rose, straddling the course pointer (e.g. "GPS   TERM"). When
+  // OBS mode is on, automatic waypoint sequencing is suspended and "OBS" is
+  // annunciated in place of the flight phase (G1000 NXi Pilot's Guide, OBS).
+  const bool obs = ui.displayToggle(DisplayToggle::Obs);
   const char* text = "GPS";
   Color c = colors::kMagenta;
   bool isGps = false;
   switch (d.cdiSource) {
-    case CdiSource::Gps:  text = "GPS";  c = colors::kMagenta;     isGps = true; break;
+    case CdiSource::Gps:  text = obs ? "OBS" : "GPS"; c = colors::kMagenta;     isGps = true; break;
     case CdiSource::Nav1: text = "VOR1"; c = colors::kActiveGreen; break;
     case CdiSource::Nav2: text = "VOR2"; c = colors::kActiveGreen; break;
   }
@@ -381,11 +399,13 @@ void drawCdiSource(Renderer& r, const Layout& L, const FlightData& d,
   if (isGps) {
     r.fillText(L.hsiCx - L.hsiRadius * 0.27f, y, text, size, TextAlign::Center,
                c);
-    if (!d.gpsFlightPhase.empty()) {
+    // OBS suspends sequencing, so "SUSP" replaces the flight-phase annunciation.
+    const std::string phase = obs ? "SUSP" : d.gpsFlightPhase;
+    if (!phase.empty()) {
       // Per the G1000 Pilot's Guide (Table 2-3), the flight-phase annunciation
       // is normally magenta (amber only under cautionary conditions), matching
       // the GPS source color rather than the cyan used for selected references.
-      r.fillText(L.hsiCx + L.hsiRadius * 0.27f, y, d.gpsFlightPhase, size,
+      r.fillText(L.hsiCx + L.hsiRadius * 0.27f, y, phase, size,
                  TextAlign::Center, colors::kMagenta);
     }
   } else {
@@ -396,7 +416,7 @@ void drawCdiSource(Renderer& r, const Layout& L, const FlightData& d,
 }  // namespace
 
 void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
-                    const SoftkeyController& ui, float h) {
+                    const SoftkeyController& ui, float h, bool hsiMapMode) {
   // AHRS heading failure: the compass rose, CDI, and wind (all referenced to
   // heading) are replaced by a red X with an "HDG" annunciation.
   if (!d.headingValid) {
@@ -405,8 +425,8 @@ void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
     return;
   }
 
-  drawHsi(r, L.hsiCx, L.hsiCy, L.hsiRadius, h, d);
-  drawCdiSource(r, L, d, h);
+  drawHsi(r, L.hsiCx, L.hsiCy, L.hsiRadius, h, d, ui, hsiMapMode);
+  drawCdiSource(r, L, d, ui, h);
   // Wind window: upper-left of the HSI rose, below the airspeed tape and right
   // of the inset map (G1000 NXi Pilot's Guide places it "to the upper left of
   // the HSI"). The format follows the PFD Opt > Wind option.

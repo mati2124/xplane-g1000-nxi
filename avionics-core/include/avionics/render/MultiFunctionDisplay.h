@@ -1,6 +1,7 @@
 #pragma once
 
 #include "avionics/Checklist.h"
+#include "avionics/Eis.h"
 #include "avionics/FlightData.h"
 #include "avionics/MapData.h"
 #include "avionics/MfdController.h"
@@ -18,8 +19,8 @@ namespace avionics {
 class MultiFunctionDisplay {
  public:
   static void render(Renderer& r, const FlightData& data, const MapData& map,
-                     const ChecklistData& checklist, const MfdController& ui,
-                     int widthPx, int heightPx);
+                     const ChecklistData& checklist, const EisLayout& eisLayout,
+                     const MfdController& ui, int widthPx, int heightPx);
 };
 
 }  // namespace avionics

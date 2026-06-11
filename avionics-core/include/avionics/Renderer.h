@@ -61,6 +61,36 @@ class Renderer {
   virtual void strokePolyline(const Point* points, int count, float widthPx,
                               const Color& c) = 0;
 
+  // Strokes many disjoint line segments in a single batched submission.
+  // `segPts` holds 2*segmentCount points (each consecutive pair is one
+  // segment). This exists because dashed/combed/railroad symbology emits
+  // hundreds of tiny segments per frame; issuing them as one path instead of
+  // one draw call each is a large win on the in-sim GL2 backend, where every
+  // draw call carries heavy driver overhead. The default implementation simply
+  // loops strokeLine so backends that don't override it still render correctly.
+  virtual void strokeSegments(const Point* segPts, int segmentCount,
+                              float widthPx, const Color& c) {
+    for (int i = 0; i < segmentCount; ++i) {
+      const Point& a = segPts[2 * i];
+      const Point& b = segPts[2 * i + 1];
+      strokeLine(a.x, a.y, b.x, b.y, widthPx, c);
+    }
+  }
+
+  // Raster images (RGBA8, row-major, no padding). Used for content that is
+  // expensive to draw as vectors every frame (the terrain raster): a caller
+  // builds a pixel buffer, uploads it once, then draws it cheaply per frame
+  // under the current transform. Returns an opaque handle (< 0 on failure).
+  virtual int createImageRGBA(int widthPx, int heightPx,
+                              const unsigned char* rgba) = 0;
+  // Re-uploads pixels into an existing image; dimensions must match creation.
+  virtual void updateImageRGBA(int imageId, const unsigned char* rgba) = 0;
+  virtual void deleteImage(int imageId) = 0;
+  // Draws the image stretched over the rect (current transform applies, so
+  // callers rotate via save/translate/rotate). `alpha` multiplies the image.
+  virtual void drawImage(int imageId, float x, float y, float w, float h,
+                         float alpha) = 0;
+
   virtual void fillText(float x, float y, const std::string& text, float sizePx,
                         TextAlign align, const Color& c) = 0;
 

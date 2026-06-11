@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "avionics/Color.h"
 #include "render/mfd/EisStrip.h"
@@ -37,42 +38,67 @@ constexpr float kSoftkeyFontWt = 17.0f;
 constexpr const char* kFreqDash2 = "---.--";
 constexpr const char* kFreqDash3 = "---.---";
 
-// Group-prefixed page title shown in the navigation data bar, in the NXi's
-// "GROUP - Page Name" style (WT NXi MFDUiPage titles). Page names match the
-// G1000 Pilot's Guide for Cessna Nav III verbatim.
+// Group-prefixed page title shown in the navigation data bar, verbatim from
+// the WT NXi MFDUiPage titles ("Map – Navigation Map" mixed case).
 const char* pageTitle(MfdPage page) {
   switch (page) {
     case MfdPage::NavigationMap:
-      return "MAP \xE2\x80\x93 NAVIGATION MAP";
+      return "Map \xE2\x80\x93 Navigation Map";
+    case MfdPage::TrafficMap:
+      return "Map \xE2\x80\x93 Traffic Map";
+    case MfdPage::WeatherRadar:
+      return "Map \xE2\x80\x93 Weather Radar";
     case MfdPage::AirportInformation:
-      return "WPT \xE2\x80\x93 AIRPORT INFORMATION";
+      return "WPT \xE2\x80\x93 Airport Information";
     case MfdPage::IntersectionInformation:
-      return "WPT \xE2\x80\x93 INTERSECTION INFORMATION";
+      return "WPT \xE2\x80\x93 Intersection Information";
     case MfdPage::NdbInformation:
-      return "WPT \xE2\x80\x93 NDB INFORMATION";
+      return "WPT \xE2\x80\x93 NDB Information";
     case MfdPage::VorInformation:
-      return "WPT \xE2\x80\x93 VOR INFORMATION";
+      return "WPT \xE2\x80\x93 VOR Information";
     case MfdPage::TripPlanning:
-      return "AUX \xE2\x80\x93 TRIP PLANNING";
+      return "Aux \xE2\x80\x93 Trip Planning";
+    case MfdPage::Utility:
+      return "Aux \xE2\x80\x93 Utility";
     case MfdPage::GpsStatus:
-      return "AUX \xE2\x80\x93 GPS STATUS";
+      return "Aux \xE2\x80\x93 GPS Status";
+    case MfdPage::SystemSetup:
+      return "Aux \xE2\x80\x93 System Setup";
     case MfdPage::SystemStatus:
-      return "AUX \xE2\x80\x93 SYSTEM STATUS";
+      return "Aux \xE2\x80\x93 System Status";
+    case MfdPage::SimBrief:
+      return "Aux \xE2\x80\x93 SimBrief";
     case MfdPage::NearestAirports:
-      return "NRST \xE2\x80\x93 NEAREST AIRPORTS";
+      return "NRST \xE2\x80\x93 Nearest Airports";
     case MfdPage::NearestIntersections:
-      return "NRST \xE2\x80\x93 NEAREST INTERSECTIONS";
+      return "NRST \xE2\x80\x93 Nearest Intersections";
     case MfdPage::NearestNdb:
-      return "NRST \xE2\x80\x93 NEAREST NDB";
+      return "NRST \xE2\x80\x93 Nearest NDB";
     case MfdPage::NearestVor:
-      return "NRST \xE2\x80\x93 NEAREST VOR";
+      return "NRST \xE2\x80\x93 Nearest VOR";
+    case MfdPage::NearestFrequencies:
+      return "NRST \xE2\x80\x93 Nearest Frequencies";
     case MfdPage::NearestAirspaces:
-      return "NRST \xE2\x80\x93 NEAREST AIRSPACES";
+      return "NRST \xE2\x80\x93 Nearest Airspaces";
     case MfdPage::ActiveFlightPlan:
-      return "FPL \xE2\x80\x93 ACTIVE FLIGHT PLAN";
+      return "FPL \xE2\x80\x93 Active Flight Plan";
   }
   return "";
 }
+
+// Bare page names per group, for the page-select popup's page list.
+const char* const kMapPages[] = {"Navigation Map", "Traffic Map",
+                                 "Weather Radar"};
+const char* const kWptPages[] = {"Airport Information",
+                                 "Intersection Information",
+                                 "NDB Information", "VOR Information"};
+const char* const kAuxPages[] = {"Trip Planning", "Utility",
+                                 "GPS Status",     "System Setup",
+                                 "System Status",  "SimBrief"};
+const char* const kNrstPages[] = {"Nearest Airports", "Nearest Intersections",
+                                  "Nearest NDB",      "Nearest VOR",
+                                  "Nearest Frequencies", "Nearest Airspaces"};
+const char* const kFplPages[] = {"Active Flight Plan"};
 
 // Double-headed cyan frequency transfer arrow, identical to the PFD's.
 void drawTransferArrow(Renderer& r, float cx, float cy, float halfW) {
@@ -210,70 +236,128 @@ void drawNavComBar(Renderer& r, float w, float h, float barH,
              TextAlign::Center, colors::kCyan);
 }
 
-// Page group / page indicator in the lower-right corner of the page body: the
-// five group tabs with the selected group highlighted, and one box per page in
-// that group with the selected page filled (G1000 Pilot's Guide for Cessna
-// Nav III, Figure 1-22).
+// Transient page-select popup in the lower-right corner, in the NXi style
+// (WT MFDPageSelect): a black box with a 1px gray border holding the active
+// group's page list (gray items, the current page cyan) above a row of
+// trapezoid group tabs with the active tab "open" into the box. Appears on
+// any group/page change and auto-closes after a few seconds idle.
 void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
                        const MfdController& ui, int checklistPageCount) {
+  const float secs = ui.pageSelectSecondsLeft();
+  if (secs <= 0.0f) return;
+  const float alpha = std::min(1.0f, secs / 0.25f);  // quick fade-out
+
   struct GroupTab {
     const char* label;
     MfdPageGroup group;
   };
-  const GroupTab tabs[] = {{"MAP", MfdPageGroup::Map},
+  const GroupTab tabs[] = {{"Map", MfdPageGroup::Map},
                            {"WPT", MfdPageGroup::Waypoint},
-                           {"AUX", MfdPageGroup::Aux},
+                           {"Aux", MfdPageGroup::Aux},
                            {"FPL", MfdPageGroup::FlightPlan},
                            {"NRST", MfdPageGroup::Nearest},
                            {"CHK", MfdPageGroup::Checklist}};
+  const int tabCount = static_cast<int>(sizeof(tabs) / sizeof(tabs[0]));
 
-  const float labelSize = mfdFontPx(13.0f, h);
-  const float boxH = labelSize * 2.6f;
-  const float boxW = w * 0.215f;
-  const float bx = w - boxW - w * 0.008f;
+  // The active group's page list. The Checklist group's pages are dynamic
+  // (one per loaded checklist), so those entries are synthesized.
+  const char* const* pages = nullptr;
+  int pageCount = 0;
+  switch (ui.pageGroup()) {
+    case MfdPageGroup::Map:
+      pages = kMapPages;
+      pageCount = 3;
+      break;
+    case MfdPageGroup::Waypoint:
+      pages = kWptPages;
+      pageCount = 4;
+      break;
+    case MfdPageGroup::Aux:
+      pages = kAuxPages;
+      pageCount = 6;
+      break;
+    case MfdPageGroup::Nearest:
+      pages = kNrstPages;
+      pageCount = 6;
+      break;
+    case MfdPageGroup::FlightPlan:
+      pages = kFplPages;
+      pageCount = 1;
+      break;
+    case MfdPageGroup::Checklist:
+      pageCount = std::max(1, checklistPageCount);
+      break;
+  }
+
+  const float itemSize = mfdFontPx(16.0f, h);
+  const float itemH = itemSize * 1.5f;
+  const float tabSize = mfdFontPx(14.0f, h);
+  const float tabH = tabSize * 1.9f;
+  const float pad = itemSize * 0.55f;
+  // Cap the (checklist) list at what fits sensibly.
+  const int listRows = std::min(pageCount, 8);
+  const float boxW = w * (260.0f / 1024.0f);
+  const float boxH = pad + listRows * itemH + pad * 0.4f + tabH;
+  const float bx = w - boxW - w * 0.004f;
   const float by = bottomBarTop - boxH - h * 0.006f;
 
-  r.fillRect(bx, by, boxW, boxH, mfdAlpha(colors::kBlack, 0.55f));
+  r.fillRect(bx, by, boxW, boxH, mfdAlpha(colors::kBlack, 0.95f * alpha));
   const Point border[5] = {{bx, by},
                            {bx + boxW, by},
                            {bx + boxW, by + boxH},
                            {bx, by + boxH},
                            {bx, by}};
-  r.strokePolyline(border, 5, 1.0f, colors::kPanelBorder);
+  r.strokePolyline(border, 5, 1.0f,
+                   mfdAlpha(colors::kGroupBoxBorder, alpha));
 
-  // Group tabs along the top of the box.
-  const float tabY = by + boxH * 0.30f;
-  const int tabCount = static_cast<int>(sizeof(tabs) / sizeof(tabs[0]));
-  for (int i = 0; i < tabCount; ++i) {
-    const float cx =
-        bx + boxW * (static_cast<float>(i) + 0.5f) / static_cast<float>(tabCount);
-    const bool active = ui.pageGroup() == tabs[i].group;
-    r.fillText(cx, tabY, tabs[i].label, labelSize, TextAlign::Center,
-               active ? colors::kCyan : colors::kLabelText);
+  // Page list: gray entries, the current page cyan. Long checklist groups
+  // scroll the window around the current page.
+  int firstRow = 0;
+  if (pageCount > listRows) {
+    firstRow = std::max(
+        0, std::min(ui.pageIndex() - listRows / 2, pageCount - listRows));
+  }
+  float iy = by + pad;
+  char chkBuf[32];
+  for (int i = firstRow; i < firstRow + listRows; ++i) {
+    const float cy = iy + itemH * 0.5f;
+    const char* name;
+    if (pages != nullptr) {
+      name = pages[i];
+    } else {
+      std::snprintf(chkBuf, sizeof(chkBuf), "Checklist %d", i + 1);
+      name = chkBuf;
+    }
+    const Color c = i == ui.pageIndex()
+                        ? mfdAlpha(colors::kCyan, alpha)
+                        : mfdAlpha(colors::kTitleGray, alpha);
+    r.fillText(bx + pad * 1.4f, cy, name, itemSize, TextAlign::Left, c);
+    iy += itemH;
   }
 
-  // One box per page of the selected group, selected page filled. The
-  // Checklist group's count is dynamic (one page per loaded checklist).
-  const int pages = ui.pageGroup() == MfdPageGroup::Checklist
-                        ? std::max(1, checklistPageCount)
-                        : MfdController::pageCount(ui.pageGroup());
-  const float squares = labelSize * 0.62f;
-  const float gap = squares * 0.55f;
-  const float rowW = pages * squares + (pages - 1) * gap;
-  float sx = bx + (boxW - rowW) * 0.5f;
-  const float sy = by + boxH * 0.72f - squares * 0.5f;
-  for (int i = 0; i < pages; ++i) {
-    if (i == ui.pageIndex()) {
-      r.fillRect(sx, sy, squares, squares, colors::kCyan);
+  // Group tabs along the bottom: a border line across the top of the row,
+  // broken over the active tab whose sides splay outward (the trapezoid
+  // "open folder tab" look).
+  const float tabTop = by + boxH - tabH;
+  const float tabBottom = by + boxH;
+  const float cellW = boxW / static_cast<float>(tabCount);
+  const float slant = tabH * 0.28f;
+  const Color lineColor = mfdAlpha(colors::kGroupBoxBorder, alpha);
+  for (int i = 0; i < tabCount; ++i) {
+    const float x0 = bx + cellW * static_cast<float>(i);
+    const float x1 = x0 + cellW;
+    const bool active = ui.pageGroup() == tabs[i].group;
+    if (active) {
+      // Slanted sides from the border line down to the box bottom.
+      r.strokeLine(x0, tabTop, x0 - slant, tabBottom, 1.0f, lineColor);
+      r.strokeLine(x1, tabTop, x1 + slant, tabBottom, 1.0f, lineColor);
     } else {
-      const Point box[5] = {{sx, sy},
-                            {sx + squares, sy},
-                            {sx + squares, sy + squares},
-                            {sx, sy + squares},
-                            {sx, sy}};
-      r.strokePolyline(box, 5, 1.0f, colors::kLabelText);
+      r.strokeLine(x0, tabTop, x1, tabTop, 1.0f, lineColor);
     }
-    sx += squares + gap;
+    r.fillText(x0 + cellW * 0.5f, tabTop + tabH * 0.52f, tabs[i].label,
+               tabSize, TextAlign::Center,
+               active ? mfdAlpha(colors::kCyan, alpha)
+                      : mfdAlpha(colors::kTitleGray, alpha));
   }
 }
 
@@ -319,6 +403,7 @@ void drawSoftkeyBar(Renderer& r, float w, float h, float barH,
 void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
                                   const MapData& map,
                                   const ChecklistData& checklist,
+                                  const EisLayout& eisLayout,
                                   const MfdController& ui, int widthPx,
                                   int heightPx) {
   const float w = static_cast<float>(widthPx);
@@ -340,62 +425,89 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
   std::string title;
   if (ui.pageGroup() == MfdPageGroup::Checklist) {
     mfd::drawChecklistPage(r, checklist, ui, bodyX, bodyY, bodyW, bodyH, h);
-    title = "CHKLIST \xE2\x80\x93 CHECKLIST";
+    title = "CHKLIST \xE2\x80\x93 Checklist";
   } else {
   switch (ui.page()) {
     case MfdPage::NavigationMap:
       mfd::drawMapPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
       break;
+    case MfdPage::TrafficMap:
+      mfd::drawTrafficMapPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+      break;
+    case MfdPage::WeatherRadar:
+      mfd::drawWeatherRadarPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+      break;
     case MfdPage::AirportInformation:
-      mfd::drawWaypointPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
+      mfd::drawWaypointPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::IntersectionInformation:
-      mfd::drawWaypointNavaidPage(r, d, map, MapFeatureType::Fix, bodyX, bodyY,
-                                  bodyW, bodyH, h);
+      mfd::drawWaypointNavaidPage(r, d, map, ui, MapFeatureType::Fix, bodyX,
+                                  bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::NdbInformation:
-      mfd::drawWaypointNavaidPage(r, d, map, MapFeatureType::Ndb, bodyX, bodyY,
-                                  bodyW, bodyH, h);
+      mfd::drawWaypointNavaidPage(r, d, map, ui, MapFeatureType::Ndb, bodyX,
+                                  bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::VorInformation:
-      mfd::drawWaypointNavaidPage(r, d, map, MapFeatureType::Vor, bodyX, bodyY,
-                                  bodyW, bodyH, h);
+      mfd::drawWaypointNavaidPage(r, d, map, ui, MapFeatureType::Vor, bodyX,
+                                  bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::TripPlanning:
       mfd::drawTripPlanningPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
       break;
+    case MfdPage::Utility:
+      mfd::drawUtilityPage(r, d, ui, bodyX, bodyY, bodyW, bodyH, h);
+      break;
     case MfdPage::GpsStatus:
-      mfd::drawGpsStatusPage(r, d, bodyX, bodyY, bodyW, bodyH, h);
+      mfd::drawGpsStatusPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
+      break;
+    case MfdPage::SystemSetup:
+      mfd::drawSystemSetupPage(r, d, bodyX, bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::SystemStatus:
       mfd::drawSystemStatusPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
       break;
+    case MfdPage::SimBrief:
+      mfd::drawSimBriefPage(r, ui, bodyX, bodyY, bodyW, bodyH, h);
+      break;
     case MfdPage::NearestAirports:
-      mfd::drawNearestAirportsPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
+      mfd::drawNearestAirportsPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH,
+                                   h);
       break;
     case MfdPage::NearestIntersections:
-      mfd::drawNearestFeaturePage(r, d, map, MapFeatureType::Fix, bodyX, bodyY,
-                                  bodyW, bodyH, h);
+      mfd::drawNearestFeaturePage(r, d, map, ui, MapFeatureType::Fix, bodyX,
+                                  bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::NearestNdb:
-      mfd::drawNearestFeaturePage(r, d, map, MapFeatureType::Ndb, bodyX, bodyY,
-                                  bodyW, bodyH, h);
+      mfd::drawNearestFeaturePage(r, d, map, ui, MapFeatureType::Ndb, bodyX,
+                                  bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::NearestVor:
-      mfd::drawNearestFeaturePage(r, d, map, MapFeatureType::Vor, bodyX, bodyY,
-                                  bodyW, bodyH, h);
+      mfd::drawNearestFeaturePage(r, d, map, ui, MapFeatureType::Vor, bodyX,
+                                  bodyY, bodyW, bodyH, h);
+      break;
+    case MfdPage::NearestFrequencies:
+      mfd::drawNearestFrequenciesPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::NearestAirspaces:
-      mfd::drawNearestAirspacesPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
+      mfd::drawNearestAirspacesPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH,
+                                    h);
       break;
     case MfdPage::ActiveFlightPlan:
-      mfd::drawActiveFlightPlanPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
+      mfd::drawActiveFlightPlanPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH,
+                                    h);
       break;
   }
   title = pageTitle(ui.page());
   }
 
-  mfd::drawEisStrip(r, d, mfd::Rect{0.0f, bodyY, eisW, bodyH}, h);
+  mfd::drawEisStrip(r, d, eisLayout, mfd::Rect{0.0f, bodyY, eisW, bodyH}, h);
+  // The Direct-To window overlays whatever page is up (it is opened by the
+  // Direct-To bezel key from anywhere), drawn over the body but under the
+  // top/bottom chrome bars.
+  if (ui.directToWindowOpen()) {
+    mfd::drawDirectToWindow(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+  }
   drawPageIndicator(r, w, h, h - bottomBarH, ui, checklist.totalChecklists());
   drawNavComBar(r, w, h, topBarH, d, title);
   drawSoftkeyBar(r, w, h, bottomBarH, ui);

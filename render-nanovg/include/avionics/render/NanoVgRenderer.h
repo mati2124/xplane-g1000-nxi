@@ -17,7 +17,12 @@ namespace avionics {
 
 class NanoVgRenderer : public Renderer {
  public:
-  NanoVgRenderer();
+  // Which NanoVG OpenGL backend to bind. GL3 suits a modern 3.2+ core context
+  // (the standalone shell's GLFW window); GL2 suits an OpenGL 2.1 context (the
+  // X-Plane plugin's avionics-bridge context).
+  enum class Backend { GL3, GL2 };
+
+  explicit NanoVgRenderer(Backend backend = Backend::GL3);
   ~NanoVgRenderer() override;
 
   NanoVgRenderer(const NanoVgRenderer&) = delete;
@@ -25,6 +30,21 @@ class NanoVgRenderer : public Renderer {
 
   // False if the NanoVG context failed to create (e.g. no current GL context).
   bool valid() const { return vg_ != nullptr; }
+
+  // Per-frame draw-call accounting for performance diagnostics. Each NanoVG
+  // path submission (fill/stroke), text run, and image draw is counted; the
+  // counters reset on beginFrame, so a reader sees the call count for the most
+  // recent frame. The in-sim GL2 backend is draw-call bound, so this is the
+  // number the shell logs to reason about render cost.
+  struct DrawStats {
+    int fills = 0;
+    int strokes = 0;
+    int texts = 0;
+    int images = 0;
+    int verts = 0;  // path vertices submitted (polygons/polylines/segments)
+    int total() const { return fills + strokes + texts + images; }
+  };
+  const DrawStats& drawStats() const { return stats_; }
 
   void beginFrame(int widthPx, int heightPx, float pixelRatio) override;
   void endFrame() override;
@@ -46,13 +66,23 @@ class NanoVgRenderer : public Renderer {
   void fillPolygon(const Point* points, int count, const Color& c) override;
   void strokePolyline(const Point* points, int count, float widthPx,
                       const Color& c) override;
+  void strokeSegments(const Point* segPts, int segmentCount, float widthPx,
+                      const Color& c) override;
+  int createImageRGBA(int widthPx, int heightPx,
+                      const unsigned char* rgba) override;
+  void updateImageRGBA(int imageId, const unsigned char* rgba) override;
+  void deleteImage(int imageId) override;
+  void drawImage(int imageId, float x, float y, float w, float h,
+                 float alpha) override;
   void fillText(float x, float y, const std::string& text, float sizePx,
                 TextAlign align, const Color& c) override;
   float measureTextWidth(const std::string& text, float sizePx) override;
 
  private:
+  Backend backend_;
   NVGcontext* vg_ = nullptr;
   int fontId_ = -1;
+  DrawStats stats_;
 };
 
 }  // namespace avionics

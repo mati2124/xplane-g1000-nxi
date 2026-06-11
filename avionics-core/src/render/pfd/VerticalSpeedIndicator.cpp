@@ -61,9 +61,27 @@ void drawRequiredVsChevron(Renderer& r, float x, float vw, float stripTop,
   r.fillPolygon(chevron, 3, colors::kMagenta);
 }
 
+// Cyan Selected Vertical Speed bug riding the VSI scale at the autopilot's
+// selected VS reference (G1000 NXi Pilot's Guide, VSI). A notched bug on the
+// outer (right) edge of the tape, mirroring the cyan selected-altitude bug.
+void drawSelectedVsBug(Renderer& r, float x, float vw, float stripTop,
+                       float stripH, float cy, float pixelsPerFpm,
+                       float selVsFpm) {
+  const float clamped = std::max(-kVsiMaxFpm, std::min(kVsiMaxFpm, selVsFpm));
+  const float y = cy - clamped * pixelsPerFpm;
+  if (y < stripTop || y > stripTop + stripH) return;
+  const float bw = vw * 0.34f;
+  const float bh = vw * 0.42f;
+  const float bx = x + vw - bw;
+  const float notch = bw * 0.5f;
+  const Point bug[5] = {{bx + bw, y - bh}, {bx, y - bh}, {bx + notch, y},
+                        {bx, y + bh},      {bx + bw, y + bh}};
+  r.fillPolygon(bug, 5, colors::kCyan);
+}
+
 void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
              float cy, float displayH, float vsFpm, bool reqVsValid,
-             float reqVsFpm) {
+             float reqVsFpm, bool selVsValid, float selVsFpm) {
   const float pixelsPerFpm = (stripH * kVsiScaleHalfFraction) / kVsiMaxFpm;
   const float clamped = std::max(-kVsiMaxFpm, std::min(kVsiMaxFpm, vsFpm));
   const float pointerY = cy - clamped * pixelsPerFpm;
@@ -100,6 +118,9 @@ void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
     drawRequiredVsChevron(r, x, vw, stripTop, stripH, cy, pixelsPerFpm,
                           reqVsFpm);
   }
+  if (selVsValid) {
+    drawSelectedVsBug(r, x, vw, stripTop, stripH, cy, pixelsPerFpm, selVsFpm);
+  }
   r.restore();
 
   // The pointer slides to the current vertical speed; its body carries the
@@ -124,7 +145,8 @@ void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
     return;
   }
   drawVsi(r, L.vsiX, L.vsiW, L.vsiTop, L.vsiH, L.attCy, h, d.verticalSpeedFpm,
-          d.requiredVsValid, d.requiredVsFpm);
+          d.requiredVsValid, d.requiredVsFpm, d.selectedVsValid,
+          d.selectedVerticalSpeedFpm);
 }
 
 }  // namespace avionics::pfd

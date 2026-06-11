@@ -25,3 +25,15 @@ compile_commands.json
 # Third-party SDKs (download locally, do not commit)
 /third_party/
 /X-Plane-SDK/
+
+# Natural Earth download cache for tools/convert_natural_earth.py
+/tools/.ne_cache/
+
+# Standalone build tree (configured in-place; do not commit)
+/build-standalone/
+
+# Reference docs (large, third-party / copyrighted material)
+/docs/reference/
+
+# Generated land-data asset (built by the Natural Earth converter tool)
+/shell-standalone/assets/land_data.bin

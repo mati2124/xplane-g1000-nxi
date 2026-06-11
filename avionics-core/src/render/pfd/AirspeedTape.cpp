@@ -71,7 +71,8 @@ void drawVspeedBugs(Renderer& r, float tapeX, float tapeW, float stripTop,
   for (int i = 0; i < kVSpeedRefCount; ++i) {
     if (!ui.vspeedEnabled(static_cast<VspeedRef>(i))) continue;
     const VSpeedRef& v = kVSpeedRefs[i];
-    const float y = cy - (v.kt - airspeed) * ppu;
+    const float vKt = ui.vspeedValueKt(static_cast<VspeedRef>(i));
+    const float y = cy - (vKt - airspeed) * ppu;
     if (y < stripTop || y > stripTop + stripH) continue;
     const float bx = innerX - bugW;
     const float by = y - bugH * 0.5f;
@@ -169,8 +170,9 @@ void drawVspeedList(Renderer& r, float tapeX, float tapeW, float stripTop,
   for (int i = 0; i < kVSpeedRefCount; ++i) {
     if (ui.vspeedEnabled(static_cast<VspeedRef>(i))) order.push_back(i);
   }
-  std::sort(order.begin(), order.end(), [](int a, int b) {
-    return kVSpeedRefs[a].kt > kVSpeedRefs[b].kt;
+  std::sort(order.begin(), order.end(), [&ui](int a, int b) {
+    return ui.vspeedValueKt(static_cast<VspeedRef>(a)) >
+           ui.vspeedValueKt(static_cast<VspeedRef>(b));
   });
 
   const float labelSize = fontPx(wt::kTapeLabel, displayH) * 0.9f;
@@ -179,10 +181,11 @@ void drawVspeedList(Renderer& r, float tapeX, float tapeW, float stripTop,
   float y = stripTop + stripH - rowH * (rows + 0.5f);
   for (int k = 0; k < rows; ++k) {
     const VSpeedRef& v = kVSpeedRefs[order[k]];
+    const float vKt = ui.vspeedValueKt(static_cast<VspeedRef>(order[k]));
     const float rowCy = y + rowH * 0.5f;
     r.fillText(tapeX + tapeW * 0.18f, rowCy, v.bugLabel, labelSize,
                TextAlign::Left, colors::kCyan);
-    r.fillText(tapeX + tapeW * 0.92f, rowCy, formatInt(v.kt), labelSize,
+    r.fillText(tapeX + tapeW * 0.92f, rowCy, formatInt(vKt), labelSize,
                TextAlign::Right, colors::kWhite);
     y += rowH;
   }
@@ -225,25 +228,42 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   drawAirspeedReadout(r, L.asiX, L.attCy - readoutH * 0.5f, L.asiW, readoutH,
                       d.airspeedKts, readoutSize, boxColor, textColor);
 
-  // TAS is shown in a small black box at the bottom of the airspeed instrument
-  // (NXi airspeed-bottom-container).
-  const float tasBoxH = 28.0f * L.s;
-  const float tasBoxY = L.asiTop + L.asiH - tasBoxH;
-  r.fillRect(L.asiX, tasBoxY, L.asiW, tasBoxH, colors::kReadoutBox);
+  // Mach readout: shown just below the IAS pointer box when the Mach number
+  // reaches 0.40, matching the G1000 NXi (suppressed in the normal piston
+  // envelope). Speed of sound is from OAT (a = 38.97*sqrt(T_K) kt).
+  const float soundKts = 38.967854f * std::sqrt(d.oatCelsius + 273.15f);
+  const float mach = soundKts > 1.0f ? d.tasKts / soundKts : 0.0f;
+  if (mach >= 0.40f) {
+    char mbuf[16];
+    std::snprintf(mbuf, sizeof(mbuf), "M %.3f", mach);
+    const float machSize = fontPx(wt::kInfoValue, h);
+    r.fillText(L.asiX + L.asiW * 0.5f, L.attCy + readoutH * 0.5f + machSize,
+               std::string(mbuf), machSize, TextAlign::Center, colors::kWhite);
+  }
+
+  // TAS and GS (groundspeed) are shown in stacked black boxes at the bottom of
+  // the airspeed instrument (NXi airspeed-bottom-container).
   const float labelSize = fontPx(wt::kInfoLabel, h);
   const float valueSize = fontPx(wt::kInfoValue, h);
-  const float tasCy = tasBoxY + tasBoxH * 0.5f;
-  const std::string tasVal = formatInt(d.tasKts);
-  const float gap = labelSize * 0.25f;
-  const float runW = r.measureTextWidth("TAS", labelSize) + gap +
-                     r.measureTextWidth(tasVal, valueSize) + gap * 0.5f +
-                     r.measureTextWidth("KT", labelSize);
-  float tx = L.asiX + L.asiW * 0.5f - runW * 0.5f;
-  tx = putText(r, tx, tasCy, "TAS", labelSize, colors::kLabelText,
-               gap / labelSize);
-  tx = putText(r, tx, tasCy, tasVal, valueSize, colors::kWhite,
-               (gap * 0.5f) / valueSize);
-  putText(r, tx, tasCy, "KT", labelSize, colors::kLabelText);
+  const float boxH = 28.0f * L.s;
+  auto drawSpeedBox = [&](float boxY, const char* label,
+                          const std::string& value) {
+    r.fillRect(L.asiX, boxY, L.asiW, boxH, colors::kReadoutBox);
+    const float boxCy = boxY + boxH * 0.5f;
+    const float gap = labelSize * 0.25f;
+    const float runW = r.measureTextWidth(label, labelSize) + gap +
+                       r.measureTextWidth(value, valueSize) + gap * 0.5f +
+                       r.measureTextWidth("KT", labelSize);
+    float tx = L.asiX + L.asiW * 0.5f - runW * 0.5f;
+    tx = putText(r, tx, boxCy, label, labelSize, colors::kLabelText,
+                 gap / labelSize);
+    tx = putText(r, tx, boxCy, value, valueSize, colors::kWhite,
+                 (gap * 0.5f) / valueSize);
+    putText(r, tx, boxCy, "KT", labelSize, colors::kLabelText);
+  };
+  const float tasBoxY = L.asiTop + L.asiH - boxH;
+  drawSpeedBox(tasBoxY - boxH - 2.0f * L.s, "GS", formatInt(d.groundSpeedKts));
+  drawSpeedBox(tasBoxY, "TAS", formatInt(d.tasKts));
 }
 
 }  // namespace avionics::pfd

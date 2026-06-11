@@ -1,17 +1,16 @@
 #pragma once
 
+#include "avionics/Eis.h"
 #include "avionics/FlightData.h"
 #include "avionics/Renderer.h"
 #include "render/mfd/MfdStyle.h"
 
 namespace avionics::mfd {
 
-// Engine Indication System strip on the left edge of the MFD, modeling the
-// single-engine Cessna Nav III Engine Display (G1000 Pilot's Guide for Cessna
-// Nav III, Section 3.1): tachometer dial, FFLOW/OIL/EGT/VAC horizontal bar
-// indicators, per-tank fuel quantity, engine hours, and the
-// voltmeter/ammeter rows. Drawn on every MFD page, like the real unit.
-void drawEisStrip(Renderer& r, const FlightData& d, const Rect& area,
-                  float displayH);
+// Engine Indication System strip on the left edge of the MFD. The gauge layout
+// comes from the per-aircraft EisLayout (g1000_eis.txt beside the .acf); live
+// values are read from FlightData::eisChannels via the layout's channel ids.
+void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
+                  const Rect& area, float displayH);
 
 }  // namespace avionics::mfd

@@ -1,9 +1,13 @@
 #include "XPlaneConnection.h"
 
+#include "avionics/EisLegacy.h"
+
 #include <cmath>
 #include <cstring>
 
 #include "avionics/Datarefs.h"
+#include "avionics/MapRange.h"
+#include "avionics/Radio.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -29,16 +33,6 @@ constexpr double kResubscribeIntervalSeconds = 3.0;
 constexpr float kMetersPerSecondToKnots = 1.943844f;
 // X-Plane radio frequency datarefs are MHz x 100 (11030 == 110.30 MHz).
 constexpr float kRadioHzToMhz = 0.01f;
-// Avgas mass-to-volume conversions for the EIS fuel readouts (6.01 lb/gal).
-constexpr float kKgPerGallonAvgas = 2.72155f;
-constexpr float kKgSecToGph = 3600.0f / kKgPerGallonAvgas;
-constexpr float kKgToGallons = 1.0f / kKgPerGallonAvgas;
-// Celsius -> Fahrenheit (the EIS oil/EGT readouts are in deg F).
-constexpr float kCToFScale = 1.8f;
-constexpr float kCToFOffset = 32.0f;
-// X-Plane's vacuum dataref is a 0..1 ratio of maximum pump output; a healthy
-// GA suction system reads ~5 inHg at the gauge.
-constexpr float kVacuumRatioToInHg = 5.0f;
 // X-Plane failure_enum value meaning the instrument is currently inoperative.
 constexpr int kFailureInop = 6;
 
@@ -160,31 +154,6 @@ const DatarefBinding kBindings[] = {
      Smooth::Snap},
     {datarefs::kCom2StandbyFrequencyHz, kRadioHzToMhz,
      &FlightData::com2StandbyMhz, Smooth::Snap},
-
-    // EIS engine/fuel/electrical indicators for the MFD engine strip.
-    {datarefs::kEngineRpm, 1.0f, &FlightData::engineRpm, Smooth::Linear},
-    {datarefs::kFuelFlowKgSec, kKgSecToGph, &FlightData::fuelFlowGph,
-     Smooth::Linear},
-    {datarefs::kOilPressurePsi, 1.0f, &FlightData::oilPressurePsi,
-     Smooth::Linear},
-    {datarefs::kOilTemperatureDegC, kCToFScale, &FlightData::oilTempDegF,
-     Smooth::Linear, kCToFOffset},
-    {datarefs::kEgtDegC, kCToFScale, &FlightData::egtDegF, Smooth::Linear,
-     kCToFOffset},
-    {datarefs::kVacuumRatio, kVacuumRatioToInHg, &FlightData::vacuumInHg,
-     Smooth::Linear},
-    {datarefs::kFuelQuantityLeftKg, kKgToGallons, &FlightData::fuelQtyLeftGal,
-     Smooth::Linear},
-    {datarefs::kFuelQuantityRightKg, kKgToGallons,
-     &FlightData::fuelQtyRightGal, Smooth::Linear},
-    {datarefs::kHobbsTimeHours, 1.0f, &FlightData::engineHours, Smooth::Snap},
-    {datarefs::kBusVoltsMain, 1.0f, &FlightData::busVoltsMain, Smooth::Linear},
-    {datarefs::kBusVoltsEssential, 1.0f, &FlightData::busVoltsEssential,
-     Smooth::Linear},
-    {datarefs::kBatteryAmpsMain, 1.0f, &FlightData::battAmpsMain,
-     Smooth::Linear},
-    {datarefs::kBatteryAmpsStandby, 1.0f, &FlightData::battAmpsStandby,
-     Smooth::Linear},
 };
 constexpr int kBindingCount =
     static_cast<int>(sizeof(kBindings) / sizeof(kBindings[0]));
@@ -276,13 +245,87 @@ constexpr int kGpsSensitivityIndex = kApModeBaseIndex + kApModeCount;
 constexpr int kLatitudeIndex = kGpsSensitivityIndex + 1;
 constexpr int kLongitudeIndex = kLatitudeIndex + 1;
 
+// TCAS traffic targets for the map overlay: per-element subscriptions into the
+// target position arrays (element 0 is ownship, so targets start at 1).
+constexpr int kTrafficTargetCount = 8;
+constexpr int kTrafficFieldCount = 4;  // lat, lon, ele, vertical_speed
+constexpr int kTrafficBaseIndex = kLongitudeIndex + 1;
+
+enum NavInstrRef {
+  kNav1Vdef = 0,
+  kNav2Vdef,
+  kNav1GsFlag,
+  kNav2GsFlag,
+  kOuterMarker,
+  kMiddleMarker,
+  kInnerMarker,
+  kNav1Dme,
+  kNav2Dme,
+  kNavInstrFieldCount,
+};
+static_assert(kNavInstrFieldCount == 9,
+              "nav instrumentation subscription count must match storage");
+constexpr int kNavInstrBaseIndex =
+    kTrafficBaseIndex + kTrafficTargetCount * kTrafficFieldCount;
+const char* const kNavInstrPaths[kNavInstrFieldCount] = {
+    datarefs::kNav1VdefDotsPilot,
+    datarefs::kNav2VdefDotsPilot,
+    datarefs::kNav1GsFlag,
+    datarefs::kNav2GsFlag,
+    datarefs::kOuterMarkerLit,
+    datarefs::kMiddleMarkerLit,
+    datarefs::kInnerMarkerLit,
+    datarefs::kNav1DmeDistanceNm,
+    datarefs::kNav2DmeDistanceNm,
+};
+
+// Sim date (day of year, 0-based) for the Trip Planning sunrise/sunset rows;
+// rides one index past the nav-instrumentation block.
+constexpr int kDateDaysIndex = kNavInstrBaseIndex + kNavInstrFieldCount;
+constexpr int kEisSubscriptionBase = kDateDaysIndex + 1;
+
+const char* const kTrafficFieldPaths[kTrafficFieldCount] = {
+    datarefs::kTcasTargetLat,
+    datarefs::kTcasTargetLon,
+    datarefs::kTcasTargetEleMeters,
+    datarefs::kTcasTargetVerticalSpeedFpm,
+};
+
 // How often the nearby-feature list is rebuilt from the nav database. Ownship
 // position updates every frame; the (range-filtered) feature scan is throttled.
 constexpr double kMapRebuildIntervalSeconds = 1.0;
-// Display range for the inset map, and the cap on features fed to the renderer.
+// Display range for the inset map (the MFD overrides per view).
 constexpr float kMapRangeNm = 10.0f;
+// Query radius for the nearby-data scans: must cover the longest MFD range,
+// not just the inset default.
+constexpr float kMapQueryRangeNm = 160.0f;
 constexpr std::size_t kMaxMapFeatures = 250;
 constexpr std::size_t kMaxMapAirspaces = 60;
+constexpr std::size_t kMaxMapAirways = 500;
+// Runway diagrams only draw at short ranges, so their query stays tight.
+constexpr float kRunwayQueryRangeNm = 30.0f;
+constexpr std::size_t kMaxMapRunways = 120;
+// Taxiway pavement only draws very close in (<= 2.5 NM), so its query is
+// tighter still and the polygon count is capped to keep the rebuild cheap.
+constexpr float kTaxiwayQueryRangeNm = 10.0f;
+constexpr std::size_t kMaxMapTaxiways = 600;
+constexpr float kTaxiwayLabelQueryRangeNm = 10.0f;
+constexpr std::size_t kMaxMapTaxiwayLabels = 400;
+// Obstacles likewise only draw at low ranges (and the DOF is dense).
+constexpr float kObstacleQueryRangeNm = 30.0f;
+constexpr std::size_t kMaxMapObstacles = 300;
+
+// Traffic display filtering and the simple TA threat heuristic (TIS-style:
+// proximate traffic within 1 NM and 1200 ft is upgraded to an advisory).
+constexpr float kTrafficMaxRangeNm = 40.0f;
+constexpr float kTrafficTaRangeNm = 1.0f;
+constexpr float kTrafficTaAltFt = 1200.0f;
+constexpr float kMetersToFeet = 3.28084f;
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+constexpr double kNmPerDegLat = 60.0;
+
+constexpr std::size_t kMaxMapLandLines = 2500;
+constexpr std::size_t kMaxMapCities = 200;
 
 // Map the active GPS CDI sensitivity (NM per dot; the G1000 uses a 2-dot full
 // scale) to the flight-phase annunciation shown in the HSI. Full-scale NM is
@@ -461,16 +504,31 @@ float readLeFloat(const unsigned char* p) {
 }  // namespace
 
 XPlaneConnection::XPlaneConnection(std::string host, std::uint16_t port,
-                                   NavDataStore& navData, FmsPlanStore& fmsPlan,
+                                   NavDataStore& navData,
+                                   AirspaceStore& airspace, AirwayStore& airways,
+                                   AptDatStore& aptData, LandDataStore& landData,
+                                   FmsPlanStore& fmsPlan,
                                    const TerrainSource* terrain,
-                                   const ChecklistSource* checklists)
-    : navData_(navData),
+                                   const ChecklistSource* checklists,
+                                   const EisSource* eis,
+                                   const ObstacleStore* obstacles,
+                                   std::uint16_t bridgePort,
+                                   bool fmsWriteEnabled)
+    : terrain_(terrain),
+      navData_(navData),
+      airspace_(airspace),
+      airways_(airways),
+      aptData_(aptData),
+      landData_(landData),
+      obstacles_(obstacles),
       fmsPlan_(fmsPlan),
-      terrain_(terrain),
       checklists_(checklists),
+      eisSource_(eis),
       host_(std::move(host)),
       port_(port),
-      webApi_(host_, XPlaneWebApi::kDefaultPort) {
+      webApi_(host_, XPlaneWebApi::kDefaultPort),
+      fmsBridge_(host_, bridgePort),
+      fmsWriteEnabled_(fmsWriteEnabled) {
 #ifdef _WIN32
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -494,6 +552,7 @@ XPlaneConnection::XPlaneConnection(std::string host, std::uint16_t port,
 #endif
 
   socketHandle_ = static_cast<std::intptr_t>(sock);
+  rebuildEisSubscriptions();
   sendSubscriptions(kSubscribeFrequencyHz);
 }
 
@@ -546,6 +605,69 @@ void XPlaneConnection::sendSubscriptions(int frequencyHz) {
   subscribe(kGpsSensitivityIndex, datarefs::kGpsHdefNmPerDot);
   subscribe(kLatitudeIndex, datarefs::kLatitudeDeg);
   subscribe(kLongitudeIndex, datarefs::kLongitudeDeg);
+
+  // TCAS target arrays, one subscription per element ("path[i]").
+  char path[128];
+  for (int t = 0; t < kTrafficTargetCount; ++t) {
+    for (int f = 0; f < kTrafficFieldCount; ++f) {
+      std::snprintf(path, sizeof(path), "%s[%d]", kTrafficFieldPaths[f], t + 1);
+      subscribe(kTrafficBaseIndex + t * kTrafficFieldCount + f, path);
+    }
+  }
+  for (int n = 0; n < kNavInstrFieldCount; ++n) {
+    subscribe(kNavInstrBaseIndex + n, kNavInstrPaths[n]);
+  }
+  subscribe(kDateDaysIndex, datarefs::kLocalDateDays);
+  subscribeEisBindings(frequencyHz);
+}
+
+void XPlaneConnection::rebuildEisSubscriptions() {
+  eisBindings_.clear();
+  if (eisSource_ == nullptr || !eisSource_->ready()) {
+    eisLayoutBindingCount_ = 0;
+    return;
+  }
+
+  const EisLayout& layout = eisSource_->layout();
+  eisLayoutBindingCount_ = layout.bindings.size();
+  int subIndex = kEisSubscriptionBase;
+  for (const EisDataBinding& spec : layout.bindings) {
+    RuntimeEisBinding binding;
+    binding.channel = spec.channel;
+    binding.datarefPath = spec.datarefPath;
+    binding.scale = spec.scale;
+    binding.offset = spec.offset;
+    binding.subIndex = subIndex++;
+    eisBindings_.push_back(std::move(binding));
+  }
+}
+
+void XPlaneConnection::subscribeEisBindings(int frequencyHz) {
+  if (socketHandle_ == -1) return;
+  SocketHandle sock = static_cast<SocketHandle>(socketHandle_);
+
+  sockaddr_in dest{};
+  dest.sin_family = AF_INET;
+  dest.sin_port = htons(port_);
+#ifdef _WIN32
+  inet_pton(AF_INET, host_.c_str(), &dest.sin_addr);
+#else
+  dest.sin_addr.s_addr = inet_addr(host_.c_str());
+#endif
+
+  unsigned char msg[kRrefRequestSize] = {0};
+  auto subscribe = [&](int index, const char* path) {
+    std::memcpy(msg, "RREF", 4);
+    writeLe32(msg + 5, frequencyHz);
+    writeLe32(msg + 9, index);
+    std::strncpy(reinterpret_cast<char*>(msg + 13), path, kDatarefNameSize - 1);
+    ::sendto(sock, reinterpret_cast<const char*>(msg), kRrefRequestSize, 0,
+             reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+  };
+
+  for (const RuntimeEisBinding& binding : eisBindings_) {
+    subscribe(binding.subIndex, binding.datarefPath.c_str());
+  }
 }
 
 void XPlaneConnection::drainSocket() {
@@ -591,6 +713,26 @@ void XPlaneConnection::drainSocket() {
       } else if (index == kLongitudeIndex) {
         ownshipLonDeg_ = value;
         haveLon_ = true;
+      } else if (index >= kTrafficBaseIndex &&
+                 index < kTrafficBaseIndex +
+                             kTrafficTargetCount * kTrafficFieldCount) {
+        static_assert(kTrafficTargetCount == kTrafficSlotCount &&
+                          kTrafficFieldCount == kTrafficSlotFields,
+                      "subscription layout must match the raw storage");
+        const int rel = index - kTrafficBaseIndex;
+        trafficRaw_[rel / kTrafficFieldCount][rel % kTrafficFieldCount] =
+            value;
+      } else if (index >= kNavInstrBaseIndex &&
+                 index < kNavInstrBaseIndex + kNavInstrFieldCount) {
+        navInstr_[index - kNavInstrBaseIndex] = value;
+      } else if (index == kDateDaysIndex) {
+        // X-Plane reports 0-based day-of-year; FlightData carries 1-based.
+        target_.utcDayOfYear = static_cast<int>(std::lround(value)) + 1;
+      } else if (index >= kEisSubscriptionBase) {
+        const int rel = index - kEisSubscriptionBase;
+        if (rel >= 0 && rel < static_cast<int>(eisBindings_.size())) {
+          eisBindings_[static_cast<std::size_t>(rel)].target = value;
+        }
       }
     }
     lastPacketSeconds_ = elapsedSeconds_;
@@ -601,6 +743,12 @@ void XPlaneConnection::drainSocket() {
 void XPlaneConnection::update(double dtSeconds) {
   elapsedSeconds_ += dtSeconds;
   sinceResubscribeSeconds_ += dtSeconds;
+
+  if (eisSource_ != nullptr && eisSource_->ready() &&
+      eisSource_->layout().bindings.size() != eisLayoutBindingCount_) {
+    rebuildEisSubscriptions();
+    sendSubscriptions(kSubscribeFrequencyHz);
+  }
 
   drainSocket();
 
@@ -614,6 +762,10 @@ void XPlaneConnection::update(double dtSeconds) {
       prevAirspeedKts_ = data_.airspeedKts;
       data_.airspeedTrendKts = 0.0f;
       data_.altitudeTrendFt = data_.verticalSpeedFpm * (6.0f / 60.0f);
+      for (const RuntimeEisBinding& b : eisBindings_) {
+        data_.eisChannels[b.channel] = b.target * b.scale + b.offset;
+      }
+      syncEisLegacyFields(data_);
       primed_ = true;
     } else {
       // alpha = 1 - e^(-dt/tau): the fraction of the remaining gap to close
@@ -648,8 +800,16 @@ void XPlaneConnection::update(double dtSeconds) {
         data_.airspeedTrendKts += (instTrend - data_.airspeedTrendKts) * alpha;
       }
       prevAirspeedKts_ = data_.airspeedKts;
+
+      for (RuntimeEisBinding& b : eisBindings_) {
+        const float converted = b.target * b.scale + b.offset;
+        float& cur = data_.eisChannels[b.channel];
+        cur += (converted - cur) * alpha;
+      }
+      syncEisLegacyFields(data_);
     }
     updateFmaModes();
+    updateNavInstrumentation();
     // GPS flight phase (ENR/TERM/APR/OCN) is a discrete annunciation derived
     // from the live CDI sensitivity, so it is set straight through (no easing).
     data_.gpsFlightPhase = gpsPhaseFromSensitivity(gpsHdefNmPerDot_);
@@ -659,6 +819,8 @@ void XPlaneConnection::update(double dtSeconds) {
     // dataref, so the leg renders direct-to ("->KXXX").
     data_.fmaToWpt = webApi_.destinationId();
     data_.fmaFromWpt.clear();
+    // Sim date passes straight through (it only changes at midnight).
+    data_.utcDayOfYear = target_.utcDayOfYear;
     updateZuluClock(dtSeconds);
     updateMap(dtSeconds);
   } else {
@@ -716,29 +878,102 @@ void XPlaneConnection::updateMap(double dtSeconds) {
   map_.ownshipLat = static_cast<double>(ownshipLatDeg_);
   map_.ownshipLon = static_cast<double>(ownshipLonDeg_);
 
-  // Flight plan: parsed from an X-Plane .fms file (see FmsPlanStore). The live
-  // FMS is not available over UDP, so this tracks the exported/loaded plan file
-  // rather than in-cockpit edits until a plugin bridge exists.
-  fmsPlan_.refreshIfChanged();
-  if (fmsPlan_.loaded() && !fmsPlan_.flightPlan().empty()) {
-    map_.flightPlan = fmsPlan_.flightPlan();
+  // Flight plan precedence:
+  //   1. An externally supplied route (SimBrief OFP / FPL page edits) wins.
+  //   2. Otherwise the live FMS from the in-sim plugin bridge, when reachable
+  //      and non-empty -- this is the real in-cockpit route over UDP.
+  //   3. Otherwise an X-Plane .fms file (see FmsPlanStore), the offline source
+  //      that works without the plugin installed.
+  // Display-only Direct-To course (the live sim navigation is unchanged).
+  map_.directToActive = directToActive_;
+  map_.directTo = directTo_;
+
+  if (routeOverrideSet_) {
+    map_.flightPlan = routeOverride_;
+  } else {
+    bool bridgeAvailable = false;
+    std::vector<MapLeg> bridgePlan = fmsBridge_.flightPlan(bridgeAvailable);
+    if (bridgeAvailable && !bridgePlan.empty()) {
+      map_.flightPlan = std::move(bridgePlan);
+    } else {
+      fmsPlan_.refreshIfChanged();
+      if (fmsPlan_.loaded() && !fmsPlan_.flightPlan().empty()) {
+        map_.flightPlan = fmsPlan_.flightPlan();
+      }
+    }
   }
 
   // Nearby navaids/fixes from the parsed nav database. Rebuild on a throttled
   // timer rather than every frame, since the database spans the whole world.
+  // When the MFD Map Pointer is active the queries follow the pointer instead
+  // of ownship so the panned-to area has data (see setMapPanCenter()).
+  const double queryLat = mapPanActive_ ? mapPanLat_ : map_.ownshipLat;
+  const double queryLon = mapPanActive_ ? mapPanLon_ : map_.ownshipLon;
   sinceMapRebuildSeconds_ += dtSeconds;
-  const bool due = map_.features.empty() ||
+  const bool due = map_.features.empty() || mapPanDirty_ ||
                    sinceMapRebuildSeconds_ >= kMapRebuildIntervalSeconds;
   if (due) {
     if (navData_.loaded()) {
-      map_.features = navData_.nearby(map_.ownshipLat, map_.ownshipLon,
-                                      map_.rangeNm, kMaxMapFeatures);
+      map_.features = navData_.nearby(queryLat, queryLon, kMapQueryRangeNm,
+                                      kMaxMapFeatures);
+      map_.navDatabase = navData_.navDatabaseInfo();
+      if (aptData_.loaded()) {
+        for (MapFeature& f : map_.features) {
+          aptData_.enrichAirport(f);
+        }
+      }
     }
     if (airspace_.loaded()) {
-      map_.airspaces = airspace_.nearby(map_.ownshipLat, map_.ownshipLon,
-                                        map_.rangeNm, kMaxMapAirspaces);
+      map_.airspaces = airspace_.nearby(queryLat, queryLon, kMapQueryRangeNm,
+                                        kMaxMapAirspaces);
     }
+    if (airways_.loaded()) {
+      map_.airways =
+          airways_.nearby(queryLat, queryLon, kMapQueryRangeNm, kMaxMapAirways);
+    }
+    if (aptData_.loaded()) {
+      map_.runways = aptData_.nearby(queryLat, queryLon, kRunwayQueryRangeNm,
+                                     kMaxMapRunways);
+      map_.taxiways = aptData_.nearbyTaxiways(
+          queryLat, queryLon, kTaxiwayQueryRangeNm, kMaxMapTaxiways);
+      map_.taxiwayLabels = aptData_.nearbyTaxiwayLabels(
+          queryLat, queryLon, kTaxiwayLabelQueryRangeNm, kMaxMapTaxiwayLabels);
+    }
+    if (landData_.loaded()) {
+      map_.landLines = landData_.nearbyLines(queryLat, queryLon,
+                                             kLandQueryRangeNm, kMaxMapLandLines);
+      map_.cities = landData_.nearbyCities(queryLat, queryLon, kLandQueryRangeNm,
+                                           kMaxMapCities);
+    }
+    if (obstacles_ != nullptr && obstacles_->loaded()) {
+      map_.obstacles = obstacles_->nearby(queryLat, queryLon,
+                                           kObstacleQueryRangeNm, kMaxMapObstacles);
+    }
+    mapPanDirty_ = false;
     sinceMapRebuildSeconds_ = 0.0;
+  }
+
+  // Traffic: decoded every frame (only a handful of slots) so targets track
+  // the 20 Hz RREF stream instead of the 1 Hz database rebuild.
+  map_.traffic.clear();
+  const double cosLat = std::cos(map_.ownshipLat * kDegToRad);
+  for (int t = 0; t < kTrafficSlotCount; ++t) {
+    const float lat = trafficRaw_[t][0];
+    const float lon = trafficRaw_[t][1];
+    if (lat == 0.0f && lon == 0.0f) continue;  // unused TCAS slot
+    const double dLatNm = (lat - map_.ownshipLat) * kNmPerDegLat;
+    const double dLonNm = (lon - map_.ownshipLon) * kNmPerDegLat * cosLat;
+    const double distNm = std::sqrt(dLatNm * dLatNm + dLonNm * dLonNm);
+    if (distNm > kTrafficMaxRangeNm) continue;
+
+    MapTraffic tgt;
+    tgt.lat = lat;
+    tgt.lon = lon;
+    tgt.relAltFt = trafficRaw_[t][2] * kMetersToFeet - data_.altitudeFt;
+    tgt.verticalSpeedFpm = trafficRaw_[t][3];
+    tgt.trafficAdvisory = distNm <= kTrafficTaRangeNm &&
+                          std::fabs(tgt.relAltFt) <= kTrafficTaAltFt;
+    map_.traffic.push_back(tgt);
   }
 }
 
@@ -820,12 +1055,142 @@ void XPlaneConnection::updateFmaModes() {
       (mode(kApGlideslope) == kApModeArmed) ? "GS" : std::string();
 }
 
+void XPlaneConnection::updateNavInstrumentation() {
+  if (navInstr_[kInnerMarker] > 0.5f) {
+    data_.markerBeacon = MarkerBeacon::Inner;
+  } else if (navInstr_[kMiddleMarker] > 0.5f) {
+    data_.markerBeacon = MarkerBeacon::Middle;
+  } else if (navInstr_[kOuterMarker] > 0.5f) {
+    data_.markerBeacon = MarkerBeacon::Outer;
+  } else {
+    data_.markerBeacon = MarkerBeacon::None;
+  }
+
+  if (data_.cdiSource == CdiSource::Nav1 || data_.cdiSource == CdiSource::Nav2) {
+    const bool nav1 = data_.cdiSource == CdiSource::Nav1;
+    data_.vdiKind = VerticalDeviationKind::Glideslope;
+    data_.vdiValid = navInstr_[nav1 ? kNav1GsFlag : kNav2GsFlag] < 0.5f;
+    data_.vdiDeviationDots = navInstr_[nav1 ? kNav1Vdef : kNav2Vdef];
+    const float dme = navInstr_[nav1 ? kNav1Dme : kNav2Dme];
+    data_.dmeValid = dme > 0.05f;
+    data_.dmeDistanceNm = dme;
+    data_.dmeMode = nav1 ? "NAV1" : "NAV2";
+    data_.dmeFreqMhz = nav1 ? data_.nav1ActiveMhz : data_.nav2ActiveMhz;
+  } else {
+    const float gpsDme = data_.fmaLegDistanceNm;
+    data_.vdiKind = VerticalDeviationKind::None;
+    data_.vdiValid = false;
+    data_.vdiDeviationDots = 0.0f;
+    data_.dmeValid = gpsDme > 0.05f;
+    data_.dmeDistanceNm = gpsDme;
+    data_.dmeMode = "GPS";
+    data_.dmeFreqMhz = 0.0f;
+  }
+}
+
 ConnectionState XPlaneConnection::connectionState() const {
   if (!everConnected_) return ConnectionState::Connecting;
   if (elapsedSeconds_ - lastPacketSeconds_ > kStaleTimeoutSeconds) {
     return ConnectionState::Disconnected;
   }
   return ConnectionState::Connected;
+}
+
+namespace {
+
+struct RadioPaths {
+  const char* active;
+  const char* standby;
+  float FlightData::* activeMember;
+  float FlightData::* standbyMember;
+};
+
+RadioPaths radioPaths(RadioUnit unit) {
+  switch (unit) {
+    case RadioUnit::Nav1:
+      return {datarefs::kNav1FrequencyHz, datarefs::kNav1StandbyFrequencyHz,
+              &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz};
+    case RadioUnit::Nav2:
+      return {datarefs::kNav2FrequencyHz, datarefs::kNav2StandbyFrequencyHz,
+              &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz};
+    case RadioUnit::Com1:
+      return {datarefs::kCom1FrequencyHz, datarefs::kCom1StandbyFrequencyHz,
+              &FlightData::com1ActiveMhz, &FlightData::com1StandbyMhz};
+    case RadioUnit::Com2:
+      return {datarefs::kCom2FrequencyHz, datarefs::kCom2StandbyFrequencyHz,
+              &FlightData::com2ActiveMhz, &FlightData::com2StandbyMhz};
+  }
+  return {datarefs::kNav1FrequencyHz, datarefs::kNav1StandbyFrequencyHz,
+          &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz};
+}
+
+constexpr float kMhzToRadioHz = 100.0f;
+
+}  // namespace
+
+void XPlaneConnection::sendDataref(const char* path, float value) {
+  if (socketHandle_ == -1) return;
+  SocketHandle sock = static_cast<SocketHandle>(socketHandle_);
+
+  sockaddr_in dest{};
+  dest.sin_family = AF_INET;
+  dest.sin_port = htons(port_);
+#ifdef _WIN32
+  inet_pton(AF_INET, host_.c_str(), &dest.sin_addr);
+#else
+  dest.sin_addr.s_addr = inet_addr(host_.c_str());
+#endif
+
+  unsigned char msg[5 + 4 + kDatarefNameSize] = {0};
+  std::memcpy(msg, "DREF", 4);
+  std::int32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  writeLe32(msg + 5, bits);
+  std::strncpy(reinterpret_cast<char*>(msg + 9), path, kDatarefNameSize - 1);
+  ::sendto(sock, reinterpret_cast<const char*>(msg),
+           static_cast<int>(sizeof(msg)), 0,
+           reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+}
+
+void XPlaneConnection::setMapPanCenter(bool active, double lat, double lon) {
+  if (active != mapPanActive_ ||
+      (active && (lat != mapPanLat_ || lon != mapPanLon_))) {
+    mapPanDirty_ = true;  // pointer toggled/moved: re-scan around the new center
+  }
+  mapPanActive_ = active;
+  mapPanLat_ = lat;
+  mapPanLon_ = lon;
+}
+
+void XPlaneConnection::tuneRadioStandby(RadioUnit unit, float standbyMhz) {
+  const RadioPaths paths = radioPaths(unit);
+  sendDataref(paths.standby, standbyMhz * kMhzToRadioHz);
+  target_.*(paths.standbyMember) = standbyMhz;
+  data_.*(paths.standbyMember) = standbyMhz;
+}
+
+void XPlaneConnection::transferRadio(RadioUnit unit) {
+  const RadioPaths paths = radioPaths(unit);
+  const float active = target_.*(paths.activeMember);
+  const float standby = target_.*(paths.standbyMember);
+  sendDataref(paths.active, standby * kMhzToRadioHz);
+  sendDataref(paths.standby, active * kMhzToRadioHz);
+  target_.*(paths.activeMember) = standby;
+  target_.*(paths.standbyMember) = active;
+  data_.*(paths.activeMember) = standby;
+  data_.*(paths.standbyMember) = active;
+}
+
+void XPlaneConnection::setTransponderCode(int code) {
+  sendDataref(datarefs::kTransponderCode, static_cast<float>(code));
+  target_.transponderCode = code;
+  data_.transponderCode = code;
+}
+
+void XPlaneConnection::setTransponderMode(int mode) {
+  sendDataref(datarefs::kTransponderMode, static_cast<float>(mode));
+  applyDiscrete(target_, kDiscTransponderMode, static_cast<float>(mode));
+  applyDiscrete(data_, kDiscTransponderMode, static_cast<float>(mode));
 }
 
 }  // namespace avionics

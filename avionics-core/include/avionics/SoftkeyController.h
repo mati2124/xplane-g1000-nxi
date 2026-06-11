@@ -7,9 +7,14 @@
 #include "avionics/FlightData.h"
 #include "avionics/MapData.h"
 #include "avionics/MapRange.h"
+#include "avionics/Radio.h"
 #include "avionics/render/BezelKeys.h"
+#include "avionics/render/MapView.h"
 
 namespace avionics {
+
+// Persisted-preferences view of this controller (avionics/PersistentState.h).
+struct PfdPersistentState;
 
 // The PFD softkey bar has 12 cells (the bottom-of-screen menu row).
 inline constexpr int kSoftkeyCount = 12;
@@ -68,6 +73,16 @@ inline constexpr int kPfdWindowCount = 4;  // including None
 enum class VspeedRef { Glide, Vr, Vx, Vy, Count };
 inline constexpr int kVspeedRefCount = static_cast<int>(VspeedRef::Count);
 
+// Default V-speed reference values (kt) for the delivered airframe (Cessna
+// 172S), indexed by VspeedRef. Single source of truth shared by the controller
+// (editable working values) and the airspeed-tape default table.
+inline constexpr float kDefaultVspeedKt[kVspeedRefCount] = {65.0f, 55.0f, 62.0f,
+                                                            74.0f};
+// Editable range and small-knob step for the V-speed reference values.
+inline constexpr float kVspeedMinKt = 20.0f;
+inline constexpr float kVspeedMaxKt = 400.0f;
+inline constexpr float kVspeedStepKt = 1.0f;
+
 // Fields the FMS cursor can highlight in the Timer/References window. The FMS
 // rocker stands in for the large FMS knob (moves the cursor); ENT activates
 // the highlighted field. On MinsValue the rocker stands in for the small knob
@@ -78,14 +93,27 @@ enum class RefField {
   Vr,
   Vx,
   Vy,
-  MinsMode,   // Off / BARO
-  MinsValue,  // MDA/DH altitude (only reachable when MinsMode is BARO)
+  MinsMode,   // Off / BARO / TEMP
+  MinsValue,  // MDA/DH altitude (reachable when MinsMode is BARO or TEMP)
+  MinsTemp,   // destination temperature (only reachable when MinsMode is TEMP)
   Count,
 };
 
-// Minimums (MDA/DH) source selected in the References window. TEMP COMP is not
-// fitted on this airframe, so the choice is Off or barometric.
-enum class MinimumsMode { Off, Baro };
+// Minimums (MDA/DH) source selected in the References window (Pilot's Guide,
+// Minimums): Off, barometric, or temperature-compensated (TEMP COMP), which
+// raises the displayed minimum for cold destination temperatures.
+enum class MinimumsMode { Off, Baro, Temp };
+
+// TEMP COMP correction reference and rule-of-thumb rate (Pilot's Guide /
+// ICAO cold-temperature correction): ~4 ft of added height per degree C below
+// ISA (15 C) per 1000 ft of minimum height.
+inline constexpr float kTempCompIsaC = 15.0f;
+inline constexpr float kTempCompFtPerCPer1000Ft = 4.0f;
+// Destination-temperature entry range and small-knob step.
+inline constexpr float kMinsTempMinC = -60.0f;
+inline constexpr float kMinsTempMaxC = 50.0f;
+inline constexpr float kMinsTempStepC = 1.0f;
+inline constexpr float kMinsTempDefaultC = 15.0f;
 
 // Selected Altitude alerting phase (Pilot's Guide, Altitude Alerting, Fig.
 // 2-32). Each transition flashes the Selected Altitude box for five seconds:
@@ -193,10 +221,27 @@ class SoftkeyController {
   bool vspeedEnabled(VspeedRef v) const {
     return vspeedOn_[static_cast<int>(v)];
   }
+  // Pilot-editable V-speed reference value (kt). Set in the References window
+  // with the small FMS knob; read by the airspeed tape bugs/list.
+  float vspeedValueKt(VspeedRef v) const {
+    return vspeedKt_[static_cast<int>(v)];
+  }
   // Minimums (MDA/DH): mode and barometric altitude set in the References
-  // window. The altimeter draws the BARO MIN box and bug from these.
+  // window. The altimeter draws the BARO/TEMP MIN box and bug from these.
   MinimumsMode minimumsMode() const { return minsMode_; }
   float minimumsAltitudeFt() const { return minsAltFt_; }
+  // Destination temperature (C) used for the TEMP COMP correction.
+  float minimumsTempC() const { return minsTempC_; }
+  // Effective (displayed) minimum altitude. In TEMP COMP it is the published
+  // minimum raised by the cold-temperature correction; otherwise it is the
+  // published minimum itself.
+  float effectiveMinimumsFt() const {
+    if (minsMode_ != MinimumsMode::Temp) return minsAltFt_;
+    const float belowIsa = kTempCompIsaC - minsTempC_;
+    if (belowIsa <= 0.0f) return minsAltFt_;  // no correction when warmer
+    return minsAltFt_ + (minsAltFt_ / 1000.0f) * belowIsa *
+                            kTempCompFtPerCPer1000Ft;
+  }
 
   // ---- Nearest Airports window state ----
   const std::vector<NearestAirport>& nearestAirports() const {
@@ -234,10 +279,23 @@ class SoftkeyController {
   // Transponder mode selected on the XPDR submenu.
   XpdrMode xpdrMode() const { return xpdrMode_; }
 
+  // CDI navigation source the pilot has cycled with the root CDI softkey
+  // (GPS -> VOR1 -> VOR2). Until the key is pressed the display follows the
+  // source reported by the data feed; once cycled, the chosen source is held.
+  // The engine resolves the effective source the HSI draws with this.
+  CdiSource cdiSourceFor(CdiSource feedSource) const {
+    return cdiOverride_ ? cdiSource_ : feedSource;
+  }
+
   // PFD map layout (Map/HSI > Layout) and the derived inset-map visibility used
   // by the PFD inset map gauge.
   MapLayout mapLayout() const { return mapLayout_; }
   bool insetMapVisible() const { return mapLayout_ == MapLayout::Inset; }
+  // HSI Map layout (Map/HSI > Layout > HSI Map): the moving map is shown
+  // around the HSI compass rose instead of in the lower-left inset.
+  bool hsiMapVisible() const { return mapLayout_ == MapLayout::Hsi; }
+  // Inset-map declutter level (Map/HSI > Detail softkey cycle).
+  MapDetail mapDetail() const { return mapDetail_; }
   // Wind display option (PFD Opt > Wind) honored by the HSI wind box.
   WindOption windOption() const { return windOption_; }
 
@@ -258,10 +316,59 @@ class SoftkeyController {
   void pressBezelKey(BezelKey key);
   // Press-flash levels (0..1) for the bezel keys, indexed by BezelKey.
   const float* bezelPressLevels() const { return bezelPress_.data(); }
-  // Range the bezel rocker drives for the PFD inset map.
+  // Range the bezel rocker drives for the PFD inset map (the selected ladder
+  // step; labels the readout and gates declutter).
   float insetRangeNm() const { return mapRangeNmAt(insetRangeIndex_); }
+  // Animated zoom scale, in NM, easing toward insetRangeNm() each update().
+  // Passed to the map renderer as the on-screen scale so the inset/HSI map
+  // glides between ladder steps (Working Title G1000 NXi smooth zoom).
+  float insetDisplayRangeNm() const { return insetDisplayRangeNm_; }
+
+  // NAV/COM bezel tuning (Pilot's Guide, Audio Panel): FMS push cycles the
+  // selected radio, the small knob steps its standby frequency, and ENT swaps
+  // active and standby (the cyan transfer arrow). Returns true when consumed.
+  bool radioBezelKey(BezelKey key, const FlightData& d);
+  // True when no pop-up window is using the FMS knob on the PFD.
+  bool canUseRadioBezel() const { return window_ == PfdWindow::None; }
+  RadioUnit radioSelected() const { return radioSelected_; }
+
+  // Dedicated NAV/COM tuning knobs (the real GDU has a COM knob and a NAV knob,
+  // each with its own 1/2 toggle, inner/outer tuning rings and flip-flop). The
+  // COM and NAV cursors are independent, so selectCom/selectNav toggle which
+  // unit each side is tuning. tuneCom/tuneNav step the selected standby (coarse
+  // = outer knob = whole MHz; fine = inner knob = one channel). transferCom/
+  // transferNav swap that side's active and standby.
+  void selectCom();
+  void selectNav();
+  void tuneCom(int direction, bool coarse, const FlightData& d);
+  void tuneNav(int direction, bool coarse, const FlightData& d);
+  void transferCom();
+  void transferNav();
+
+  // Currently selected COM and NAV unit (each side's cyan tuning cursor).
+  RadioUnit comSelected() const { return comSelected_; }
+  RadioUnit navSelected() const { return navSelected_; }
+  // The band whose tuning cursor is "armed" (flashes for a few seconds after a
+  // selection/tuning action, like the real unit) and whether it is still
+  // within that flash window. The renderer flashes the selector box while
+  // armed and draws it solid otherwise.
+  RadioBand radioArmedBand() const { return this->radioArmedBand_; }
+  bool radioArmed() const { return radioArmedSeconds_ > 0.0; }
+
+  // Transponder commits for the sim feed. Mode values use the X-Plane
+  // transponder_mode enum (off=0, stdby=1, on=2, alt=3).
+  bool consumeXpdrCodeCommit(int& code);
+  bool consumeXpdrModeCommit(int& mode);
+
+  // NAV/COM commits for the sim feed.
+  bool consumeRadioTune(RadioUnit& unit, float& standbyMhz);
+  bool consumeRadioTransfer(RadioUnit& unit);
 
  private:
+  // The persistence helpers read/write the durable display options directly.
+  friend void capturePfdState(const SoftkeyController&, PfdPersistentState&);
+  friend void applyPfdState(SoftkeyController&, const PfdPersistentState&);
+
   void rebuildAlerts(const FlightData& data);
   // Refresh the visible cell labels from the menu now on top of the stack.
   void rebuildLabels();
@@ -274,12 +381,23 @@ class SoftkeyController {
   // Advance the Selected Altitude alerting state machine (Pilot's Guide,
   // Altitude Alerting).
   void updateAltAlert(double dtSeconds, const FlightData& data);
-  // FMS-cursor movement / ENT activation inside the References window.
+  // FMS-cursor movement / ENT activation inside the References window. The
+  // large knob moves the cursor, the small knob steps the highlighted value.
   void moveReferencesCursor(int step);
+  void adjustReferencesValue(int step);
   void activateReferencesField();
   // Start the 18-second IDNT annunciation; from the XPDR menus this also
   // reverts to the top-level softkeys, like the real unit.
   void startIdent();
+  void queueXpdrModeCommit();
+  static int xpdrModeToSim(XpdrMode mode);
+  float standbyMhzFor(RadioUnit unit, const FlightData& d) const;
+  void setStandbyMhzFor(RadioUnit unit, float mhz);
+  void queueRadioTune(RadioUnit unit, float standbyMhz);
+  void queueRadioTransfer(RadioUnit unit);
+  void cycleRadioSelect();
+  // Flash the given band's tuning cursor for kRadioArmedSeconds.
+  void armRadioBand(RadioBand band);
 
   std::array<std::string, kSoftkeyCount> labels_;
   std::array<float, kSoftkeyCount> press_{};
@@ -289,7 +407,15 @@ class SoftkeyController {
   std::vector<SoftkeyMenu> menuStack_;
   std::array<bool, kDisplayToggleCount> toggles_{};
   XpdrMode xpdrMode_ = XpdrMode::Alt;
+
+  // CDI source the root CDI softkey cycles. cdiOverride_ stays false until the
+  // pilot first presses CDI, so the display tracks the feed by default;
+  // lastCdiFeed_ remembers the feed's source so the first press cycles from it.
+  CdiSource cdiSource_ = CdiSource::Gps;
+  bool cdiOverride_ = false;
+  CdiSource lastCdiFeed_ = CdiSource::Gps;
   MapLayout mapLayout_ = MapLayout::Inset;
+  MapDetail mapDetail_ = MapDetail::All;
   WindOption windOption_ = WindOption::Option2;
 
   // ~1 Hz blink phase for flashing alert annunciations.
@@ -300,6 +426,9 @@ class SoftkeyController {
   // controls (the range rocker steps kMapRangeLadderNm).
   std::array<float, kBezelKeyCount> bezelPress_{};
   int insetRangeIndex_ = kMapRangeDefaultIndex;
+  // Animated scale eased toward mapRangeNmAt(insetRangeIndex_) by update();
+  // seeded to the default so the first frame is already at the right zoom.
+  float insetDisplayRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
 
   // Active PFD pop-up window and the per-window open/close animations (indexed
   // by PfdWindow; the None slot is unused).
@@ -314,18 +443,42 @@ class SoftkeyController {
   bool timerRunning_ = false;
   double timerSeconds_ = 0.0;
   std::array<bool, kVspeedRefCount> vspeedOn_{true, true, true, true};
+  std::array<float, kVspeedRefCount> vspeedKt_{
+      kDefaultVspeedKt[0], kDefaultVspeedKt[1], kDefaultVspeedKt[2],
+      kDefaultVspeedKt[3]};
   MinimumsMode minsMode_ = MinimumsMode::Off;
   float minsAltFt_ = 0.0f;
+  float minsTempC_ = kMinsTempDefaultC;
 
   // Nearest Airports window: distance-sorted list and the FMS cursor index.
   std::vector<NearestAirport> nearest_;
   int nearestCursor_ = 0;
 
   // Transponder: remaining IDNT annunciation time and the in-progress code
-  // entry digits. Committing the completed code to the radio is owned by the
-  // sim feed (no command channel yet), matching the VFR/STD Baro keys.
+  // entry digits.
   double identSecondsLeft_ = 0.0;
   std::string xpdrPending_;
+  bool xpdrCodeCommitPending_ = false;
+  int xpdrCodeCommit_ = 1200;
+  bool xpdrModeCommitPending_ = false;
+  int xpdrModeCommit_ = 3;
+
+  // NAV/COM tuning state. radioSelected_ is the unified focus the FMS knob
+  // cycles (standalone bezel); comSelected_/navSelected_ are the per-side
+  // cursors the dedicated COM/NAV knobs toggle and the bar draws.
+  RadioUnit radioSelected_ = RadioUnit::Nav1;
+  RadioUnit comSelected_ = RadioUnit::Com1;
+  RadioUnit navSelected_ = RadioUnit::Nav1;
+  bool radioTunePending_ = false;
+  RadioUnit radioTuneUnit_ = RadioUnit::Nav1;
+  float radioTuneMhz_ = 0.0f;
+  bool radioTransferPending_ = false;
+  RadioUnit radioTransferUnit_ = RadioUnit::Nav1;
+  // Flashing tuning-cursor ("armed") state: which band is armed and how long
+  // its selector box keeps flashing before settling solid.
+  static constexpr double kRadioArmedSeconds = 5.0;
+  RadioBand radioArmedBand_ = RadioBand::None;
+  double radioArmedSeconds_ = 0.0;
 
   // Selected Altitude alerting state: phase, remaining flash time for the
   // current phase's five-second flash, and the reference the alerter was last

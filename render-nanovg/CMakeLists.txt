@@ -14,10 +14,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nanovg)
 
-# NanoVG core (C, GL-agnostic) + our GL3 backend translation unit.
+# NanoVG core (C, GL-agnostic) + our GL3 and GL2 backend translation units. The
+# standalone shell drives the GL3 backend (its own 3.2 core context); the
+# X-Plane plugin drives the GL2 backend (the sim's OpenGL 2.1 bridge).
 add_library(nanovg STATIC
   ${nanovg_SOURCE_DIR}/src/nanovg.c
   ${CMAKE_CURRENT_SOURCE_DIR}/src/nanovg_gl_impl.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/nanovg_gl2_impl.c
 )
 target_include_directories(nanovg PUBLIC ${nanovg_SOURCE_DIR}/src)
 

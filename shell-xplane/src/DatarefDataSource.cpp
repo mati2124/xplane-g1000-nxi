@@ -1,14 +1,21 @@
 #include "DatarefDataSource.h"
+#include "avionics/EisLegacy.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
+#include <sys/stat.h>
 #include <utility>
 
 #include "XPLMNavigation.h"
+#include "XPLMPlugin.h"
 #include "XPLMUtilities.h"
+#include "avionics/AptDatGeometryCache.h"
+#include "avionics/AptDatParser.h"
 #include "avionics/Datarefs.h"
 #include "avionics/OpenAirParser.h"
 
@@ -17,14 +24,39 @@ namespace {
 
 // Inset-map display range and the cap on features handed to the renderer.
 constexpr float kMapRangeNm = 10.0f;
+// Query radius for the nearby-feature/airspace scans: must cover the longest
+// MFD map range and any Map-Pointer pan, not just the inset default (mirrors
+// the standalone shell's kMapQueryRangeNm). Using the 10 NM display range here
+// left zoomed-out and panned views empty.
+constexpr float kMapQueryRangeNm = 160.0f;
 constexpr std::size_t kMaxMapFeatures = 250;
 constexpr std::size_t kMaxMapAirspaces = 60;
+constexpr float kRunwayQueryRangeNm = 30.0f;
+constexpr std::size_t kMaxMapRunways = 120;
+constexpr float kTaxiwayQueryRangeNm = 30.0f;
+constexpr std::size_t kMaxMapTaxiways = 600;
+constexpr float kTaxiwayLabelQueryRangeNm = 30.0f;
+constexpr std::size_t kMaxMapTaxiwayLabels = 400;
 
 // X-Plane's bundled OpenAir airspace file, relative to the system path
 // (XPLMGetSystemPath). User-updated data under Custom Data wins when present.
 const char* kAirspaceRelPaths[] = {
     "Custom Data/Airspaces/airspace.txt",
     "Resources/default data/airspaces/airspace.txt",
+};
+
+const char* kAptDatRelPaths[] = {
+    "Global Scenery/Global Airports/Earth nav data/apt.dat",
+    "Custom Scenery/Global Airports/Earth nav data/apt.dat",
+};
+
+// Global Scenery "Earth nav data" directory holding the 1°x1° DSF DEM tiles the
+// terrain background samples, relative to the install root (XPLMGetSystemPath).
+// Mirrors the candidates xplane_install::earthNavDataDir() probes.
+const char* kEarthNavDataRelPaths[] = {
+    "Global Scenery/X-Plane 12 Global Scenery/Earth nav data",
+    "Global Scenery/X-Plane 11 Global Scenery/Earth nav data",
+    "Global Scenery/Earth nav data",
 };
 // Nearby-feature list is range-filtered from the cache on this cadence rather
 // than every frame (ownship position itself still updates every frame).
@@ -33,6 +65,54 @@ constexpr double kMapRebuildIntervalSeconds = 1.0;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegToRad = kPi / 180.0;
 constexpr double kNmPerDeg = 60.0;
+
+// X-Plane's NAV/COM frequency datarefs are integers of MHz x 100 (e.g. 11800
+// == 118.00 MHz), so convert in both directions around the FlightData MHz.
+constexpr float kRadioHzToMhz = 0.01f;
+constexpr float kMhzToRadioHz = 100.0f;
+
+// X-Plane 12 transponder_mode enum (off=0, stdby=1, on=2, alt=3, test=4, with
+// 6/7 the TCAS traffic modes). The G1000 annunciates Mode C as ALT, and the
+// traffic modes still squawk altitude, so they map to ALT / TA / TA-RA rather
+// than a bare "ON". Mirrors the standalone shell's decode.
+const char* xpdrModeString(int mode) {
+  switch (mode) {
+    case 0:
+      return "OFF";
+    case 1:
+      return "STBY";
+    case 2:
+      return "ON";
+    case 4:
+      return "TEST";
+    case 6:
+      return "TA";
+    case 7:
+      return "TA/RA";
+    default:
+      return "ALT";
+  }
+}
+
+// Resolve a (possibly array-element) dataref path. The "[index]" suffix is RREF
+// wire syntax that the in-process SDK's XPLMFindDataRef does not accept, so it
+// is stripped here and returned separately; the element is then read with
+// XPLMGetDatavf. A scalar path yields index -1 (read with XPLMGetDataf).
+struct ResolvedDataRef {
+  XPLMDataRef ref;
+  int arrayIndex;
+};
+
+ResolvedDataRef resolveDataRef(const char* path) {
+  std::string p(path);
+  int arrayIndex = -1;
+  const std::size_t open = p.find('[');
+  if (open != std::string::npos && !p.empty() && p.back() == ']') {
+    arrayIndex = std::atoi(p.c_str() + open + 1);
+    p.resize(open);
+  }
+  return {XPLMFindDataRef(p.c_str()), arrayIndex};
+}
 
 // Navaid identifier buffer: the SDK recommends >= 6 chars; 32 is generous.
 constexpr int kNavIdBufferSize = 32;
@@ -94,9 +174,79 @@ FmsEntry fmsEntry(int index) {
 
 std::string fmsEntryId(int index) { return fmsEntry(index).id; }
 
+bool dirExists(const std::string& path) {
+  struct stat st {};
+  return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+bool fileExists(const std::string& path) {
+  struct stat st {};
+  return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+bool installRootLooksValid(const std::string& root) {
+  if (root.empty()) return false;
+  return dirExists(root + "Resources") || dirExists(root + "Global Scenery");
+}
+
+// Derive the install root from this plugin's path, walking up directory
+// components until one looks like an X-Plane root. The plugin lives at
+// .../Resources/plugins/<name>/mac_x64/xplane-avionics.xpl, so the root is a
+// few levels up, but the exact depth (and whether the path is absolute) can
+// vary, so probe each ancestor rather than assume a fixed count.
+std::string installRootFromPluginPath() {
+  char pluginPath[2048] = {};
+  XPLMGetPluginInfo(XPLMGetMyID(), nullptr, pluginPath, nullptr, nullptr);
+  std::string path(pluginPath);
+  for (int i = 0; i < 8 && !path.empty(); ++i) {
+    const std::size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) break;
+    path.resize(slash);
+    const std::string candidate = path + "/";
+    if (installRootLooksValid(candidate)) return candidate;
+  }
+  return {};
+}
+
+std::string resolveInstallRoot() {
+  char systemPath[1024] = {};
+  XPLMGetSystemPath(systemPath);
+  std::string root(systemPath);
+  if (!root.empty() && root.back() != '/' && root.back() != '\\') {
+    root += '/';
+  }
+  {
+    char msg[1200];
+    std::snprintf(msg, sizeof(msg),
+                  "G1000 NXi: XPLMGetSystemPath = '%s'\n", root.c_str());
+    XPLMDebugString(msg);
+  }
+  if (installRootLooksValid(root)) return root;
+
+  const std::string fromPlugin = installRootFromPluginPath();
+  {
+    char msg[1200];
+    std::snprintf(msg, sizeof(msg),
+                  "G1000 NXi: install root from plugin path = '%s'\n",
+                  fromPlugin.c_str());
+    XPLMDebugString(msg);
+  }
+  if (installRootLooksValid(fromPlugin)) return fromPlugin;
+  return {};
+}
+
+const char* firstExistingFile(const std::string& root, const char* const* relPaths,
+                              std::size_t count) {
+  for (std::size_t i = 0; i < count; ++i) {
+    if (fileExists(root + relPaths[i])) return relPaths[i];
+  }
+  return nullptr;
+}
+
 }  // namespace
 
-DatarefDataSource::DatarefDataSource() {
+DatarefDataSource::DatarefDataSource(EisSource* eisSource)
+    : eisSource_(eisSource) {
   airspeed_ = XPLMFindDataRef(datarefs::kAirspeedKts);
   altitude_ = XPLMFindDataRef(datarefs::kAltitudeFt);
   heading_ = XPLMFindDataRef(datarefs::kHeadingDegMag);
@@ -108,34 +258,121 @@ DatarefDataSource::DatarefDataSource() {
   latitude_ = XPLMFindDataRef(datarefs::kLatitudeDeg);
   longitude_ = XPLMFindDataRef(datarefs::kLongitudeDeg);
 
+  zuluTimeSec_ = XPLMFindDataRef(datarefs::kZuluTimeSec);
+  localDateDays_ = XPLMFindDataRef(datarefs::kLocalDateDays);
+
   gpsDistance_ = XPLMFindDataRef(datarefs::kGpsDistanceNm);
   gpsBearing_ = XPLMFindDataRef(datarefs::kGpsBearingDegMag);
   gpsNavId_ = XPLMFindDataRef(datarefs::kGpsNavId);
 
-  // Resolve the airspace file path on the sim thread (XPLMGetSystemPath returns
-  // the install root, native separator, trailing slash), then parse it off the
-  // sim thread since the global file can be large.
-  char systemPath[1024] = {};
-  XPLMGetSystemPath(systemPath);
-  std::string root(systemPath);
-  std::string airspacePath;
-  for (const char* rel : kAirspaceRelPaths) {
-    std::string candidate = root + rel;
-    std::ifstream probe(candidate);
-    if (probe.good()) {
-      airspacePath = std::move(candidate);
+  radios_[static_cast<int>(RadioUnit::Nav1)] = {
+      XPLMFindDataRef(datarefs::kNav1FrequencyHz),
+      XPLMFindDataRef(datarefs::kNav1StandbyFrequencyHz),
+      &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz};
+  radios_[static_cast<int>(RadioUnit::Nav2)] = {
+      XPLMFindDataRef(datarefs::kNav2FrequencyHz),
+      XPLMFindDataRef(datarefs::kNav2StandbyFrequencyHz),
+      &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz};
+  radios_[static_cast<int>(RadioUnit::Com1)] = {
+      XPLMFindDataRef(datarefs::kCom1FrequencyHz),
+      XPLMFindDataRef(datarefs::kCom1StandbyFrequencyHz),
+      &FlightData::com1ActiveMhz, &FlightData::com1StandbyMhz};
+  radios_[static_cast<int>(RadioUnit::Com2)] = {
+      XPLMFindDataRef(datarefs::kCom2FrequencyHz),
+      XPLMFindDataRef(datarefs::kCom2StandbyFrequencyHz),
+      &FlightData::com2ActiveMhz, &FlightData::com2StandbyMhz};
+
+  transponderCode_ = XPLMFindDataRef(datarefs::kTransponderCode);
+  transponderMode_ = XPLMFindDataRef(datarefs::kTransponderMode);
+  acfRelativePath_ = XPLMFindDataRef("sim/aircraft/view/acf_relative_path");
+
+  rebuildEisBindings();
+}
+
+void DatarefDataSource::rebuildEisBindings() {
+  eisBindings_.clear();
+  if (eisSource_ == nullptr || !eisSource_->ready()) return;
+
+  for (const EisDataBinding& spec : eisSource_->layout().bindings) {
+    const ResolvedDataRef resolved = resolveDataRef(spec.datarefPath.c_str());
+    if (resolved.ref) {
+      eisBindings_.push_back({resolved.ref, resolved.arrayIndex, spec.scale,
+                              spec.offset, spec.channel});
+    }
+  }
+}
+
+void DatarefDataSource::updateAircraftEisPath() {
+  if (acfRelativePath_ == nullptr) return;
+
+  char buf[1024] = {};
+  const int n = XPLMGetDatab(acfRelativePath_, buf, 0, static_cast<int>(sizeof(buf)) - 1);
+  if (n <= 0) return;
+  buf[n] = '\0';
+  const std::string acfPath(buf);
+  if (acfPath == lastAircraftAcfPath_) return;
+  lastAircraftAcfPath_ = acfPath;
+
+  if (eisSource_ != nullptr) {
+    eisSource_->setAircraftAcfRelativePath(acfPath);
+  }
+}
+
+void DatarefDataSource::ensureInstallDataLoaded() {
+  if (installDataStarted_) return;
+  installDataStarted_ = true;
+
+  const std::string root = resolveInstallRoot();
+  if (root.empty()) {
+    XPLMDebugString(
+        "G1000 NXi: could not resolve X-Plane install root for map data\n");
+    airspaceLoaded_.store(true, std::memory_order_release);
+    aptDatLoaded_.store(true, std::memory_order_release);
+    terrain_ = std::make_unique<DsfTerrainStore>(std::string{});
+    return;
+  }
+
+  if (const char* airspaceRel = firstExistingFile(
+          root, kAirspaceRelPaths,
+          sizeof(kAirspaceRelPaths) / sizeof(kAirspaceRelPaths[0]))) {
+    char msg[256];
+    std::snprintf(msg, sizeof(msg),
+                  "G1000 NXi: loading airspace (%s)...\n", airspaceRel);
+    XPLMDebugString(msg);
+    loadAirspaceAsync(root + airspaceRel);
+  } else {
+    XPLMDebugString("G1000 NXi: airspace file not found\n");
+    airspaceLoaded_.store(true, std::memory_order_release);
+  }
+
+  if (const char* aptRel = firstExistingFile(
+          root, kAptDatRelPaths,
+          sizeof(kAptDatRelPaths) / sizeof(kAptDatRelPaths[0]))) {
+    aptDatPath_ = root + aptRel;
+    aptGeometryCachePath_ =
+        root + "Resources/plugins/xplane-avionics/apt_geometry.cache";
+    XPLMDebugString(
+        "G1000 NXi: loading airport diagram geometry (apt.dat)...\n");
+    loadAptDatAsync();
+  } else {
+    XPLMDebugString("G1000 NXi: apt.dat not found\n");
+    aptDatLoaded_.store(true, std::memory_order_release);
+  }
+
+  std::string earthNavDir;
+  for (const char* rel : kEarthNavDataRelPaths) {
+    const std::string candidate = root + rel;
+    if (dirExists(candidate)) {
+      earthNavDir = candidate;
       break;
     }
   }
-  if (!airspacePath.empty()) {
-    loadAirspaceAsync(std::move(airspacePath));
-  } else {
-    airspaceLoaded_.store(true, std::memory_order_release);
-  }
+  terrain_ = std::make_unique<DsfTerrainStore>(std::move(earthNavDir));
 }
 
 DatarefDataSource::~DatarefDataSource() {
   if (airspaceThread_.joinable()) airspaceThread_.join();
+  if (aptDatThread_.joinable()) aptDatThread_.join();
 }
 
 void DatarefDataSource::loadAirspaceAsync(std::string airspaceFilePath) {
@@ -146,7 +383,41 @@ void DatarefDataSource::loadAirspaceAsync(std::string airspaceFilePath) {
   });
 }
 
+void DatarefDataSource::loadAptDatAsync() {
+  aptDatThread_ = std::thread([this] {
+    AptDatParseResult parsed;
+    bool loaded = !aptGeometryCachePath_.empty() &&
+                  loadAptDatGeometryCache(aptGeometryCachePath_, aptDatPath_,
+                                          parsed);
+    if (!loaded) {
+      std::ifstream in(aptDatPath_);
+      if (in.good()) {
+        parsed = parseAptDat(in);
+        if (!aptGeometryCachePath_.empty()) {
+          saveAptDatGeometryCache(aptGeometryCachePath_, aptDatPath_, parsed);
+        }
+      }
+    }
+    aptMetaByIcao_ = std::move(parsed.metaByIcao);
+    runwayCells_ = std::move(parsed.runwayCells);
+    pavementCells_ = std::move(parsed.pavementCells);
+    taxiwayLabelCells_ = std::move(parsed.taxiwayLabelCells);
+    aptMapDirty_.store(true, std::memory_order_release);
+    aptDatLoaded_.store(true, std::memory_order_release);
+  });
+}
+
 void DatarefDataSource::update(double dtSeconds) {
+  ensureInstallDataLoaded();
+  updateAircraftEisPath();
+  if (eisSource_ != nullptr) {
+    eisSource_->refreshIfChanged();
+    if (eisSource_->ready() &&
+        eisBindings_.size() != eisSource_->layout().bindings.size()) {
+      rebuildEisBindings();
+    }
+  }
+
   if (airspeed_) data_.airspeedKts = XPLMGetDataf(airspeed_);
   if (altitude_) data_.altitudeFt = XPLMGetDataf(altitude_);
   if (heading_) data_.headingDeg = XPLMGetDataf(heading_);
@@ -158,6 +429,43 @@ void DatarefDataSource::update(double dtSeconds) {
   // Nav status box: distance + magnetic bearing to the active GPS destination.
   if (gpsDistance_) data_.fmaLegDistanceNm = XPLMGetDataf(gpsDistance_);
   if (gpsBearing_) data_.fmaLegBearingDeg = XPLMGetDataf(gpsBearing_);
+
+  // Sim UTC clock (chrome clock readout) and date (Trip Planning
+  // sunrise/sunset).
+  if (zuluTimeSec_) {
+    const int total = static_cast<int>(XPLMGetDataf(zuluTimeSec_));
+    data_.utcHour = (total / 3600) % 24;
+    data_.utcMinute = (total / 60) % 60;
+    data_.utcSecond = total % 60;
+  }
+  if (localDateDays_) {
+    // X-Plane reports 0-based day-of-year; FlightData carries 1-based.
+    data_.utcDayOfYear = XPLMGetDatai(localDateDays_) + 1;
+  }
+
+  // NAV/COM active + standby frequencies and the transponder, so the glass
+  // tracks the live radios (and reflects bezel tuning we wrote back). These are
+  // integer datarefs, so read with XPLMGetDatai.
+  for (const RadioRef& r : radios_) {
+    if (r.active) data_.*(r.activeMember) = XPLMGetDatai(r.active) * kRadioHzToMhz;
+    if (r.standby)
+      data_.*(r.standbyMember) = XPLMGetDatai(r.standby) * kRadioHzToMhz;
+  }
+  if (transponderCode_) data_.transponderCode = XPLMGetDatai(transponderCode_);
+  if (transponderMode_)
+    data_.transponderMode = xpdrModeString(XPLMGetDatai(transponderMode_));
+
+  // EIS engine/fuel/electrical indicators for the MFD engine strip.
+  for (const EisBinding& b : eisBindings_) {
+    float raw = 0.0f;
+    if (b.arrayIndex < 0) {
+      raw = XPLMGetDataf(b.ref);
+    } else {
+      XPLMGetDatavf(b.ref, &raw, b.arrayIndex, 1);
+    }
+    data_.eisChannels[b.channel] = raw * b.scale + b.offset;
+  }
+  syncEisLegacyFields(data_);
 
   // Active flight-plan leg (FROM -> TO). The entry the FMS is flying toward is
   // the TO waypoint; the one before it is FROM (e.g. KFMY -> KLAL).
@@ -180,6 +488,46 @@ void DatarefDataSource::update(double dtSeconds) {
   }
 
   updateMap(dtSeconds);
+  weather_.update(dtSeconds);
+}
+
+void DatarefDataSource::syncWeatherRadar(const MfdController& ui) {
+  weather_.syncFromController(ui);
+}
+
+void DatarefDataSource::tuneRadioStandby(RadioUnit unit, float standbyMhz) {
+  const RadioRef& r = radios_[static_cast<int>(unit)];
+  if (r.standby) {
+    XPLMSetDatai(r.standby,
+                 static_cast<int>(std::lround(standbyMhz * kMhzToRadioHz)));
+  }
+  data_.*(r.standbyMember) = standbyMhz;
+}
+
+void DatarefDataSource::transferRadio(RadioUnit unit) {
+  const RadioRef& r = radios_[static_cast<int>(unit)];
+  const float active = data_.*(r.activeMember);
+  const float standby = data_.*(r.standbyMember);
+  if (r.active) {
+    XPLMSetDatai(r.active,
+                 static_cast<int>(std::lround(standby * kMhzToRadioHz)));
+  }
+  if (r.standby) {
+    XPLMSetDatai(r.standby,
+                 static_cast<int>(std::lround(active * kMhzToRadioHz)));
+  }
+  data_.*(r.activeMember) = standby;
+  data_.*(r.standbyMember) = active;
+}
+
+void DatarefDataSource::setTransponderCode(int code) {
+  if (transponderCode_) XPLMSetDatai(transponderCode_, code);
+  data_.transponderCode = code;
+}
+
+void DatarefDataSource::setTransponderMode(int mode) {
+  if (transponderMode_) XPLMSetDatai(transponderMode_, mode);
+  data_.transponderMode = xpdrModeString(mode);
 }
 
 void DatarefDataSource::buildNavCache() {
@@ -207,13 +555,33 @@ void DatarefDataSource::buildNavCache() {
       XPLMNavType type = xplm_Nav_Unknown;
       float lat = 0.0f;
       float lon = 0.0f;
+      int freq = 0;
       char id[kNavIdBufferSize] = {};
-      XPLMGetNavAidInfo(ref, &type, &lat, &lon, nullptr, nullptr, nullptr, id,
-                        nullptr, nullptr);
+      char name[256] = {};
+      XPLMGetNavAidInfo(ref, &type, &lat, &lon, nullptr, &freq, nullptr, id,
+                        name, nullptr);
       id[sizeof(id) - 1] = '\0';
+      name[sizeof(name) - 1] = '\0';
       if (type == kind.xpType) {
-        navCache_.push_back({kind.mapType, static_cast<double>(lat),
-                             static_cast<double>(lon), std::string(id)});
+        MapFeature f;
+        f.type = kind.mapType;
+        f.lat = static_cast<double>(lat);
+        f.lon = static_cast<double>(lon);
+        f.id = id;
+        f.name = name;
+        if (kind.mapType == MapFeatureType::Vor ||
+            kind.mapType == MapFeatureType::Ndb) {
+          f.navaidType = splitNavaidTypeSuffix(f.name);
+          if (f.navaidType.empty()) {
+            f.navaidType = kind.mapType == MapFeatureType::Vor ? "VOR" : "NDB";
+          }
+          // XPLM frequencies: VORs in 10 kHz units (11390 == 113.90 MHz),
+          // NDBs directly in kHz.
+          f.frequency = kind.mapType == MapFeatureType::Vor
+                            ? static_cast<float>(freq) / 100.0f
+                            : static_cast<float>(freq);
+        }
+        navCache_.push_back(std::move(f));
       }
       if (ref == last) break;
       ref = XPLMGetNextNavAid(ref);
@@ -223,6 +591,8 @@ void DatarefDataSource::buildNavCache() {
 
 void DatarefDataSource::updateMap(double dtSeconds) {
   map_.rangeNm = kMapRangeNm;
+  map_.terrain = terrain_.get();
+  map_.weather = &weather_;
 
   // Ownship position at full double precision (in-process, no RREF truncation).
   if (latitude_ && longitude_) {
@@ -251,20 +621,70 @@ void DatarefDataSource::updateMap(double dtSeconds) {
   // filtering follows the aircraft).
   if (!navCacheBuilt_) buildNavCache();
   sinceMapRebuildSeconds_ += dtSeconds;
+  if (aptMapDirty_.load(std::memory_order_acquire)) {
+    sinceMapRebuildSeconds_ = kMapRebuildIntervalSeconds;
+  }
+  // When the MFD Map Pointer is active the queries follow the pointer instead
+  // of ownship so the panned-to area has data (see setMapPanCenter()).
+  const double queryLat = mapPanActive_ ? mapPanLat_ : map_.ownshipLat;
+  const double queryLon = mapPanActive_ ? mapPanLon_ : map_.ownshipLon;
   if (map_.positionValid &&
-      (map_.features.empty() ||
+      (map_.features.empty() || mapPanDirty_ ||
        sinceMapRebuildSeconds_ >= kMapRebuildIntervalSeconds)) {
-    map_.features = filterNearby(navCache_, map_.ownshipLat, map_.ownshipLon,
-                                 map_.rangeNm, kMaxMapFeatures);
+    map_.features = filterNearby(navCache_, queryLat, queryLon,
+                                 kMapQueryRangeNm, kMaxMapFeatures);
+    if (aptDatLoaded_.load(std::memory_order_acquire)) {
+      for (MapFeature& f : map_.features) {
+        enrichAirportFromMeta(f, aptMetaByIcao_);
+      }
+      const std::size_t prevRunways = map_.runways.size();
+      const std::size_t prevTaxiways = map_.taxiways.size();
+      const std::size_t prevTaxiwayLabels = map_.taxiwayLabels.size();
+      map_.runways = nearbyRunwaysFromCells(runwayCells_, queryLat, queryLon,
+                                            kRunwayQueryRangeNm, kMaxMapRunways);
+      map_.taxiways = nearbyPavementFromCells(
+          pavementCells_, queryLat, queryLon, kTaxiwayQueryRangeNm,
+          kMaxMapTaxiways);
+      map_.taxiwayLabels = nearbyTaxiwayLabelsFromCells(
+          taxiwayLabelCells_, queryLat, queryLon, kTaxiwayLabelQueryRangeNm,
+          kMaxMapTaxiwayLabels);
+      if (aptMapDirty_.exchange(false, std::memory_order_acq_rel) ||
+          map_.runways.size() != prevRunways ||
+          map_.taxiways.size() != prevTaxiways ||
+          map_.taxiwayLabels.size() != prevTaxiwayLabels) {
+        ++map_.geometryEpoch;
+        char msg[160];
+        std::snprintf(
+            msg, sizeof(msg),
+            "G1000 NXi: airport diagram ready (%zu runways, %zu taxiway polys "
+            "near aircraft)\n",
+            map_.runways.size(), map_.taxiways.size());
+        XPLMDebugString(msg);
+      }
+    }
     // Airspace boundaries from the (background-parsed) OpenAir file, filtered to
     // the same neighborhood as the features.
     if (airspaceLoaded_.load(std::memory_order_acquire)) {
-      map_.airspaces = airspacesNear(airspaceCache_, map_.ownshipLat,
-                                     map_.ownshipLon, map_.rangeNm,
-                                     kMaxMapAirspaces);
+      const std::size_t prevAirspaces = map_.airspaces.size();
+      map_.airspaces = airspacesNear(airspaceCache_, queryLat, queryLon,
+                                     kMapQueryRangeNm, kMaxMapAirspaces);
+      if (map_.airspaces.size() != prevAirspaces) {
+        ++map_.geometryEpoch;
+      }
     }
+    mapPanDirty_ = false;
     sinceMapRebuildSeconds_ = 0.0;
   }
+}
+
+void DatarefDataSource::setMapPanCenter(bool active, double lat, double lon) {
+  if (active != mapPanActive_ ||
+      (active && (lat != mapPanLat_ || lon != mapPanLon_))) {
+    mapPanDirty_ = true;  // pointer toggled/moved: re-scan around the new center
+  }
+  mapPanActive_ = active;
+  mapPanLat_ = lat;
+  mapPanLon_ = lon;
 }
 
 }  // namespace avionics

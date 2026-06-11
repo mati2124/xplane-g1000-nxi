@@ -4,7 +4,13 @@
 add_library(avionics-core STATIC
   src/AvionicsEngine.cpp
   src/ChecklistParser.cpp
+  src/EisParser.cpp
+  src/EisLegacy.cpp
+  src/EisStore.cpp
   src/MockDataSource.cpp
+  src/PersistentState.cpp
+  src/Radio.cpp
+  src/NavDatabase.cpp
   src/SoftkeyController.cpp
   src/render/BezelKeys.cpp
   src/render/BezelStyle.cpp
@@ -13,12 +19,26 @@ add_library(avionics-core STATIC
   src/render/PrimaryFlightDisplay.cpp
   src/render/mfd/EisStrip.cpp
   src/render/mfd/MfdController.cpp
-  src/render/mfd/MfdPages.cpp
+  src/render/mfd/MfdPageSupport.cpp
+  src/render/mfd/MfdMapPage.cpp
+  src/render/mfd/MfdWeatherRadarPage.cpp
+  src/render/mfd/MfdWaypointPages.cpp
+  src/render/mfd/MfdAuxPages.cpp
+  src/render/mfd/MfdNearestPages.cpp
+  src/render/mfd/MfdFlightPlanPage.cpp
+  src/render/mfd/MfdChecklistPage.cpp
   src/render/mfd/MultiFunctionDisplay.cpp
+  src/nav/AptDatParser.cpp
+  src/nav/AptDatGeometryCache.cpp
+  src/nav/CifpParser.cpp
   src/nav/OpenAirParser.cpp
   src/nav/Terrain.cpp
+  src/nav/WeatherRadar.cpp
   src/render/map/MapProjection.cpp
+  src/render/map/MapSymbols.cpp
   src/render/map/MapView.cpp
+  src/render/map/TerrainRaster.cpp
+  src/render/map/WeatherRaster.cpp
   src/render/pfd/InsetMap.cpp
   src/render/pfd/PfdShared.cpp
   src/render/pfd/AttitudeIndicator.cpp
@@ -33,3 +53,5 @@ add_library(avionics-core STATIC
 target_include_directories(avionics-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(avionics-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(avionics-core PUBLIC cxx_std_17)
+target_compile_definitions(avionics-core PRIVATE
+  AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/assets/eis/c172s.eis")

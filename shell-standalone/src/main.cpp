@@ -16,11 +16,27 @@
 //   --no-mfd                  open only the PFD window (no MFD)
 //   --xplane-host HOST        X-Plane host (default: 127.0.0.1)
 //   --xplane-port PORT        X-Plane UDP port (default: 49000)
-//   --fms-plan NAME           .fms flight plan for the inset map route
+//   --fms-bridge-port PORT    UDP port of the in-sim flight-plan bridge
+//                             (shell-xplane plugin) that serves the live FMS
+//                             route over the network (default: 49100)
+//   --no-fms-write            don't program FPL/SimBrief/Direct-To edits back
+//                             into X-Plane's FMS (display-only; the live route
+//                             is still read from the bridge)
+//   --fms-plan NAME           .fms flight plan for the inset map route, used
+//                             when the live FMS bridge is unavailable
 //                             (name under Output/FMS plans/, or a full path;
 //                             default: most recently modified .fms in that dir)
 //   --checklist PATH          checklist file for the MFD Checklist page group
 //                             (default: the bundled sample)
+//   --eis PATH                engine display layout file for the MFD EIS strip
+//                             (default: bundled C172S sample, or g1000_eis.txt
+//                             beside the loaded aircraft in the plugin)
+//   --simbrief-id ID          SimBrief Pilot ID for the AUX - SIMBRIEF page's
+//                             OFP fetch (default: the persisted setting,
+//                             entered on the page itself)
+//   --obstacles PATH          FAA Digital Obstacle File in CSV format
+//                             (the "DDOF CSV" download) for the map's
+//                             obstacle overlay; US-only, off when omitted
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>  // GL_SILENCE_DEPRECATION is set by the build.
@@ -41,13 +57,19 @@
 
 #include "AppSettings.h"
 #include "ChecklistStore.h"
+#include "avionics/EisStore.h"
 #include "DsfTerrainStore.h"
 #include "FmsPlanStore.h"
 #include "NavData.h"
+#include "ObstacleStore.h"
+#include "ProcedureStore.h"
+#include "ShellNavMapData.h"
+#include "SimBriefStore.h"
 #include "XPlaneConnection.h"
 #include "avionics/AvionicsEngine.h"
 #include "avionics/ConnectionState.h"
 #include "avionics/MockDataSource.h"
+#include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/BootScreen.h"
 #include "avionics/render/NanoVgRenderer.h"
@@ -130,6 +152,13 @@ constexpr const char* kLabelMock = "MOCK DATA";
 constexpr const char* kDefaultXPlaneHost = "127.0.0.1";
 constexpr std::uint16_t kDefaultXPlanePort = 49000;
 
+// Bundled Natural Earth land-data asset path, baked in by the build (empty when
+// the build provides none; LandDataStore then loads nothing).
+#ifndef AVIONICS_LAND_DATA
+#define AVIONICS_LAND_DATA ""
+#endif
+constexpr const char* kLandDataAssetPath = AVIONICS_LAND_DATA;
+
 const char* FlagValue(int argc, char** argv, const char* flag) {
   for (int i = 1; i < argc - 1; ++i) {
     if (std::strcmp(argv[i], flag) == 0) return argv[i + 1];
@@ -172,9 +201,19 @@ struct AppState {
   // Whether the hardware bezel strips are drawn (and the windows sized to
   // include them). Mirrors settings.showBezel; toggled from the View menu.
   bool showBezel = true;
-  // Persisted user preferences, written back when the user changes the feed or
-  // toggles the bezel.
+  // Persisted user preferences, written back whenever the user changes the
+  // feed or flips one of the View menu toggles.
   avionics::AppSettings settings;
+  // In-progress CLR press-and-hold (CLR DFLT MAP): the engine whose CLR bezel
+  // key the mouse went down on, and when. Cleared on release or once the hold
+  // function fires.
+  avionics::AvionicsEngine* clrHoldEngine = nullptr;
+  double clrHoldStart = 0.0;
+  // Hover cursors for the on-screen bezel: a left-right cursor over the
+  // rotatable rings (FMS knob / RANGE joystick zoom), a hand over the other
+  // clickable controls. Created at startup, freed at shutdown.
+  GLFWcursor* rotateCursor = nullptr;
+  GLFWcursor* handCursor = nullptr;
 };
 
 // Window dimensions for the two bezel states: the full suite (screen + strips)
@@ -184,6 +223,26 @@ inline int SuiteWindowWidth(bool showBezel) {
 }
 inline int SuiteWindowHeight(bool showBezel) {
   return showBezel ? kSuiteHeight : kWindowHeight;
+}
+
+// Records the current window placement into the settings, for the "Remember
+// Window Position" option. Positions are screen coordinates of the content
+// area's top-left corner, as reported by GLFW.
+void CaptureWindowPositions(AppState& app) {
+  if (app.pfdWindow == nullptr) return;
+  glfwGetWindowPos(app.pfdWindow, &app.settings.pfdWindowX,
+                   &app.settings.pfdWindowY);
+  if (app.mfdWindow != nullptr) {
+    glfwGetWindowPos(app.mfdWindow, &app.settings.mfdWindowX,
+                     &app.settings.mfdWindowY);
+  } else {
+    // PFD-only run: save the docked position so a later dual-window launch
+    // still puts the MFD beside the PFD.
+    app.settings.mfdWindowX = app.settings.pfdWindowX +
+                              SuiteWindowWidth(app.showBezel) + kWindowGap;
+    app.settings.mfdWindowY = app.settings.pfdWindowY;
+  }
+  app.settings.hasWindowPos = true;
 }
 
 // Resizes both windows to match the current bezel state and keeps the MFD
@@ -217,6 +276,20 @@ void SwitchSource(AppState& app, bool useXPlane) {
 #endif
 }
 
+// ENT during power-up acknowledges the database information and brings up the
+// live pages on both displays at once. A real unit acknowledges per display,
+// but the standalone PFD and MFD windows boot as one suite, so a single ENT
+// dismisses both. No-op once the pages are live (mock advances on its own).
+void AcknowledgeBoot(AppState& app) {
+  if (app.pfdEngine != nullptr) app.pfdEngine->acknowledgePowerUp();
+  if (app.mfdEngine != nullptr) app.mfdEngine->acknowledgePowerUp();
+}
+
+bool AwaitingBootAck(const AppState& app) {
+  return (app.pfdEngine != nullptr && app.pfdEngine->awaitingPowerUpAck()) ||
+         (app.mfdEngine != nullptr && app.mfdEngine->awaitingPowerUpAck());
+}
+
 // Persists the current data-source choice so the next launch starts on it.
 void PersistDataSource(AppState& app) {
   app.settings.useXPlane = app.usingXPlane;
@@ -231,6 +304,15 @@ void OnMenuSelectSource(void* context, bool useXPlane) {
   PersistDataSource(*app);
 }
 
+// Menu-bar action target: turns simulated turbulence on the mock feed on/off
+// and remembers the choice across runs (no effect on the live X-Plane feed).
+void OnMenuToggleTurbulence(void* context, bool enabled) {
+  auto* app = static_cast<AppState*>(context);
+  if (app->mock != nullptr) app->mock->setTurbulenceEnabled(enabled);
+  app->settings.simulateTurbulence = enabled;
+  avionics::SaveAppSettings(app->settings);
+}
+
 // Menu-bar action target: shows/hides the hardware bezel strips and remembers
 // the choice across runs.
 void OnMenuToggleBezel(void* context, bool showBezel) {
@@ -241,7 +323,63 @@ void OnMenuToggleBezel(void* context, bool showBezel) {
   ApplyBezelWindowSize(*app);
 }
 
-// Renders a single deterministic frame offscreen and writes it to a binary PPM
+// Menu-bar action target: shows/hides the OS window chrome (the title bar with
+// its close / minimize / maximize controls) on both windows.
+void OnMenuToggleWindowChrome(void* context, bool showChrome) {
+  auto* app = static_cast<AppState*>(context);
+  const int decorated = showChrome ? GLFW_TRUE : GLFW_FALSE;
+  if (app->pfdWindow != nullptr) {
+    glfwSetWindowAttrib(app->pfdWindow, GLFW_DECORATED, decorated);
+  }
+  if (app->mfdWindow != nullptr) {
+    glfwSetWindowAttrib(app->mfdWindow, GLFW_DECORATED, decorated);
+  }
+  app->settings.showWindowChrome = showChrome;
+  avionics::SaveAppSettings(app->settings);
+}
+
+// Menu-bar action target: floats/unfloats both windows above other windows and
+// remembers the choice across runs.
+void OnMenuToggleAlwaysOnTop(void* context, bool alwaysOnTop) {
+  auto* app = static_cast<AppState*>(context);
+  const int floating = alwaysOnTop ? GLFW_TRUE : GLFW_FALSE;
+  if (app->pfdWindow != nullptr) {
+    glfwSetWindowAttrib(app->pfdWindow, GLFW_FLOATING, floating);
+  }
+  if (app->mfdWindow != nullptr) {
+    glfwSetWindowAttrib(app->mfdWindow, GLFW_FLOATING, floating);
+  }
+  app->settings.alwaysOnTop = alwaysOnTop;
+  avionics::SaveAppSettings(app->settings);
+}
+
+// Menu-bar action target: enables/disables restoring the window positions on
+// the next launch. Enabling captures the current placement immediately so the
+// preference takes effect even if the app later exits abnormally.
+void OnMenuToggleRememberWindowPos(void* context, bool remember) {
+  auto* app = static_cast<AppState*>(context);
+  app->settings.rememberWindowPos = remember;
+  if (remember) CaptureWindowPositions(*app);
+  avionics::SaveAppSettings(app->settings);
+}
+
+// Screenshot-mode render: repeats the suite render for a short settle period
+// so progressively-built content converges before capture -- the DSF terrain
+// tiles load on a worker thread and the terrain raster rebuilds across frames,
+// so the first frame would otherwise show the procedural fallback. The engine
+// is NOT updated between repeats, keeping the captured values deterministic.
+inline void RenderSuiteSettled(avionics::NanoVgRenderer& renderer,
+                               avionics::AvionicsEngine& eng, int fbWidth,
+                               int fbHeight, bool showBezel) {
+  constexpr int kSettleFrames = 60;
+  for (int i = 0; i < kSettleFrames; ++i) {
+    RenderSuite(renderer, eng, fbWidth, fbHeight, showBezel);
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  }
+  RenderSuite(renderer, eng, fbWidth, fbHeight, showBezel);
+}
+
+// Renders a deterministic frame offscreen and writes it to a binary PPM
 // (P6). PPM keeps this dependency-free; convert to PNG with `sips` afterwards.
 // Returns 0 on success. The mock state is advanced by `seconds` so we can pick a
 // clean, representative attitude (seconds = 0 is wings-level, no turbulence).
@@ -274,16 +412,33 @@ int RunScreenshot(const char* path, double seconds, const char* state,
 
   avionics::MockDataSource dataSource;
 
-  // Use real X-Plane nav features when an install is present (falls back to the
-  // built-in demo features otherwise); give the background loader a moment so
-  // the captured frame shows the actual nearby navaids/fixes.
+  // The mock simulates only the aircraft motion: all moving-map navigation data
+  // comes from the real X-Plane databases (features, airspaces, airways,
+  // runways, land vectors, obstacles), so a screenshot reflects the actual
+  // installed data, never fabricated data. Give the background loaders a moment
+  // so the captured frame shows the actual nearby data.
   avionics::NavDataStore navData;
+  avionics::AirspaceStore airspace;
+  avionics::AirwayStore airways;
+  avionics::AptDatStore aptData;
+  avionics::LandDataStore landData(kLandDataAssetPath);
+  avionics::ObstacleStore obstacles("");
+  avionics::ProcedureStore procedures(navData);
+  avionics::ShellNavMapData navMapData(navData, airspace, airways, aptData,
+                                       landData, procedures, &obstacles);
   avionics::DsfTerrainStore terrain;
   avionics::ChecklistStore checklists;
-  dataSource.setNavFeatureSource(&navData);
+  avionics::EisStore eisStore;
+  dataSource.setNavFeatureSource(&navMapData);
   dataSource.setTerrainSource(&terrain);
   dataSource.setChecklistSource(&checklists);
-  for (int i = 0; i < 400 && !navData.ready(); ++i) {
+  dataSource.setEisSource(&eisStore);
+  // Wait for the database loaders so the captured frame reflects the real data
+  // (the airspace file in particular is large and parses on its own thread).
+  for (int i = 0; i < 2000 && !(navData.ready() && airspace.loaded() &&
+                                airways.loaded() && landData.loaded() &&
+                                aptData.loaded());
+       ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 
@@ -299,6 +454,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   }
 
   avionics::AvionicsEngine engine(dataSource, renderer, kLabelMock);
+  engine.mfdController().setNavFeatureSource(&navMapData);
 
   int fbWidth = 0;
   int fbHeight = 0;
@@ -316,9 +472,30 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   //   boot   - the power-on initialization screen
   //   failed - the connection-lost display (link down: instruments red-X'd,
   //            chrome readouts dashed)
-  if (state != nullptr && std::strcmp(state, "boot") == 0) {
+  if (state != nullptr && std::strcmp(state, "bootlogo") == 0) {
+    // The initial Garmin logo splash (phase 1 of power-up).
     renderer.beginFrame(fbWidth, fbHeight, 1.0f);
-    avionics::BootScreen::render(renderer, kLabelMock, 0.6f, fbWidth, fbHeight);
+    avionics::BootScreen::render(renderer, avionics::BootScreen::Phase::Logo,
+                                 kLabelMock, dataSource.mapSnapshot().navDatabase,
+                                 false, 1.0f, fbWidth, fbHeight);
+    renderer.endFrame();
+  } else if (state != nullptr && std::strcmp(state, "bootfade") == 0) {
+    // Mid cross-fade: Power-up Page at ~50% opacity (1s into the 2s fade).
+    dataSource.update(0.0);
+    renderer.beginFrame(fbWidth, fbHeight, 1.0f);
+    avionics::BootScreen::render(renderer, avionics::BootScreen::Phase::PowerUp,
+                                 kLabelMock, dataSource.mapSnapshot().navDatabase,
+                                 false, 0.5f, fbWidth, fbHeight);
+    renderer.endFrame();
+  } else if (state != nullptr && std::strcmp(state, "boot") == 0) {
+    // The MFD Power-up Page (phase 2). Pump the source once so the database
+    // currency block is populated (from the parsed nav data when available, the
+    // demo cycle otherwise), and show the ENT acknowledgement prompt.
+    dataSource.update(0.0);
+    renderer.beginFrame(fbWidth, fbHeight, 1.0f);
+    avionics::BootScreen::render(renderer, avionics::BootScreen::Phase::PowerUp,
+                                 kLabelMock, dataSource.mapSnapshot().navDatabase,
+                                 true, 1.0f, fbWidth, fbHeight);
     renderer.endFrame();
   } else if (state != nullptr && std::strcmp(state, "alerts") == 0) {
     // Drive the real interaction path: bring up the live page, press the
@@ -327,7 +504,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.update(seconds);
     engine.pressSoftkey(11);  // Alerts key
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "menu") == 0) {
     // Exercise the softkey menu state machine: open the PFD Options submenu and
     // turn on a couple of display-option toggles so the captured frame shows the
@@ -338,7 +515,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(1);  // "SVT" toggle on
     engine.pressSoftkey(2);  // "Wind" toggle on
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "tmrref") == 0) {
     // Timer/References window: open it, start the timer, run it for a bit,
     // then set BARO minimums so the BARO MIN box and tape bug are captured.
@@ -347,28 +524,29 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(9);  // "Tmr/Ref" -> open the References window
     engine.pressBezelKey(avionics::BezelKey::Ent);  // Start? -> timer runs
     for (int i = 0; i < 90; ++i) engine.update(1.0 / 60.0);  // 1.5 s elapses
-    // Cursor down to MINS (over the four V-speed rows), select BARO, then
-    // step the altitude up with the FMS rocker (100 ft per click).
+    // Cursor down to MINS (over the four V-speed rows) with the large FMS
+    // knob, select BARO, then step the altitude up with the small knob
+    // (100 ft per click).
     for (int i = 0; i < 5; ++i) {
-      engine.pressBezelKey(avionics::BezelKey::FmsNext);
+      engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
     }
     engine.pressBezelKey(avionics::BezelKey::Ent);  // MINS Off -> BARO
     for (int i = 0; i < 54; ++i) {
       // 5400 ft: just below the mock's cruise altitude so the BARO MIN box
       // and the tape bug are both captured.
-      engine.pressBezelKey(avionics::BezelKey::FmsNext);
+      engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);
     }
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "nrst") == 0) {
     // Nearest Airports window with the FMS cursor stepped to the second entry.
     engine.skipBoot();
     engine.update(seconds);
     engine.pressSoftkey(10);  // "Nearest"
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    engine.pressBezelKey(avionics::BezelKey::FmsNext);
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
     for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "ident") == 0) {
     // IDNT annunciation plus an in-progress squawk entry: press Ident at the
     // root (starts the 18 s annunciation), then type two digits of a new code
@@ -381,27 +559,128 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(4);  // digit 4
     engine.pressSoftkey(5);  // digit 5
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "map") == 0) {
-    // Turn on the PFD inset map: open the Map/HSI submenu, then toggle "Inset".
+    // The PFD with its inset map (on by default) and the Map/HSI submenu open,
+    // showing the Detail / Traffic / Topo / Rel Ter map option keys.
     engine.skipBoot();
     engine.update(seconds);
     engine.pressSoftkey(1);  // "Map/HSI" -> open submenu
-    engine.pressSoftkey(2);  // "Inset" toggle on
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
     // The MFD full-screen MAP page (its own window in normal operation).
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdsimbrief") == 0) {
+    // The AUX - SIMBRIEF page with a Pilot ID entry in progress: step to the
+    // page (fourth AUX page), open the ID digit-entry softkeys, and type two
+    // digits so the cyan edit plate and the digit bar are captured.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int p = 0; p < 4; ++p) engine.pressSoftkey(2);  // AUX -> SimBrief
+    engine.pressSoftkey(8);  // "ID" -> digit entry
+    engine.pressSoftkey(8);  // digit 8
+    engine.pressSoftkey(4);  // digit 4
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdlayers") == 0) {
+    // The MAP page with every optional overlay enabled via the Map Opt
+    // submenu (Traffic on, TER Topo, AWY On), left open so the submenu
+    // labels/highlights are captured too.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(5);  // "Map Opt" -> open submenu
+    engine.pressSoftkey(1);  // "Traffic" on
+    engine.pressSoftkey(3);  // "AWY" Off -> On
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdwx") == 0) {
+    // The MAP page with the NEXRAD precipitation overlay enabled, zoomed out
+    // so the (forward-range) mock weather cells are on screen. Zoom first on
+    // the root bar (RNG+ steps the range ladder), then open Map Opt and toggle
+    // NEXRAD, leaving the submenu open so the highlighted key is captured.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int p = 0; p < 4; ++p) engine.pressSoftkey(11);  // RNG+ -> ~100 NM
+    engine.pressSoftkey(5);  // "Map Opt" -> open submenu
+    engine.pressSoftkey(2);  // TER Topo -> Rel
+    engine.pressSoftkey(2);  // TER Rel -> Off (clean background)
+    engine.pressSoftkey(4);  // "NEXRAD" on
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);  // settle zoom
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdwxr") == 0) {
+    // The dedicated MAP - Weather Radar page (airborne GWX radar): step to the
+    // third MAP-group page, select Weather mode, trim the antenna tilt down,
+    // show the bearing line, and zoom out so the mock storm cells fall in the
+    // forward scan wedge.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(0);  // Map -> Traffic Map
+    engine.pressSoftkey(0);  // Map -> Weather Radar
+    engine.pressSoftkey(0);  // "Mode" -> submenu
+    engine.pressSoftkey(2);  // "Weather"
+    for (int i = 0; i < 4; ++i)
+      engine.pressBezelKey(avionics::BezelKey::FmsInnerCcw);  // tilt DN 1.00
+    engine.pressSoftkey(4);                                   // "BRG" line on
+    for (int p = 0; p < 5; ++p) engine.pressSoftkey(11);      // RNG+ -> wide
+    // Settle past the 3 s page-select popup so it fades clear of the readouts.
+    for (int i = 0; i < 260; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdfplent") == 0) {
+    // The FPL page mid-edit: cursor on (FMS knob push), Waypoint Information
+    // window open with a partially spelled ident (small knob spells, large
+    // knob moves the character cursor) so the entry overlay, the spell-ahead
+    // fill, and the leg-list cursor are all captured.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);     // cursor on
+    // The large knob steps IDENT -> ALT -> next row's IDENT, so two clicks
+    // reach the second waypoint's identifier.
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // first row ALT
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // second row
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // entry window
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // first char: K
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // next cell
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // spell on
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfddto") == 0) {
+    // The Direct-To window: the Direct-To key opens it pre-filled with the
+    // active waypoint (resolved from the nav data), ready to ACTIVATE.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::DirectTo);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdfplrmv") == 0) {
+    // The FPL page's "Remove <wpt>?" confirmation: cursor onto the second
+    // waypoint, CLR opens the OK/CANCEL window (ENT would delete the leg).
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);     // cursor on
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // second row
+    engine.pressBezelKey(avionics::BezelKey::Clr);         // Remove <wpt>?
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strncmp(state, "mfd", 3) == 0) {
     // MFD page screenshots. The state encodes a page-group softkey plus an
     // optional repeat count (pressing the active group's key again steps to
     // the group's next page): "mfdwpt" = WPT page 1, "mfdwpt3" = WPT page 3.
     // "mfdfpl" presses the FPL bezel key instead, and "mfdtrk" toggles
-    // track-up on the MAP page.
+    // track-up on the MAP page. "mfdrng<N>" zooms the MAP page out N range
+    // steps (RangeUp) to capture wide/continental views.
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
@@ -412,7 +691,14 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     if (std::strncmp(suffix, "nrst", 4) == 0) cell = 3;
     if (std::strncmp(suffix, "trk", 3) == 0) cell = 4;
     if (std::strncmp(suffix, "chklist", 7) == 0) cell = 7;
-    if (std::strncmp(suffix, "fpl", 3) == 0) {
+    if (std::strncmp(suffix, "rng", 3) == 0) {
+      const char* digits = suffix + 3;
+      const int presses = *digits != '\0' ? std::atoi(digits) : 1;
+      for (int p = 0; p < presses; ++p) {
+        engine.pressBezelKey(avionics::BezelKey::RangeUp);
+        for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+      }
+    } else if (std::strncmp(suffix, "fpl", 3) == 0) {
       engine.pressBezelKey(avionics::BezelKey::Fpl);
     } else if (cell >= 0) {
       const char* digits = suffix;
@@ -429,7 +715,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
       for (int p = 0; p < 3; ++p) engine.pressBezelKey(avionics::BezelKey::Ent);
     }
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "failed") == 0) {
     // Capture the connection-lost display: populate believable live values from
     // the mock feed, then serve them through a source that reports the link as
@@ -440,11 +726,11 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     avionics::AvionicsEngine failedEngine(stale, renderer, kSourceXPlane);
     failedEngine.skipBoot();
     failedEngine.update(1.0 / 60.0);
-    RenderSuite(renderer, failedEngine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, failedEngine, fbWidth, fbHeight, showBezel);
   } else {
     engine.skipBoot();
     engine.update(seconds);
-    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   }
   glFinish();
 
@@ -481,6 +767,13 @@ void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
     glfwSetWindowShouldClose(window, GLFW_TRUE);
     return;
   }
+  // ENT acknowledges the power-up page (live sim link); the keyboard Enter key
+  // is a convenience alongside clicking the ENT bezel key.
+  if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
+    auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
+    if (app != nullptr) AcknowledgeBoot(*app);
+    return;
+  }
   // M toggles between the mock feed and the live X-Plane connection.
   if (key == GLFW_KEY_M) {
     auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
@@ -497,9 +790,14 @@ void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
 // the cursor in window points, so scale by the framebuffer/window ratio to stay
 // correct on HiDPI displays.
 void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
-  if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+  if (button != GLFW_MOUSE_BUTTON_LEFT) return;
   auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
   if (app == nullptr) return;
+  if (action == GLFW_RELEASE) {
+    app->clrHoldEngine = nullptr;  // released before the hold function fired
+    return;
+  }
+  if (action != GLFW_PRESS) return;
   // With the bezel hidden there are no physical keys to click; the screen
   // itself is just glass, so swallow the click.
   if (!app->showBezel) return;
@@ -531,7 +829,18 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
         static_cast<float>(fx), static_cast<float>(fy),
         static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
         static_cast<float>(fbH));
-    if (key != avionics::BezelKey::Count) engine->pressBezelKey(key);
+    if (key == avionics::BezelKey::Ent && AwaitingBootAck(*app)) {
+      // Acknowledge the power-up page on both displays together.
+      AcknowledgeBoot(*app);
+    } else if (key != avionics::BezelKey::Count) {
+      engine->pressBezelKey(key);
+      // Arm the CLR press-and-hold; the main loop fires CLR (DFLT MAP) if the
+      // button is still down after kClrDefaultMapHoldSeconds.
+      if (key == avionics::BezelKey::Clr) {
+        app->clrHoldEngine = engine;
+        app->clrHoldStart = glfwGetTime();
+      }
+    }
   } else if (fy >= screenH) {
     const int key = avionics::SoftkeyBezelPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy), 0.0f,
@@ -539,6 +848,50 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
         static_cast<float>(fbH - screenH));
     if (key >= 0) engine->pressSoftkey(key);
   }
+}
+
+// Hover feedback over the on-screen bezel: a left-right (rotate) cursor over
+// the FMS knob / RANGE joystick rings, a hand over the other clickable keys and
+// softkeys, and the default arrow over the glass screen. Uses the same hit-test
+// and pixel scaling as OnMouseButton so the cursor matches what a click does.
+void OnCursorPos(GLFWwindow* window, double cursorX, double cursorY) {
+  auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
+  if (app == nullptr) return;
+  if (!app->showBezel) {
+    glfwSetCursor(window, nullptr);  // glass only; default arrow
+    return;
+  }
+
+  int winW = 0, winH = 0, fbW = 0, fbH = 0;
+  glfwGetWindowSize(window, &winW, &winH);
+  glfwGetFramebufferSize(window, &fbW, &fbH);
+  const double sx = winW > 0 ? static_cast<double>(fbW) / winW : 1.0;
+  const double sy = winH > 0 ? static_cast<double>(fbH) / winH : 1.0;
+  const double fx = cursorX * sx;
+  const double fy = cursorY * sy;
+
+  const int bezelPx = BezelStripPx(fbW);
+  const int screenW = fbW - bezelPx;
+  const int screenH = fbH - SoftkeyStripPx(fbH);
+
+  GLFWcursor* cursor = nullptr;  // default arrow over the glass screen
+  if (fx >= screenW) {
+    const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
+        static_cast<float>(fx), static_cast<float>(fy),
+        static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
+        static_cast<float>(fbH));
+    if (key != avionics::BezelKey::Count) {
+      cursor = avionics::isRotatableBezelKey(key) ? app->rotateCursor
+                                                  : app->handCursor;
+    }
+  } else if (fy >= screenH) {
+    const int key = avionics::SoftkeyBezelPanel::hitTest(
+        static_cast<float>(fx), static_cast<float>(fy), 0.0f,
+        static_cast<float>(screenH), static_cast<float>(screenW),
+        static_cast<float>(fbH - screenH));
+    if (key >= 0) cursor = app->handCursor;
+  }
+  glfwSetCursor(window, cursor);
 }
 
 // Keep the window floating above other windows when requested via the
@@ -562,20 +915,25 @@ bool HasFlag(int argc, char** argv, const char* flag) {
 // Creates a GLFW window with the GL 3.2 core profile NanoVG needs. Returns null
 // on failure. `share` lets a second window share the first's GL object space
 // (unused here -- each renderer owns its own resources -- but kept for clarity).
+// The window starts hidden so it can be positioned (e.g. a restored saved
+// placement) before its first appearance; the caller shows it when ready.
 GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
-                                 GLFWwindow* share, int width, int height) {
+                                 bool decorated, GLFWwindow* share, int width,
+                                 int height) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_FLOATING, alwaysOnTop ? GLFW_TRUE : GLFW_FALSE);
+  glfwWindowHint(GLFW_DECORATED, decorated ? GLFW_TRUE : GLFW_FALSE);
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   return glfwCreateWindow(width, height, title, nullptr, share);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  const bool alwaysOnTop = WantsAlwaysOnTop(argc, argv);
+  const bool cliAlwaysOnTop = WantsAlwaysOnTop(argc, argv);
 
   if (!glfwInit()) {
     std::fprintf(stderr, "Failed to initialize GLFW\n");
@@ -603,6 +961,10 @@ int main(int argc, char** argv) {
   // Restore persisted preferences unless the command line overrides them.
   const avionics::AppSettings savedSettings = avionics::LoadAppSettings();
   const bool showBezel = savedSettings.showBezel;
+  const bool showWindowChrome = savedSettings.showWindowChrome;
+  // The --always-on-top flag / env var forces floating on; otherwise honor the
+  // persisted preference.
+  const bool alwaysOnTop = cliAlwaysOnTop || savedSettings.alwaysOnTop;
   const int winW = SuiteWindowWidth(showBezel);
   const int winH = SuiteWindowHeight(showBezel);
 
@@ -619,8 +981,8 @@ int main(int argc, char** argv) {
 
   // The PFD window owns vsync (paces the whole loop). Its context is created
   // first; the renderer is constructed while that context is current.
-  GLFWwindow* pfdWindow =
-      CreateAvionicsWindow(kWindowTitle, alwaysOnTop, nullptr, winW, winH);
+  GLFWwindow* pfdWindow = CreateAvionicsWindow(
+      kWindowTitle, alwaysOnTop, showWindowChrome, nullptr, winW, winH);
   if (!pfdWindow) {
     std::fprintf(stderr, "Failed to create window\n");
     glfwTerminate();
@@ -630,6 +992,7 @@ int main(int argc, char** argv) {
   glfwSwapInterval(1);  // vsync on the PFD paces the loop to the display refresh
   glfwSetKeyCallback(pfdWindow, OnKey);
   glfwSetMouseButtonCallback(pfdWindow, OnMouseButton);
+  glfwSetCursorPosCallback(pfdWindow, OnCursorPos);
 
   avionics::NanoVgRenderer pfdRenderer;
   if (!pfdRenderer.valid()) {
@@ -645,13 +1008,14 @@ int main(int argc, char** argv) {
   GLFWwindow* mfdWindow = nullptr;
   avionics::NanoVgRenderer* mfdRenderer = nullptr;
   if (wantMfd) {
-    mfdWindow =
-        CreateAvionicsWindow(kMfdWindowTitle, alwaysOnTop, nullptr, winW, winH);
+    mfdWindow = CreateAvionicsWindow(kMfdWindowTitle, alwaysOnTop,
+                                     showWindowChrome, nullptr, winW, winH);
     if (mfdWindow) {
       glfwMakeContextCurrent(mfdWindow);
       glfwSwapInterval(0);
       glfwSetKeyCallback(mfdWindow, OnKey);
       glfwSetMouseButtonCallback(mfdWindow, OnMouseButton);
+      glfwSetCursorPosCallback(mfdWindow, OnCursorPos);
       mfdRenderer = new avionics::NanoVgRenderer();
       if (!mfdRenderer->valid()) {
         std::fprintf(stderr, "Failed to create MFD renderer; running PFD only\n");
@@ -663,12 +1027,23 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Side-by-side placement: put the MFD just to the right of the PFD.
-  if (mfdWindow != nullptr) {
+  // Window placement, applied while the windows are still hidden so they first
+  // appear in their final spots: the saved positions when "Remember Window
+  // Position" is on, otherwise the MFD docked just to the right of the PFD.
+  if (savedSettings.rememberWindowPos && savedSettings.hasWindowPos) {
+    glfwSetWindowPos(pfdWindow, savedSettings.pfdWindowX,
+                     savedSettings.pfdWindowY);
+    if (mfdWindow != nullptr) {
+      glfwSetWindowPos(mfdWindow, savedSettings.mfdWindowX,
+                       savedSettings.mfdWindowY);
+    }
+  } else if (mfdWindow != nullptr) {
     int px = 0, py = 0;
     glfwGetWindowPos(pfdWindow, &px, &py);
     glfwSetWindowPos(mfdWindow, px + winW + kWindowGap, py);
   }
+  glfwShowWindow(pfdWindow);
+  if (mfdWindow != nullptr) glfwShowWindow(mfdWindow);
 
   // Both feeds exist for the whole session; the engines are pointed at one at a
   // time and M swaps between them. Opening the X-Plane UDP socket up front is
@@ -679,12 +1054,29 @@ int main(int argc, char** argv) {
                                  ? static_cast<std::uint16_t>(std::atoi(portStr))
                                  : kDefaultXPlanePort;
 
+  // UDP port of the in-sim flight-plan bridge (shell-xplane plugin), which feeds
+  // the live FMS route the RREF/Web API transports can't carry.
+  const char* bridgePortStr = FlagValue(argc, argv, "--fms-bridge-port");
+  const std::uint16_t bridgePort =
+      bridgePortStr ? static_cast<std::uint16_t>(std::atoi(bridgePortStr))
+                    : avionics::fpbridge::kDefaultPort;
+
+  // FPL/SimBrief/Direct-To edits are programmed back into X-Plane's FMS through
+  // the bridge by default; --no-fms-write keeps them display-only.
+  const bool fmsWriteEnabled = !HasFlag(argc, argv, "--no-fms-write");
+
   const char* fmsPlanArg = FlagValue(argc, argv, "--fms-plan");
 
-  // Nav database + flight plan are loaded once and shared by both feeds: the
-  // live X-Plane connection and the mock (so the mock can fly a real route over
-  // real navaids when an X-Plane install is present).
+  // X-Plane navigation databases + flight plan, loaded once and shared by both
+  // feeds: the live X-Plane connection and the motion-only mock both read the
+  // same real data (the mock never fabricates navigation data). The large
+  // databases -- notably the Global Airports apt.dat -- are therefore parsed
+  // only once.
   avionics::NavDataStore navData;
+  avionics::AirspaceStore airspace;
+  avionics::AirwayStore airways;
+  avionics::AptDatStore aptData;
+  avionics::LandDataStore landData(kLandDataAssetPath);
   avionics::FmsPlanStore fmsPlan(fmsPlanArg ? fmsPlanArg : "");
   avionics::DsfTerrainStore terrain;
 
@@ -692,15 +1084,49 @@ int main(int argc, char** argv) {
   // selects a file; otherwise the build-time sample is used.
   const char* checklistArg = FlagValue(argc, argv, "--checklist");
   avionics::ChecklistStore checklists(checklistArg ? checklistArg : "");
+  const char* eisArg = FlagValue(argc, argv, "--eis");
+  avionics::EisStore eisStore(eisArg ? eisArg : "");
+
+  // Optional FAA DOF obstacle database (CSV). Loads nothing when no file is
+  // given, leaving the map's obstacle layer empty.
+  const char* obstaclesArg = FlagValue(argc, argv, "--obstacles");
+  avionics::ObstacleStore obstacles(obstaclesArg ? obstaclesArg : "");
+  avionics::ProcedureStore procedures(navData);
+
+  // Real X-Plane navigation data behind the core's NavFeatureSource interface,
+  // shared by every feed so the map always shows X-Plane data, never mock data.
+  avionics::ShellNavMapData navMapData(navData, airspace, airways, aptData,
+                                       landData, procedures, &obstacles);
 
   avionics::MockDataSource mock;
-  mock.setNavFeatureSource(&navData);
+  mock.setNavFeatureSource(&navMapData);
   mock.setTerrainSource(&terrain);
   mock.setChecklistSource(&checklists);
+  mock.setEisSource(&eisStore);
+  mock.setTurbulenceEnabled(savedSettings.simulateTurbulence);
   bool mockRouteSet = false;  // set once the .fms flight plan has loaded
 
   avionics::XPlaneConnection xplane(host ? host : kDefaultXPlaneHost, port,
-                                    navData, fmsPlan, &terrain, &checklists);
+                                    navData, airspace, airways, aptData,
+                                    landData, fmsPlan, &terrain, &checklists,
+                                    &eisStore, &obstacles, bridgePort,
+                                    fmsWriteEnabled);
+
+  // SimBrief OFP fetch (AUX - SIMBRIEF page). The Pilot ID comes from the
+  // command line, falling back to the persisted setting; when one is known the
+  // latest OFP is fetched once at startup, and the page's FETCH softkey
+  // re-fetches on demand.
+  avionics::SimBriefStore simbrief;
+  const char* simbriefIdArg = FlagValue(argc, argv, "--simbrief-id");
+  std::string simbriefPilotId =
+      simbriefIdArg != nullptr ? simbriefIdArg : savedSettings.simbriefPilotId;
+  avionics::SimBriefState simbriefState;
+  if (simbriefPilotId.empty()) {
+    simbriefState.status = avionics::SimBriefStatus::NotConfigured;
+  } else {
+    simbriefState.status = avionics::SimBriefStatus::Fetching;
+    simbrief.requestFetch(simbriefPilotId);
+  }
 
   avionics::DataSource& initialSource =
       startWithXPlane ? static_cast<avionics::DataSource&>(xplane)
@@ -719,6 +1145,19 @@ int main(int argc, char** argv) {
         new avionics::AvionicsEngine(initialSource, *mfdRenderer, initialLabel);
     mfdEngine->setPage(avionics::DisplayPage::MultiFunctionDisplay);
     mfdEngine->setDrivesDataSource(false);
+    mfdEngine->mfdController().setSimbriefPilotId(simbriefPilotId);
+    // Ident lookups for FPL waypoint entry come from the parsed nav database.
+    mfdEngine->mfdController().setNavFeatureSource(&navMapData);
+  }
+
+  // Restore the durable display preferences from the last run (e.g. the PFD
+  // inset map on/off, map ranges, declutter) so the avionics come up the way
+  // the pilot left them.
+  avionics::applyPfdState(pfdEngine.softkeyController(),
+                          savedSettings.avionics.pfd);
+  if (mfdEngine != nullptr) {
+    avionics::applyMfdState(mfdEngine->mfdController(),
+                            savedSettings.avionics.mfd);
   }
 
   AppState app;
@@ -728,6 +1167,7 @@ int main(int argc, char** argv) {
   app.autoDetectXPlane = autoDetectXPlane;
   app.showBezel = showBezel;
   app.settings = savedSettings;
+  app.settings.alwaysOnTop = alwaysOnTop;
   if (!app.settings.loaded) {
     app.settings.useXPlane = startWithXPlane;
     app.settings.showBezel = showBezel;
@@ -736,13 +1176,31 @@ int main(int argc, char** argv) {
   app.mfdEngine = mfdEngine;
   app.pfdWindow = pfdWindow;
   app.mfdWindow = mfdWindow;
+  // Hover cursors for the bezel: left-right over the rotatable rings, hand over
+  // the other clickable controls (a null handle falls back to the arrow).
+  app.rotateCursor = glfwCreateStandardCursor(GLFW_RESIZE_EW_CURSOR);
+  app.handCursor = glfwCreateStandardCursor(GLFW_POINTING_HAND_CURSOR);
   glfwSetWindowUserPointer(pfdWindow, &app);
   if (mfdWindow != nullptr) glfwSetWindowUserPointer(mfdWindow, &app);
 
 #if defined(__APPLE__)
-  // macOS menu bar: data feed and bezel visibility (both persisted).
-  avionics::InstallDataSourceMenu(startWithXPlane, &OnMenuSelectSource, &app);
-  avionics::InstallBezelVisibilityMenu(showBezel, &OnMenuToggleBezel, &app);
+  // macOS menu bar: data feed plus the View toggles (all persisted). The
+  // Data Source menu also carries the mock-only "Simulate Turbulence" toggle.
+  avionics::InstallDataSourceMenu(startWithXPlane,
+                                  app.settings.simulateTurbulence,
+                                  &OnMenuSelectSource, &OnMenuToggleTurbulence,
+                                  &app);
+  avionics::ViewMenuConfig viewMenu;
+  viewMenu.showBezel = showBezel;
+  viewMenu.showWindowChrome = showWindowChrome;
+  viewMenu.alwaysOnTop = alwaysOnTop;
+  viewMenu.rememberWindowPos = app.settings.rememberWindowPos;
+  viewMenu.onToggleBezel = &OnMenuToggleBezel;
+  viewMenu.onToggleWindowChrome = &OnMenuToggleWindowChrome;
+  viewMenu.onToggleAlwaysOnTop = &OnMenuToggleAlwaysOnTop;
+  viewMenu.onToggleRememberWindowPos = &OnMenuToggleRememberWindowPos;
+  viewMenu.context = &app;
+  avionics::InstallViewMenu(viewMenu);
 #endif
 
   // Renders one engine into its window: the avionics screen on the left and the
@@ -781,6 +1239,112 @@ int main(int argc, char** argv) {
     // Pick up live edits to the checklist file so authors can iterate without
     // restarting.
     checklists.refreshIfChanged();
+    eisStore.refreshIfChanged();
+
+    // SimBrief: react to the AUX - SIMBRIEF page (a newly committed Pilot ID
+    // is persisted; FETCH kicks off a download), land completed fetches into
+    // both feeds' flight plans, and publish the status back for rendering.
+    if (mfdEngine != nullptr) {
+      avionics::MfdController& mfdUi = mfdEngine->mfdController();
+      if (mfdUi.simbriefPilotId() != simbriefPilotId) {
+        simbriefPilotId = mfdUi.simbriefPilotId();
+        app.settings.simbriefPilotId = simbriefPilotId;
+        avionics::SaveAppSettings(app.settings);
+        if (simbriefState.status == avionics::SimBriefStatus::NotConfigured) {
+          simbriefState.status = avionics::SimBriefStatus::Idle;
+        }
+      }
+      if (mfdUi.consumeSimbriefFetchRequest() && !simbriefPilotId.empty() &&
+          !simbrief.fetching()) {
+        simbriefState.status = avionics::SimBriefStatus::Fetching;
+        simbrief.requestFetch(simbriefPilotId);
+      }
+    }
+    avionics::SimBriefFetchResult simbriefResult;
+    if (simbrief.consumeResult(simbriefResult)) {
+      if (simbriefResult.ok) {
+        simbriefState.status = avionics::SimBriefStatus::Ok;
+        simbriefState.error.clear();
+        simbriefState.originIcao = simbriefResult.originIcao;
+        simbriefState.destinationIcao = simbriefResult.destinationIcao;
+        simbriefState.route = simbriefResult.route;
+        simbriefState.generatedUtc = simbriefResult.generatedUtc;
+        simbriefState.waypointCount =
+            static_cast<int>(simbriefResult.legs.size());
+        // The OFP becomes the active flight plan on both feeds (and blocks the
+        // later-loading .fms plan from overwriting it on the mock).
+        mock.setRoute(simbriefResult.legs);
+        mockRouteSet = true;
+        xplane.setRouteOverride(simbriefResult.legs);
+      } else {
+        simbriefState.status = avionics::SimBriefStatus::Error;
+        simbriefState.error = simbriefResult.error;
+      }
+    }
+    if (mfdEngine != nullptr) {
+      mfdEngine->mfdController().setSimbriefState(simbriefState);
+    }
+
+    // FPL page edits become the active flight plan on both feeds: the mock
+    // keeps flying (no reposition) and the X-Plane feed's displayed plan is
+    // overridden, mirroring the SimBrief flow above.
+    if (mfdEngine != nullptr) {
+      std::vector<avionics::MapLeg> editedPlan;
+      if (mfdEngine->mfdController().consumeFlightPlanEdit(editedPlan)) {
+        mock.updateRoute(editedPlan);
+        mockRouteSet = true;
+        xplane.setRouteOverride(editedPlan);
+      }
+
+      // Direct-To activation: the mock flies the direct course; the X-Plane
+      // feed shows the magenta direct line (display only over UDP).
+      avionics::MapLeg dtoTarget;
+      if (mfdEngine->mfdController().consumeDirectToRequest(dtoTarget)) {
+        mock.directTo(dtoTarget);
+        xplane.setDirectTo(dtoTarget);
+      }
+
+      avionics::MapProcedure proc;
+      if (mfdEngine->mfdController().consumeProcLoadRequest(proc) &&
+          proc.frequencyMhz > 0.0f) {
+        mock.tuneRadioStandby(avionics::RadioUnit::Nav1, proc.frequencyMhz);
+        xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, proc.frequencyMhz);
+      }
+
+      // Map panning: keep both feeds' nearby-data queries centered on the MFD
+      // Map Pointer while panning, so the panned-to area loads features /
+      // airspaces instead of staying empty around the aircraft.
+      const avionics::MfdController& mapUi = mfdEngine->mfdController();
+      mock.setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
+                           mapUi.mapPointerLon());
+      xplane.setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
+                             mapUi.mapPointerLon());
+    }
+
+    // PFD radio / transponder commands from the bezel and XPDR softkeys.
+    {
+      avionics::SoftkeyController& pfdUi = pfdEngine.softkeyController();
+      avionics::RadioUnit radioUnit;
+      float standbyMhz = 0.0f;
+      if (pfdUi.consumeRadioTune(radioUnit, standbyMhz)) {
+        mock.tuneRadioStandby(radioUnit, standbyMhz);
+        xplane.tuneRadioStandby(radioUnit, standbyMhz);
+      }
+      if (pfdUi.consumeRadioTransfer(radioUnit)) {
+        mock.transferRadio(radioUnit);
+        xplane.transferRadio(radioUnit);
+      }
+      int xpdrCode = 0;
+      if (pfdUi.consumeXpdrCodeCommit(xpdrCode)) {
+        mock.setTransponderCode(xpdrCode);
+        xplane.setTransponderCode(xpdrCode);
+      }
+      int xpdrMode = 0;
+      if (pfdUi.consumeXpdrModeCommit(xpdrMode)) {
+        mock.setTransponderMode(xpdrMode);
+        xplane.setTransponderMode(xpdrMode);
+      }
+    }
 
     // Auto-detect: while showing mock, keep the X-Plane link pumped (the engines
     // only update the active source) and switch over the instant it connects.
@@ -791,12 +1355,44 @@ int main(int argc, char** argv) {
       }
     }
 
+    // CLR held past the threshold acts as CLR (DFLT MAP): display the MFD
+    // Navigation Map page immediately.
+    if (app.clrHoldEngine != nullptr &&
+        glfwGetTime() - app.clrHoldStart >=
+            avionics::kClrDefaultMapHoldSeconds) {
+      app.clrHoldEngine->holdBezelKey(avionics::BezelKey::Clr);
+      app.clrHoldEngine = nullptr;
+    }
+
     renderWindow(pfdWindow, pfdEngine, pfdRenderer, dt);
     if (mfdWindow != nullptr && mfdEngine != nullptr) {
       renderWindow(mfdWindow, *mfdEngine, *mfdRenderer, dt);
     }
 
+    // Persist durable display preferences whenever the pilot changes one (e.g.
+    // toggling the PFD inset map), so they survive the next launch. Writes only
+    // happen on an actual change, so the common no-change frame costs a cheap
+    // struct compare.
+    {
+      avionics::AvionicsPersistentState current = app.settings.avionics;
+      avionics::capturePfdState(pfdEngine.softkeyController(), current.pfd);
+      if (mfdEngine != nullptr) {
+        avionics::captureMfdState(mfdEngine->mfdController(), current.mfd);
+      }
+      if (current != app.settings.avionics) {
+        app.settings.avionics = current;
+        avionics::SaveAppSettings(app.settings);
+      }
+    }
+
     glfwPollEvents();
+  }
+
+  // Capture the final window placement for the next launch before the windows
+  // go away.
+  if (app.settings.rememberWindowPos) {
+    CaptureWindowPositions(app);
+    avionics::SaveAppSettings(app.settings);
   }
 
   // Tear down GL objects while their contexts are still current.
@@ -807,6 +1403,8 @@ int main(int argc, char** argv) {
     glfwDestroyWindow(mfdWindow);
   }
   glfwDestroyWindow(pfdWindow);
+  if (app.rotateCursor != nullptr) glfwDestroyCursor(app.rotateCursor);
+  if (app.handCursor != nullptr) glfwDestroyCursor(app.handCursor);
   glfwTerminate();
   return 0;
 }

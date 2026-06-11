@@ -59,6 +59,10 @@ inline constexpr const char* kOatDegC =
 // displayed clock advances smoothly and never skips a second on UDP jitter/loss.
 inline constexpr const char* kZuluTimeSec = "sim/time/zulu_time_sec";
 
+// Day of year (0-based, 0 = Jan 1) of the sim date, for the Trip Planning
+// sunrise/sunset computation.
+inline constexpr const char* kLocalDateDays = "sim/time/local_date_days";
+
 // Pilot-selected references and barometric setting.
 inline constexpr const char* kSelectedAltitudeFt =
     "sim/cockpit/autopilot/altitude";
@@ -97,6 +101,27 @@ inline constexpr const char* kHsiDeviationDots =
     "sim/cockpit2/radios/indicators/hsi_hdef_dots_pilot";
 inline constexpr const char* kHsiFromTo =
     "sim/cockpit2/radios/indicators/hsi_flag_from_to_pilot";  // 0=flag 1=to 2=from
+
+// Glideslope / marker / DME indicators for the PFD vertical deviation,
+// marker beacon annunciation, and DME window.
+inline constexpr const char* kNav1VdefDotsPilot =
+    "sim/cockpit2/radios/indicators/nav1_vdef_dots_pilot";
+inline constexpr const char* kNav2VdefDotsPilot =
+    "sim/cockpit2/radios/indicators/nav2_vdef_dots_pilot";
+inline constexpr const char* kNav1GsFlag =
+    "sim/cockpit2/radios/indicators/nav1_flag_glideslope";  // 1 = flagged
+inline constexpr const char* kNav2GsFlag =
+    "sim/cockpit2/radios/indicators/nav2_flag_glideslope";
+inline constexpr const char* kOuterMarkerLit =
+    "sim/cockpit2/radios/indicators/outer_marker_lit";
+inline constexpr const char* kMiddleMarkerLit =
+    "sim/cockpit2/radios/indicators/middle_marker_lit";
+inline constexpr const char* kInnerMarkerLit =
+    "sim/cockpit2/radios/indicators/inner_marker_lit";
+inline constexpr const char* kNav1DmeDistanceNm =
+    "sim/cockpit2/radios/indicators/nav1_dme_distance_nm";
+inline constexpr const char* kNav2DmeDistanceNm =
+    "sim/cockpit2/radios/indicators/nav2_dme_distance_nm";
 
 // GPS/FMS active-leg indicators for the navigation status box: slant-range
 // distance (nm) and magnetic bearing to the selected GPS destination waypoint.
@@ -233,6 +258,39 @@ inline constexpr const char* kAnnunGearUnsafe =
     "sim/cockpit2/annunciators/gear_unsafe";
 inline constexpr const char* kAnnunStallWarning =
     "sim/cockpit2/annunciators/stall_warning";
+
+// TCAS / multiplayer target arrays for the map traffic overlay. Element 0 is
+// ownship; targets occupy 1..63. Subscribed per-element ("path[i]") over RREF.
+inline constexpr const char* kTcasTargetLat =
+    "sim/cockpit2/tcas/targets/position/lat";
+inline constexpr const char* kTcasTargetLon =
+    "sim/cockpit2/tcas/targets/position/lon";
+inline constexpr const char* kTcasTargetEleMeters =
+    "sim/cockpit2/tcas/targets/position/ele";
+inline constexpr const char* kTcasTargetVerticalSpeedFpm =
+    "sim/cockpit2/tcas/targets/position/vertical_speed";
+
+// EFIS weather radar (X-Plane 12.3+). Mode must be non-OFF for the radar
+// return-strength texture to populate; gain/tilt follow the pilot-side controls.
+enum class EfisWeatherMode : int {
+  Off = 0,
+  Test = 1,
+  Wx = 2,
+  WxT = 3,
+  Map = 4,
+  Turb = 5,
+};
+
+inline constexpr const char* kEfisWeatherMode =
+    "sim/cockpit2/EFIS/EFIS_weather_mode";
+inline constexpr const char* kEfisWeatherGain =
+    "sim/cockpit2/EFIS/EFIS_weather_gain";
+inline constexpr const char* kEfisWeatherTilt =
+    "sim/cockpit2/EFIS/EFIS_weather_tilt";
+inline constexpr const char* kEfisWeatherSectorWidth =
+    "sim/cockpit2/EFIS/EFIS_weather_sector_width";
+inline constexpr const char* kEfisMapRangeSelector =
+    "sim/cockpit/switches/EFIS_map_range_selector";
 
 }  // namespace datarefs
 }  // namespace avionics

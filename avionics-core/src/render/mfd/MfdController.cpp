@@ -1,24 +1,91 @@
 #include "avionics/MfdController.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
+#include "avionics/NavMath.h"
 #include "avionics/render/BezelKeys.h"
 
 namespace avionics {
 namespace {
 
-// Softkey cell assignments for the MFD bar. The four page groups form a radio
-// group on the left (standing in for the large FMS knob); range control sits
-// on the right two cells, mirroring the G1000 MFD softkey layout.
+// Softkey cell assignments for the MFD root bar. The four page groups form a
+// radio group on the left (standing in for the large FMS knob); range control
+// sits on the right two cells, mirroring the G1000 MFD softkey layout. Map Opt
+// opens the navigation-map options submenu and Detail cycles the declutter
+// level, per the NXi MFD softkey map.
 constexpr int kKeyMap = 0;
 constexpr int kKeyWaypoint = 1;
 constexpr int kKeyAux = 2;
 constexpr int kKeyNearest = 3;
 constexpr int kKeyOrient = 4;
-constexpr int kKeyTerrain = 5;
+constexpr int kKeyMapOpt = 5;
+constexpr int kKeyDetail = 6;
 constexpr int kKeyChecklist = 7;  // CHKLIST: selects the Checklist page group
 constexpr int kKeyRangeDown = 10;
 constexpr int kKeyRangeUp = 11;
+
+// Map Opt submenu cells (Pilot's Guide: Traffic, TER, AWY, ..., Back).
+constexpr int kKeyOptTraffic = 1;
+constexpr int kKeyOptTer = 2;
+constexpr int kKeyOptAwy = 3;
+constexpr int kKeyOptNexrad = 4;
+constexpr int kKeyOptBack = 11;
+
+// MAP - Weather Radar page root bar (Pilot's Guide, Hazard Avoidance -
+// Airborne Color Weather Radar): Mode opens the Standby/Weather/Ground submenu;
+// Horizon/Vertical pick the scan; the fifth cell is BRG (horizontal scan, the
+// bearing line) or Tilt (vertical scan); range stays on the rocker, like the
+// other MAP-group pages.
+constexpr int kKeyRdrMode = 0;
+constexpr int kKeyRdrHorizon = 1;
+constexpr int kKeyRdrVertical = 2;
+constexpr int kKeyRdrGain = 3;
+constexpr int kKeyRdrBrg = 4;
+constexpr int kKeyRdrFeatures = 5;
+// Mode submenu cells.
+constexpr int kKeyRdrStandby = 1;
+constexpr int kKeyRdrWeather = 2;
+constexpr int kKeyRdrGround = 3;
+constexpr int kKeyRdrModeBack = 11;
+
+// AUX - SIMBRIEF page extras on the root bar (free cells beside CHKLIST), and
+// the Pilot ID digit-entry bar (0-9 / BKSP / Back, XPDR-code style).
+constexpr int kKeySimbriefId = 8;
+constexpr int kKeySimbriefFetch = 9;
+constexpr int kKeyEntryBksp = 10;
+constexpr int kKeyEntryBack = 11;
+
+// State-carrying softkey labels, verbatim from the NXi Pilot's Guide ("Select
+// the TER Softkey until 'Topo' is shown...", "AWY Off/On/LO/HI", "The Detail
+// Softkey label advances to Detail All, Detail 3, Detail 2 and Detail 1").
+const char* terLabel(TerrainDisplay t) {
+  switch (t) {
+    case TerrainDisplay::Topo:
+      return "TER Topo";
+    case TerrainDisplay::Rel:
+      return "TER REL";
+    case TerrainDisplay::Off:
+      break;
+  }
+  return "TER Off";
+}
+
+const char* awyLabel(AirwayDisplay a) {
+  switch (a) {
+    case AirwayDisplay::All:
+      return "AWY On";
+    case AirwayDisplay::Low:
+      return "AWY LO";
+    case AirwayDisplay::High:
+      return "AWY HI";
+    case AirwayDisplay::Off:
+      break;
+  }
+  return "AWY Off";
+}
 
 // First page of each group, in MfdPage enum order. Keep in sync with the page
 // counts below.
@@ -31,25 +98,102 @@ constexpr MfdPage kGroupFirstPage[] = {
 };
 
 constexpr int kGroupPageCount[] = {
-    1,  // Map: Navigation Map
+    3,  // Map: Navigation Map / Traffic Map / Weather Radar
     4,  // Waypoint: Airport / Intersection / NDB / VOR Information
-    3,  // Aux: Trip Planning / GPS Status / System Status
-    5,  // Nearest: Airports / Intersections / NDB / VOR / Airspaces
+    6,  // Aux: Trip Planning / Utility / GPS Status / System Setup / System
+        //      Status / SimBrief
+    6,  // Nearest: Airports / Intersections / NDB / VOR / Frequencies /
+        //          Airspaces
     1,  // FlightPlan: Active Flight Plan
 };
 
+// The FMS data-entry character sequence: the alphabet then the digits, with
+// the small knob starting "in the middle at K" on a blank placeholder
+// (Pilot's Guide, "Using the FMS Knob to enter data").
+constexpr char kEntryChars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+constexpr int kEntryCharCount = 36;
+
+char stepEntryChar(char c, int step) {
+  int idx = 0;
+  for (int i = 0; i < kEntryCharCount; ++i) {
+    if (kEntryChars[i] == c) {
+      idx = i;
+      break;
+    }
+  }
+  return kEntryChars[((idx + step) % kEntryCharCount + kEntryCharCount) %
+                     kEntryCharCount];
+}
+
+bool legsEqual(const std::vector<MapLeg>& a, const std::vector<MapLeg>& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].id != b[i].id || a[i].lat != b[i].lat || a[i].lon != b[i].lon) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
-MfdController::MfdController() {
+MfdController::MfdController() { rebuildLabels(); }
+
+void MfdController::rebuildLabels() {
+  for (std::string& l : labels_) l.clear();
+  if (simbriefIdEntry_) {
+    // Pilot ID digit entry replaces the whole bar, like the XPDR Code menu on
+    // the PFD: 0-9 with BKSP and Back on the right.
+    for (int d = 0; d <= 9; ++d) labels_[d] = static_cast<char>('0' + d);
+    labels_[kKeyEntryBksp] = "BKSP";
+    labels_[kKeyEntryBack] = "Back";
+    return;
+  }
+  if (menu_ == Menu::MapOpt) {
+    labels_[kKeyOptTraffic] = "Traffic";
+    labels_[kKeyOptTer] = terLabel(terrain_);
+    labels_[kKeyOptAwy] = awyLabel(airways_);
+    labels_[kKeyOptNexrad] = "NEXRAD";
+    labels_[kKeyOptBack] = "Back";
+    return;
+  }
+  if (menu_ == Menu::RadarMode) {
+    // Mode submenu, verbatim from the Pilot's Guide (Mode -> Standby / Weather
+    // / Ground).
+    labels_[kKeyRdrStandby] = "Standby";
+    labels_[kKeyRdrWeather] = "Weather";
+    labels_[kKeyRdrGround] = "Ground";
+    labels_[kKeyRdrModeBack] = "Back";
+    return;
+  }
+  if (page() == MfdPage::WeatherRadar) {
+    labels_[kKeyRdrMode] = "Mode";
+    labels_[kKeyRdrHorizon] = "Horizon";
+    labels_[kKeyRdrVertical] = "Vertical";
+    labels_[kKeyRdrGain] = "Gain";
+    // The fifth cell is the bearing line on the horizontal scan and the tilt
+    // line on the vertical scan (Figures 6-72 / 6-74).
+    labels_[kKeyRdrBrg] =
+        radarScan_ == RadarScan::Vertical ? "Tilt" : "BRG";
+    labels_[kKeyRdrFeatures] = "Features";
+    labels_[kKeyRangeDown] = "RNG-";
+    labels_[kKeyRangeUp] = "RNG+";
+    return;
+  }
   labels_[kKeyMap] = "Map";
   labels_[kKeyWaypoint] = "WPT";
   labels_[kKeyAux] = "AUX";
   labels_[kKeyNearest] = "NRST";
   labels_[kKeyOrient] = "TRK";
-  labels_[kKeyTerrain] = "TERR";
+  labels_[kKeyMapOpt] = "Map Opt";
+  labels_[kKeyDetail] = mapDetailLabel(detail_);
   labels_[kKeyChecklist] = "CHKLIST";
   labels_[kKeyRangeDown] = "RNG-";
   labels_[kKeyRangeUp] = "RNG+";
+  if (page() == MfdPage::SimBrief) {
+    labels_[kKeySimbriefId] = "ID";
+    labels_[kKeySimbriefFetch] = "FETCH";
+  }
 }
 
 float MfdController::rangeNm() const { return mapRangeNmAt(rangeIndex_); }
@@ -70,6 +214,8 @@ MfdPage MfdController::page() const {
 }
 
 void MfdController::stepPage(int direction) {
+  pageSelectSec_ = kPageSelectSeconds;
+  menu_ = Menu::Root;  // close any page-specific submenu when the page changes
   if (pageGroup_ == MfdPageGroup::Checklist) {
     stepChecklist(direction);
     return;
@@ -77,6 +223,12 @@ void MfdController::stepPage(int direction) {
   const int count = pageCount(pageGroup_);
   int& index = pageIndex_[static_cast<int>(pageGroup_)];
   index = ((index + direction) % count + count) % count;
+  if (pageGroup_ == MfdPageGroup::Nearest) {
+    nrstSelected_ = 0;
+  }
+  if (pageGroup_ == MfdPageGroup::Map && page() != MfdPage::NavigationMap) {
+    mapResetPointer();
+  }
 }
 
 int MfdController::checklistCount() const {
@@ -155,11 +307,16 @@ void MfdController::selectGroup(MfdPageGroup group) {
   if (pageGroup_ == group) {
     stepPage(1);
   } else {
+    if (pageGroup_ == MfdPageGroup::Map) mapResetPointer();
+    if (pageGroup_ == MfdPageGroup::Waypoint) wptResetInteraction();
+    if (pageGroup_ == MfdPageGroup::Nearest) nrstResetInteraction();
     pageGroup_ = group;
+    menu_ = Menu::Root;
+    pageSelectSec_ = kPageSelectSeconds;
   }
 }
 
-void MfdController::update(double dtSeconds) {
+void MfdController::update(double dtSeconds, const FlightData& data) {
   const float pressStep = static_cast<float>(dtSeconds) / kPressFlashSeconds;
   for (int i = 0; i < kSoftkeyCount; ++i) {
     press_[i] = std::max(0.0f, press_[i] - pressStep);
@@ -167,9 +324,87 @@ void MfdController::update(double dtSeconds) {
   for (int i = 0; i < kBezelKeyCount; ++i) {
     bezelPress_[i] = std::max(0.0f, bezelPress_[i] - pressStep);
   }
+  pageSelectSec_ =
+      std::max(0.0f, pageSelectSec_ - static_cast<float>(dtSeconds));
+  displayRangeNm_ =
+      animateMapRange(displayRangeNm_, mapRangeNmAt(rangeIndex_), dtSeconds);
+
+  // ~1 Hz blink for highlight-select cursor fields: on for the first half of
+  // each second (matches SoftkeyController::blinkOn_ and WT pulse).
+  blinkSeconds_ += dtSeconds;
+  blinkOn_ = std::fmod(blinkSeconds_, 1.0) < 0.5;
+
+  // Antenna sweep position for the Weather Radar page scan line (one look per
+  // kRadarSweepSeconds; the page maps this to a left/right ping-pong angle).
+  radarSweepPhase_ += dtSeconds / kRadarSweepSeconds;
+  radarSweepPhase_ = std::fmod(radarSweepPhase_, 1.0);
+
+  // AUX Utility timers / trip statistics: accumulate only while live data is
+  // coming in (a dead link freezes the timers rather than running on stale
+  // values).
+  if (data.dataLinkValid) {
+    FlightSessionStats& s = flightStats_;
+    s.genericTimerSec += dtSeconds;
+    const float gs = data.groundSpeedKts;
+    // In-air detection for the flight timer / departure time: airspeed alive
+    // above a rotation-ish threshold (the unit's "In-Air" criterion).
+    if (!s.airborneSeen && data.airspeedValid && data.airspeedKts >= 40.0f) {
+      s.airborneSeen = true;
+      s.departureHour = data.utcHour;
+      s.departureMinute = data.utcMinute;
+    }
+    if (s.airborneSeen) s.flightTimerSec += dtSeconds;
+    s.odometerNm += static_cast<double>(gs) * dtSeconds / 3600.0;
+    if (gs >= 5.0f) s.movingTimeSec += dtSeconds;
+    s.maxGroundSpeedKts = std::max(s.maxGroundSpeedKts, gs);
+  }
 }
 
 bool MfdController::keyActive(int i) const {
+  // Digit-entry cells are momentary; no radio/toggle highlight applies.
+  if (simbriefIdEntry_) return false;
+  if (menu_ == Menu::MapOpt) {
+    switch (i) {
+      case kKeyOptTraffic:
+        return showTraffic_;
+      case kKeyOptTer:
+        return terrain_ != TerrainDisplay::Off;
+      case kKeyOptAwy:
+        return airways_ != AirwayDisplay::Off;
+      case kKeyOptNexrad:
+        return showWeather_;
+      default:
+        return false;
+    }
+  }
+  if (menu_ == Menu::RadarMode) {
+    switch (i) {
+      case kKeyRdrStandby:
+        return radarMode_ == RadarMode::Standby;
+      case kKeyRdrWeather:
+        return radarMode_ == RadarMode::Weather;
+      case kKeyRdrGround:
+        return radarMode_ == RadarMode::Ground;
+      default:
+        return false;
+    }
+  }
+  if (page() == MfdPage::WeatherRadar) {
+    switch (i) {
+      case kKeyRdrHorizon:
+        return radarScan_ == RadarScan::Horizontal;
+      case kKeyRdrVertical:
+        return radarScan_ == RadarScan::Vertical;
+      case kKeyRdrGain:
+        return !radarGainCalibrated_;  // lit while in manual gain
+      case kKeyRdrBrg:
+        return radarScan_ != RadarScan::Vertical && radarBearingLineOn_;
+      case kKeyRdrFeatures:
+        return radarAct_;
+      default:
+        return false;
+    }
+  }
   switch (i) {
     case kKeyMap:
       return pageGroup_ == MfdPageGroup::Map;
@@ -183,8 +418,6 @@ bool MfdController::keyActive(int i) const {
       return pageGroup_ == MfdPageGroup::Checklist;
     case kKeyOrient:
       return mapOrientation_ == MapOrientation::TrackUp;
-    case kKeyTerrain:
-      return showTerrain_;
     default:
       return false;
   }
@@ -194,6 +427,71 @@ void MfdController::pressBezelKey(BezelKey key) {
   const int i = static_cast<int>(key);
   if (i < 0 || i >= kBezelKeyCount) return;
   bezelPress_[i] = 1.0f;  // trigger the press-flash animation
+
+  // Pilot ID digit entry is modal, like a cursor field on the real unit: ENT
+  // commits the pending digits, CLR erases (cancelling once empty), and the
+  // page-navigation keys are inert until the entry is closed.
+  if (simbriefIdEntry_) {
+    switch (key) {
+      case BezelKey::Ent:
+        if (!simbriefPendingId_.empty()) {
+          simbriefPilotId_ = simbriefPendingId_;
+        }
+        simbriefPendingId_.clear();
+        simbriefIdEntry_ = false;
+        break;
+      case BezelKey::Clr:
+        if (simbriefPendingId_.empty()) {
+          simbriefIdEntry_ = false;
+        } else {
+          simbriefPendingId_.pop_back();
+        }
+        break;
+      default:
+        break;
+    }
+    rebuildLabels();
+    return;
+  }
+
+  // The Direct-To window is modal over any page: opened by the Direct-To key,
+  // it owns the FMS knob / ENT / CLR until it is closed or activated.
+  if (directToBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+
+  // The FPL page owns the FMS knob / ENT / CLR / MENU while it is up (cursor,
+  // waypoint entry, remove confirmation); unconsumed keys fall through to the
+  // common handling below (FPL toggle, range rocker).
+  if (pageGroup_ == MfdPageGroup::FlightPlan && fplBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+
+  if (procMenuOpen_ && procBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+
+  if (pageGroup_ == MfdPageGroup::Map && mapBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+  if (pageGroup_ == MfdPageGroup::Map && page() == MfdPage::WeatherRadar &&
+      radarBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+  if (pageGroup_ == MfdPageGroup::Waypoint && wptBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+  if (pageGroup_ == MfdPageGroup::Nearest && nrstBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+
   switch (key) {
     case BezelKey::RangeUp:
       rangeIndex_ = std::min(kMapRangeLadderCount - 1, rangeIndex_ + 1);
@@ -206,14 +504,25 @@ void MfdController::pressBezelKey(BezelKey key) {
       // the page that was displayed before.
       if (pageGroup_ == MfdPageGroup::FlightPlan) {
         pageGroup_ = groupBeforeFpl_;
+        fplResetInteraction();
       } else {
         groupBeforeFpl_ = pageGroup_;
         pageGroup_ = MfdPageGroup::FlightPlan;
       }
+      pageSelectSec_ = kPageSelectSeconds;
       break;
-    case BezelKey::FmsNext:
+    case BezelKey::Proc:
+      if (pageGroup_ == MfdPageGroup::FlightPlan) {
+        procMenuOpen_ = !procMenuOpen_;
+        procSelected_ = 0;
+        procCategory_ = ProcedureType::Approach;
+        procStep_ = ProcMenuStep::ProcedureList;
+        procSelectedName_.clear();
+      }
+      break;
+    case BezelKey::FmsInnerCw:
       // Small FMS knob: move the item cursor down the checklist, else step
-      // pages within the active group.
+      // pages within the active group (Pilot's Guide, "Page Selection").
       if (pageGroup_ == MfdPageGroup::Checklist) {
         cursorItem_ =
             std::min(checklistItemCount(checklistIndex_), cursorItem_ + 1);
@@ -221,12 +530,19 @@ void MfdController::pressBezelKey(BezelKey key) {
         stepPage(1);
       }
       break;
-    case BezelKey::FmsPrev:
+    case BezelKey::FmsInnerCcw:
       if (pageGroup_ == MfdPageGroup::Checklist) {
         cursorItem_ = std::max(0, cursorItem_ - 1);
       } else {
         stepPage(-1);
       }
+      break;
+    case BezelKey::FmsOuterCw:
+      // Large FMS knob: select the page group.
+      stepPageGroup(1);
+      break;
+    case BezelKey::FmsOuterCcw:
+      stepPageGroup(-1);
       break;
     case BezelKey::Ent:
       if (pageGroup_ == MfdPageGroup::Checklist) checklistEnter();
@@ -237,6 +553,45 @@ void MfdController::pressBezelKey(BezelKey key) {
     default:
       break;
   }
+  rebuildLabels();  // the page (and so the ID/FETCH keys) may have changed
+}
+
+void MfdController::stepPageGroup(int direction) {
+  // The large knob cycles the softkey-selectable groups; the FPL and
+  // Checklist groups are entered with their own keys on the real unit, so
+  // turning the knob inside them steps back out to the MAP group.
+  static constexpr MfdPageGroup kCycle[] = {
+      MfdPageGroup::Map, MfdPageGroup::Waypoint, MfdPageGroup::Aux,
+      MfdPageGroup::Nearest};
+  constexpr int kCycleCount = 4;
+  pageSelectSec_ = kPageSelectSeconds;
+  menu_ = Menu::Root;
+  for (int i = 0; i < kCycleCount; ++i) {
+    if (kCycle[i] == pageGroup_) {
+      pageGroup_ = kCycle[((i + direction) % kCycleCount + kCycleCount) %
+                          kCycleCount];
+      return;
+    }
+  }
+  pageGroup_ = MfdPageGroup::Map;
+}
+
+void MfdController::clrDefaultMap() {
+  // Cancel whatever is in progress, exactly like backing all the way out, then
+  // bring up the MAP - NAVIGATION MAP page.
+  simbriefPendingId_.clear();
+  simbriefIdEntry_ = false;
+  fplResetInteraction();
+  wptResetInteraction();
+  nrstResetInteraction();
+  mapResetPointer();
+  dtoOpen_ = false;
+  dtoArmed_ = false;
+  dtoEntry_ = FmsWaypointEntry{};
+  menu_ = Menu::Root;
+  pageGroup_ = MfdPageGroup::Map;
+  pageIndex_[static_cast<int>(MfdPageGroup::Map)] = 0;
+  rebuildLabels();
 }
 
 void MfdController::checklistEnter() {
@@ -267,6 +622,108 @@ bool MfdController::pressKey(int key) {
 
   press_[key] = 1.0f;  // trigger the press-flash animation
 
+  if (simbriefIdEntry_) {
+    simbriefEntryKey(key);
+    rebuildLabels();
+    return true;
+  }
+
+  if (menu_ == Menu::MapOpt) {
+    switch (key) {
+      case kKeyOptTraffic:
+        showTraffic_ = !showTraffic_;
+        break;
+      case kKeyOptTer:
+        // TER cycles Off -> Topo -> REL -> Off (Pilot's Guide).
+        terrain_ = terrain_ == TerrainDisplay::Off   ? TerrainDisplay::Topo
+                   : terrain_ == TerrainDisplay::Topo ? TerrainDisplay::Rel
+                                                       : TerrainDisplay::Off;
+        break;
+      case kKeyOptAwy:
+        // AWY cycles Off -> On (all) -> LO -> HI -> Off (Pilot's Guide).
+        airways_ = airways_ == AirwayDisplay::Off   ? AirwayDisplay::All
+                   : airways_ == AirwayDisplay::All ? AirwayDisplay::Low
+                   : airways_ == AirwayDisplay::Low ? AirwayDisplay::High
+                                                    : AirwayDisplay::Off;
+        break;
+      case kKeyOptNexrad:
+        showWeather_ = !showWeather_;
+        break;
+      case kKeyOptBack:
+        menu_ = Menu::Root;
+        break;
+      default:
+        return false;
+    }
+    rebuildLabels();
+    return true;
+  }
+
+  if (menu_ == Menu::RadarMode) {
+    switch (key) {
+      case kKeyRdrStandby:
+        radarMode_ = RadarMode::Standby;
+        menu_ = Menu::Root;
+        break;
+      case kKeyRdrWeather:
+        radarMode_ = RadarMode::Weather;
+        menu_ = Menu::Root;
+        break;
+      case kKeyRdrGround:
+        radarMode_ = RadarMode::Ground;
+        menu_ = Menu::Root;
+        break;
+      case kKeyRdrModeBack:
+        menu_ = Menu::Root;
+        break;
+      default:
+        return false;
+    }
+    rebuildLabels();
+    return true;
+  }
+
+  if (page() == MfdPage::WeatherRadar) {
+    switch (key) {
+      case kKeyRdrMode:
+        menu_ = Menu::RadarMode;
+        break;
+      case kKeyRdrHorizon:
+        radarScan_ = RadarScan::Horizontal;
+        break;
+      case kKeyRdrVertical:
+        radarScan_ = RadarScan::Vertical;
+        break;
+      case kKeyRdrGain:
+        // Toggle calibrated <-> manual gain (Pilot's Guide: the Gain Softkey
+        // activates manual gain; selecting it again restores Calibrated).
+        radarGainCalibrated_ = !radarGainCalibrated_;
+        radarGainManual_ = radarGainCalibrated_ ? 0.0f : 0.4f;
+        break;
+      case kKeyRdrBrg:
+        // Horizontal scan: toggle the bearing line. Vertical scan: the cell is
+        // Tilt; tilt is trimmed with the FMS knob (radarBezelKey).
+        if (radarScan_ != RadarScan::Vertical) {
+          radarBearingLineOn_ = !radarBearingLineOn_;
+          if (!radarBearingLineOn_) radarBearingDeg_ = 0.0f;
+        }
+        break;
+      case kKeyRdrFeatures:
+        radarAct_ = !radarAct_;  // Altitude Compensated Tilt on/off
+        break;
+      case kKeyRangeDown:
+        rangeIndex_ = std::max(0, rangeIndex_ - 1);
+        break;
+      case kKeyRangeUp:
+        rangeIndex_ = std::min(kMapRangeLadderCount - 1, rangeIndex_ + 1);
+        break;
+      default:
+        return false;
+    }
+    rebuildLabels();
+    return true;
+  }
+
   switch (key) {
     case kKeyMap:
       selectGroup(MfdPageGroup::Map);
@@ -290,8 +747,25 @@ bool MfdController::pressKey(int key) {
                             ? MapOrientation::TrackUp
                             : MapOrientation::NorthUp;
       break;
-    case kKeyTerrain:
-      showTerrain_ = !showTerrain_;
+    case kKeyMapOpt:
+      menu_ = Menu::MapOpt;
+      rebuildLabels();
+      break;
+    case kKeyDetail:
+      detail_ = nextMapDetail(detail_);
+      rebuildLabels();
+      break;
+    case kKeySimbriefId:
+      // Only labeled on the AUX - SIMBRIEF page. A fresh entry starts empty
+      // (dashes), like the XPDR Code entry.
+      simbriefPendingId_.clear();
+      simbriefIdEntry_ = true;
+      break;
+    case kKeySimbriefFetch:
+      if (!simbriefPilotId_.empty() &&
+          simbriefState_.status != SimBriefStatus::Fetching) {
+        simbriefFetchRequested_ = true;
+      }
       break;
     case kKeyRangeDown:
       rangeIndex_ = std::max(0, rangeIndex_ - 1);
@@ -302,7 +776,1074 @@ bool MfdController::pressKey(int key) {
     default:
       return false;
   }
+  rebuildLabels();  // the page (and so the ID/FETCH keys) may have changed
   return true;
+}
+
+void MfdController::simbriefEntryKey(int key) {
+  if (key >= 0 && key <= 9) {
+    if (static_cast<int>(simbriefPendingId_.size()) <
+        kSimBriefPilotIdMaxDigits) {
+      simbriefPendingId_ += static_cast<char>('0' + key);
+    }
+  } else if (key == kKeyEntryBksp) {
+    if (!simbriefPendingId_.empty()) simbriefPendingId_.pop_back();
+  } else if (key == kKeyEntryBack) {
+    // Abandon the in-progress entry; the committed ID is untouched.
+    simbriefPendingId_.clear();
+    simbriefIdEntry_ = false;
+  }
+}
+
+bool MfdController::consumeSimbriefFetchRequest() {
+  const bool requested = simbriefFetchRequested_;
+  simbriefFetchRequested_ = false;
+  return requested;
+}
+
+bool MfdController::blocksRadioBezel() const {
+  // Map panning is driven by the RANGE joystick, not the FMS knob, so the
+  // active Map Pointer does not claim the knob here.
+  return dtoOpen_ || dtoEntry_.active || fplEntry_.active ||
+         fplAltEntry_.active || fplConfirm_ != FplConfirm::None ||
+         wptEntry_.active || simbriefIdEntry_ || procMenuOpen_;
+}
+
+std::vector<MapApproach> MfdController::approachesForAirport(
+    const std::string& icao) const {
+  if (navSource_ == nullptr || !navSource_->ready() || icao.empty()) return {};
+  return navSource_->approachesForAirport(icao);
+}
+
+std::vector<MapProcedure> MfdController::proceduresForAirport(
+    const std::string& icao, ProcedureType type) const {
+  if (navSource_ == nullptr || !navSource_->ready() || icao.empty()) return {};
+  return navSource_->proceduresForAirport(icao, type);
+}
+
+std::vector<MapProcedure> MfdController::proceduresFor(ProcedureType type) const {
+  return proceduresForAirport(procAirportIcao(), type);
+}
+
+std::string MfdController::procAirportIcao() const {
+  if (procCategory_ == ProcedureType::Departure && !fplLegs_.empty() &&
+      fplLegs_.front().id.size() == 4) {
+    return fplLegs_.front().id;
+  }
+  for (int i = static_cast<int>(fplLegs_.size()) - 1; i >= 0; --i) {
+    if (fplLegs_[static_cast<std::size_t>(i)].id.size() == 4) {
+      return fplLegs_[static_cast<std::size_t>(i)].id;
+    }
+  }
+  return activeWaypoint_;
+}
+
+bool MfdController::consumeProcLoadRequest(MapProcedure& out) {
+  if (!procLoadPending_) return false;
+  procLoadPending_ = false;
+  out = procLoadTarget_;
+  return true;
+}
+
+std::vector<MapAirportFrequency> MfdController::airportFrequencies(
+    const std::string& icao) const {
+  if (navSource_ == nullptr || !navSource_->ready() || icao.empty()) return {};
+  return navSource_->airportFrequencies(icao);
+}
+
+std::vector<AirportRunwayInfo> MfdController::airportRunways(
+    const std::string& icao) const {
+  if (navSource_ == nullptr || !navSource_->ready() || icao.empty()) return {};
+  std::vector<AirportRunwayInfo> runways = navSource_->airportRunways(icao);
+  // Primary (longest) runway first, the order the unit pages through them.
+  std::stable_sort(runways.begin(), runways.end(),
+                   [](const AirportRunwayInfo& a, const AirportRunwayInfo& b) {
+                     return a.lengthFt > b.lengthFt;
+                   });
+  return runways;
+}
+
+std::vector<std::string> MfdController::procProcedureNames(
+    ProcedureType type) const {
+  std::vector<std::string> names;
+  for (const MapProcedure& proc : proceduresFor(type)) {
+    if (std::find(names.begin(), names.end(), proc.name) == names.end()) {
+      names.push_back(proc.name);
+    }
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+std::vector<std::string> MfdController::procTransitions(
+    ProcedureType type, const std::string& name) const {
+  std::vector<std::string> transitions;
+  for (const MapProcedure& proc : proceduresFor(type)) {
+    if (proc.name != name) continue;
+    if (std::find(transitions.begin(), transitions.end(), proc.transition) ==
+        transitions.end()) {
+      transitions.push_back(proc.transition);
+    }
+  }
+  std::sort(transitions.begin(), transitions.end());
+  return transitions;
+}
+
+std::vector<MapLeg> MfdController::procPreviewLegs() const {
+  if (!procMenuOpen_ || navSource_ == nullptr || !navSource_->ready()) {
+    return {};
+  }
+  const std::string icao = procAirportIcao();
+  if (icao.empty()) return {};
+
+  std::string name;
+  std::string transition;
+  if (procStep_ == ProcMenuStep::ProcedureList) {
+    const std::vector<std::string> names = procProcedureNames(procCategory_);
+    if (procSelected_ < 0 ||
+        procSelected_ >= static_cast<int>(names.size())) {
+      return {};
+    }
+    name = names[static_cast<std::size_t>(procSelected_)];
+    const std::vector<std::string> transitions =
+        procTransitions(procCategory_, name);
+    if (transitions.empty()) return {};
+    transition = transitions.front();
+  } else {
+    name = procSelectedName_;
+    const std::vector<std::string> transitions =
+        procTransitions(procCategory_, name);
+    if (procSelected_ < 0 ||
+        procSelected_ >= static_cast<int>(transitions.size())) {
+      return {};
+    }
+    transition = transitions[static_cast<std::size_t>(procSelected_)];
+  }
+  return navSource_->expandProcedure(icao, procCategory_, name, transition);
+}
+
+// ---- shared FMS waypoint entry ----
+
+void MfdController::entryOpen(FmsWaypointEntry& e, const std::string& initial) {
+  e.active = true;
+  e.chars = initial;
+  e.pos = 0;
+  e.autofill.clear();
+  e.match = MapFeature{};
+  e.hasMatch = false;
+  e.notFound = false;
+  if (!e.chars.empty()) entryUpdateAutofill(e);
+}
+
+void MfdController::entryUpdateAutofill(FmsWaypointEntry& e) {
+  e.autofill.clear();
+  e.hasMatch = false;
+
+  if (e.chars.empty()) return;
+
+  // Spell-ahead: the alphabetically-first database ident extending the typed
+  // prefix. Without a nav database, fall back to the nearby map features so
+  // entry still works on the demo feed.
+  if (navSource_ != nullptr && navSource_->ready()) {
+    e.autofill = navSource_->firstIdentWithPrefix(e.chars);
+  }
+  if (e.autofill.empty() && mapData_ != nullptr) {
+    for (const MapFeature& f : mapData_->features) {
+      if (f.id.compare(0, e.chars.size(), e.chars) != 0) continue;
+      if (e.autofill.empty() || f.id < e.autofill) e.autofill = f.id;
+    }
+  }
+  if (e.autofill.empty()) return;
+
+  // Resolve the filled ident to a waypoint, nearest to ownship when the same
+  // ident names several (a fix and a VOR, duplicates across regions).
+  std::vector<MapFeature> candidates;
+  if (navSource_ != nullptr && navSource_->ready()) {
+    candidates = navSource_->lookupIdent(e.autofill, 16);
+  }
+  if (candidates.empty() && mapData_ != nullptr) {
+    for (const MapFeature& f : mapData_->features) {
+      if (f.id == e.autofill) candidates.push_back(f);
+    }
+  }
+  if (candidates.empty()) {
+    if (!e.hasMatch && navSource_ != nullptr && navSource_->ready() &&
+        &e == &fplEntry_ && navSource_->isAirwayName(e.chars)) {
+      e.hasMatch = true;
+      e.match = MapFeature{};
+      e.match.id = e.chars;
+    }
+    return;
+  }
+
+  const MapFeature* best = &candidates.front();
+  if (mapData_ != nullptr && mapData_->positionValid) {
+    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+    const double cosLat =
+        std::max(0.05, std::cos(mapData_->ownshipLat * kDegToRad));
+    double bestSq = 0.0;
+    bool first = true;
+    for (const MapFeature& f : candidates) {
+      const double dLat = f.lat - mapData_->ownshipLat;
+      const double dLon = (f.lon - mapData_->ownshipLon) * cosLat;
+      const double dSq = dLat * dLat + dLon * dLon;
+      if (first || dSq < bestSq) {
+        best = &f;
+        bestSq = dSq;
+        first = false;
+      }
+    }
+  }
+  e.match = *best;
+  e.hasMatch = true;
+}
+
+void MfdController::entryTurnChar(FmsWaypointEntry& e, int step) {
+  const std::string shown = e.ident();
+  const char base =
+      e.pos < static_cast<int>(shown.size()) ? shown[e.pos] : '\0';
+  // A blank placeholder starts "in the middle at K"; a filled one steps from
+  // the displayed character (Pilot's Guide data-entry procedure).
+  const char next =
+      base == '\0' ? (step > 0 ? 'K' : 'J') : stepEntryChar(base, step);
+  if (static_cast<int>(e.chars.size()) <= e.pos) {
+    e.chars.push_back(next);
+  } else {
+    e.chars[e.pos] = next;
+  }
+  e.notFound = false;
+  entryUpdateAutofill(e);
+}
+
+void MfdController::entryMoveCursor(FmsWaypointEntry& e, int step) {
+  if (step < 0) {
+    e.pos = std::max(0, e.pos - 1);
+    return;
+  }
+  if (e.pos + 1 >= kFplEntryMaxChars) return;
+  // Moving right adopts the character under the cursor into the typed prefix
+  // (stepping through the auto-filled ident, like the real unit).
+  if (static_cast<int>(e.chars.size()) <= e.pos) {
+    const std::string shown = e.ident();
+    e.chars.push_back(e.pos < static_cast<int>(shown.size()) ? shown[e.pos]
+                                                             : 'A');
+  }
+  ++e.pos;
+  entryUpdateAutofill(e);
+}
+
+// ---- Active Flight Plan page ----
+
+void MfdController::syncFlightPlan(const MapData& map,
+                                   const std::string& activeWaypoint) {
+  mapData_ = &map;
+  activeWaypoint_ = activeWaypoint;
+
+  if (!legsEqual(map.flightPlan, fplLastMapPlan_)) {
+    fplLastMapPlan_ = map.flightPlan;
+    // Adopt the change unless it is just the data source catching up with our
+    // own pending/published edit.
+    if (!fplEditPending_ && !legsEqual(map.flightPlan, fplLastPublished_)) {
+      fplLegs_ = map.flightPlan;
+      // The rows the interaction state referenced are gone; close the entry
+      // and confirmation windows rather than acting on the wrong waypoint.
+      fplEntry_.active = false;
+      fplEntry_.notFound = false;
+      fplAltEntry_.active = false;
+      fplConfirm_ = FplConfirm::None;
+      fplMenuOpen_ = false;
+    }
+  }
+
+  fplCursorRow_ =
+      std::max(0, std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_));
+  if (fplCursorRow_ >= static_cast<int>(fplLegs_.size())) {
+    fplCursorCol_ = FplCursorCol::Ident;  // the append slot has no ALT field
+  }
+}
+
+bool MfdController::consumeFlightPlanEdit(std::vector<MapLeg>& out) {
+  if (!fplEditPending_) return false;
+  fplEditPending_ = false;
+  out = fplLegs_;
+  fplLastPublished_ = fplLegs_;
+  return true;
+}
+
+void MfdController::fplPublishEdit() { fplEditPending_ = true; }
+
+void MfdController::fplResetInteraction() {
+  fplCursorOn_ = false;
+  fplCursorRow_ = std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_);
+  fplCursorCol_ = FplCursorCol::Ident;
+  fplEntry_ = FmsWaypointEntry{};
+  fplAltEntry_ = FplAltEntry{};
+  fplConfirm_ = FplConfirm::None;
+  fplMenuOpen_ = false;
+  procMenuOpen_ = false;
+  procStep_ = ProcMenuStep::ProcedureList;
+  procSelectedName_.clear();
+}
+
+namespace {
+
+void insertProcedureLegs(ProcedureType type, std::vector<MapLeg>& fplLegs,
+                         const std::vector<MapLeg>& legs) {
+  if (legs.empty()) return;
+  int row = 0;
+  if (type == ProcedureType::Departure) {
+    row = fplLegs.empty() ? 0 : 1;
+  } else if (type == ProcedureType::Arrival) {
+    row = std::max(0, static_cast<int>(fplLegs.size()) - 1);
+  } else {
+    row = static_cast<int>(fplLegs.size());
+  }
+  fplLegs.insert(fplLegs.begin() + row, legs.begin(), legs.end());
+}
+
+MapProcedure findProcedure(ProcedureType type, const std::string& name,
+                         const std::string& transition,
+                         const std::vector<MapProcedure>& catalog) {
+  for (const MapProcedure& proc : catalog) {
+    if (proc.type == type && proc.name == name &&
+        proc.transition == transition) {
+      return proc;
+    }
+  }
+  MapProcedure fallback;
+  fallback.type = type;
+  fallback.name = name;
+  fallback.transition = transition;
+  return fallback;
+}
+
+}  // namespace
+
+bool MfdController::procBezelKey(BezelKey key) {
+  const std::vector<std::string> names = procProcedureNames(procCategory_);
+  const std::vector<std::string> transitions =
+      procStep_ == ProcMenuStep::TransitionList
+          ? procTransitions(procCategory_, procSelectedName_)
+          : std::vector<std::string>{};
+
+  auto loadProcedure = [&](const std::string& name,
+                           const std::string& transition) {
+    if (navSource_ == nullptr || !navSource_->ready()) return;
+    const std::string icao = procAirportIcao();
+    std::vector<MapLeg> legs =
+        navSource_->expandProcedure(icao, procCategory_, name, transition);
+    if (legs.empty()) return;
+    insertProcedureLegs(procCategory_, fplLegs_, legs);
+    fplCursorRow_ = static_cast<int>(fplLegs_.size());
+    fplPublishEdit();
+    procLoadTarget_ = findProcedure(procCategory_, name, transition,
+                                    proceduresFor(procCategory_));
+    procLoadPending_ = true;
+    procMenuOpen_ = false;
+    procStep_ = ProcMenuStep::ProcedureList;
+    procSelectedName_.clear();
+  };
+
+  switch (key) {
+    case BezelKey::Ent:
+      if (procStep_ == ProcMenuStep::ProcedureList) {
+        if (procSelected_ >= 0 &&
+            procSelected_ < static_cast<int>(names.size())) {
+          const std::string& name =
+              names[static_cast<std::size_t>(procSelected_)];
+          const std::vector<std::string> trans =
+              procTransitions(procCategory_, name);
+          if (trans.size() == 1) {
+            loadProcedure(name, trans.front());
+          } else if (trans.size() > 1) {
+            procSelectedName_ = name;
+            procStep_ = ProcMenuStep::TransitionList;
+            procSelected_ = 0;
+          }
+        }
+      } else if (procSelected_ >= 0 &&
+                 procSelected_ < static_cast<int>(transitions.size())) {
+        loadProcedure(procSelectedName_,
+                      transitions[static_cast<std::size_t>(procSelected_)]);
+      }
+      break;
+    case BezelKey::Clr:
+    case BezelKey::FmsPush:
+      if (procStep_ == ProcMenuStep::TransitionList) {
+        procStep_ = ProcMenuStep::ProcedureList;
+        procSelectedName_.clear();
+        procSelected_ = 0;
+      } else {
+        procMenuOpen_ = false;
+      }
+      break;
+    case BezelKey::FmsInnerCw:
+      if (procStep_ == ProcMenuStep::ProcedureList && !names.empty()) {
+        procSelected_ = (procSelected_ + 1) % static_cast<int>(names.size());
+      } else if (procStep_ == ProcMenuStep::TransitionList &&
+                 !transitions.empty()) {
+        procSelected_ =
+            (procSelected_ + 1) % static_cast<int>(transitions.size());
+      }
+      break;
+    case BezelKey::FmsInnerCcw:
+      if (procStep_ == ProcMenuStep::ProcedureList && !names.empty()) {
+        procSelected_ = (procSelected_ - 1 + static_cast<int>(names.size())) %
+                        static_cast<int>(names.size());
+      } else if (procStep_ == ProcMenuStep::TransitionList &&
+                 !transitions.empty()) {
+        procSelected_ = (procSelected_ - 1 +
+                         static_cast<int>(transitions.size())) %
+                        static_cast<int>(transitions.size());
+      }
+      break;
+    case BezelKey::FmsOuterCw:
+      if (procStep_ == ProcMenuStep::ProcedureList) {
+        procCategory_ = static_cast<ProcedureType>(
+            (static_cast<int>(procCategory_) + 1) % 3);
+        procSelected_ = 0;
+        procSelectedName_.clear();
+      }
+      break;
+    case BezelKey::FmsOuterCcw:
+      if (procStep_ == ProcMenuStep::ProcedureList) {
+        procCategory_ = static_cast<ProcedureType>(
+            (static_cast<int>(procCategory_) + 2) % 3);
+        procSelected_ = 0;
+        procSelectedName_.clear();
+      }
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
+void MfdController::fplAltEntryOpen(int row) {
+  if (row < 0 || row >= static_cast<int>(fplLegs_.size())) return;
+  fplAltEntry_.active = true;
+  fplAltEntry_.row = row;
+  fplAltEntry_.pos = 0;
+  // Seed the five digit cells with the existing constraint (right-aligned), or
+  // zeros for a fresh entry.
+  const int ft = fplLegs_[static_cast<std::size_t>(row)].altitudeConstraintFt;
+  char buf[8];
+  std::snprintf(buf, sizeof(buf), "%05d", std::max(0, std::min(99999, ft)));
+  fplAltEntry_.digits.assign(buf, 5);
+}
+
+void MfdController::fplAltEntryCommit() {
+  const int row = fplAltEntry_.row;
+  fplAltEntry_.active = false;
+  if (row < 0 || row >= static_cast<int>(fplLegs_.size())) return;
+  const int ft = std::atoi(fplAltEntry_.digits.c_str());
+  MapLeg& leg = fplLegs_[static_cast<std::size_t>(row)];
+  if (ft > 0) {
+    leg.altitudeConstraintFt = ft;
+    leg.altitudeConstraint = AltConstraintType::At;
+    leg.altitudeDesignated = true;  // manually entered -> drawn cyan
+  } else {
+    leg.altitudeConstraintFt = 0;
+    leg.altitudeConstraint = AltConstraintType::None;
+    leg.altitudeDesignated = false;
+  }
+  fplPublishEdit();
+}
+
+void MfdController::fplCommitEntry() {
+  if (fplEntry_.chars.empty()) {
+    // Nothing spelled: close the window, like backing out.
+    fplEntry_.active = false;
+    return;
+  }
+  if (!fplEntry_.hasMatch) {
+    fplEntry_.notFound = true;  // stay open so the ident can be corrected
+    return;
+  }
+
+  // Insert before the selected row (Pilot's Guide: "The new waypoint is
+  // placed directly in front of the highlighted waypoint"); the blank slot
+  // after the last waypoint appends.
+  const int row =
+      std::max(0, std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_));
+
+  const std::string ident = fplEntry_.autofill.empty() ? fplEntry_.chars
+                                                         : fplEntry_.autofill;
+  if (navSource_ != nullptr && navSource_->isAirwayName(ident) && row > 0 &&
+      row < static_cast<int>(fplLegs_.size())) {
+    const std::vector<MapLeg> expanded = navSource_->expandAirway(
+        ident, fplLegs_[static_cast<std::size_t>(row - 1)].id,
+        fplLegs_[static_cast<std::size_t>(row)].id);
+    if (!expanded.empty()) {
+      fplLegs_.insert(fplLegs_.begin() + row, expanded.begin(), expanded.end());
+      fplCursorRow_ = row + static_cast<int>(expanded.size());
+      fplEntry_.active = false;
+      fplEntry_.notFound = false;
+      fplPublishEdit();
+      return;
+    }
+  }
+
+  MapLeg leg;
+  leg.lat = fplEntry_.match.lat;
+  leg.lon = fplEntry_.match.lon;
+  leg.id = fplEntry_.match.id;
+  fplLegs_.insert(fplLegs_.begin() + row, leg);
+  fplCursorRow_ = row + 1;  // follow the insertion, ready for the next entry
+  fplEntry_.active = false;
+  fplEntry_.notFound = false;
+  fplPublishEdit();
+}
+
+bool MfdController::fplBezelKey(BezelKey key) {
+  // The confirmation window is modal: ENT executes the highlighted choice,
+  // CLR (or pushing the FMS knob) cancels, the knob toggles OK/CANCEL.
+  if (fplConfirm_ != FplConfirm::None) {
+    switch (key) {
+      case BezelKey::Ent:
+        if (fplConfirmOk_) {
+          if (fplConfirm_ == FplConfirm::RemoveWaypoint) {
+            if (fplCursorRow_ < static_cast<int>(fplLegs_.size())) {
+              fplLegs_.erase(fplLegs_.begin() + fplCursorRow_);
+              fplPublishEdit();
+            }
+          } else {  // DeleteFlightPlan
+            fplLegs_.clear();
+            fplCursorRow_ = 0;
+            fplPublishEdit();
+          }
+        }
+        fplConfirm_ = FplConfirm::None;
+        break;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        fplConfirm_ = FplConfirm::None;
+        break;
+      case BezelKey::FmsOuterCw:
+      case BezelKey::FmsOuterCcw:
+      case BezelKey::FmsInnerCw:
+      case BezelKey::FmsInnerCcw:
+        fplConfirmOk_ = !fplConfirmOk_;
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  // Page menu: a single option (Delete Flight Plan), ENT selects it.
+  if (fplMenuOpen_) {
+    switch (key) {
+      case BezelKey::Ent:
+        fplMenuOpen_ = false;
+        fplConfirm_ = FplConfirm::DeleteFlightPlan;
+        fplConfirmOk_ = true;
+        break;
+      case BezelKey::Clr:
+      case BezelKey::Menu:
+      case BezelKey::FmsPush:
+        fplMenuOpen_ = false;
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  // Waypoint Information entry window: small knob spells, large knob moves
+  // the character cursor, ENT accepts, CLR / knob push cancels (the field
+  // reverts, Pilot's Guide data-entry procedure).
+  if (fplEntry_.active) {
+    switch (key) {
+      case BezelKey::Ent:
+        fplCommitEntry();
+        break;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        fplEntry_.active = false;
+        fplEntry_.notFound = false;
+        break;
+      case BezelKey::FmsInnerCw:
+        entryTurnChar(fplEntry_, +1);
+        break;
+      case BezelKey::FmsInnerCcw:
+        entryTurnChar(fplEntry_, -1);
+        break;
+      case BezelKey::FmsOuterCw:
+        entryMoveCursor(fplEntry_, +1);
+        break;
+      case BezelKey::FmsOuterCcw:
+        entryMoveCursor(fplEntry_, -1);
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  // VNAV altitude-constraint entry window: small knob spins the digit under the
+  // cursor, large knob moves the cursor, ENT commits (0 clears the constraint),
+  // CLR / knob push cancels.
+  if (fplAltEntry_.active) {
+    switch (key) {
+      case BezelKey::Ent:
+        fplAltEntryCommit();
+        break;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        fplAltEntry_.active = false;
+        break;
+      case BezelKey::FmsInnerCw:
+      case BezelKey::FmsInnerCcw: {
+        const int step = key == BezelKey::FmsInnerCw ? +1 : -1;
+        char& c = fplAltEntry_.digits[static_cast<std::size_t>(fplAltEntry_.pos)];
+        c = static_cast<char>('0' + ((c - '0' + step + 10) % 10));
+        break;
+      }
+      case BezelKey::FmsOuterCw:
+        fplAltEntry_.pos = std::min(4, fplAltEntry_.pos + 1);
+        break;
+      case BezelKey::FmsOuterCcw:
+        fplAltEntry_.pos = std::max(0, fplAltEntry_.pos - 1);
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  // MENU opens the page menu whether or not the cursor is on.
+  if (key == BezelKey::Menu) {
+    fplMenuOpen_ = true;
+    return true;
+  }
+
+  // Pushing the knob turns the selection cursor on/off.
+  if (key == BezelKey::FmsPush) {
+    fplCursorOn_ = !fplCursorOn_;
+    fplCursorRow_ =
+        std::max(0, std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_));
+    fplCursorCol_ = FplCursorCol::Ident;
+    return true;
+  }
+
+  if (!fplCursorOn_) return false;  // knob turns step pages as usual
+
+  const int legCount = static_cast<int>(fplLegs_.size());
+  // The blank append slot (row == legCount) has no ALT field.
+  const bool onWaypointRow = fplCursorRow_ < legCount;
+  const bool onAltCol =
+      onWaypointRow && fplCursorCol_ == FplCursorCol::Altitude;
+
+  switch (key) {
+    case BezelKey::FmsOuterCw:
+      // Step through fields: a waypoint row's IDENT then its ALT, then the next
+      // row's IDENT (Pilot's Guide: the large knob moves the field highlight).
+      if (onWaypointRow && fplCursorCol_ == FplCursorCol::Ident) {
+        fplCursorCol_ = FplCursorCol::Altitude;
+      } else {
+        fplCursorRow_ = std::min(legCount, fplCursorRow_ + 1);
+        fplCursorCol_ = FplCursorCol::Ident;
+      }
+      return true;
+    case BezelKey::FmsOuterCcw:
+      if (onAltCol) {
+        fplCursorCol_ = FplCursorCol::Ident;
+      } else if (fplCursorRow_ > 0) {
+        fplCursorRow_ -= 1;
+        // Land on the previous waypoint row's ALT field when it has one.
+        fplCursorCol_ = fplCursorRow_ < legCount ? FplCursorCol::Altitude
+                                                 : FplCursorCol::Ident;
+      }
+      return true;
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      if (onAltCol) {
+        // Small knob on the ALT column opens the altitude-constraint entry.
+        fplAltEntryOpen(fplCursorRow_);
+      } else {
+        // Small knob on the IDENT column opens the Waypoint Information window
+        // for an insertion before that row.
+        entryOpen(fplEntry_);
+      }
+      return true;
+    case BezelKey::Clr:
+      if (onAltCol) {
+        // CLR on the ALT column removes an existing constraint.
+        MapLeg& leg = fplLegs_[static_cast<std::size_t>(fplCursorRow_)];
+        if (leg.altitudeConstraint != AltConstraintType::None) {
+          leg.altitudeConstraintFt = 0;
+          leg.altitudeConstraint = AltConstraintType::None;
+          leg.altitudeDesignated = false;
+          fplPublishEdit();
+        }
+      } else if (onWaypointRow) {
+        // CLR on a waypoint row asks "Remove <wpt>?"; the blank append slot has
+        // nothing to remove.
+        fplConfirm_ = FplConfirm::RemoveWaypoint;
+        fplConfirmOk_ = true;
+        fplRemoveIdent_ = fplLegs_[fplCursorRow_].id;
+      }
+      return true;
+    case BezelKey::Ent:
+      return true;  // no function on a bare row, but the cursor owns the key
+    default:
+      return false;
+  }
+}
+
+// ---- Direct-To ----
+
+void MfdController::directToOpen() {
+  dtoOpen_ = true;
+  dtoArmed_ = false;
+  // Map Pointer: Direct-To opens on the waypoint under the pointer (Pilot's
+  // Guide, Map Panning).
+  if (mapPointerActive_) {
+    const MapFeature* sel = mapPointerFeature();
+    if (sel != nullptr) {
+      entryOpen(dtoEntry_, sel->id);
+      dtoEntry_.match = *sel;
+      dtoEntry_.hasMatch = true;
+      dtoEntry_.autofill = sel->id;
+      mapResetPointer();
+      return;
+    }
+  }
+  // Default destination (Pilot's Guide: the field defaults to the active
+  // waypoint, or the highlighted flight-plan waypoint when one is selected).
+  std::string initial;
+  if (fplCursorOn_ && fplCursorRow_ < static_cast<int>(fplLegs_.size())) {
+    initial = fplLegs_[fplCursorRow_].id;
+  } else if (!activeWaypoint_.empty()) {
+    initial = activeWaypoint_;
+  }
+  entryOpen(dtoEntry_, initial);
+}
+
+bool MfdController::directToBezelKey(BezelKey key) {
+  if (!dtoOpen_) {
+    if (key != BezelKey::DirectTo) return false;
+    directToOpen();
+    return true;
+  }
+
+  // Pressing Direct-To again, CLR, or pushing the knob closes the window.
+  if (key == BezelKey::Clr || key == BezelKey::FmsPush ||
+      key == BezelKey::DirectTo) {
+    dtoOpen_ = false;
+    dtoArmed_ = false;
+    dtoEntry_ = FmsWaypointEntry{};
+    return true;
+  }
+
+  // Armed: the ACTIVATE? prompt is highlighted; ENT engages the direct course.
+  if (dtoArmed_) {
+    if (key == BezelKey::Ent) {
+      dtoRequestTarget_.lat = dtoEntry_.match.lat;
+      dtoRequestTarget_.lon = dtoEntry_.match.lon;
+      dtoRequestTarget_.id = dtoEntry_.match.id;
+      dtoRequestPending_ = true;
+      dtoOpen_ = false;
+      dtoArmed_ = false;
+      dtoEntry_ = FmsWaypointEntry{};
+    }
+    return true;
+  }
+
+  // Entering the destination identifier.
+  switch (key) {
+    case BezelKey::Ent:
+      // First ENT confirms the waypoint and arms ACTIVATE? (an unknown ident
+      // keeps the window open so it can be corrected).
+      if (dtoEntry_.chars.empty()) {
+        break;
+      } else if (dtoEntry_.hasMatch) {
+        dtoEntry_.active = false;
+        dtoArmed_ = true;
+      } else {
+        dtoEntry_.notFound = true;
+      }
+      break;
+    case BezelKey::FmsInnerCw:
+      entryTurnChar(dtoEntry_, +1);
+      break;
+    case BezelKey::FmsInnerCcw:
+      entryTurnChar(dtoEntry_, -1);
+      break;
+    case BezelKey::FmsOuterCw:
+      entryMoveCursor(dtoEntry_, +1);
+      break;
+    case BezelKey::FmsOuterCcw:
+      entryMoveCursor(dtoEntry_, -1);
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
+bool MfdController::consumeDirectToRequest(MapLeg& out) {
+  if (!dtoRequestPending_) return false;
+  dtoRequestPending_ = false;
+  out = dtoRequestTarget_;
+  return true;
+}
+
+// ---- MAP pointer / pan ----
+
+namespace {
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+constexpr double kNmPerDeg = 60.0;
+
+// Each FMS-knob click pans this fraction of the current map range, so panning
+// covers the same on-screen distance per click at every zoom (matching the
+// real unit's joystick feel, where one nudge moves a fixed part of the view
+// rather than a fixed ground distance).
+constexpr double kPanStepFrac = 0.10;
+// Smallest pan step (NM), so the tightest range still pans noticeably.
+constexpr double kPanStepMinNm = 0.05;
+
+// How close (as a fraction of the current range) the pointer must be to a map
+// feature for it to be "selected" -- highlighted and shown in the Map Pointer
+// information box. Keeps the snap radius a few pixels of the crosshair at any
+// zoom.
+constexpr double kMapPointerSnapFrac = 0.04;
+constexpr double kMapPointerSnapMinNm = 0.1;
+
+void offsetNm(double lat, double lon, double bearingDeg, double distNm,
+              double& outLat, double& outLon) {
+  const double cosLat = std::max(0.05, std::cos(lat * kDegToRad));
+  const double brg = bearingDeg * kDegToRad;
+  outLat = lat + (distNm * std::cos(brg)) / kNmPerDeg;
+  outLon = lon + (distNm * std::sin(brg)) / kNmPerDeg / cosLat;
+}
+
+// WPT group page index for a map feature (Airport / Intersection / NDB / VOR).
+int wptPageIndexFor(MapFeatureType type) {
+  switch (type) {
+    case MapFeatureType::Airport:
+      return 0;
+    case MapFeatureType::Fix:
+    case MapFeatureType::Waypoint:
+      return 1;
+    case MapFeatureType::Ndb:
+      return 2;
+    case MapFeatureType::Vor:
+      return 3;
+  }
+  return 0;
+}
+
+}  // namespace
+
+void MfdController::mapResetPointer() { mapPointerActive_ = false; }
+
+const MapFeature* MfdController::mapPointerFeature() const {
+  if (!mapPointerActive_ || mapData_ == nullptr) return nullptr;
+  const double snapNm =
+      std::max(kMapPointerSnapMinNm, rangeNm() * kMapPointerSnapFrac);
+  const MapFeature* best = nullptr;
+  double bestNm = snapNm;
+  for (const MapFeature& f : mapData_->features) {
+    const double dNm =
+        navDistanceNm(mapPointerLat_, mapPointerLon_, f.lat, f.lon);
+    if (dNm < bestNm) {
+      bestNm = dNm;
+      best = &f;
+    }
+  }
+  return best;
+}
+
+bool MfdController::mapBezelKey(BezelKey key) {
+  if (page() != MfdPage::NavigationMap) return false;
+
+  // The RANGE joystick drives panning (Pilot's Guide: push the Joystick to
+  // bring up the Map Pointer, move it to pan). The FMS knob is not involved.
+  if (key == BezelKey::PanPush) {
+    if (!mapPointerActive_ && mapData_ != nullptr && mapData_->positionValid) {
+      mapPointerLat_ = mapData_->ownshipLat;
+      mapPointerLon_ = mapData_->ownshipLon;
+    }
+    mapPointerActive_ = !mapPointerActive_;
+    return true;
+  }
+
+  if (!mapPointerActive_) return false;
+
+  // ENT on a highlighted waypoint opens its Waypoint Information page (Pilot's
+  // Guide, Map Panning).
+  if (key == BezelKey::Ent) {
+    const MapFeature* sel = mapPointerFeature();
+    if (sel != nullptr) {
+      wptEntry_ = FmsWaypointEntry{};
+      wptFeature_ = *sel;
+      wptHasSelection_ = true;
+      pageIndex_[static_cast<int>(MfdPageGroup::Waypoint)] =
+          wptPageIndexFor(sel->type);
+      mapResetPointer();
+      pageGroup_ = MfdPageGroup::Waypoint;
+      pageSelectSec_ = kPageSelectSeconds;
+    }
+    return true;
+  }
+
+  const double stepNm = std::max(kPanStepMinNm, rangeNm() * kPanStepFrac);
+  double bearing = 0.0;
+  switch (key) {
+    case BezelKey::PanRight:
+      bearing = 90.0;
+      break;
+    case BezelKey::PanLeft:
+      bearing = 270.0;
+      break;
+    case BezelKey::PanUp:
+      bearing = 0.0;
+      break;
+    case BezelKey::PanDown:
+      bearing = 180.0;
+      break;
+  default:
+    return false;
+  }
+  offsetNm(mapPointerLat_, mapPointerLon_, bearing, stepNm,
+           mapPointerLat_, mapPointerLon_);
+  return true;
+}
+
+// ---- Weather Radar page ----
+
+bool MfdController::radarBezelKey(BezelKey key) {
+  // The small FMS knob trims the bearing line while it is displayed, otherwise
+  // the antenna tilt (Pilot's Guide, Radar Controls). The large knob is left
+  // alone so it still steps the page group out of the radar page.
+  const bool onBearing =
+      radarBearingLineOn_ && radarScan_ != RadarScan::Vertical;
+  switch (key) {
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw: {
+      const float dir = key == BezelKey::FmsInnerCw ? 1.0f : -1.0f;
+      if (onBearing) {
+        radarBearingDeg_ = std::max(
+            -kRadarBearingLimitDeg,
+            std::min(kRadarBearingLimitDeg,
+                     radarBearingDeg_ + dir * kRadarBearingStepDeg));
+      } else {
+        radarTiltDeg_ = std::max(
+            -kRadarTiltLimitDeg,
+            std::min(kRadarTiltLimitDeg,
+                     radarTiltDeg_ + dir * kRadarTiltStepDeg));
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// ---- WPT ident search ----
+
+void MfdController::wptResetInteraction() {
+  wptEntry_ = FmsWaypointEntry{};
+  wptHasSelection_ = false;
+  wptFeature_ = MapFeature{};
+}
+
+void MfdController::wptCommitEntry() {
+  if (wptEntry_.chars.empty()) {
+    wptEntry_.active = false;
+    return;
+  }
+  if (!wptEntry_.hasMatch) {
+    wptEntry_.notFound = true;
+    return;
+  }
+  wptFeature_ = wptEntry_.match;
+  wptHasSelection_ = true;
+  wptEntry_.active = false;
+  wptEntry_.notFound = false;
+}
+
+bool MfdController::wptBezelKey(BezelKey key) {
+  if (wptEntry_.active) {
+    switch (key) {
+      case BezelKey::Ent:
+        wptCommitEntry();
+        break;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        wptEntry_.active = false;
+        wptEntry_.notFound = false;
+        break;
+      case BezelKey::FmsInnerCw:
+        entryTurnChar(wptEntry_, +1);
+        break;
+      case BezelKey::FmsInnerCcw:
+        entryTurnChar(wptEntry_, -1);
+        break;
+      case BezelKey::FmsOuterCw:
+        entryMoveCursor(wptEntry_, +1);
+        break;
+      case BezelKey::FmsOuterCcw:
+        entryMoveCursor(wptEntry_, -1);
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  switch (key) {
+    case BezelKey::FmsPush:
+      entryOpen(wptEntry_, wptHasSelection_ ? wptFeature_.id : "");
+      return true;
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      entryOpen(wptEntry_);
+      return true;
+    default:
+      return false;
+  }
+}
+
+// ---- NRST list cursor ----
+
+void MfdController::nrstResetInteraction() {
+  nrstCursorOn_ = false;
+  nrstSelected_ = 0;
+}
+
+bool MfdController::nrstBezelKey(BezelKey key) {
+  const MfdPage p = page();
+  if (p == MfdPage::NearestFrequencies) return false;
+
+  if (key == BezelKey::FmsPush) {
+    nrstCursorOn_ = !nrstCursorOn_;
+    return true;
+  }
+
+  if (nrstCursorOn_) {
+    switch (key) {
+      case BezelKey::FmsOuterCw:
+        ++nrstSelected_;
+        return true;
+      case BezelKey::FmsOuterCcw:
+        nrstSelected_ = std::max(0, nrstSelected_ - 1);
+        return true;
+      case BezelKey::FmsInnerCw:
+        stepPage(1);
+        return true;
+      case BezelKey::FmsInnerCcw:
+        stepPage(-1);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  return false;
 }
 
 }  // namespace avionics

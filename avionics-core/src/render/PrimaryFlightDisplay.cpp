@@ -16,11 +16,13 @@ void PrimaryFlightDisplay::render(Renderer& r, const FlightData& d,
 
   pfd::drawAttitude(r, L, d, w, h);
   pfd::drawInsetMap(r, L, map, d, ui, h);
+  // HSI Map layout draws the moving map behind the compass rose.
+  pfd::drawHsiMap(r, L, map, d, ui, h);
   pfd::drawAirspeedTape(r, L, d, ui, h);
   pfd::drawAltimeter(r, L, d, ui, h);
   pfd::drawVerticalSpeedIndicator(r, L, d, h);
   pfd::drawVerticalDeviation(r, L, d, h);
-  pfd::drawHsiSection(r, L, d, ui, h);
+  pfd::drawHsiSection(r, L, d, ui, h, ui.hsiMapVisible());
   pfd::drawChrome(r, L, d, ui, w, h);
 }
 

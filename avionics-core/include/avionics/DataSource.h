@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cstdint>
+
 #include "avionics/Checklist.h"
 #include "avionics/ConnectionState.h"
+#include "avionics/Eis.h"
 #include "avionics/FlightData.h"
 #include "avionics/MapData.h"
 
@@ -27,11 +30,28 @@ class DataSource {
   // page. Default is empty; shells that can populate nav data override this.
   virtual const MapData& mapSnapshot() const { return emptyMap_; }
 
+  // Airport diagram geometry generation; shells with a render cache compare
+  // this each frame and invalidate when it changes.
+  virtual std::uint32_t mapGeometryEpoch() const { return 0; }
+
   // Author-supplied checklists for the MFD Checklist page group. Default is
   // empty; shells that can locate the aircraft's checklist file override this.
   virtual const ChecklistData& checklistSnapshot() const {
     return emptyChecklist_;
   }
+
+  // Per-aircraft engine display layout (g1000_eis.txt beside the .acf).
+  virtual const EisLayout& eisLayoutSnapshot() const { return emptyEis_; }
+
+  // Map panning: when the MFD MAP page's Map Pointer is active the map view
+  // recenters on the pointer instead of ownship, so the feature/airspace/etc.
+  // layers must be queried around that pointer too -- otherwise the data stays
+  // around the aircraft and the panned-to area comes up empty. Shells push the
+  // MFD controller's pointer state here each frame; sources that build the map
+  // snapshot query around this center (when active) instead of ownship.
+  // Sources without a spatial map layer ignore it (the default no-op).
+  virtual void setMapPanCenter(bool /*active*/, double /*lat*/,
+                               double /*lon*/) {}
 
   // Health of this source. Sources that are always available (the mock feed,
   // the in-process dataref reader) keep the default; network-backed sources
@@ -40,9 +60,17 @@ class DataSource {
     return ConnectionState::Connected;
   }
 
+  // Whether the MFD power-up page must be acknowledged with the ENT key before
+  // the live pages appear, as on a real unit (the pilot confirms database
+  // currency). Live sim links keep the default; synthetic feeds (the mock)
+  // override it to false so the boot sequence advances on its own without a
+  // keypress.
+  virtual bool requiresPowerUpAcknowledge() const { return true; }
+
  private:
   static inline const MapData emptyMap_{};
   static inline const ChecklistData emptyChecklist_{};
+  static inline const EisLayout emptyEis_{};
 };
 
 }  // namespace avionics

@@ -12,6 +12,15 @@ constexpr const char* kAppDirName = "XPlaneAvionics";
 constexpr const char* kSettingsFileName = "settings.txt";
 constexpr const char* kKeyUseXPlane = "useXPlane";
 constexpr const char* kKeyShowBezel = "showBezel";
+constexpr const char* kKeySimbriefPilotId = "simbriefPilotId";
+constexpr const char* kKeyShowWindowChrome = "showWindowChrome";
+constexpr const char* kKeyAlwaysOnTop = "alwaysOnTop";
+constexpr const char* kKeySimulateTurbulence = "simulateTurbulence";
+constexpr const char* kKeyRememberWindowPos = "rememberWindowPos";
+constexpr const char* kKeyPfdWindowX = "pfdWindowX";
+constexpr const char* kKeyPfdWindowY = "pfdWindowY";
+constexpr const char* kKeyMfdWindowX = "mfdWindowX";
+constexpr const char* kKeyMfdWindowY = "mfdWindowY";
 
 // Per-user config directory, following each platform's convention. Empty when
 // the environment does not point anywhere sensible (settings then no-op).
@@ -49,6 +58,17 @@ bool ParseBool(const std::string& value, bool fallback) {
   return fallback;
 }
 
+// Parses a window coordinate (may legitimately be negative on multi-monitor
+// setups). Marks hasWindowPos so a saved position is only restored when every
+// coordinate key was actually present and numeric.
+void ParseWindowCoord(const std::string& value, int& target, bool& valid) {
+  try {
+    target = std::stoi(value);
+  } catch (...) {
+    valid = false;
+  }
+}
+
 }  // namespace
 
 AppSettings LoadAppSettings() {
@@ -60,6 +80,8 @@ AppSettings LoadAppSettings() {
   if (!in.is_open()) return settings;
 
   std::string line;
+  int windowCoords = 0;
+  bool coordsValid = true;
   while (std::getline(in, line)) {
     const std::string::size_type eq = line.find('=');
     if (eq == std::string::npos) continue;
@@ -69,8 +91,38 @@ AppSettings LoadAppSettings() {
       settings.useXPlane = ParseBool(value, settings.useXPlane);
     } else if (key == kKeyShowBezel) {
       settings.showBezel = ParseBool(value, settings.showBezel);
+    } else if (key == kKeySimbriefPilotId) {
+      settings.simbriefPilotId = value;
+    } else if (key == kKeyShowWindowChrome) {
+      settings.showWindowChrome =
+          ParseBool(value, settings.showWindowChrome);
+    } else if (key == kKeyAlwaysOnTop) {
+      settings.alwaysOnTop = ParseBool(value, settings.alwaysOnTop);
+    } else if (key == kKeySimulateTurbulence) {
+      settings.simulateTurbulence =
+          ParseBool(value, settings.simulateTurbulence);
+    } else if (key == kKeyRememberWindowPos) {
+      settings.rememberWindowPos =
+          ParseBool(value, settings.rememberWindowPos);
+    } else if (key == kKeyPfdWindowX) {
+      ParseWindowCoord(value, settings.pfdWindowX, coordsValid);
+      ++windowCoords;
+    } else if (key == kKeyPfdWindowY) {
+      ParseWindowCoord(value, settings.pfdWindowY, coordsValid);
+      ++windowCoords;
+    } else if (key == kKeyMfdWindowX) {
+      ParseWindowCoord(value, settings.mfdWindowX, coordsValid);
+      ++windowCoords;
+    } else if (key == kKeyMfdWindowY) {
+      ParseWindowCoord(value, settings.mfdWindowY, coordsValid);
+      ++windowCoords;
+    } else {
+      // Durable avionics display preferences are owned by the shared core, so
+      // it parses its own keys; anything else is silently ignored.
+      applyStateLine(key, value, settings.avionics);
     }
   }
+  settings.hasWindowPos = coordsValid && windowCoords == 4;
   settings.loaded = true;
   return settings;
 }
@@ -86,6 +138,26 @@ void SaveAppSettings(const AppSettings& settings) {
   if (!out.is_open()) return;
   out << kKeyUseXPlane << '=' << (settings.useXPlane ? '1' : '0') << '\n';
   out << kKeyShowBezel << '=' << (settings.showBezel ? '1' : '0') << '\n';
+  out << kKeySimbriefPilotId << '=' << settings.simbriefPilotId << '\n';
+  out << kKeyShowWindowChrome << '='
+      << (settings.showWindowChrome ? '1' : '0') << '\n';
+  out << kKeyAlwaysOnTop << '=' << (settings.alwaysOnTop ? '1' : '0') << '\n';
+  out << kKeySimulateTurbulence << '='
+      << (settings.simulateTurbulence ? '1' : '0') << '\n';
+  out << kKeyRememberWindowPos << '='
+      << (settings.rememberWindowPos ? '1' : '0') << '\n';
+  // Window coordinates are only written once a position has been captured, so
+  // a fresh install never restores a bogus (0, 0) placement.
+  if (settings.hasWindowPos) {
+    out << kKeyPfdWindowX << '=' << settings.pfdWindowX << '\n';
+    out << kKeyPfdWindowY << '=' << settings.pfdWindowY << '\n';
+    out << kKeyMfdWindowX << '=' << settings.mfdWindowX << '\n';
+    out << kKeyMfdWindowY << '=' << settings.mfdWindowY << '\n';
+  }
+  // Durable avionics display preferences, serialized by the shared core.
+  std::string avionicsLines;
+  appendStateLines(settings.avionics, avionicsLines);
+  out << avionicsLines;
 }
 
 }  // namespace avionics

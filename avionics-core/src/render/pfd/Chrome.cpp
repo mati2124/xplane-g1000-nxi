@@ -151,7 +151,7 @@ void drawNavStatusBox(Renderer& r, float w, float h, const Layout& L,
 }
 
 void drawTopBar(Renderer& r, float w, float h, const Layout& L,
-                const FlightData& d) {
+                const FlightData& d, const SoftkeyController& ui) {
   const float barH = L.topBarH;
   // NavComBox dark blue-grey vertical gradient rgb(4,4,12) -> rgb(24,28,43).
   r.fillRectVerticalGradient(0.0f, 0.0f, w, barH, 0.0f, barH,
@@ -187,11 +187,34 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
   };
   const Nav navs[2] = {{"NAV1", d.nav1ActiveMhz, d.nav1StandbyMhz, row1Cy},
                        {"NAV2", d.nav2ActiveMhz, d.nav2StandbyMhz, row2Cy}};
-  for (const Nav& n : navs) {
+  auto drawStandby = [&](float x, float cy, const std::string& text,
+                         bool selected) {
+    if (selected) {
+      const float tw = r.measureTextWidth(text, freqSize);
+      r.fillRect(x - tw - freqSize * 0.15f, cy - freqSize * 0.62f,
+                 tw + freqSize * 0.3f, freqSize * 1.24f, colors::kCyan);
+      r.fillText(x, cy, text, freqSize, TextAlign::Right, colors::kBlack);
+    } else {
+      r.fillText(x, cy, text, freqSize, TextAlign::Right, standbyColor);
+    }
+  };
+
+  // The selected COM/NAV standby is boxed in cyan; the box flashes (with the
+  // shared ~1 Hz blink phase) for a few seconds after a tuning action, then
+  // settles solid, matching the real unit's armed tuning cursor.
+  auto boxed = [&](RadioUnit unit, RadioUnit selected, RadioBand band) {
+    if (selected != unit) return false;
+    const bool flashing = ui.radioArmedBand() == band && ui.radioArmed();
+    return !flashing || ui.blinkOn();
+  };
+
+  for (int i = 0; i < 2; ++i) {
+    const Nav& n = navs[i];
+    const RadioUnit unit = i == 0 ? RadioUnit::Nav1 : RadioUnit::Nav2;
     r.fillText(w * 0.012f, n.cy, n.label, labelSize, TextAlign::Left,
                colors::kLabelText);
-    r.fillText(w * 0.140f, n.cy, freqText(n.standby, 2), freqSize,
-               TextAlign::Right, standbyColor);
+    drawStandby(w * 0.140f, n.cy, freqText(n.standby, 2),
+                boxed(unit, ui.navSelected(), RadioBand::Nav));
     drawTransferArrow(r, w * 0.158f, n.cy, w * 0.011f);
     r.fillText(w * 0.245f, n.cy, freqText(n.active, 2), freqSize,
                TextAlign::Right, activeColor);
@@ -199,7 +222,9 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
 
   const Nav coms[2] = {{"COM1", d.com1ActiveMhz, d.com1StandbyMhz, row1Cy},
                        {"COM2", d.com2ActiveMhz, d.com2StandbyMhz, row2Cy}};
-  for (const Nav& c : coms) {
+  for (int i = 0; i < 2; ++i) {
+    const Nav& c = coms[i];
+    const RadioUnit unit = i == 0 ? RadioUnit::Com1 : RadioUnit::Com2;
     // Right-align the active frequency just left of the transfer arrow so the
     // wider 3-decimal COM readouts never collide with the arrow (the NAV side
     // right-aligns away from the arrow for the same reason).
@@ -208,8 +233,8 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
     drawTransferArrow(r, w * 0.844f, c.cy, w * 0.011f);
     // Right-align the standby just short of the identifier (rather than
     // left-aligning it, which grows the 3-decimal readout into the COMx label).
-    r.fillText(w * 0.940f, c.cy, freqText(c.standby, 3), freqSize,
-               TextAlign::Right, standbyColor);
+    drawStandby(w * 0.940f, c.cy, freqText(c.standby, 3),
+                boxed(unit, ui.comSelected(), RadioBand::Com));
     r.fillText(w * 0.996f, c.cy, c.label, labelSize, TextAlign::Right,
                colors::kLabelText);
   }
@@ -307,11 +332,13 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   // each with a pointer icon, source, identifier, and distance.
   const float brgSize = fontPx(wt::kInfoLabel, h);
   const float brgRowCy = top + panelH * 0.55f;
-  if (d.bearing1Valid) {
+  const bool brg1On = ui.displayToggle(DisplayToggle::Bearing1);
+  const bool brg2On = ui.displayToggle(DisplayToggle::Bearing2);
+  if (d.bearing1Valid && brg1On) {
     drawBearingInfo(r, 200.0f * L.sx, brgRowCy, false, d.bearing1Source,
                     d.bearing1Ident, d.bearing1DistanceNm, brgSize);
   }
-  if (d.bearing2Valid) {
+  if (d.bearing2Valid && brg2On) {
     // BRG2 is anchored to the left edge of the transponder box (or the timer
     // box when shown) so the distance readout can never run into it.
     const float brg2Right = (tmrVisible ? tmrX : xpdrX) - 10.0f * L.sx;
@@ -520,20 +547,23 @@ void drawAlertsWindow(Renderer& r, float w, float h, const Layout& L,
   }
 }
 
-// One field of the References window: text with an optional FMS-cursor
-// highlight (black text on a cyan plate). Returns the x just past the field.
+// One field of the References window: text with an optional highlight-select
+// cursor (pulses cyan plate / black text vs plain cyan text). Returns the x
+// just past the field.
 float putField(Renderer& r, float x, float cy, const std::string& text,
                float size, const Color& color, bool highlighted, float alpha,
-               float trailingGapFrac = 0.6f) {
+               bool blinkOn, float trailingGapFrac = 0.6f) {
   const float tw = r.measureTextWidth(text, size);
-  if (highlighted) {
+  if (highlighted && blinkOn) {
     const float padX = size * 0.25f;
     const float padY = size * 0.18f;
     r.fillRect(x - padX, cy - size * 0.5f - padY, tw + 2.0f * padX,
                size + 2.0f * padY, withAlpha(colors::kCyan, alpha));
   }
-  r.fillText(x, cy, text, size, TextAlign::Left,
-             withAlpha(highlighted ? colors::kBlack : color, alpha));
+  const Color textColor = highlighted
+                              ? (blinkOn ? colors::kBlack : colors::kCyan)
+                              : color;
+  r.fillText(x, cy, text, size, TextAlign::Left, withAlpha(textColor, alpha));
   return x + tw + size * trailingGapFrac;
 }
 
@@ -544,13 +574,15 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
                           const SoftkeyController& ui) {
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::References),
-                      "REFERENCES", w * 0.34f, h * 0.40f);
+                      "REFERENCES", w * 0.34f, h * 0.46f);
   if (f.a <= 0.0f) return;
   const float a = f.a;
   const RefField cursor = ui.referencesCursor();
+  const bool blinkOn = ui.blinkOn();
 
   const float size = fontPx(wt::kInfoValue, h) * 0.9f;
-  const float lineH = (f.top + f.h - f.contentTop) / 6.5f;
+  // Up to seven rows (TIMER, four V-speeds, MINS, and the TEMP-COMP row).
+  const float lineH = (f.top + f.h - f.contentTop) / 7.5f;
   const float labelX = f.x + f.w * 0.05f;
   const float valueX = f.x + f.w * 0.34f;
   const float stateX = f.x + f.w * 0.70f;
@@ -561,10 +593,11 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
   r.fillText(labelX, cy, "TIMER", size, TextAlign::Left,
              withAlpha(colors::kWhite, a));
   putField(r, valueX, cy, formatTimer(ui.timerSeconds()), size, colors::kWhite,
-           false, a);
-  putField(r, f.x + f.w * 0.58f, cy, "UP", size, colors::kCyan, false, a);
+           false, a, blinkOn);
+  putField(r, f.x + f.w * 0.58f, cy, "UP", size, colors::kCyan, false, a,
+           blinkOn);
   putField(r, stateX, cy, ui.timerCommandLabel(), size, colors::kWhite,
-           cursor == RefField::TimerCmd, a);
+           cursor == RefField::TimerCmd, a, blinkOn);
   cy += lineH;
 
   // V-speed rows: reference value (cyan) and the On/Off enable field.
@@ -573,24 +606,42 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
     const bool on = ui.vspeedEnabled(static_cast<VspeedRef>(i));
     const RefField field =
         static_cast<RefField>(static_cast<int>(RefField::Glide) + i);
+    const float vKt = ui.vspeedValueKt(static_cast<VspeedRef>(i));
     r.fillText(labelX, cy, v.windowLabel, size, TextAlign::Left,
                withAlpha(colors::kWhite, a));
-    putField(r, valueX, cy, formatInt(v.kt) + "KT", size, colors::kCyan, false,
-             a);
+    // The reference value is the FMS-cursor field (small knob edits it); the
+    // On/Off enable sits to its right.
+    putField(r, valueX, cy, formatInt(vKt) + "KT", size, colors::kCyan,
+             cursor == field, a, blinkOn);
     putField(r, stateX, cy, on ? "ON" : "OFF", size,
-             on ? colors::kWhite : colors::kLabelText, cursor == field, a);
+             on ? colors::kWhite : colors::kLabelText, false, a, blinkOn);
     cy += lineH;
   }
 
-  // MINS row: Off/BARO mode and, when BARO, the MDA/DH altitude.
-  const bool baro = ui.minimumsMode() == MinimumsMode::Baro;
+  // MINS row: Off/BARO/TEMP source and, when set, the MDA/DH altitude. TEMP
+  // COMP adds a destination-temperature field on the following row.
+  const MinimumsMode minsMode = ui.minimumsMode();
+  const bool minsOn = minsMode != MinimumsMode::Off;
+  const char* minsModeLabel = minsMode == MinimumsMode::Baro   ? "BARO"
+                              : minsMode == MinimumsMode::Temp ? "TEMP"
+                                                              : "OFF";
   r.fillText(labelX, cy, "MINS", size, TextAlign::Left,
              withAlpha(colors::kWhite, a));
-  putField(r, valueX, cy, baro ? "BARO" : "OFF", size, colors::kWhite,
-           cursor == RefField::MinsMode, a);
-  if (baro) {
+  putField(r, valueX, cy, minsModeLabel, size, colors::kWhite,
+           cursor == RefField::MinsMode, a, blinkOn);
+  if (minsOn) {
     putField(r, stateX, cy, formatInt(ui.minimumsAltitudeFt()) + "FT", size,
-             colors::kCyan, cursor == RefField::MinsValue, a);
+             colors::kCyan, cursor == RefField::MinsValue, a, blinkOn);
+  }
+  if (minsMode == MinimumsMode::Temp) {
+    cy += lineH;
+    r.fillText(labelX, cy, "TEMP AT DEST", size, TextAlign::Left,
+               withAlpha(colors::kWhite, a));
+    char tbuf[16];
+    std::snprintf(tbuf, sizeof(tbuf), "%+d\u00b0C",
+                  static_cast<int>(std::lround(ui.minimumsTempC())));
+    putField(r, stateX, cy, tbuf, size, colors::kCyan,
+             cursor == RefField::MinsTemp, a, blinkOn);
   }
 }
 
@@ -615,6 +666,7 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
 
   constexpr int kVisibleEntries = 3;
   const int cursor = ui.nearestCursor();
+  const bool blinkOn = ui.blinkOn();
   // The list scrolls only once the cursor moves past the bottom visible row.
   const int first = std::max(0, cursor - kVisibleEntries + 1);
   const float entryH = (f.top + f.h - f.contentTop) /
@@ -632,7 +684,8 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
 
     // Line 1: identifier (FMS cursor highlights the selected airport),
     // bearing, and distance.
-    putField(r, labelX, cy1, apt.id, size, colors::kWhite, i == cursor, a);
+    putField(r, labelX, cy1, apt.id, size, colors::kWhite, i == cursor, a,
+             blinkOn);
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%s\u00b0  %.1fNM",
                   formatHeading(apt.bearingDeg).c_str(), apt.distanceNm);
@@ -710,7 +763,7 @@ void drawCasAnnunciations(Renderer& r, float w, float h, const Layout& L,
 
 void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
                 const SoftkeyController& ui, float w, float h) {
-  drawTopBar(r, w, h, L, d);
+  drawTopBar(r, w, h, L, d, ui);
   drawNavStatusBox(r, w, h, L, d);
   drawBottomInfoPanel(r, w, h, L, d, ui);
   // CAS annunciation window is always visible (when active) on the main PFD.

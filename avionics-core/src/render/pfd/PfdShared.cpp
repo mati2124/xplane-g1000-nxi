@@ -5,12 +5,15 @@
 namespace avionics::pfd {
 
 // Indexed by avionics::VspeedRef (Glide, Vr, Vx, Vy) so the References window
-// On/Off toggles map 1:1 onto these rows. Defaults are the Cessna 172S values.
+// On/Off toggles map 1:1 onto these rows. The kt field holds the default
+// (Cessna 172S) value; the live, pilot-editable value is owned by the
+// SoftkeyController and read via vspeedValueKt(). Defaults come from the shared
+// kDefaultVspeedKt so the controller and this table never drift apart.
 const VSpeedRef kVSpeedRefs[kVspeedRefCount] = {
-    {"G", "GLIDE", 65.0f},
-    {"R", "VR", 55.0f},
-    {"X", "VX", 62.0f},
-    {"Y", "VY", 74.0f},
+    {"G", "GLIDE", kDefaultVspeedKt[0]},
+    {"R", "VR", kDefaultVspeedKt[1]},
+    {"X", "VX", kDefaultVspeedKt[2]},
+    {"Y", "VY", kDefaultVspeedKt[3]},
 };
 const int kVSpeedRefCount = kVspeedRefCount;
 

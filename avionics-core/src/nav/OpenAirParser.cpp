@@ -33,13 +33,53 @@ std::string upperTrim(const std::string& s) {
 
 AirspaceClass classFromToken(const std::string& token) {
   const std::string t = upperTrim(token);
+  if (t == "A") return AirspaceClass::ClassA;
   if (t == "B") return AirspaceClass::ClassB;
   if (t == "C") return AirspaceClass::ClassC;
   if (t == "D") return AirspaceClass::ClassD;
   if (t == "R") return AirspaceClass::Restricted;
   if (t == "P") return AirspaceClass::Prohibited;
   if (t == "Q") return AirspaceClass::Danger;
+  if (t == "W") return AirspaceClass::Warning;
   return AirspaceClass::Other;
+}
+
+// Refine OpenAir AC=W entries and named areas to the NXi airspace groups.
+void refineAirspaceClass(AirspaceClass& cls, const std::string& name) {
+  const std::string n = upperTrim(name);
+  if (n.find("TFR") != std::string::npos) {
+    cls = AirspaceClass::TFR;
+    return;
+  }
+  if (n.find("ADIZ") != std::string::npos) {
+    cls = AirspaceClass::ADIZ;
+    return;
+  }
+  if (n.find("TRSA") != std::string::npos) {
+    cls = AirspaceClass::TRSA;
+    return;
+  }
+  if (n.find("MOA") != std::string::npos ||
+      n.find("MIL") != std::string::npos) {
+    cls = AirspaceClass::MOA;
+    return;
+  }
+  if (n.find("TRAINING") != std::string::npos || n.find(" TRA ") != std::string::npos) {
+    cls = AirspaceClass::Training;
+    return;
+  }
+  if (n.find("ALERT") != std::string::npos) {
+    cls = AirspaceClass::Alert;
+    return;
+  }
+  if (n.find("CAUTION") != std::string::npos) {
+    cls = AirspaceClass::Caution;
+    return;
+  }
+  if (n.find("WARN") != std::string::npos) {
+    cls = AirspaceClass::Warning;
+    return;
+  }
 }
 
 // Altitude strings: "SFC"/"GND" -> 0, "UNLIM[ITED]" -> sentinel, "FL180" ->
@@ -158,6 +198,7 @@ struct Builder {
 
 void flush(std::vector<MapAirspace>& out, Builder& b) {
   if (b.airspace.airspaceClass != AirspaceClass::Other &&
+      b.airspace.airspaceClass != AirspaceClass::ClassA &&
       b.airspace.boundary.size() >= 2) {
     out.push_back(std::move(b.airspace));
   }
@@ -215,6 +256,7 @@ std::vector<MapAirspace> parseOpenAir(std::istream& in) {
       b.airspace.airspaceClass = classFromToken(arg);
     } else if (k0 == 'A' && k1 == 'N') {
       b.airspace.name = upperTrim(arg);
+      refineAirspaceClass(b.airspace.airspaceClass, b.airspace.name);
     } else if (k0 == 'A' && k1 == 'H') {
       b.airspace.ceilingFt = parseAltitudeFt(arg, kUnlimitedFt);
     } else if (k0 == 'A' && k1 == 'L') {
@@ -287,8 +329,21 @@ std::vector<MapAirspace> airspacesNear(const std::vector<MapAirspace>& src,
   const double minLon = lon - dLon;
   const double maxLon = lon + dLon;
 
+  // Candidates that overlap the box, tagged with their distance (nm^2, scaled
+  // by latitude) from ownship to the nearest point of their bounding box. We
+  // rank by distance and keep the closest maxCount: in dense areas (e.g.
+  // Florida) far more than maxCount airspaces overlap a wide query box, so a
+  // file-order cut would silently drop airspace right at the aircraft (the
+  // KRSW Class C case). Distance ranking guarantees the nearest are kept.
+  struct Candidate {
+    const MapAirspace* airspace;
+    double distSq;
+  };
+  std::vector<Candidate> candidates;
+
   for (const MapAirspace& as : src) {
-    if (as.airspaceClass == AirspaceClass::Other || as.boundary.empty()) {
+    if (as.airspaceClass == AirspaceClass::Other ||
+        as.airspaceClass == AirspaceClass::ClassA || as.boundary.empty()) {
       continue;
     }
     double bMinLat = as.boundary.front().lat;
@@ -305,9 +360,27 @@ std::vector<MapAirspace> airspacesNear(const std::vector<MapAirspace>& src,
                           bMinLon <= maxLon && bMaxLon >= minLon;
     if (!overlaps) continue;
 
-    result.push_back(as);
-    if (result.size() >= maxCount) break;
+    // Distance from ownship to the nearest point of the bounding box (zero when
+    // ownship is inside it), in nm, so a large airspace whose edge is close
+    // ranks ahead of a small one whose center is far.
+    const double clampedLat = std::min(std::max(lat, bMinLat), bMaxLat);
+    const double clampedLon = std::min(std::max(lon, bMinLon), bMaxLon);
+    const double dNorthNm = (lat - clampedLat) * kNmPerDeg;
+    const double dEastNm = (lon - clampedLon) * kNmPerDeg * cosLat;
+    candidates.push_back({&as, dNorthNm * dNorthNm + dEastNm * dEastNm});
   }
+
+  if (candidates.size() > maxCount) {
+    std::nth_element(candidates.begin(), candidates.begin() + maxCount,
+                     candidates.end(),
+                     [](const Candidate& a, const Candidate& b) {
+                       return a.distSq < b.distSq;
+                     });
+    candidates.resize(maxCount);
+  }
+
+  result.reserve(candidates.size());
+  for (const Candidate& c : candidates) result.push_back(*c.airspace);
   return result;
 }
 

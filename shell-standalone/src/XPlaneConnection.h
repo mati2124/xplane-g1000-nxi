@@ -2,13 +2,22 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "AirspaceStore.h"
+#include "AirwayStore.h"
+#include "AptDatStore.h"
+#include "FlightPlanBridgeClient.h"
 #include "FmsPlanStore.h"
+#include "LandDataStore.h"
+#include "ObstacleStore.h"
 #include "NavData.h"
 #include "XPlaneWebApi.h"
 #include "avionics/Checklist.h"
+#include "avionics/Eis.h"
 #include "avionics/MapData.h"
+#include "avionics/Radio.h"
 #include "avionics/SimulatorConnection.h"
 #include "avionics/Terrain.h"
 
@@ -31,11 +40,18 @@ namespace avionics {
 // (SimConnect) can drop in behind the same interface.
 class XPlaneConnection : public SimulatorConnection {
  public:
-  // navData and fmsPlan are owned by the caller and shared with the mock feed
-  // so the (large) nav database and the flight plan are loaded only once.
+  // The database stores and fmsPlan are owned by the caller and shared with the
+  // mock feed (via ShellNavMapData) so the large databases -- notably the
+  // Global Airports apt.dat -- and the flight plan are parsed only once.
   XPlaneConnection(std::string host, std::uint16_t port, NavDataStore& navData,
+                   AirspaceStore& airspace, AirwayStore& airways,
+                   AptDatStore& aptData, LandDataStore& landData,
                    FmsPlanStore& fmsPlan, const TerrainSource* terrain = nullptr,
-                   const ChecklistSource* checklists = nullptr);
+                   const ChecklistSource* checklists = nullptr,
+                   const EisSource* eis = nullptr,
+                   const ObstacleStore* obstacles = nullptr,
+                   std::uint16_t bridgePort = fpbridge::kDefaultPort,
+                   bool fmsWriteEnabled = true);
   ~XPlaneConnection() override;
 
   XPlaneConnection(const XPlaneConnection&) = delete;
@@ -49,12 +65,59 @@ class XPlaneConnection : public SimulatorConnection {
                ? checklists_->checklists()
                : emptyChecklists_;
   }
+  const EisLayout& eisLayoutSnapshot() const override {
+    return (eisSource_ != nullptr && eisSource_->ready()) ? eisSource_->layout()
+                                                           : emptyEis_;
+  }
   ConnectionState connectionState() const override;
   const char* simulatorName() const override { return "X-PLANE"; }
 
+  // Replaces the .fms-file flight plan with an externally supplied route
+  // (a SimBrief OFP or an FPL page edit). Once set it stays authoritative --
+  // an empty vector shows an empty plan (a deleted flight plan) rather than
+  // falling back to the .fms file. When FMS write-back is enabled and the
+  // plugin bridge is reachable, the route is also programmed into X-Plane's
+  // FMS (an empty route clears the FMS plan).
+  void setRouteOverride(std::vector<MapLeg> route) {
+    routeOverride_ = std::move(route);
+    routeOverrideSet_ = true;
+    if (fmsWriteEnabled_) fmsBridge_.writePlan(routeOverride_);
+  }
+
+  // Active GPS Direct-To target for the map's magenta direct course. When FMS
+  // write-back is enabled and the plugin bridge is reachable, this also engages
+  // a present-position Direct-To in X-Plane's FMS; otherwise it drives the
+  // display only. An empty id clears the direct course.
+  void setDirectTo(MapLeg target) {
+    directTo_ = std::move(target);
+    directToActive_ = !directTo_.id.empty();
+    if (fmsWriteEnabled_) {
+      if (directToActive_) {
+        fmsBridge_.writeDirectTo(directTo_);
+      } else {
+        fmsBridge_.clearDirectTo();
+      }
+    }
+  }
+  void clearDirectTo() {
+    directToActive_ = false;
+    if (fmsWriteEnabled_) fmsBridge_.clearDirectTo();
+  }
+
+  void setMapPanCenter(bool active, double lat, double lon) override;
+
+  // Pilot commands from the PFD bezel / softkeys (UDP DREF writes).
+  void tuneRadioStandby(RadioUnit unit, float standbyMhz);
+  void transferRadio(RadioUnit unit);
+  void setTransponderCode(int code);
+  void setTransponderMode(int mode);
+
  private:
+  void sendDataref(const char* path, float value);
   void sendSubscriptions(int frequencyHz);
   void drainSocket();
+  void rebuildEisSubscriptions();
+  void subscribeEisBindings(int frequencyHz);
 
   // Refresh the moving-map snapshot (ownship position + nearby features). The
   // feature list is range-filtered from the nav database on a throttled timer,
@@ -70,6 +133,9 @@ class XPlaneConnection : public SimulatorConnection {
   // (lateral + vertical active/armed modes and the cyan altitude reference)
   // shown on the top bar.
   void updateFmaModes();
+
+  // Glideslope, marker beacon, and DME fields from the nav radio indicators.
+  void updateNavInstrumentation();
 
   // data_ is the smoothed state returned by snapshot(); target_ holds the most
   // recent values decoded from packets, which data_ is eased toward each frame.
@@ -106,16 +172,60 @@ class XPlaneConnection : public SimulatorConnection {
   bool haveLat_ = false;
   bool haveLon_ = false;
 
+  // Latest raw TCAS target fields straight off the RREF stream, one row per
+  // tracked target slot: [lat deg, lon deg, elevation m, vertical speed fpm].
+  // Decoded into MapTraffic entries by updateMap(). Slots X-Plane is not using
+  // report (0, 0) lat/lon and are skipped.
+  static constexpr int kTrafficSlotCount = 8;
+  static constexpr int kTrafficSlotFields = 4;
+  float trafficRaw_[kTrafficSlotCount][kTrafficSlotFields] = {};
+
+  static constexpr int kNavInstrCount = 9;
+  float navInstr_[kNavInstrCount] = {};
+
   // Moving-map snapshot and its nearby-feature rebuild timer. navData_ and
   // fmsPlan_ are shared (owned by the shell, also used by the mock feed).
   MapData map_;
   const TerrainSource* terrain_ = nullptr;
+  // Database stores are owned by the shell and shared (also used by the mock
+  // feed through ShellNavMapData) so each is loaded only once.
   NavDataStore& navData_;
-  AirspaceStore airspace_;
+  AirspaceStore& airspace_;
+  AirwayStore& airways_;
+  AptDatStore& aptData_;
+  LandDataStore& landData_;
+  const ObstacleStore* obstacles_ = nullptr;  // optional, owned by the shell
   FmsPlanStore& fmsPlan_;
+  std::vector<MapLeg> routeOverride_;  // takes precedence over fmsPlan_
+  bool routeOverrideSet_ = false;      // override active (even when empty)
+  MapLeg directTo_;                    // display-only Direct-To target
+  bool directToActive_ = false;
   const ChecklistSource* checklists_ = nullptr;
+  const EisSource* eisSource_ = nullptr;
   static inline const ChecklistData emptyChecklists_{};
+  static inline const EisLayout emptyEis_{};
+
+  struct RuntimeEisBinding {
+    std::string channel;
+    std::string datarefPath;
+    float scale = 1.0f;
+    float offset = 0.0f;
+    int subIndex = -1;
+    float target = 0.0f;
+  };
+  std::vector<RuntimeEisBinding> eisBindings_;
+  std::size_t eisLayoutBindingCount_ = 0;
+
   double sinceMapRebuildSeconds_ = 0.0;
+
+  // MFD Map Pointer (pan) state pushed by the shell. When active, the nearby-
+  // data scans center on (mapPanLat_, mapPanLon_) instead of ownship so the
+  // panned-to area has data. mapPanDirty_ forces an immediate rebuild when the
+  // pointer is toggled or moved so panning feels responsive.
+  bool mapPanActive_ = false;
+  double mapPanLat_ = 0.0;
+  double mapPanLon_ = 0.0;
+  bool mapPanDirty_ = false;
 
   std::string host_;
   std::uint16_t port_;
@@ -123,6 +233,16 @@ class XPlaneConnection : public SimulatorConnection {
   // String datarefs (the GPS destination identifier) can't ride the float-only
   // RREF stream, so they come from X-Plane's Web API on a background thread.
   XPlaneWebApi webApi_;
+
+  // Live FMS flight plan from the in-sim plugin's UDP bridge (the FMS route is
+  // not on the RREF stream or the Web API). When the bridge is reachable and
+  // has a non-empty route it supersedes the .fms-file plan; otherwise the
+  // .fms fallback still applies, so installing the bridge is purely additive.
+  // The bridge is also the write path: shell-side route / Direct-To edits are
+  // programmed back into X-Plane's FMS through it (unless fmsWriteEnabled_ is
+  // false, e.g. --no-fms-write).
+  FlightPlanBridgeClient fmsBridge_;
+  bool fmsWriteEnabled_ = true;
 
   // Native socket handle stored width-safe: -1 is "invalid" on both POSIX (int
   // fd) and Windows (SOCKET, where INVALID_SOCKET is all-ones == -1).

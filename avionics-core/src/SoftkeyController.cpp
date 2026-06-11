@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #include "avionics/NavMath.h"
 #include "avionics/render/BezelKeys.h"
@@ -80,6 +81,10 @@ enum class SoftkeyAction {
   ToggleAptSign,
   ToggleTopo,
   ToggleRelTer,
+  // Map declutter level cycle (Detail All -> 3 -> 2 -> 1).
+  DetailCycle,
+  // Root CDI key: cycle the displayed nav source GPS -> VOR1 -> VOR2.
+  CdiSrcCycle,
   // Transponder mode radio group.
   XpdrStandby,
   XpdrOn,
@@ -101,7 +106,7 @@ constexpr Menu kRootMenu = {{
     {"TFC Map", SoftkeyAction::ToggleTraffic},
     {"PFD Opt", SoftkeyAction::OpenPfdOpt},
     {"OBS", SoftkeyAction::ToggleObs},
-    {"CDI", SoftkeyAction::Momentary},
+    {"CDI", SoftkeyAction::CdiSrcCycle},
     {"DME", SoftkeyAction::ToggleDme},
     {"XPDR", SoftkeyAction::OpenXpdr},
     {"Ident", SoftkeyAction::Ident},
@@ -111,15 +116,16 @@ constexpr Menu kRootMenu = {{
 }};
 
 // Map/HSI submenu (Pilot's Guide Table 1-3): Layout opens the map-placement
-// radio; the remaining keys overlay traffic/topo/relative-terrain on the map.
+// radio; Detail cycles the declutter level; the remaining keys overlay
+// traffic/topo/relative-terrain on the map.
 constexpr Menu kMapHsiMenu = {{
     {"", SoftkeyAction::None},
     {"Layout", SoftkeyAction::OpenLayout},
-    {"TFC Map", SoftkeyAction::ToggleTraffic},
-    {"Detail", SoftkeyAction::Momentary},
-    {"Traffic", SoftkeyAction::Momentary},
+    {"Detail", SoftkeyAction::DetailCycle},
+    {"Traffic", SoftkeyAction::ToggleTraffic},
     {"Topo", SoftkeyAction::ToggleTopo},
     {"Rel Ter", SoftkeyAction::ToggleRelTer},
+    {"", SoftkeyAction::None},
     {"", SoftkeyAction::None},
     {"", SoftkeyAction::None},
     {"", SoftkeyAction::None},
@@ -329,12 +335,20 @@ constexpr CasMessageDef kCasMessages[] = {
 }  // namespace
 
 SoftkeyController::SoftkeyController() : menuStack_{SoftkeyMenu::Root} {
+  // The inset map ships with the topographic background on, matching the MFD
+  // navigation map default.
+  toggles_[static_cast<int>(DisplayToggle::MapTopo)] = true;
   rebuildLabels();
 }
 
 void SoftkeyController::rebuildLabels() {
   const Menu& menu = menuDefs(currentMenu());
-  for (int i = 0; i < kSoftkeyCount; ++i) labels_[i] = menu[i].label;
+  for (int i = 0; i < kSoftkeyCount; ++i) {
+    // The Detail key's label carries the current declutter level.
+    labels_[i] = menu[i].action == SoftkeyAction::DetailCycle
+                     ? mapDetailLabel(mapDetail_)
+                     : menu[i].label;
+  }
 }
 
 void SoftkeyController::update(double dtSeconds, const FlightData& data,
@@ -349,6 +363,8 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
   for (int i = 0; i < kBezelKeyCount; ++i) {
     bezelPress_[i] = std::max(0.0f, bezelPress_[i] - pressStep);
   }
+  insetDisplayRangeNm_ = animateMapRange(
+      insetDisplayRangeNm_, mapRangeNmAt(insetRangeIndex_), dtSeconds);
 
   // Each pop-up window eases toward its open/closed target at a constant rate,
   // so a replaced window fades out while the new one fades in.
@@ -362,6 +378,12 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
   blinkSeconds_ += dtSeconds;
   blinkOn_ = std::fmod(blinkSeconds_, 1.0) < 0.5;
 
+  // The NAV/COM tuning cursor flashes for a few seconds after a tuning action,
+  // then settles solid (Working Title NXi armed-border behavior).
+  if (radioArmedSeconds_ > 0.0) {
+    radioArmedSeconds_ = std::max(0.0, radioArmedSeconds_ - dtSeconds);
+  }
+
   // Generic timer and the IDNT annunciation countdown.
   if (timerRunning_) timerSeconds_ += dtSeconds;
   if (identSecondsLeft_ > 0.0) {
@@ -372,6 +394,9 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
       windowAnim_[static_cast<int>(PfdWindow::Nearest)] > 0.0f) {
     rebuildNearest(map);
   }
+
+  // Remember the feed's CDI source so the first CDI-key press cycles on from it.
+  lastCdiFeed_ = data.cdiSource;
 
   updateAltAlert(dtSeconds, data);
   rebuildAlerts(data);
@@ -569,25 +594,28 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
     return;
   }
 
-  // Inside the References window the FMS rocker stands in for the FMS knob
-  // (moves the cursor; on the MINS altitude field it steps the value) and ENT
-  // activates the highlighted field.
+  // Inside the References window the FMS knob works as on the real unit: the
+  // large knob moves the field cursor, the small knob changes the highlighted
+  // value (the MINS altitude), and ENT activates the highlighted field.
   if (window_ == PfdWindow::References) {
-    if (key == BezelKey::FmsNext) moveReferencesCursor(+1);
-    if (key == BezelKey::FmsPrev) moveReferencesCursor(-1);
+    if (key == BezelKey::FmsOuterCw) moveReferencesCursor(+1);
+    if (key == BezelKey::FmsOuterCcw) moveReferencesCursor(-1);
+    if (key == BezelKey::FmsInnerCw || key == BezelKey::FmsInnerCcw) {
+      adjustReferencesValue(key == BezelKey::FmsInnerCw ? +1 : -1);
+    }
     if (key == BezelKey::Ent) activateReferencesField();
     return;
   }
 
-  // Inside the Nearest Airports window the FMS rocker scrolls the list. (On
+  // Inside the Nearest Airports window the FMS knob scrolls the list. (On
   // the real unit ENT loads the highlighted COM frequency into the standby
   // field; the radios are owned by the sim feed, so ENT is press-flash only.)
   if (window_ == PfdWindow::Nearest && !nearest_.empty()) {
     const int last = static_cast<int>(nearest_.size()) - 1;
-    if (key == BezelKey::FmsNext) {
+    if (key == BezelKey::FmsOuterCw || key == BezelKey::FmsInnerCw) {
       nearestCursor_ = std::min(last, nearestCursor_ + 1);
     }
-    if (key == BezelKey::FmsPrev) {
+    if (key == BezelKey::FmsOuterCcw || key == BezelKey::FmsInnerCcw) {
       nearestCursor_ = std::max(0, nearestCursor_ - 1);
     }
     return;
@@ -595,22 +623,42 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
 }
 
 void SoftkeyController::moveReferencesCursor(int step) {
-  // On the MINS altitude field the rocker adjusts the value (small-knob
-  // stand-in); ENT moves the cursor on.
+  // The cursor walks every field except MinsValue, which is only reachable
+  // via ENT from the MINS mode field once BARO is selected (mirroring the
+  // real unit, where ENT highlights the next field after a selection).
+  // Turning the large knob while on the altitude steps off it.
+  const int lastField = static_cast<int>(RefField::MinsMode);
+  int cur = (refCursor_ == RefField::MinsValue ||
+             refCursor_ == RefField::MinsTemp)
+                ? static_cast<int>(RefField::MinsMode)
+                : static_cast<int>(refCursor_);
+  cur += step;
+  if (cur < 0) cur = lastField;
+  if (cur > lastField) cur = 0;
+  refCursor_ = static_cast<RefField>(cur);
+}
+
+void SoftkeyController::adjustReferencesValue(int step) {
+  // Small FMS knob: the MINS altitude and the V-speed reference values are the
+  // numeric fields (the On/Off selections are activated with ENT).
   if (refCursor_ == RefField::MinsValue) {
     minsAltFt_ = std::max(
         0.0f, std::min(kMinsMaxFt, minsAltFt_ + step * kMinsStepFt));
     return;
   }
-  // The cursor walks every field except MinsValue, which is only reachable
-  // via ENT from the MINS mode field once BARO is selected (mirroring the
-  // real unit, where ENT highlights the next field after a selection).
-  const int lastField = static_cast<int>(RefField::MinsMode);
-  int cur = static_cast<int>(refCursor_);
-  cur += step;
-  if (cur < 0) cur = lastField;
-  if (cur > lastField) cur = 0;
-  refCursor_ = static_cast<RefField>(cur);
+  if (refCursor_ == RefField::MinsTemp) {
+    minsTempC_ = std::max(
+        kMinsTempMinC,
+        std::min(kMinsTempMaxC, minsTempC_ + step * kMinsTempStepC));
+    return;
+  }
+  if (refCursor_ == RefField::Glide || refCursor_ == RefField::Vr ||
+      refCursor_ == RefField::Vx || refCursor_ == RefField::Vy) {
+    const int v = static_cast<int>(refCursor_) - static_cast<int>(RefField::Glide);
+    vspeedKt_[v] = std::max(
+        kVspeedMinKt,
+        std::min(kVspeedMaxKt, vspeedKt_[v] + step * kVspeedStepKt));
+  }
 }
 
 void SoftkeyController::activateReferencesField() {
@@ -634,15 +682,28 @@ void SoftkeyController::activateReferencesField() {
       break;
     }
     case RefField::MinsMode:
-      if (minsMode_ == MinimumsMode::Off) {
-        minsMode_ = MinimumsMode::Baro;
-        // ENT highlights the next field (the altitude) per the real unit.
-        refCursor_ = RefField::MinsValue;
-      } else {
-        minsMode_ = MinimumsMode::Off;
+      // Cycle the minimum source Off -> BARO -> TEMP -> Off. Selecting a source
+      // highlights the next field (the altitude), per the real unit.
+      switch (minsMode_) {
+        case MinimumsMode::Off:
+          minsMode_ = MinimumsMode::Baro;
+          refCursor_ = RefField::MinsValue;
+          break;
+        case MinimumsMode::Baro:
+          minsMode_ = MinimumsMode::Temp;
+          refCursor_ = RefField::MinsValue;
+          break;
+        case MinimumsMode::Temp:
+          minsMode_ = MinimumsMode::Off;
+          break;
       }
       break;
     case RefField::MinsValue:
+      // In TEMP COMP, ENT advances to the destination-temperature field.
+      refCursor_ = (minsMode_ == MinimumsMode::Temp) ? RefField::MinsTemp
+                                                     : RefField::TimerCmd;
+      break;
+    case RefField::MinsTemp:
       refCursor_ = RefField::TimerCmd;  // entry accepted
       break;
     case RefField::Count:
@@ -735,6 +796,9 @@ bool SoftkeyController::pressKey(int key) {
         xpdrPending_ += menuDefs(currentMenu())[key].label[0];
       }
       if (xpdrPending_.size() == 4) {
+        xpdrCodeCommit_ = static_cast<int>(std::strtol(xpdrPending_.c_str(),
+                                                       nullptr, 10));
+        xpdrCodeCommitPending_ = true;
         xpdrPending_.clear();
         menuStack_.resize(1);
         rebuildLabels();
@@ -774,17 +838,37 @@ bool SoftkeyController::pressKey(int key) {
       // The NXi STD Baro key sets standard pressure; the actual setting is owned
       // by the sim feed, so here it is press-flash only.
       break;
+    case SoftkeyAction::DetailCycle:
+      mapDetail_ = nextMapDetail(mapDetail_);
+      rebuildLabels();
+      break;
+    case SoftkeyAction::CdiSrcCycle: {
+      // GPS -> VOR1 -> VOR2 -> GPS. The first press starts from the source the
+      // feed is currently reporting; subsequent presses cycle the held source.
+      const CdiSource from = cdiOverride_ ? cdiSource_ : lastCdiFeed_;
+      switch (from) {
+        case CdiSource::Gps:  cdiSource_ = CdiSource::Nav1; break;
+        case CdiSource::Nav1: cdiSource_ = CdiSource::Nav2; break;
+        case CdiSource::Nav2: cdiSource_ = CdiSource::Gps;  break;
+      }
+      cdiOverride_ = true;
+      break;
+    }
     case SoftkeyAction::XpdrStandby:
       xpdrMode_ = XpdrMode::Standby;
+      queueXpdrModeCommit();
       break;
     case SoftkeyAction::XpdrOn:
       xpdrMode_ = XpdrMode::On;
+      queueXpdrModeCommit();
       break;
     case SoftkeyAction::XpdrAlt:
       xpdrMode_ = XpdrMode::Alt;
+      queueXpdrModeCommit();
       break;
     case SoftkeyAction::XpdrVfr:
-      // Sets the VFR squawk code on the sim feed; press-flash only here.
+      xpdrCodeCommit_ = 1200;
+      xpdrCodeCommitPending_ = true;
       break;
     default: {
       const int toggle = toggleIndex(action);
@@ -873,6 +957,174 @@ void SoftkeyController::rebuildAlerts(const FlightData& data) {
   };
   std::stable_sort(alerts_.begin(), alerts_.end(), byLevel);
   std::stable_sort(annunciations_.begin(), annunciations_.end(), byLevel);
+}
+
+int SoftkeyController::xpdrModeToSim(XpdrMode mode) {
+  switch (mode) {
+    case XpdrMode::Standby:
+      return 1;
+    case XpdrMode::On:
+      return 2;
+    case XpdrMode::Alt:
+      return 3;
+    case XpdrMode::Ground:
+      return 1;
+  }
+  return 3;
+}
+
+void SoftkeyController::queueXpdrModeCommit() {
+  xpdrModeCommit_ = xpdrModeToSim(xpdrMode_);
+  xpdrModeCommitPending_ = true;
+}
+
+bool SoftkeyController::consumeXpdrCodeCommit(int& code) {
+  if (!xpdrCodeCommitPending_) return false;
+  xpdrCodeCommitPending_ = false;
+  code = xpdrCodeCommit_;
+  return true;
+}
+
+bool SoftkeyController::consumeXpdrModeCommit(int& mode) {
+  if (!xpdrModeCommitPending_) return false;
+  xpdrModeCommitPending_ = false;
+  mode = xpdrModeCommit_;
+  return true;
+}
+
+bool SoftkeyController::consumeRadioTune(RadioUnit& unit, float& standbyMhz) {
+  if (!radioTunePending_) return false;
+  radioTunePending_ = false;
+  unit = radioTuneUnit_;
+  standbyMhz = radioTuneMhz_;
+  return true;
+}
+
+bool SoftkeyController::consumeRadioTransfer(RadioUnit& unit) {
+  if (!radioTransferPending_) return false;
+  radioTransferPending_ = false;
+  unit = radioTransferUnit_;
+  return true;
+}
+
+float SoftkeyController::standbyMhzFor(RadioUnit unit,
+                                       const FlightData& d) const {
+  switch (unit) {
+    case RadioUnit::Nav1:
+      return d.nav1StandbyMhz;
+    case RadioUnit::Nav2:
+      return d.nav2StandbyMhz;
+    case RadioUnit::Com1:
+      return d.com1StandbyMhz;
+    case RadioUnit::Com2:
+      return d.com2StandbyMhz;
+  }
+  return d.nav1StandbyMhz;
+}
+
+void SoftkeyController::setStandbyMhzFor(RadioUnit unit, float mhz) {
+  radioTuneUnit_ = unit;
+  radioTuneMhz_ = mhz;
+  radioTunePending_ = true;
+}
+
+void SoftkeyController::queueRadioTune(RadioUnit unit, float standbyMhz) {
+  setStandbyMhzFor(unit, standbyMhz);
+  armRadioBand(radioBandOf(unit));
+}
+
+void SoftkeyController::queueRadioTransfer(RadioUnit unit) {
+  radioTransferUnit_ = unit;
+  radioTransferPending_ = true;
+  armRadioBand(radioBandOf(unit));
+}
+
+void SoftkeyController::armRadioBand(RadioBand band) {
+  radioArmedBand_ = band;
+  radioArmedSeconds_ = kRadioArmedSeconds;
+}
+
+void SoftkeyController::cycleRadioSelect() {
+  switch (radioSelected_) {
+    case RadioUnit::Nav1:
+      radioSelected_ = RadioUnit::Nav2;
+      break;
+    case RadioUnit::Nav2:
+      radioSelected_ = RadioUnit::Com1;
+      break;
+    case RadioUnit::Com1:
+      radioSelected_ = RadioUnit::Com2;
+      break;
+    case RadioUnit::Com2:
+      radioSelected_ = RadioUnit::Nav1;
+      break;
+  }
+  // Mirror the unified focus into the per-side cursor so the bar's COM and NAV
+  // boxes track the FMS knob, and flash the side it landed on.
+  if (radioBandOf(radioSelected_) == RadioBand::Com) {
+    comSelected_ = radioSelected_;
+  } else {
+    navSelected_ = radioSelected_;
+  }
+  armRadioBand(radioBandOf(radioSelected_));
+}
+
+void SoftkeyController::selectCom() {
+  comSelected_ =
+      comSelected_ == RadioUnit::Com1 ? RadioUnit::Com2 : RadioUnit::Com1;
+  radioSelected_ = comSelected_;
+  armRadioBand(RadioBand::Com);
+}
+
+void SoftkeyController::selectNav() {
+  navSelected_ =
+      navSelected_ == RadioUnit::Nav1 ? RadioUnit::Nav2 : RadioUnit::Nav1;
+  radioSelected_ = navSelected_;
+  armRadioBand(RadioBand::Nav);
+}
+
+void SoftkeyController::tuneCom(int direction, bool coarse, const FlightData& d) {
+  const float cur = standbyMhzFor(comSelected_, d);
+  const float next = coarse ? stepComStandbyMhzCoarse(cur, direction)
+                            : stepComStandbyMhz(cur, direction);
+  queueRadioTune(comSelected_, next);
+}
+
+void SoftkeyController::tuneNav(int direction, bool coarse, const FlightData& d) {
+  const float cur = standbyMhzFor(navSelected_, d);
+  const float next = coarse ? stepNavStandbyMhzCoarse(cur, direction)
+                            : stepNavStandbyMhz(cur, direction);
+  queueRadioTune(navSelected_, next);
+}
+
+void SoftkeyController::transferCom() { queueRadioTransfer(comSelected_); }
+
+void SoftkeyController::transferNav() { queueRadioTransfer(navSelected_); }
+
+bool SoftkeyController::radioBezelKey(BezelKey key, const FlightData& d) {
+  if (!canUseRadioBezel()) return false;
+
+  switch (key) {
+    case BezelKey::FmsPush:
+      cycleRadioSelect();
+      return true;
+    case BezelKey::Ent:
+      queueRadioTransfer(radioSelected_);
+      return true;
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw: {
+      const int dir = key == BezelKey::FmsInnerCw ? +1 : -1;
+      const float cur = standbyMhzFor(radioSelected_, d);
+      const bool isCom = radioSelected_ == RadioUnit::Com1 ||
+                         radioSelected_ == RadioUnit::Com2;
+      const float next =
+          isCom ? stepComStandbyMhz(cur, dir) : stepNavStandbyMhz(cur, dir);
+      queueRadioTune(radioSelected_, next);
+      return true;
+    }
+    default:
+      return false;
+  }
 }
 
 }  // namespace avionics

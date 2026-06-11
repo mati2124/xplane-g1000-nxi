@@ -14,26 +14,48 @@ namespace avionics {
 // useXPlane == true selects the live X-Plane connection, false selects mock.
 using DataSourceMenuCallback = void (*)(void* context, bool useXPlane);
 
+// Invoked on the main thread when the user flips the "Simulate Turbulence"
+// item. enabled is the item's new (post-toggle) state.
+using TurbulenceMenuToggleCallback = void (*)(void* context, bool enabled);
+
 // Adds the "Data Source" menu to the application menu bar. initiallyXPlane sets
-// which item starts checked. The callback fires when the user changes the
-// selection.
-void InstallDataSourceMenu(bool initiallyXPlane, DataSourceMenuCallback callback,
+// which feed item starts checked; initiallyTurbulent sets the "Simulate
+// Turbulence" checkmark. sourceCallback fires when the user changes the feed;
+// turbulenceCallback fires when the turbulence toggle flips (it only affects
+// the mock feed).
+void InstallDataSourceMenu(bool initiallyXPlane, bool initiallyTurbulent,
+                           DataSourceMenuCallback sourceCallback,
+                           TurbulenceMenuToggleCallback turbulenceCallback,
                            void* context);
 
 // Updates the menu checkmarks to reflect the current selection (e.g. after the
 // source was toggled with the keyboard rather than the menu).
 void SetDataSourceMenuSelection(bool useXPlane);
 
-// Invoked on the main thread when the user toggles the bezel-strip visibility.
-// showBezel == true draws the hardware bezel strips, false hides them.
-using BezelVisibilityMenuCallback = void (*)(void* context, bool showBezel);
+// Invoked on the main thread when the user flips one of the checkable View
+// menu items. enabled is the item's new (post-toggle) state.
+using ViewMenuToggleCallback = void (*)(void* context, bool enabled);
 
-// Adds the "View" menu with a checkable "Show Bezel Keys" item. initiallyShow
-// sets whether the item starts checked. The callback fires when the user
-// toggles it.
-void InstallBezelVisibilityMenu(bool initiallyShow,
-                                BezelVisibilityMenuCallback callback,
-                                void* context);
+// Initial states and toggle callbacks for the "View" menu items:
+//   - "Show Bezel Keys": the hardware bezel strips around the screen.
+//   - "Show Window Title Bar": the OS window chrome (title bar with its
+//     close / minimize / maximize controls).
+//   - "Always on Top": keep the windows floating above other windows.
+//   - "Remember Window Position": capture positions at exit, restore at launch.
+struct ViewMenuConfig {
+  bool showBezel = true;
+  bool showWindowChrome = true;
+  bool alwaysOnTop = false;
+  bool rememberWindowPos = false;
+  ViewMenuToggleCallback onToggleBezel = nullptr;
+  ViewMenuToggleCallback onToggleWindowChrome = nullptr;
+  ViewMenuToggleCallback onToggleAlwaysOnTop = nullptr;
+  ViewMenuToggleCallback onToggleRememberWindowPos = nullptr;
+  void* context = nullptr;
+};
+
+// Adds the "View" menu with its checkable items to the application menu bar.
+void InstallViewMenu(const ViewMenuConfig& config);
 
 // Updates the "Show Bezel Keys" checkmark to reflect the current state.
 void SetBezelVisibilityMenuSelection(bool showBezel);

@@ -6,27 +6,51 @@
 // alive for the lifetime of the process by the file-static pointer below.
 @interface AvDataSourceMenuController : NSObject
 @property(nonatomic, assign) avionics::DataSourceMenuCallback callback;
+@property(nonatomic, assign)
+    avionics::TurbulenceMenuToggleCallback turbulenceCallback;
 @property(nonatomic, assign) void* context;
 @property(nonatomic, strong) NSMenuItem* mockItem;
 @property(nonatomic, strong) NSMenuItem* xplaneItem;
+@property(nonatomic, strong) NSMenuItem* turbulenceItem;
 - (void)selectMock:(id)sender;
 - (void)selectXPlane:(id)sender;
+- (void)toggleTurbulence:(id)sender;
 - (void)syncSelection:(BOOL)useXPlane;
 @end
 
 static AvDataSourceMenuController* gController = nil;
 
-// Owns the single checkable "Show Bezel Keys" item and forwards toggles to the
-// C++ callback. Held alive for the process lifetime by the static pointer below.
-@interface AvBezelVisibilityMenuController : NSObject
-@property(nonatomic, assign) avionics::BezelVisibilityMenuCallback callback;
+// Owns the View menu's checkable items and forwards toggles to the C++
+// callbacks. Held alive for the process lifetime by the static pointer below.
+@interface AvViewMenuController : NSObject
+@property(nonatomic, assign) avionics::ViewMenuToggleCallback bezelCallback;
+@property(nonatomic, assign)
+    avionics::ViewMenuToggleCallback windowChromeCallback;
+@property(nonatomic, assign)
+    avionics::ViewMenuToggleCallback alwaysOnTopCallback;
+@property(nonatomic, assign)
+    avionics::ViewMenuToggleCallback rememberPosCallback;
 @property(nonatomic, assign) void* context;
-@property(nonatomic, strong) NSMenuItem* showItem;
+@property(nonatomic, strong) NSMenuItem* showBezelItem;
+@property(nonatomic, strong) NSMenuItem* showWindowChromeItem;
+@property(nonatomic, strong) NSMenuItem* alwaysOnTopItem;
+@property(nonatomic, strong) NSMenuItem* rememberPosItem;
 - (void)toggleBezel:(id)sender;
-- (void)syncSelection:(BOOL)showBezel;
+- (void)toggleWindowChrome:(id)sender;
+- (void)toggleAlwaysOnTop:(id)sender;
+- (void)toggleRememberPos:(id)sender;
+- (void)syncBezelSelection:(BOOL)showBezel;
 @end
 
-static AvBezelVisibilityMenuController* gBezelController = nil;
+static AvViewMenuController* gViewController = nil;
+
+// AppKit does not flip an NSMenuItem's checkmark on click, so compute the new
+// state as the inverse of the current one and apply it ourselves.
+static BOOL FlipMenuItemState(NSMenuItem* item) {
+  const BOOL enabled = (item.state != NSControlStateValueOn);
+  item.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+  return enabled;
+}
 
 @implementation AvDataSourceMenuController
 
@@ -38,6 +62,13 @@ static AvBezelVisibilityMenuController* gBezelController = nil;
   if (self.callback) self.callback(self.context, true);
 }
 
+- (void)toggleTurbulence:(id)sender {
+  const BOOL enabled = FlipMenuItemState(self.turbulenceItem);
+  if (self.turbulenceCallback) {
+    self.turbulenceCallback(self.context, enabled ? true : false);
+  }
+}
+
 - (void)syncSelection:(BOOL)useXPlane {
   self.mockItem.state =
       useXPlane ? NSControlStateValueOff : NSControlStateValueOn;
@@ -47,18 +78,38 @@ static AvBezelVisibilityMenuController* gBezelController = nil;
 
 @end
 
-@implementation AvBezelVisibilityMenuController
+@implementation AvViewMenuController
 
 - (void)toggleBezel:(id)sender {
-  // AppKit does not flip an NSMenuItem's checkmark on click, so compute the new
-  // state as the inverse of the current one and apply it ourselves.
-  const BOOL showBezel = (self.showItem.state != NSControlStateValueOn);
-  [self syncSelection:showBezel];
-  if (self.callback) self.callback(self.context, showBezel ? true : false);
+  const BOOL enabled = FlipMenuItemState(self.showBezelItem);
+  if (self.bezelCallback) {
+    self.bezelCallback(self.context, enabled ? true : false);
+  }
 }
 
-- (void)syncSelection:(BOOL)showBezel {
-  self.showItem.state =
+- (void)toggleWindowChrome:(id)sender {
+  const BOOL enabled = FlipMenuItemState(self.showWindowChromeItem);
+  if (self.windowChromeCallback) {
+    self.windowChromeCallback(self.context, enabled ? true : false);
+  }
+}
+
+- (void)toggleAlwaysOnTop:(id)sender {
+  const BOOL enabled = FlipMenuItemState(self.alwaysOnTopItem);
+  if (self.alwaysOnTopCallback) {
+    self.alwaysOnTopCallback(self.context, enabled ? true : false);
+  }
+}
+
+- (void)toggleRememberPos:(id)sender {
+  const BOOL enabled = FlipMenuItemState(self.rememberPosItem);
+  if (self.rememberPosCallback) {
+    self.rememberPosCallback(self.context, enabled ? true : false);
+  }
+}
+
+- (void)syncBezelSelection:(BOOL)showBezel {
+  self.showBezelItem.state =
       showBezel ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
@@ -66,7 +117,9 @@ static AvBezelVisibilityMenuController* gBezelController = nil;
 
 namespace avionics {
 
-void InstallDataSourceMenu(bool initiallyXPlane, DataSourceMenuCallback callback,
+void InstallDataSourceMenu(bool initiallyXPlane, bool initiallyTurbulent,
+                           DataSourceMenuCallback sourceCallback,
+                           TurbulenceMenuToggleCallback turbulenceCallback,
                            void* context) {
   @autoreleasepool {
     NSMenu* mainMenu = [NSApp mainMenu];
@@ -76,7 +129,8 @@ void InstallDataSourceMenu(bool initiallyXPlane, DataSourceMenuCallback callback
     }
 
     gController = [[AvDataSourceMenuController alloc] init];
-    gController.callback = callback;
+    gController.callback = sourceCallback;
+    gController.turbulenceCallback = turbulenceCallback;
     gController.context = context;
 
     NSMenuItem* dataMenuItem = [[NSMenuItem alloc] init];
@@ -98,8 +152,20 @@ void InstallDataSourceMenu(bool initiallyXPlane, DataSourceMenuCallback callback
     [dataMenu addItem:mockItem];
     [dataMenu addItem:xplaneItem];
 
+    [dataMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* turbulenceItem =
+        [[NSMenuItem alloc] initWithTitle:@"Simulate Turbulence"
+                                   action:@selector(toggleTurbulence:)
+                            keyEquivalent:@""];
+    [turbulenceItem setTarget:gController];
+    turbulenceItem.state =
+        initiallyTurbulent ? NSControlStateValueOn : NSControlStateValueOff;
+    [dataMenu addItem:turbulenceItem];
+
     gController.mockItem = mockItem;
     gController.xplaneItem = xplaneItem;
+    gController.turbulenceItem = turbulenceItem;
     [gController syncSelection:(initiallyXPlane ? YES : NO)];
 
     [mainMenu addItem:dataMenuItem];
@@ -112,9 +178,7 @@ void SetDataSourceMenuSelection(bool useXPlane) {
   }
 }
 
-void InstallBezelVisibilityMenu(bool initiallyShow,
-                                BezelVisibilityMenuCallback callback,
-                                void* context) {
+void InstallViewMenu(const ViewMenuConfig& config) {
   @autoreleasepool {
     NSMenu* mainMenu = [NSApp mainMenu];
     if (mainMenu == nil) {
@@ -122,31 +186,67 @@ void InstallBezelVisibilityMenu(bool initiallyShow,
       [NSApp setMainMenu:mainMenu];
     }
 
-    gBezelController = [[AvBezelVisibilityMenuController alloc] init];
-    gBezelController.callback = callback;
-    gBezelController.context = context;
+    gViewController = [[AvViewMenuController alloc] init];
+    gViewController.bezelCallback = config.onToggleBezel;
+    gViewController.windowChromeCallback = config.onToggleWindowChrome;
+    gViewController.alwaysOnTopCallback = config.onToggleAlwaysOnTop;
+    gViewController.rememberPosCallback = config.onToggleRememberWindowPos;
+    gViewController.context = config.context;
 
     NSMenuItem* viewMenuItem = [[NSMenuItem alloc] init];
     NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
     [viewMenuItem setSubmenu:viewMenu];
 
-    NSMenuItem* showItem =
+    NSMenuItem* showBezelItem =
         [[NSMenuItem alloc] initWithTitle:@"Show Bezel Keys"
                                    action:@selector(toggleBezel:)
                             keyEquivalent:@"b"];
-    [showItem setTarget:gBezelController];
-    [viewMenu addItem:showItem];
+    [showBezelItem setTarget:gViewController];
+    [viewMenu addItem:showBezelItem];
 
-    gBezelController.showItem = showItem;
-    [gBezelController syncSelection:(initiallyShow ? YES : NO)];
+    NSMenuItem* showWindowChromeItem =
+        [[NSMenuItem alloc] initWithTitle:@"Show Window Title Bar"
+                                   action:@selector(toggleWindowChrome:)
+                            keyEquivalent:@"t"];
+    [showWindowChromeItem setTarget:gViewController];
+    [viewMenu addItem:showWindowChromeItem];
+
+    NSMenuItem* alwaysOnTopItem =
+        [[NSMenuItem alloc] initWithTitle:@"Always on Top"
+                                   action:@selector(toggleAlwaysOnTop:)
+                            keyEquivalent:@""];
+    [alwaysOnTopItem setTarget:gViewController];
+    [viewMenu addItem:alwaysOnTopItem];
+
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem* rememberPosItem =
+        [[NSMenuItem alloc] initWithTitle:@"Remember Window Position"
+                                   action:@selector(toggleRememberPos:)
+                            keyEquivalent:@""];
+    [rememberPosItem setTarget:gViewController];
+    [viewMenu addItem:rememberPosItem];
+
+    gViewController.showBezelItem = showBezelItem;
+    gViewController.showWindowChromeItem = showWindowChromeItem;
+    gViewController.alwaysOnTopItem = alwaysOnTopItem;
+    gViewController.rememberPosItem = rememberPosItem;
+    [gViewController syncBezelSelection:(config.showBezel ? YES : NO)];
+    showWindowChromeItem.state = config.showWindowChrome
+                                     ? NSControlStateValueOn
+                                     : NSControlStateValueOff;
+    alwaysOnTopItem.state = config.alwaysOnTop ? NSControlStateValueOn
+                                               : NSControlStateValueOff;
+    rememberPosItem.state = config.rememberWindowPos ? NSControlStateValueOn
+                                                     : NSControlStateValueOff;
 
     [mainMenu addItem:viewMenuItem];
   }
 }
 
 void SetBezelVisibilityMenuSelection(bool showBezel) {
-  if (gBezelController != nil) {
-    [gBezelController syncSelection:(showBezel ? YES : NO)];
+  if (gViewController != nil) {
+    [gViewController syncBezelSelection:(showBezel ? YES : NO)];
   }
 }
 

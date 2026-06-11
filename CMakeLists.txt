@@ -26,6 +26,7 @@ endif()
 
 if(BUILD_XPLANE_SHELL)
   add_subdirectory(shell-xplane)
+  add_subdirectory(tools/reload-plugins)
 endif()
 
 if(BUILD_STANDALONE_SHELL)

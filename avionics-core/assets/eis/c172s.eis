@@ -1,0 +1,94 @@
+# G1000 NXi Engine Display — Cessna 172S (Nav III)
+# Pilot's Guide Section 3.1. Ship this file (or g1000_eis.txt) beside your .acf.
+# Format: TITLE / SECTION / GAUGE / BIND — see avionics-core/include/avionics/Eis.h.
+
+TITLE ENGINE
+
+GAUGE RPM_DIAL
+  CHANNEL eng.rpm
+  MIN 0 MAX 3000
+  REDLINE 2700
+  BAND GREEN 2100 2500
+  BAND RED 2700 3000
+
+GAUGE BAR
+  LABEL FFLOW GPH
+  CHANNEL eng.fuel_flow
+  MIN 0 MAX 15
+  BAND GREEN 0 12
+
+GAUGE BAR
+  LABEL OIL PRES
+  CHANNEL eng.oil_pres
+  MIN 0 MAX 115
+  BAND RED 0 20
+  BAND GREEN 50 90
+  BAND RED 110 115
+
+GAUGE BAR
+  LABEL OIL TEMP
+  CHANNEL eng.oil_temp
+  MIN 100 MAX 250
+  REDLINE 245
+  BAND GREEN 100 245
+  BAND RED 245 250
+
+GAUGE BAR
+  LABEL EGT °F
+  CHANNEL eng.egt
+  MIN 1250 MAX 1650
+
+GAUGE BAR
+  LABEL VAC
+  CHANNEL eng.vacuum
+  MIN 3 MAX 7
+  BAND GREEN 4.5 5.5
+
+SECTION FUEL QTY GAL
+GAUGE BAR
+  LABEL L
+  CHANNEL fuel.qty_left
+  MIN 0 MAX 24
+  BAND RED 0 1.5
+  BAND GREEN 1.5 24
+
+GAUGE BAR
+  LABEL R
+  CHANNEL fuel.qty_right
+  MIN 0 MAX 24
+  BAND RED 0 1.5
+  BAND GREEN 1.5 24
+
+SECTION
+GAUGE READOUT
+  LABEL ENG HRS
+  CHANNEL eng.hours
+  FORMAT %.1f
+
+SECTION ELECTRICAL
+GAUGE ELECTRICAL
+  LABEL BUS VOLTS
+  LEFT M elec.bus_main
+  RIGHT E elec.bus_ess
+  FORMAT %.1f
+
+GAUGE ELECTRICAL
+  LABEL BATT AMPS
+  LEFT M elec.batt_main
+  RIGHT S elec.batt_standby
+  FORMAT %+.0f
+
+# X-Plane dataref bindings (scale/offset convert native units to display units).
+BIND eng.rpm sim/cockpit2/engine/indicators/engine_speed_rpm[0] 1 0
+BIND eng.fuel_flow sim/cockpit2/engine/indicators/fuel_flow_kg_sec[0] 132.275554 0
+BIND eng.oil_pres sim/cockpit2/engine/indicators/oil_pressure_psi[0] 1 0
+BIND eng.oil_temp sim/cockpit2/engine/indicators/oil_temperature_deg_C[0] 1.8 32
+BIND eng.egt sim/cockpit2/engine/indicators/EGT_deg_C[0] 1.8 32
+BIND eng.vacuum sim/cockpit/misc/vacuum 5 0
+BIND fuel.qty_left sim/cockpit2/fuel/fuel_quantity[0] 0.367744 0
+BIND fuel.qty_right sim/cockpit2/fuel/fuel_quantity[1] 0.367744 0
+BIND eng.hours sim/cockpit2/clock_timer/hobbs_time_hours 1 0
+BIND elec.bus_main sim/cockpit2/electrical/bus_volts[0] 1 0
+BIND elec.bus_ess sim/cockpit2/electrical/bus_volts[1] 1 0
+BIND elec.batt_main sim/cockpit2/electrical/battery_amps[0] 1 0
+BIND elec.batt_standby sim/cockpit2/electrical/battery_amps[1] 1 0

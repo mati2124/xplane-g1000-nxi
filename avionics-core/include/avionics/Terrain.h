@@ -12,6 +12,23 @@ class TerrainSource {
 
   // Ground/terrain elevation in feet MSL at a geographic point.
   virtual float elevationFt(double lat, double lon) const = 0;
+
+  // Samples one raster row: `count` points at constant latitude with longitude
+  // stepping uniformly (lon[i] = lonStart + lonStep*i), writing feet MSL into
+  // `out`. The terrain raster samples hundreds of thousands of points per
+  // rebuild, so backends that lock or scan per sample (the DSF tile store)
+  // override this to resolve the tile once per row instead of once per point.
+  // The default just loops elevationFt for sources that are already cheap.
+  virtual void elevationFtRow(double lat, double lonStart, double lonStep,
+                              int count, float* out) const {
+    for (int i = 0; i < count; ++i) {
+      out[i] = elevationFt(lat, lonStart + lonStep * static_cast<double>(i));
+    }
+  }
+
+  // Monotonic counter bumped whenever better data becomes available (e.g. a
+  // DEM tile finishes loading), so cached terrain rasters know to resample.
+  virtual unsigned revision() const { return 0; }
 };
 
 // Deterministic procedural terrain for the mock feed (and offline rendering):

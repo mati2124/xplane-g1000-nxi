@@ -10,19 +10,31 @@ if(NOT XPLANE_SDK_DIR)
     "BUILD_XPLANE_SHELL=ON requires -DXPLANE_SDK_DIR=/path/to/X-Plane-SDK")
 endif()
 
+# DsfTerrainStore (and its XPlaneInstall dependency) are shared with the
+# standalone shell: they read X-Plane's Global Scenery DSF DEM tiles for the
+# topographic map background. The plugin resolves the scenery path via the SDK
+# rather than the install-list files, so only the explicit-directory path is
+# exercised here.
 add_library(xplane-avionics MODULE
   src/plugin_main.cpp
   src/DatarefDataSource.cpp
+  src/DatarefWeatherRadar.cpp
+  src/FlightPlanBridge.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/DsfTerrainStore.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/XPlaneInstall.cpp
 )
 
 target_include_directories(xplane-avionics PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src
   ${XPLANE_SDK_DIR}/CHeaders/XPLM
   ${XPLANE_SDK_DIR}/CHeaders/Widgets
 )
 
-# SDK version + platform macros expected by the XPLM headers.
-target_compile_definitions(xplane-avionics PRIVATE XPLM200 XPLM210 XPLM300 XPLM301 XPLM303 XPLM400)
+# SDK version + platform macros expected by the XPLM headers. XPLM410 unlocks
+# the FMS flight-plan write APIs used by the flight-plan bridge (true
+# present-position Direct-To); requires the X-Plane 12.1+ SDK and runtime.
+target_compile_definitions(xplane-avionics PRIVATE XPLM200 XPLM210 XPLM300 XPLM301 XPLM303 XPLM400 XPLM410 XPLM420)
 if(APPLE)
   target_compile_definitions(xplane-avionics PRIVATE APL=1 IBM=0 LIN=0)
 elseif(WIN32)
@@ -31,10 +43,17 @@ else()
   target_compile_definitions(xplane-avionics PRIVATE APL=0 IBM=0 LIN=1)
 endif()
 
+target_compile_definitions(xplane-avionics PRIVATE
+  AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/../avionics-core/assets/eis/c172s.eis")
+
 # Airspace parsing runs on a background std::thread.
 find_package(Threads REQUIRED)
 
-target_link_libraries(xplane-avionics PRIVATE avionics-core Threads::Threads)
+# render-nanovg brings the shared NanoVG Renderer backend (and, transitively,
+# avionics-core, NanoVG, and the platform OpenGL framework) so the plugin can
+# draw the PFD/MFD into the sim's avionics device screens.
+target_link_libraries(xplane-avionics PRIVATE
+  render-nanovg Threads::Threads)
 
 # X-Plane loads plugins as <name>/<platform>/<name>.xpl with no lib prefix.
 set_target_properties(xplane-avionics PROPERTIES

@@ -194,10 +194,15 @@ void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
                                 const FlightData& d, float h);
 void drawVerticalDeviation(Renderer& r, const Layout& L, const FlightData& d,
                            float h);
-void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
-                    const SoftkeyController& ui, float h);
 void drawInsetMap(Renderer& r, const Layout& L, const MapData& map,
                   const FlightData& d, const SoftkeyController& ui, float h);
+// HSI Map layout: the moving map drawn in a square region centered on the HSI
+// rose (the rose is then drawn over it with a translucent backing).
+void drawHsiMap(Renderer& r, const Layout& L, const MapData& map,
+                const FlightData& d, const SoftkeyController& ui, float h);
+void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
+                    const SoftkeyController& ui, float h,
+                    bool hsiMapMode = false);
 void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
                 const SoftkeyController& ui, float w, float h);
 

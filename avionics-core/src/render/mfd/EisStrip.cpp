@@ -4,48 +4,16 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "avionics/Color.h"
+#include "avionics/EisLegacy.h"
 
 namespace avionics::mfd {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-// Cessna 172S gauge scales and color bands (172S POH / G1000 Pilot's Guide for
-// Cessna Nav III, Section 3.1). RPM green-arc top is the sea-level value; the
-// real unit expands it with altitude (Figure 3-7), which needs pressure
-// altitude trends we don't model here.
-constexpr float kRpmMax = 3000.0f;
-constexpr float kRpmGreenLo = 2100.0f;
-constexpr float kRpmGreenHi = 2500.0f;
-constexpr float kRpmRedline = 2700.0f;
-
-constexpr float kFflowMax = 15.0f;
-constexpr float kFflowGreenHi = 12.0f;
-
-constexpr float kOilPresMax = 115.0f;
-constexpr float kOilPresRedLo = 20.0f;
-constexpr float kOilPresGreenLo = 50.0f;
-constexpr float kOilPresGreenHi = 90.0f;
-constexpr float kOilPresRedHi = 110.0f;
-
-constexpr float kOilTempMin = 100.0f;
-constexpr float kOilTempMax = 250.0f;
-constexpr float kOilTempRedLine = 245.0f;
-
-constexpr float kEgtMin = 1250.0f;
-constexpr float kEgtMax = 1650.0f;
-
-constexpr float kVacMin = 3.0f;
-constexpr float kVacMax = 7.0f;
-constexpr float kVacGreenLo = 4.5f;
-constexpr float kVacGreenHi = 5.5f;
-
-constexpr float kFuelMaxGal = 24.0f;  // usable per side, 172R/172S
-constexpr float kFuelRedHi = 1.5f;
-
-// Font weights on the shared 768 canvas.
 constexpr float kLabelWt = 13.0f;
 constexpr float kValueWt = 16.0f;
 constexpr float kRpmReadoutWt = 22.0f;
@@ -56,8 +24,6 @@ std::string fmt(const char* pattern, double v) {
   return buf;
 }
 
-// Tessellated arc stroke between two angles (deg, 0 = up, clockwise positive)
-// around (cx, cy).
 void strokeArc(Renderer& r, float cx, float cy, float radius, float a0Deg,
                float a1Deg, float widthPx, const Color& c) {
   constexpr int kSegments = 24;
@@ -71,33 +37,34 @@ void strokeArc(Renderer& r, float cx, float cy, float radius, float a0Deg,
   r.strokePolyline(pts, kSegments + 1, widthPx, c);
 }
 
-// The 172 tachometer: a 270-degree dial sweeping clockwise from the lower
-// left, green normal-operating arc, red overspeed arc, white needle, and a
-// digital readout in the lower half of the dial.
-void drawRpmDial(Renderer& r, const FlightData& d, const Rect& area,
-                 float displayH) {
+struct BarBand {
+  float lo, hi;
+  Color color;
+};
+
+void drawRpmDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
+                 const Rect& area, float displayH) {
   const float cx = area.x + area.w * 0.5f;
   const float cy = area.y + area.h * 0.52f;
   const float radius = std::min(area.w * 0.40f, area.h * 0.42f);
 
-  // 0 RPM points down-left (-135 deg), max RPM down-right (+135 deg).
   constexpr float kStartDeg = -135.0f;
   constexpr float kSweepDeg = 270.0f;
   auto angleFor = [&](float rpm) {
-    const float frac = std::max(0.0f, std::min(1.0f, rpm / kRpmMax));
+    const float frac =
+        std::max(0.0f, std::min(1.0f, rpm / gauge.max));
     return kStartDeg + kSweepDeg * frac;
   };
 
   strokeArc(r, cx, cy, radius, kStartDeg, kStartDeg + kSweepDeg, 1.5f,
             colors::kPanelBorder);
-  strokeArc(r, cx, cy, radius - 1.0f, angleFor(kRpmGreenLo),
-            angleFor(kRpmGreenHi), 4.0f, colors::kBandGreen);
-  strokeArc(r, cx, cy, radius - 1.0f, angleFor(kRpmRedline), angleFor(kRpmMax),
-            4.0f, colors::kBandRed);
+  for (const EisBand& band : gauge.bands) {
+    strokeArc(r, cx, cy, radius - 1.0f, angleFor(band.lo), angleFor(band.hi),
+              4.0f, eisBandColor(band.color));
+  }
 
-  // Major ticks + hundreds labels every 1000 RPM, minor ticks every 500.
   const float labelSize = mfdFontPx(kLabelWt, displayH);
-  for (int rpm = 0; rpm <= static_cast<int>(kRpmMax); rpm += 500) {
+  for (int rpm = 0; rpm <= static_cast<int>(gauge.max); rpm += 500) {
     const float a = angleFor(static_cast<float>(rpm)) * kPi / 180.0f;
     const bool major = rpm % 1000 == 0;
     const float inner = radius * (major ? 0.84f : 0.90f);
@@ -112,10 +79,11 @@ void drawRpmDial(Renderer& r, const FlightData& d, const Rect& area,
     }
   }
 
-  // Needle: white pointer from the hub, drawn only with live data.
   const bool valid = d.dataLinkValid;
+  const float rpm =
+      eisChannelValue(d, gauge.channel, d.engineRpm);
   if (valid) {
-    const float a = angleFor(d.engineRpm) * kPi / 180.0f;
+    const float a = angleFor(rpm) * kPi / 180.0f;
     const float ca = std::cos(a);
     const float sa = std::sin(a);
     const float tip = radius * 0.92f;
@@ -129,22 +97,18 @@ void drawRpmDial(Renderer& r, const FlightData& d, const Rect& area,
   }
   r.fillCircle(cx, cy, radius * 0.07f, colors::kPanelBorder);
 
-  r.fillText(cx, cy - radius * 0.34f, "RPM", labelSize, TextAlign::Center,
+  const char* dialLabel =
+      gauge.label.empty() ? "RPM" : gauge.label.c_str();
+  r.fillText(cx, cy - radius * 0.34f, dialLabel, labelSize, TextAlign::Center,
              colors::kLabelText);
-  const bool overspeed = valid && d.engineRpm >= kRpmRedline;
+  const bool overspeed =
+      valid && gauge.hasRedline && rpm >= gauge.redline;
   r.fillText(cx, cy + radius * 0.52f,
-             valid ? fmt("%.0f", std::round(d.engineRpm / 10.0) * 10.0)
+             valid ? fmt("%.0f", std::round(rpm / 10.0) * 10.0)
                    : std::string("____"),
              mfdFontPx(kRpmReadoutWt, displayH), TextAlign::Center,
              overspeed ? colors::kBandRed : colors::kWhite);
 }
-
-// One horizontal bar indicator: "LABEL" line above a thin track with color
-// bands and a white pointer triangle riding on top of the track.
-struct BarBand {
-  float lo, hi;
-  Color color;
-};
 
 void drawBar(Renderer& r, const Rect& area, float y, const char* label,
              float value, float minV, float maxV, const BarBand* bands,
@@ -179,7 +143,6 @@ void drawBar(Renderer& r, const Rect& area, float y, const char* label,
   r.fillPolygon(pointer, 3, colors::kWhite);
 }
 
-// "LABEL  value" readout row (e.g. ENG HRS), value right-aligned.
 float drawReadout(Renderer& r, const Rect& area, float y, const char* label,
                   const std::string& value, float displayH) {
   r.fillText(area.x, y, label, mfdFontPx(kLabelWt, displayH), TextAlign::Left,
@@ -189,7 +152,6 @@ float drawReadout(Renderer& r, const Rect& area, float y, const char* label,
   return y + mfdFontPx(kValueWt, displayH) * 1.35f;
 }
 
-// Two-column electrical row: "M <value>  <S/E> <value>" under a group label.
 float drawElectricalRow(Renderer& r, const Rect& area, float y,
                         const char* label, const char* leftTag, float leftVal,
                         const char* rightTag, float rightVal,
@@ -212,12 +174,59 @@ float drawElectricalRow(Renderer& r, const Rect& area, float y,
   return y + valueSize * 1.4f;
 }
 
+std::vector<BarBand> toBarBands(const EisGauge& gauge) {
+  std::vector<BarBand> bands;
+  bands.reserve(gauge.bands.size());
+  for (const EisBand& band : gauge.bands) {
+    bands.push_back({band.lo, band.hi, eisBandColor(band.color)});
+  }
+  return bands;
+}
+
+void drawGauge(Renderer& r, const FlightData& d, const EisGauge& gauge,
+               const Rect& inner, float& y, bool valid, float displayH,
+               float barStride, float labelSize) {
+  switch (gauge.type) {
+    case EisGaugeType::RpmDial: {
+      const float dialH = inner.h * 0.26f;
+      drawRpmDial(r, d, gauge, Rect{inner.x, y, inner.w, dialH}, displayH);
+      y += dialH + labelSize * 0.9f;
+      break;
+    }
+    case EisGaugeType::Bar: {
+      const std::vector<BarBand> bands = toBarBands(gauge);
+      const float value = eisChannelValue(d, gauge.channel, 0.0f);
+      drawBar(r, inner, y, gauge.label.c_str(), value, gauge.min, gauge.max,
+              bands.empty() ? nullptr : bands.data(),
+              static_cast<int>(bands.size()), valid, displayH);
+      y += barStride;
+      break;
+    }
+    case EisGaugeType::Readout: {
+      const float value = eisChannelValue(d, gauge.channel, 0.0f);
+      y = drawReadout(
+          r, inner, y, gauge.label.c_str(),
+          valid ? fmt(gauge.format.c_str(), value) : std::string("____._"),
+          displayH);
+      y += labelSize * 0.5f;
+      break;
+    }
+    case EisGaugeType::Electrical: {
+      const float leftVal = eisChannelValue(d, gauge.channel, 0.0f);
+      const float rightVal = eisChannelValue(d, gauge.channelRight, 0.0f);
+      y = drawElectricalRow(r, inner, y, gauge.label.c_str(),
+                            gauge.leftTag.c_str(), leftVal,
+                            gauge.rightTag.c_str(), rightVal,
+                            gauge.format.c_str(), valid, displayH);
+      break;
+    }
+  }
+}
+
 }  // namespace
 
-void drawEisStrip(Renderer& r, const FlightData& d, const Rect& area,
-                  float displayH) {
-  // Strip face: same dark panel gradient as the top bar, with a separator
-  // along the right edge against the page body.
+void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
+                  const Rect& area, float displayH) {
   r.fillRectVerticalGradient(area.x, area.y, area.w, area.h, area.y,
                              area.y + area.h, colors::kPanelBackgroundBottom,
                              colors::kPanelBackground);
@@ -230,75 +239,32 @@ void drawEisStrip(Renderer& r, const FlightData& d, const Rect& area,
   const float labelSize = mfdFontPx(kLabelWt, displayH);
   const float barStride = labelSize * 3.1f;
 
-  // Title, then the tachometer dial.
   float y = area.y + labelSize * 1.4f;
-  r.fillText(area.x + area.w * 0.5f, y, "ENGINE", mfdFontPx(kValueWt, displayH),
-             TextAlign::Center, colors::kWhite);
+  r.fillText(area.x + area.w * 0.5f, y, layout.stripTitle.c_str(),
+             mfdFontPx(kValueWt, displayH), TextAlign::Center, colors::kWhite);
   y += labelSize * 0.8f;
 
-  const float dialH = area.h * 0.26f;
-  drawRpmDial(r, d, Rect{inner.x, y, inner.w, dialH}, displayH);
-  y += dialH + labelSize * 0.9f;
-
-  // Horizontal bar indicators, top to bottom in the real Engine Display order.
-  const BarBand fflowBands[] = {{0.0f, kFflowGreenHi, colors::kBandGreen}};
-  drawBar(r, inner, y, "FFLOW GPH", d.fuelFlowGph, 0.0f, kFflowMax, fflowBands,
-          1, valid, displayH);
-  y += barStride;
-
-  const BarBand oilPresBands[] = {
-      {0.0f, kOilPresRedLo, colors::kBandRed},
-      {kOilPresGreenLo, kOilPresGreenHi, colors::kBandGreen},
-      {kOilPresRedHi, kOilPresMax, colors::kBandRed}};
-  drawBar(r, inner, y, "OIL PRES", d.oilPressurePsi, 0.0f, kOilPresMax,
-          oilPresBands, 3, valid, displayH);
-  y += barStride;
-
-  const BarBand oilTempBands[] = {
-      {kOilTempMin, kOilTempRedLine, colors::kBandGreen},
-      {kOilTempRedLine, kOilTempMax, colors::kBandRed}};
-  drawBar(r, inner, y, "OIL TEMP", d.oilTempDegF, kOilTempMin, kOilTempMax,
-          oilTempBands, 2, valid, displayH);
-  y += barStride;
-
-  drawBar(r, inner, y, "EGT \xC2\xB0""F", d.egtDegF, kEgtMin, kEgtMax, nullptr,
-          0, valid, displayH);
-  y += barStride;
-
-  const BarBand vacBands[] = {{kVacGreenLo, kVacGreenHi, colors::kBandGreen}};
-  drawBar(r, inner, y, "VAC", d.vacuumInHg, kVacMin, kVacMax, vacBands, 1,
-          valid, displayH);
-  y += barStride;
-
-  // Fuel quantity: one bar per tank (left and right), shared group label.
-  r.fillText(inner.x + inner.w * 0.5f, y, "FUEL QTY GAL", labelSize,
-             TextAlign::Center, colors::kLabelText);
-  y += labelSize * 0.6f;
-  const BarBand fuelBands[] = {{0.0f, kFuelRedHi, colors::kBandRed},
-                               {kFuelRedHi, kFuelMaxGal, colors::kBandGreen}};
-  drawBar(r, inner, y, "L", d.fuelQtyLeftGal, 0.0f, kFuelMaxGal, fuelBands, 2,
-          valid, displayH);
-  y += barStride;
-  drawBar(r, inner, y, "R", d.fuelQtyRightGal, 0.0f, kFuelMaxGal, fuelBands, 2,
-          valid, displayH);
-  y += barStride * 1.1f;
-
-  // Engine hours (tach), then the electrical group.
-  y = drawReadout(r, inner, y, "ENG HRS",
-                  valid ? fmt("%.1f", d.engineHours) : std::string("____._"),
-                  displayH);
-  y += labelSize * 0.5f;
-
-  r.strokeLine(inner.x, y, inner.x + inner.w, y, 1.0f,
-               colors::kPanelSeparator);
-  y += labelSize * 1.2f;
-  r.fillText(inner.x + inner.w * 0.5f, y, "ELECTRICAL",
-             mfdFontPx(kValueWt, displayH), TextAlign::Center, colors::kWhite);
-  y += labelSize * 1.5f;
-  y = drawElectricalRow(r, inner, y, "BUS VOLTS", "M", d.busVoltsMain, "E",
-                        d.busVoltsEssential, "%.1f", valid, displayH);
-  y = drawElectricalRow(r, inner, y, "BATT AMPS", "M", d.battAmpsMain, "S",
-                        d.battAmpsStandby, "%+.0f", valid, displayH);
+  for (const EisSection& section : layout.sections) {
+    if (section.title == "ELECTRICAL") {
+      r.strokeLine(inner.x, y, inner.x + inner.w, y, 1.0f,
+                   colors::kPanelSeparator);
+      y += labelSize * 1.2f;
+      r.fillText(inner.x + inner.w * 0.5f, y, section.title.c_str(),
+                 mfdFontPx(kValueWt, displayH), TextAlign::Center,
+                 colors::kWhite);
+      y += labelSize * 1.5f;
+    } else if (!section.title.empty()) {
+      r.fillText(inner.x + inner.w * 0.5f, y, section.title.c_str(), labelSize,
+                 TextAlign::Center, colors::kLabelText);
+      y += labelSize * 0.6f;
+    }
+    for (const EisGauge& gauge : section.gauges) {
+      drawGauge(r, d, gauge, inner, y, valid, displayH, barStride, labelSize);
+    }
+    if (section.title == "FUEL QTY GAL") {
+      y += barStride * 0.1f;
+    }
+  }
 }
 
 }  // namespace avionics::mfd

@@ -1,0 +1,357 @@
+#include "render/map/TerrainRaster.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "avionics/Color.h"
+#include "avionics/Terrain.h"
+#include "render/map/MapProjection.h"
+
+namespace avionics::map {
+namespace {
+
+// Raster edge length in pixels. 512 px across ~2.4x the map range keeps each
+// raster pixel near (or below) the DEM's ~90 m grid at typical ranges while a
+// full rebuild stays a few-frame job.
+constexpr int kRasterSize = 512;
+
+// Raster half-width as a multiple of the map range. The viewport's rotated
+// corner reaches ~1.9x range on the full-screen MFD map, so 2.4x leaves drift
+// margin before any un-rastered edge could scroll into view.
+constexpr float kCoverageRangeFactor = 2.4f;
+
+// Rebuild once the view center drifts this fraction of the range from the
+// raster center.
+constexpr float kRecenterDriftFactor = 0.30f;
+
+// Above this map range the DSF tile cache cannot cover the raster footprint
+// (~2.4x range); skip terrain shading and let the plain background + land
+// overlay define the wide view instead of half-loaded procedural noise.
+constexpr float kTerrainMaxRangeNm = 75.0f;
+
+// DEM rows sampled per frame during a rebuild (~50k samples/frame), so a full
+// 512-row build spreads over ~6 frames and never stalls the render loop.
+constexpr int kRowsPerFrame = 96;
+
+constexpr float kFeetPerNm = 6076.12f;
+
+// Relative-terrain (TER REL) thresholds per the NXi terrain proximity scheme:
+// terrain at/above 100 ft below the aircraft is red, within 1000 ft yellow.
+constexpr float kRelRedBelowFt = 100.0f;
+constexpr float kRelYellowBelowFt = 1000.0f;
+// Quantize ownship altitude so REL rebuilds happen per 100 ft step, not
+// continuously while climbing.
+constexpr float kRelAltBucketFt = 100.0f;
+
+// Topographic color ramp (ft MSL -> color). Elevation breakpoints and RGB
+// values sampled from the Garmin G1000 NXi Pilot's Guide TOPO SCALE legend
+// (Fig 5-14, PDF p. 144). The real unit turns tan by ~500 ft and burnt-orange
+// by ~3000 ft; green is confined to near sea level. Water is a muted teal
+// (not bright cyan). Shoreline is a sharp step from water (<=0 ft) to land
+// (>0 ft).
+struct TerrainStop {
+  float ft;
+  Color color;
+};
+
+constexpr TerrainStop kTerrainStops[] = {
+    {-2000.0f, {0.110f, 0.365f, 0.439f, 1.0f}},  // deep water (28,93,112)
+    {0.0f, {0.286f, 0.604f, 0.573f, 1.0f}},      // shoreline water (73,154,146)
+    {1.0f, {0.373f, 0.427f, 0.290f, 1.0f}},      // lowland green (95,109,74)
+    {500.0f, {0.698f, 0.624f, 0.420f, 1.0f}},    // tan (178,159,107)
+    {2000.0f, {0.753f, 0.553f, 0.357f, 1.0f}},   // clay (192,141,91)
+    {3000.0f, {0.612f, 0.396f, 0.196f, 1.0f}},   // burnt orange (156,101,50)
+    {6000.0f, {0.573f, 0.310f, 0.192f, 1.0f}},  // brown (146,79,49)
+    {8000.0f, {0.561f, 0.267f, 0.145f, 1.0f}},  // brick (143,68,37)
+    {10500.0f, {0.553f, 0.573f, 0.584f, 1.0f}}, // grey rock (141,146,149)
+    {27000.0f, {0.761f, 0.780f, 0.792f, 1.0f}}, // snow (194,199,202)
+};
+
+Color terrainColor(float ft) {
+  constexpr int n =
+      static_cast<int>(sizeof(kTerrainStops) / sizeof(kTerrainStops[0]));
+  if (ft <= kTerrainStops[0].ft) return kTerrainStops[0].color;
+  if (ft >= kTerrainStops[n - 1].ft) return kTerrainStops[n - 1].color;
+  for (int i = 1; i < n; ++i) {
+    if (ft <= kTerrainStops[i].ft) {
+      const Color& a = kTerrainStops[i - 1].color;
+      const Color& b = kTerrainStops[i].color;
+      const float t = (ft - kTerrainStops[i - 1].ft) /
+                      (kTerrainStops[i].ft - kTerrainStops[i - 1].ft);
+      return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
+              a.b + (b.b - a.b) * t, 1.0f};
+    }
+  }
+  return kTerrainStops[n - 1].color;
+}
+
+// Geographic snapshot a raster was (or is being) built for.
+struct Snapshot {
+  double centerLat = 0.0;
+  double centerLon = 0.0;
+  float halfNm = 0.0f;
+  TerrainRasterMode mode = TerrainRasterMode::Absolute;
+  int relAltBucket = 0;
+  unsigned sourceRevision = 0;
+
+  bool sameParams(const Snapshot& o) const {
+    return sameGeometry(o) && sourceRevision == o.sourceRevision;
+  }
+
+  // Geometry-only match (ignores sourceRevision): two snapshots that cover the
+  // same ground at the same scale/mode, even if newer DEM tiles have since
+  // loaded. Used to decide whether an in-flight build can keep going -- a tile
+  // load bumps the revision every frame while flying, and restarting the build
+  // each time would mean it never finishes and the map resamples the whole
+  // raster on every redraw.
+  bool sameGeometry(const Snapshot& o) const {
+    return halfNm == o.halfNm && mode == o.mode &&
+           relAltBucket == o.relAltBucket;
+  }
+
+  float driftNm(const Snapshot& o) const {
+    const double dN = (centerLat - o.centerLat) * kNmPerDegLat;
+    const double dE = (centerLon - o.centerLon) * nmPerDegLon(o.centerLat);
+    return static_cast<float>(std::sqrt(dN * dN + dE * dE));
+  }
+};
+
+// Per-map-view raster cache entry. Keyed by (renderer, view center px) so each
+// on-screen map instance owns one raster and one GPU image.
+struct ViewRaster {
+  Renderer* renderer = nullptr;
+  int keyX = 0;
+  int keyY = 0;
+  std::uint64_t lastUse = 0;
+
+  int imageId = -1;
+  Snapshot front;
+  bool frontValid = false;
+
+  bool building = false;
+  Snapshot target;
+  int rowsDone = 0;
+  std::vector<float> elevFt;        // kRasterSize^2 sampled elevations
+  std::vector<unsigned char> rgba;  // kRasterSize^2 * 4 upload buffer
+};
+
+constexpr std::size_t kMaxViewRasters = 8;
+
+std::vector<std::unique_ptr<ViewRaster>>& registry() {
+  static std::vector<std::unique_ptr<ViewRaster>> views;
+  return views;
+}
+
+ViewRaster& viewFor(Renderer& r, float cx, float cy) {
+  static std::uint64_t useCounter = 0;
+  const int kx = static_cast<int>(std::lround(cx));
+  const int ky = static_cast<int>(std::lround(cy));
+  auto& views = registry();
+  for (auto& v : views) {
+    if (v->renderer == &r && v->keyX == kx && v->keyY == ky) {
+      v->lastUse = ++useCounter;
+      return *v;
+    }
+  }
+  if (views.size() >= kMaxViewRasters) {
+    auto oldest = std::min_element(
+        views.begin(), views.end(),
+        [](const auto& a, const auto& b) { return a->lastUse < b->lastUse; });
+    // Only reclaim the GPU image when the evicted entry belongs to the same
+    // renderer (whose GL context is current right now, since it is drawing).
+    if ((*oldest)->renderer == &r && (*oldest)->imageId >= 0) {
+      r.deleteImage((*oldest)->imageId);
+    }
+    views.erase(oldest);
+  }
+  views.push_back(std::make_unique<ViewRaster>());
+  ViewRaster& v = *views.back();
+  v.renderer = &r;
+  v.keyX = kx;
+  v.keyY = ky;
+  v.lastUse = ++useCounter;
+  return v;
+}
+
+// Samples a horizontal band of DEM rows into the elevation grid. Within a row
+// latitude is fixed and longitude steps uniformly, so the per-cell lon is
+// lonStart + lonStep*j; handing the whole row to elevationFtRow lets the DSF
+// store resolve (and lock) the tile once per row instead of once per pixel.
+void sampleRows(ViewRaster& v, const TerrainSource& terrain, int rows) {
+  const Snapshot& s = v.target;
+  const float stepNm = 2.0f * s.halfNm / kRasterSize;
+  const double nmLon = nmPerDegLon(s.centerLat);
+  const double lonStart =
+      s.centerLon + (-s.halfNm + 0.5 * stepNm) / nmLon;
+  const double lonStep = static_cast<double>(stepNm) / nmLon;
+  const int endRow = std::min(kRasterSize, v.rowsDone + rows);
+  for (int i = v.rowsDone; i < endRow; ++i) {
+    const double northNm = s.halfNm - (i + 0.5) * stepNm;
+    const double lat = s.centerLat + northNm / kNmPerDegLat;
+    float* out = v.elevFt.data() + static_cast<std::size_t>(i) * kRasterSize;
+    terrain.elevationFtRow(lat, lonStart, lonStep, kRasterSize, out);
+  }
+  v.rowsDone = endRow;
+}
+
+void writePixel(unsigned char* px, const Color& c) {
+  px[0] = static_cast<unsigned char>(
+      std::lround(std::min(1.0f, std::max(0.0f, c.r)) * 255.0f));
+  px[1] = static_cast<unsigned char>(
+      std::lround(std::min(1.0f, std::max(0.0f, c.g)) * 255.0f));
+  px[2] = static_cast<unsigned char>(
+      std::lround(std::min(1.0f, std::max(0.0f, c.b)) * 255.0f));
+  px[3] = static_cast<unsigned char>(
+      std::lround(std::min(1.0f, std::max(0.0f, c.a)) * 255.0f));
+}
+
+// Converts the sampled elevation grid into RGBA. Absolute mode applies the
+// topo ramp plus a NW-lit hillshade (slope from the DEM gradient) so relief
+// reads like the real TOPO map; Relative mode applies the TER REL proximity
+// colors against the snapshot's altitude bucket.
+void colorize(ViewRaster& v) {
+  const Snapshot& s = v.target;
+  const float cellFt = (2.0f * s.halfNm / kRasterSize) * kFeetPerNm;
+  // Light from the northwest, above (x = east, y = south, z = up).
+  constexpr float kLx = -0.45f, kLy = -0.45f, kLz = 0.77f;
+  // Slope exaggeration so ~90 m cells still produce visible relief.
+  constexpr float kSlopeGain = 3.0f;
+
+  const float ownAltFt =
+      static_cast<float>(s.relAltBucket) * kRelAltBucketFt;
+
+  for (int i = 0; i < kRasterSize; ++i) {
+    const float* row = v.elevFt.data() + static_cast<std::size_t>(i) * kRasterSize;
+    const float* rowN =
+        v.elevFt.data() + static_cast<std::size_t>(std::max(i - 1, 0)) * kRasterSize;
+    const float* rowS = v.elevFt.data() +
+        static_cast<std::size_t>(std::min(i + 1, kRasterSize - 1)) * kRasterSize;
+    unsigned char* px =
+        v.rgba.data() + static_cast<std::size_t>(i) * kRasterSize * 4;
+    for (int j = 0; j < kRasterSize; ++j, px += 4) {
+      const float e = row[j];
+
+      if (s.mode == TerrainRasterMode::Relative) {
+        const float rel = e - ownAltFt;
+        if (rel >= -kRelRedBelowFt) {
+          writePixel(px, colors::kBandRed);
+        } else if (rel >= -kRelYellowBelowFt) {
+          writePixel(px, colors::kBandYellow);
+        } else {
+          writePixel(px, colors::kBlack);
+        }
+        continue;
+      }
+
+      Color c = terrainColor(e);
+      if (e > 0.5f) {
+        const int jW = std::max(j - 1, 0);
+        const int jE = std::min(j + 1, kRasterSize - 1);
+        const float dzdx = kSlopeGain * (row[jE] - row[jW]) / (2.0f * cellFt);
+        const float dzdy = kSlopeGain * (rowS[j] - rowN[j]) / (2.0f * cellFt);
+        const float invLen =
+            1.0f / std::sqrt(dzdx * dzdx + dzdy * dzdy + 1.0f);
+        const float dot =
+            (-dzdx * kLx - dzdy * kLy + kLz) * invLen;  // normal . light
+        // Normalized so flat ground keeps the ramp color exactly.
+        const float bright =
+            std::min(1.30f, std::max(0.40f, 0.25f + 0.75f * (dot / kLz)));
+        c.r *= bright;
+        c.g *= bright;
+        c.b *= bright;
+      }
+      writePixel(px, c);
+    }
+  }
+}
+
+}  // namespace
+
+bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
+                       TerrainRasterMode mode, float ownAltFt,
+                       double viewCenterLat, double viewCenterLon, float cx,
+                       float cy, float pixelsPerNm, float rotationDeg,
+                       float rangeNm) {
+  if (rangeNm > kTerrainMaxRangeNm) return false;
+
+  ViewRaster& v = viewFor(r, cx, cy);
+
+  Snapshot desired;
+  desired.centerLat = viewCenterLat;
+  desired.centerLon = viewCenterLon;
+  desired.halfNm = rangeNm * kCoverageRangeFactor;
+  desired.mode = mode;
+  desired.relAltBucket =
+      mode == TerrainRasterMode::Relative
+          ? static_cast<int>(std::lround(ownAltFt / kRelAltBucketFt))
+          : 0;
+  desired.sourceRevision = terrain.revision();
+
+  const float driftLimitNm = rangeNm * kRecenterDriftFactor;
+  const bool frontFresh = v.frontValid && v.front.sameParams(desired) &&
+                          v.front.driftNm(desired) <= driftLimitNm;
+
+  if (!frontFresh) {
+    // (Re)start the build when there is none in flight or the in-flight target
+    // covers different ground than the view now needs. A pure revision bump (a
+    // newer DEM tile loaded) does NOT restart the build -- we let it finish and
+    // pick up the fresher data on the next rebuild, so streaming tiles can't
+    // pin the raster in a permanent from-scratch resample.
+    const bool targetStale =
+        !v.building || !v.target.sameGeometry(desired) ||
+        v.target.driftNm(desired) > driftLimitNm;
+    if (targetStale) {
+      v.building = true;
+      v.target = desired;
+      v.rowsDone = 0;
+      if (v.elevFt.empty()) {
+        v.elevFt.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize);
+        v.rgba.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize * 4);
+      }
+    }
+  }
+
+  if (v.building) {
+    // First-ever raster for this view builds synchronously so the map never
+    // shows a bare background on entry; later rebuilds (pan/zoom/new tiles)
+    // spread across frames while the previous raster keeps drawing.
+    sampleRows(v, terrain, v.frontValid ? kRowsPerFrame : kRasterSize);
+    if (v.rowsDone >= kRasterSize) {
+      colorize(v);
+      if (v.imageId < 0) {
+        v.imageId = r.createImageRGBA(kRasterSize, kRasterSize, v.rgba.data());
+      } else {
+        r.updateImageRGBA(v.imageId, v.rgba.data());
+      }
+      v.front = v.target;
+      v.frontValid = v.imageId >= 0;
+      v.building = false;
+    }
+  }
+
+  if (!v.frontValid || v.imageId < 0) return false;
+
+  // The raster is north-up around its own snapshot center: rotate into the map
+  // orientation and offset by the snapshot-vs-view center displacement so the
+  // image stays geographically pinned while the aircraft drifts between
+  // rebuilds.
+  const double dLat = v.front.centerLat - viewCenterLat;
+  const double dLon = v.front.centerLon - viewCenterLon;
+  const float dxPx =
+      static_cast<float>(dLon * nmPerDegLon(viewCenterLat)) * pixelsPerNm;
+  const float dyPx = -static_cast<float>(dLat * kNmPerDegLat) * pixelsPerNm;
+  const float halfPx = v.front.halfNm * pixelsPerNm;
+
+  r.save();
+  r.translate(cx, cy);
+  r.rotateDegrees(-rotationDeg);
+  r.drawImage(v.imageId, dxPx - halfPx, dyPx - halfPx, 2.0f * halfPx,
+              2.0f * halfPx, 1.0f);
+  r.restore();
+  return true;
+}
+
+}  // namespace avionics::map
