@@ -1,5 +1,14 @@
 #include "DatarefWeatherRadar.h"
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 
@@ -12,12 +21,6 @@
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl.h>
 #elif defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
 #include <GL/gl.h>
 #else
 #include <GL/gl.h>
