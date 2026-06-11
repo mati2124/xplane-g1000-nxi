@@ -15,6 +15,11 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+# Linux CI/dev boxes often lack wayland-scanner; the standalone shell only needs
+# X11 on Linux (same as a typical desktop session).
+if(UNIX AND NOT APPLE)
+  set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+endif()
 FetchContent_MakeAvailable(glfw)
 
 # JSON parser for the SimBrief OFP fetch (header-only, fetched like GLFW).
