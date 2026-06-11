@@ -3,16 +3,14 @@
 // Owns its own windows and frame loop (unlike the plugin, which is driven by the
 // sim). Puts the shared PFD and MFD on screen as two GLFW windows (each with its
 // own GL context + NanoVgRenderer + AvionicsEngine, both reading one shared data
-// source), fed by either the built-in mock data or a live X-Plane connection
-// (UDP RREF). Press M at runtime to toggle the feed. Pass --no-mfd to run the
+// source), fed by a live X-Plane connection (UDP RREF). Pass --no-mfd to run the
 // PFD window only.
 //
-// On startup (when no --source is given) it starts on the mock feed but keeps
-// the X-Plane link warm and switches to it automatically the moment X-Plane
-// starts delivering data. Passing --source pins the feed and disables this, as
-// does manually toggling with M or the Data Source menu.
+// The displays always read the live X-Plane link: until the sim starts
+// delivering data the engine shows the power-up / waiting screen, then the live
+// pages. (The --screenshot dev mode renders a mock feed offscreen for asset
+// iteration; it never appears in the interactive app.)
 //
-//   --source mock|xplane     initial data feed (default: auto-detect)
 //   --no-mfd                  open only the PFD window (no MFD)
 //   --xplane-host HOST        X-Plane host (default: 127.0.0.1)
 //   --xplane-port PORT        X-Plane UDP port (default: 49000)
@@ -87,7 +85,6 @@
 #include "avionics/render/GlLoader.h"
 #include "avionics/render/NanoVgRenderer.h"
 #include "avionics/render/SoftkeyBezel.h"
-#include "MacMenu.h"  // DataSourceSelection enum; menu APIs are macOS-only.
 
 namespace {
 
@@ -210,9 +207,8 @@ inline void RenderSuite(avionics::NanoVgRenderer& renderer,
   renderer.endFrame();
 }
 
-constexpr const char* kSourceMock = "mock";
 constexpr const char* kSourceXPlane = "xplane";
-constexpr const char* kLabelMock = "MOCK DATA";
+constexpr const char* kLabelMock = "MOCK DATA";  // --screenshot dev mode only
 constexpr const char* kDefaultXPlaneHost = "127.0.0.1";
 constexpr std::uint16_t kDefaultXPlanePort = 49000;
 
@@ -255,15 +251,12 @@ struct AppState {
   avionics::AvionicsEngine* mfdEngine = nullptr;  // null when --no-mfd
   GLFWwindow* pfdWindow = nullptr;
   GLFWwindow* mfdWindow = nullptr;
-  avionics::MockDataSource* mock = nullptr;
+  // The standalone always reads the live X-Plane connection (no mock feed): the
+  // engine shows the power-up / waiting screen until the sim starts delivering
+  // data, then the live pages.
   avionics::SimulatorConnection* xplane = nullptr;
-  bool usingXPlane = false;
-  // While true, the main loop keeps the X-Plane link pumped and switches to it
-  // as soon as it connects. Cleared once the user takes manual control (M key /
-  // menu) or when a --source was given explicitly.
-  bool autoDetectXPlane = false;
   // Whether the hardware bezel strips are drawn (and the windows sized to
-  // include them). Mirrors settings.showBezel; toggled from the View menu.
+  // include them). Mirrors settings.showBezel; toggled with the B key.
   bool showBezel = true;
   // Persisted user preferences, written back whenever the user changes the
   // feed or flips one of the View menu toggles.
@@ -297,9 +290,9 @@ inline int SuiteWindowHeight(bool showBezel) {
   return showBezel ? kSuiteHeight : kWindowHeight;
 }
 
-// Records the current window placement into the settings, for the "Remember
-// Window Position" option. Positions are screen coordinates of the content
-// area's top-left corner, as reported by GLFW.
+// Records the current window placement into the settings (window positions are
+// always restored on the next launch). Positions are screen coordinates of the
+// content area's top-left corner, as reported by GLFW.
 void CaptureWindowPositions(AppState& app) {
   if (app.pfdWindow == nullptr) return;
   glfwGetWindowPos(app.pfdWindow, &app.settings.pfdWindowX,
@@ -333,32 +326,6 @@ void ApplyBezelWindowSize(AppState& app) {
   }
 }
 
-#if defined(__APPLE__)
-// Maps the current feed (and mock sub-mode) to the menu's radio selection so
-// the checkmarks stay in sync however the source was changed.
-avionics::DataSourceSelection CurrentSelection(const AppState& app) {
-  if (app.usingXPlane) return avionics::DataSourceSelection::XPlane;
-  return (app.mock != nullptr && app.mock->groundMode())
-             ? avionics::DataSourceSelection::MockGround
-             : avionics::DataSourceSelection::MockFlying;
-}
-#endif
-
-// Point both displays at the same feed so the MFD and PFD never diverge.
-void SwitchSource(AppState& app, bool useXPlane) {
-  if (useXPlane == app.usingXPlane) return;
-  app.usingXPlane = useXPlane;
-  avionics::DataSource* source =
-      useXPlane ? static_cast<avionics::DataSource*>(app.xplane)
-                : static_cast<avionics::DataSource*>(app.mock);
-  const std::string label = useXPlane ? app.xplane->simulatorName() : kLabelMock;
-  if (app.pfdEngine != nullptr) app.pfdEngine->setDataSource(*source, label);
-  if (app.mfdEngine != nullptr) app.mfdEngine->setDataSource(*source, label);
-#if defined(__APPLE__)
-  avionics::SetDataSourceMenuSelection(CurrentSelection(app));  // keep in sync
-#endif
-}
-
 // ENT during power-up acknowledges the database information and brings up the
 // live pages on both displays at once. A real unit acknowledges per display,
 // but the standalone PFD and MFD windows boot as one suite, so a single ENT
@@ -373,47 +340,8 @@ bool AwaitingBootAck(const AppState& app) {
          (app.mfdEngine != nullptr && app.mfdEngine->awaitingPowerUpAck());
 }
 
-// Persists the current data-source choice so the next launch starts on it.
-void PersistDataSource(AppState& app) {
-  app.settings.useXPlane = app.usingXPlane;
-  avionics::SaveAppSettings(app.settings);
-}
-
-// Menu-bar action target: switches the feed when the user picks from the menu.
-// The two mock entries share the mock feed and differ only in its sub-mode
-// (flying the demo route vs. parked on the ground at KFMY).
-void OnMenuSelectSource(void* context,
-                        avionics::DataSourceSelection selection) {
-  auto* app = static_cast<AppState*>(context);
-  app->autoDetectXPlane = false;  // explicit user choice wins from here on
-  if (selection == avionics::DataSourceSelection::XPlane) {
-    SwitchSource(*app, true);
-  } else {
-    const bool onGround =
-        selection == avionics::DataSourceSelection::MockGround;
-    if (app->mock != nullptr) app->mock->setGroundMode(onGround);
-    app->settings.mockOnGround = onGround;
-    SwitchSource(*app, false);
-#if defined(__APPLE__)
-    // SwitchSource is a no-op when already on the mock feed, so refresh the
-    // checkmarks here to reflect the new sub-mode.
-    avionics::SetDataSourceMenuSelection(CurrentSelection(*app));
-#endif
-  }
-  PersistDataSource(*app);
-}
-
-// Menu-bar action target: turns simulated turbulence on the mock feed on/off
-// and remembers the choice across runs (no effect on the live X-Plane feed).
-void OnMenuToggleTurbulence(void* context, bool enabled) {
-  auto* app = static_cast<AppState*>(context);
-  if (app->mock != nullptr) app->mock->setTurbulenceEnabled(enabled);
-  app->settings.simulateTurbulence = enabled;
-  avionics::SaveAppSettings(app->settings);
-}
-
-// Menu-bar action target: shows/hides the hardware bezel strips and remembers
-// the choice across runs.
+// B-key action: shows/hides the hardware bezel strips and remembers the choice
+// across runs.
 void OnMenuToggleBezel(void* context, bool showBezel) {
   auto* app = static_cast<AppState*>(context);
   app->showBezel = showBezel;
@@ -422,8 +350,8 @@ void OnMenuToggleBezel(void* context, bool showBezel) {
   ApplyBezelWindowSize(*app);
 }
 
-// Menu-bar action target: shows/hides the OS window chrome (the title bar with
-// its close / minimize / maximize controls) on both windows.
+// T-key action: shows/hides the OS window chrome (the title bar with its
+// close / minimize / maximize controls) on both windows.
 void OnMenuToggleWindowChrome(void* context, bool showChrome) {
   auto* app = static_cast<AppState*>(context);
   const int decorated = showChrome ? GLFW_TRUE : GLFW_FALSE;
@@ -437,8 +365,8 @@ void OnMenuToggleWindowChrome(void* context, bool showChrome) {
   avionics::SaveAppSettings(app->settings);
 }
 
-// Menu-bar action target: floats/unfloats both windows above other windows and
-// remembers the choice across runs.
+// P-key action: floats/unfloats both windows above other windows and remembers
+// the choice across runs.
 void OnMenuToggleAlwaysOnTop(void* context, bool alwaysOnTop) {
   auto* app = static_cast<AppState*>(context);
   const int floating = alwaysOnTop ? GLFW_TRUE : GLFW_FALSE;
@@ -449,16 +377,6 @@ void OnMenuToggleAlwaysOnTop(void* context, bool alwaysOnTop) {
     glfwSetWindowAttrib(app->mfdWindow, GLFW_FLOATING, floating);
   }
   app->settings.alwaysOnTop = alwaysOnTop;
-  avionics::SaveAppSettings(app->settings);
-}
-
-// Menu-bar action target: enables/disables restoring the window positions on
-// the next launch. Enabling captures the current placement immediately so the
-// preference takes effect even if the app later exits abnormally.
-void OnMenuToggleRememberWindowPos(void* context, bool remember) {
-  auto* app = static_cast<AppState*>(context);
-  app->settings.rememberWindowPos = remember;
-  if (remember) CaptureWindowPositions(*app);
   avionics::SaveAppSettings(app->settings);
 }
 
@@ -935,14 +853,23 @@ void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
     if (app != nullptr) AcknowledgeBoot(*app);
     return;
   }
-  // M toggles between the mock feed and the live X-Plane connection.
-  if (key == GLFW_KEY_M) {
-    auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
-    if (app != nullptr) {
-      app->autoDetectXPlane = false;  // explicit user choice wins from here on
-      SwitchSource(*app, !app->usingXPlane);
-      PersistDataSource(*app);
-    }
+  auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
+  if (app == nullptr) return;
+  // View toggles (persisted). No on-screen menu: these are the standalone's
+  // keyboard shortcuts for the bezel strips, the OS window title bar, and
+  // keep-on-top. Each affects both windows at once.
+  switch (key) {
+    case GLFW_KEY_B:
+      OnMenuToggleBezel(app, !app->showBezel);
+      break;
+    case GLFW_KEY_T:
+      OnMenuToggleWindowChrome(app, !app->settings.showWindowChrome);
+      break;
+    case GLFW_KEY_P:
+      OnMenuToggleAlwaysOnTop(app, !app->settings.alwaysOnTop);
+      break;
+    default:
+      break;
   }
 }
 
@@ -1319,17 +1246,6 @@ int main(int argc, char** argv) {
   const int winW = SuiteWindowWidth(showBezel);
   const int winH = SuiteWindowHeight(showBezel);
 
-  const char* sourceArg = FlagValue(argc, argv, "--source");
-  bool startWithXPlane = false;
-  bool autoDetectXPlane = false;
-  if (sourceArg != nullptr) {
-    startWithXPlane = std::strcmp(sourceArg, kSourceXPlane) == 0;
-  } else if (savedSettings.loaded) {
-    startWithXPlane = savedSettings.useXPlane;
-  } else {
-    autoDetectXPlane = true;
-  }
-
   // The PFD window owns vsync (paces the whole loop). Its context is created
   // first; the renderer is constructed while that context is current.
   GLFWwindow* pfdWindow = CreateAvionicsWindow(
@@ -1385,7 +1301,7 @@ int main(int argc, char** argv) {
   // Window placement, applied while the windows are still hidden so they first
   // appear in their final spots: the saved positions when "Remember Window
   // Position" is on, otherwise the MFD docked just to the right of the PFD.
-  if (savedSettings.rememberWindowPos && savedSettings.hasWindowPos) {
+  if (savedSettings.hasWindowPos) {
     glfwSetWindowPos(pfdWindow, savedSettings.pfdWindowX,
                      savedSettings.pfdWindowY);
     if (mfdWindow != nullptr) {
@@ -1450,18 +1366,9 @@ int main(int argc, char** argv) {
   avionics::ProcedureStore procedures(navData);
 
   // Real X-Plane navigation data behind the core's NavFeatureSource interface,
-  // shared by every feed so the map always shows X-Plane data, never mock data.
+  // so the map always shows X-Plane data.
   avionics::ShellNavMapData navMapData(navData, airspace, airways, aptData,
                                        landData, procedures, &obstacles);
-
-  avionics::MockDataSource mock;
-  mock.setNavFeatureSource(&navMapData);
-  mock.setTerrainSource(&terrain);
-  mock.setChecklistSource(&checklists);
-  mock.setEisSource(&eisStore);
-  mock.setTurbulenceEnabled(savedSettings.simulateTurbulence);
-  mock.setGroundMode(savedSettings.mockOnGround);
-  bool mockRouteSet = false;  // set once the .fms flight plan has loaded
 
   avionics::XPlaneConnection xplane(host ? host : kDefaultXPlaneHost, port,
                                     navData, airspace, airways, aptData,
@@ -1485,11 +1392,11 @@ int main(int argc, char** argv) {
     simbrief.requestFetch(simbriefPilotId);
   }
 
-  avionics::DataSource& initialSource =
-      startWithXPlane ? static_cast<avionics::DataSource&>(xplane)
-                      : static_cast<avionics::DataSource&>(mock);
-  const std::string initialLabel =
-      startWithXPlane ? xplane.simulatorName() : kLabelMock;
+  // The standalone always reads the live X-Plane connection. Until the sim
+  // starts delivering data the engine shows the power-up / waiting screen, then
+  // the live pages.
+  avionics::DataSource& initialSource = xplane;
+  const std::string initialLabel = xplane.simulatorName();
 
   // Both displays read the same source. The PFD engine pumps it each frame; the
   // MFD engine renders the MFD page from the same data without pumping again.
@@ -1518,15 +1425,11 @@ int main(int argc, char** argv) {
   }
 
   AppState app;
-  app.mock = &mock;
   app.xplane = &xplane;
-  app.usingXPlane = startWithXPlane;
-  app.autoDetectXPlane = autoDetectXPlane;
   app.showBezel = showBezel;
   app.settings = savedSettings;
   app.settings.alwaysOnTop = alwaysOnTop;
   if (!app.settings.loaded) {
-    app.settings.useXPlane = startWithXPlane;
     app.settings.showBezel = showBezel;
   }
   app.pfdEngine = &pfdEngine;
@@ -1542,30 +1445,12 @@ int main(int argc, char** argv) {
   glfwSetWindowUserPointer(pfdWindow, &app);
   if (mfdWindow != nullptr) glfwSetWindowUserPointer(mfdWindow, &app);
 
-#if defined(__APPLE__)
-  // macOS menu bar: data feed plus the View toggles (all persisted). The
-  // Data Source menu also carries the mock-only "Simulate Turbulence" toggle.
-  const avionics::DataSourceSelection initialSelection =
-      startWithXPlane ? avionics::DataSourceSelection::XPlane
-      : savedSettings.mockOnGround
-          ? avionics::DataSourceSelection::MockGround
-          : avionics::DataSourceSelection::MockFlying;
-  avionics::InstallDataSourceMenu(initialSelection,
-                                  app.settings.simulateTurbulence,
-                                  &OnMenuSelectSource, &OnMenuToggleTurbulence,
-                                  &app);
-  avionics::ViewMenuConfig viewMenu;
-  viewMenu.showBezel = showBezel;
-  viewMenu.showWindowChrome = showWindowChrome;
-  viewMenu.alwaysOnTop = alwaysOnTop;
-  viewMenu.rememberWindowPos = app.settings.rememberWindowPos;
-  viewMenu.onToggleBezel = &OnMenuToggleBezel;
-  viewMenu.onToggleWindowChrome = &OnMenuToggleWindowChrome;
-  viewMenu.onToggleAlwaysOnTop = &OnMenuToggleAlwaysOnTop;
-  viewMenu.onToggleRememberWindowPos = &OnMenuToggleRememberWindowPos;
-  viewMenu.context = &app;
-  avionics::InstallViewMenu(viewMenu);
-#endif
+  // View toggles are keyboard shortcuts (persisted): B = bezel strips, T = OS
+  // window title bar, P = keep windows on top. Window positions are always
+  // restored on the next launch.
+  std::fprintf(stderr,
+               "Shortcuts: B = bezel, T = title bar, P = always-on-top, "
+               "Esc = quit.\n");
 
   // Optional per-display render profiler (AVIONICS_PROFILE=1): isolates the GPU
   // cost of each window's draw with a glFinish so we can see whether the PFD or
@@ -1621,13 +1506,6 @@ int main(int argc, char** argv) {
     const double dt = std::chrono::duration<double>(now - previous).count();
     previous = now;
 
-    // Once the .fms flight plan has loaded, fly it on the mock feed too (until
-    // then the mock flies its built-in demo route).
-    if (!mockRouteSet && fmsPlan.loaded() && fmsPlan.flightPlan().size() >= 2) {
-      mock.setRoute(fmsPlan.flightPlan());
-      mockRouteSet = true;
-    }
-
     // Pick up live edits to the checklist file so authors can iterate without
     // restarting.
     checklists.refreshIfChanged();
@@ -1635,7 +1513,7 @@ int main(int argc, char** argv) {
 
     // SimBrief: react to the AUX - SIMBRIEF page (a newly committed Pilot ID
     // is persisted; FETCH kicks off a download), land completed fetches into
-    // both feeds' flight plans, and publish the status back for rendering.
+    // the X-Plane feed's flight plan, and publish the status back for rendering.
     if (mfdEngine != nullptr) {
       avionics::MfdController& mfdUi = mfdEngine->mfdController();
       if (mfdUi.simbriefPilotId() != simbriefPilotId) {
@@ -1663,10 +1541,7 @@ int main(int argc, char** argv) {
         simbriefState.generatedUtc = simbriefResult.generatedUtc;
         simbriefState.waypointCount =
             static_cast<int>(simbriefResult.legs.size());
-        // The OFP becomes the active flight plan on both feeds (and blocks the
-        // later-loading .fms plan from overwriting it on the mock).
-        mock.setRoute(simbriefResult.legs);
-        mockRouteSet = true;
+        // The OFP becomes the displayed flight plan on the X-Plane feed.
         xplane.setRouteOverride(simbriefResult.legs);
       } else {
         simbriefState.status = avionics::SimBriefStatus::Error;
@@ -1677,38 +1552,31 @@ int main(int argc, char** argv) {
       mfdEngine->mfdController().setSimbriefState(simbriefState);
     }
 
-    // FPL page edits become the active flight plan on both feeds: the mock
-    // keeps flying (no reposition) and the X-Plane feed's displayed plan is
-    // overridden, mirroring the SimBrief flow above.
+    // FPL page edits override the X-Plane feed's displayed plan, mirroring the
+    // SimBrief flow above.
     if (mfdEngine != nullptr) {
       std::vector<avionics::MapLeg> editedPlan;
       if (mfdEngine->mfdController().consumeFlightPlanEdit(editedPlan)) {
-        mock.updateRoute(editedPlan);
-        mockRouteSet = true;
         xplane.setRouteOverride(editedPlan);
       }
 
-      // Direct-To activation: the mock flies the direct course; the X-Plane
-      // feed shows the magenta direct line (display only over UDP).
+      // Direct-To activation: the X-Plane feed shows the magenta direct line
+      // (display only over UDP).
       avionics::MapLeg dtoTarget;
       if (mfdEngine->mfdController().consumeDirectToRequest(dtoTarget)) {
-        mock.directTo(dtoTarget);
         xplane.setDirectTo(dtoTarget);
       }
 
       avionics::MapProcedure proc;
       if (mfdEngine->mfdController().consumeProcLoadRequest(proc) &&
           proc.frequencyMhz > 0.0f) {
-        mock.tuneRadioStandby(avionics::RadioUnit::Nav1, proc.frequencyMhz);
         xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, proc.frequencyMhz);
       }
 
-      // Map panning: keep both feeds' nearby-data queries centered on the MFD
+      // Map panning: keep the feed's nearby-data queries centered on the MFD
       // Map Pointer while panning, so the panned-to area loads features /
       // airspaces instead of staying empty around the aircraft.
       const avionics::MfdController& mapUi = mfdEngine->mfdController();
-      mock.setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
-                           mapUi.mapPointerLon());
       xplane.setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
                              mapUi.mapPointerLon());
     }
@@ -1719,31 +1587,18 @@ int main(int argc, char** argv) {
       avionics::RadioUnit radioUnit;
       float standbyMhz = 0.0f;
       if (pfdUi.consumeRadioTune(radioUnit, standbyMhz)) {
-        mock.tuneRadioStandby(radioUnit, standbyMhz);
         xplane.tuneRadioStandby(radioUnit, standbyMhz);
       }
       if (pfdUi.consumeRadioTransfer(radioUnit)) {
-        mock.transferRadio(radioUnit);
         xplane.transferRadio(radioUnit);
       }
       int xpdrCode = 0;
       if (pfdUi.consumeXpdrCodeCommit(xpdrCode)) {
-        mock.setTransponderCode(xpdrCode);
         xplane.setTransponderCode(xpdrCode);
       }
       int xpdrMode = 0;
       if (pfdUi.consumeXpdrModeCommit(xpdrMode)) {
-        mock.setTransponderMode(xpdrMode);
         xplane.setTransponderMode(xpdrMode);
-      }
-    }
-
-    // Auto-detect: while showing mock, keep the X-Plane link pumped (the engines
-    // only update the active source) and switch over the instant it connects.
-    if (app.autoDetectXPlane && !app.usingXPlane) {
-      xplane.update(dt);
-      if (xplane.connectionState() == avionics::ConnectionState::Connected) {
-        SwitchSource(app, true);
       }
     }
 
@@ -1815,11 +1670,9 @@ int main(int argc, char** argv) {
   }
 
   // Capture the final window placement for the next launch before the windows
-  // go away.
-  if (app.settings.rememberWindowPos) {
-    CaptureWindowPositions(app);
-    avionics::SaveAppSettings(app.settings);
-  }
+  // go away (always remembered).
+  CaptureWindowPositions(app);
+  avionics::SaveAppSettings(app.settings);
 
   // Tear down GL objects while their contexts are still current.
   if (mfdWindow != nullptr) {

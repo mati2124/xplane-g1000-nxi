@@ -10,14 +10,10 @@ namespace {
 
 constexpr const char* kAppDirName = "XPlaneAvionics";
 constexpr const char* kSettingsFileName = "settings.txt";
-constexpr const char* kKeyUseXPlane = "useXPlane";
 constexpr const char* kKeyShowBezel = "showBezel";
 constexpr const char* kKeySimbriefPilotId = "simbriefPilotId";
 constexpr const char* kKeyShowWindowChrome = "showWindowChrome";
 constexpr const char* kKeyAlwaysOnTop = "alwaysOnTop";
-constexpr const char* kKeySimulateTurbulence = "simulateTurbulence";
-constexpr const char* kKeyMockOnGround = "mockOnGround";
-constexpr const char* kKeyRememberWindowPos = "rememberWindowPos";
 constexpr const char* kKeyPfdWindowX = "pfdWindowX";
 constexpr const char* kKeyPfdWindowY = "pfdWindowY";
 constexpr const char* kKeyMfdWindowX = "mfdWindowX";
@@ -88,9 +84,7 @@ AppSettings LoadAppSettings() {
     if (eq == std::string::npos) continue;
     const std::string key = line.substr(0, eq);
     const std::string value = line.substr(eq + 1);
-    if (key == kKeyUseXPlane) {
-      settings.useXPlane = ParseBool(value, settings.useXPlane);
-    } else if (key == kKeyShowBezel) {
+    if (key == kKeyShowBezel) {
       settings.showBezel = ParseBool(value, settings.showBezel);
     } else if (key == kKeySimbriefPilotId) {
       settings.simbriefPilotId = value;
@@ -99,14 +93,6 @@ AppSettings LoadAppSettings() {
           ParseBool(value, settings.showWindowChrome);
     } else if (key == kKeyAlwaysOnTop) {
       settings.alwaysOnTop = ParseBool(value, settings.alwaysOnTop);
-    } else if (key == kKeySimulateTurbulence) {
-      settings.simulateTurbulence =
-          ParseBool(value, settings.simulateTurbulence);
-    } else if (key == kKeyMockOnGround) {
-      settings.mockOnGround = ParseBool(value, settings.mockOnGround);
-    } else if (key == kKeyRememberWindowPos) {
-      settings.rememberWindowPos =
-          ParseBool(value, settings.rememberWindowPos);
     } else if (key == kKeyPfdWindowX) {
       ParseWindowCoord(value, settings.pfdWindowX, coordsValid);
       ++windowCoords;
@@ -139,17 +125,11 @@ void SaveAppSettings(const AppSettings& settings) {
 
   std::ofstream out(path, std::ios::trunc);
   if (!out.is_open()) return;
-  out << kKeyUseXPlane << '=' << (settings.useXPlane ? '1' : '0') << '\n';
   out << kKeyShowBezel << '=' << (settings.showBezel ? '1' : '0') << '\n';
   out << kKeySimbriefPilotId << '=' << settings.simbriefPilotId << '\n';
   out << kKeyShowWindowChrome << '='
       << (settings.showWindowChrome ? '1' : '0') << '\n';
   out << kKeyAlwaysOnTop << '=' << (settings.alwaysOnTop ? '1' : '0') << '\n';
-  out << kKeySimulateTurbulence << '='
-      << (settings.simulateTurbulence ? '1' : '0') << '\n';
-  out << kKeyMockOnGround << '=' << (settings.mockOnGround ? '1' : '0') << '\n';
-  out << kKeyRememberWindowPos << '='
-      << (settings.rememberWindowPos ? '1' : '0') << '\n';
   // Window coordinates are only written once a position has been captured, so
   // a fresh install never restores a bogus (0, 0) placement.
   if (settings.hasWindowPos) {

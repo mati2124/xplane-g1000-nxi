@@ -2,7 +2,7 @@
 # the shared NanoVG renderer, and a GLFW window owning a real 60 fps loop.
 #
 # GLFW is fetched and built at configure time, so no system package is needed.
-# Data still comes from MockDataSource until the WebSocket bridge lands.
+# The displays read a live X-Plane connection (UDP RREF / Web API).
 
 include(FetchContent)
 
@@ -58,7 +58,7 @@ find_package(Threads REQUIRED)
 # Linux distributions; on Windows install it via vcpkg or similar.
 find_package(CURL REQUIRED)
 
-# Native macOS menu-bar integration (Objective-C++, Cocoa).
+# Native macOS update-available alert (Objective-C++, Cocoa).
 if(APPLE)
   list(APPEND STANDALONE_SOURCES src/MacMenu.mm)
   set_source_files_properties(src/MacMenu.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")

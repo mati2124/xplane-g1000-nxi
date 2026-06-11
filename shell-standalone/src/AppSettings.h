@@ -14,8 +14,6 @@
 namespace avionics {
 
 struct AppSettings {
-  // Data feed the user last selected explicitly (mock vs. live X-Plane).
-  bool useXPlane = false;
   // Whether the hardware bezel strips (right-hand key column + bottom softkey
   // row) are drawn around the avionics screen.
   bool showBezel = true;
@@ -27,16 +25,6 @@ struct AppSettings {
   bool showWindowChrome = true;
   // Whether the PFD and MFD windows float above other windows (GLFW_FLOATING).
   bool alwaysOnTop = false;
-  // Whether the mock data feed adds simulated turbulence (chaotic bumps on the
-  // attitude/airspeed/etc.). Only affects the mock feed, not live X-Plane.
-  bool simulateTurbulence = false;
-  // Whether the mock feed is frozen on the ground at KFMY runway 31 (engine
-  // idling, stationary) instead of flying the demo route. Only affects the
-  // mock feed, not live X-Plane.
-  bool mockOnGround = false;
-  // Whether the window positions are captured at exit and restored on the
-  // next launch.
-  bool rememberWindowPos = false;
   // Last saved window positions (screen coordinates of the window's top-left
   // corner), only meaningful when hasWindowPos is true.
   bool hasWindowPos = false;
