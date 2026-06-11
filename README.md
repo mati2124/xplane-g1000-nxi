@@ -1,5 +1,10 @@
 # X-Plane G1000 NXi
 
+> ⚠️ **Work in progress — not complete.** This project is currently more of a
+> proof of concept than a finished product. By no means is it complete, expect
+> bugs, missing features, and rough edges. It is, however, actively planned to be
+> finished.
+
 A high-performance glass-cockpit (G1000-style PFD/MFD) for X-Plane, built as
 **one C++ engine with two shells** so the same avionics code runs:
 
