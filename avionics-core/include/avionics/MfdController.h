@@ -508,7 +508,7 @@ class MfdController {
   // to the default so the first frame is already at the right zoom.
   float displayRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
   Menu menu_ = Menu::Root;
-  TerrainDisplay terrain_ = TerrainDisplay::Topo;  // topo on by default
+  TerrainDisplay terrain_ = TerrainDisplay::Off;  // terrain off by default
   AirwayDisplay airways_ = AirwayDisplay::Off;
   bool showTraffic_ = false;
   bool showWeather_ = false;

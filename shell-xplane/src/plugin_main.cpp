@@ -462,7 +462,9 @@ int DrawDevice(AvionicsDevice& dev) {
   // callback (and always on the first frame after a resize, when the cache has
   // no content yet). On the other frames we fall through to a cheap blit of the
   // last cached frame. Unlike a time cap, this keeps skipping work even when the
-  // sim is slow, which is exactly when we need to.
+  // sim is slow, which is exactly when we need to. Each display keeps a steady,
+  // independent cadence (deferring renders to balance per-frame load made the
+  // refresh interval irregular, which reads as judder).
   const bool doRender =
       !dev.cacheReady || (dev.frameCounter % dev.renderEveryN) == 0;
   ++dev.frameCounter;

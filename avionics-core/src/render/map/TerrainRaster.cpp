@@ -1,9 +1,13 @@
 #include "render/map/TerrainRaster.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "avionics/Color.h"
@@ -27,14 +31,27 @@ constexpr float kCoverageRangeFactor = 2.4f;
 // raster center.
 constexpr float kRecenterDriftFactor = 0.30f;
 
+// Minimum draw calls between terrain rebuilds that are triggered *only* by
+// newer DEM data (a tile finishing load bumps the source revision). Geometry
+// changes (pan/zoom/recenter) always rebuild immediately; this rate-limits the
+// data-driven refresh so a burst of streaming tiles doesn't recolor and
+// re-upload the whole raster every few frames -- which lands a 512x512
+// hillshade plus a texture upload on a live frame as a visible hitch in shells
+// that render every frame (the standalone). ~3 s at 60 fps; terrain detail
+// still fills in a few seconds after the tiles load.
+constexpr int kRevisionRebuildIntervalFrames = 180;
+
 // Above this map range the DSF tile cache cannot cover the raster footprint
 // (~2.4x range); skip terrain shading and let the plain background + land
 // overlay define the wide view instead of half-loaded procedural noise.
 constexpr float kTerrainMaxRangeNm = 75.0f;
 
-// DEM rows sampled per frame during a rebuild (~50k samples/frame), so a full
-// 512-row build spreads over ~6 frames and never stalls the render loop.
-constexpr int kRowsPerFrame = 96;
+// DEM rows sampled per frame during an incremental rebuild. Kept small enough
+// that a live-every-frame shell (the standalone) stays near 60 fps while a
+// rebuild is in flight (~48 rows ≈ 10 ms on typical hardware); a full 512-row
+// build then spreads over ~11 frames. The plugin only hits this on its full-
+// render frames (every Nth), so the wider spread is fine there too.
+constexpr int kRowsPerFrame = 48;
 
 constexpr float kFeetPerNm = 6076.12f;
 
@@ -97,10 +114,6 @@ struct Snapshot {
   int relAltBucket = 0;
   unsigned sourceRevision = 0;
 
-  bool sameParams(const Snapshot& o) const {
-    return sameGeometry(o) && sourceRevision == o.sourceRevision;
-  }
-
   // Geometry-only match (ignores sourceRevision): two snapshots that cover the
   // same ground at the same scale/mode, even if newer DEM tiles have since
   // loaded. Used to decide whether an in-flight build can keep going -- a tile
@@ -136,6 +149,10 @@ struct ViewRaster {
   int rowsDone = 0;
   std::vector<float> elevFt;        // kRasterSize^2 sampled elevations
   std::vector<unsigned char> rgba;  // kRasterSize^2 * 4 upload buffer
+
+  // Draw calls since the last completed build, used to rate-limit rebuilds that
+  // are driven only by newer DEM data (see kRevisionRebuildIntervalFrames).
+  int framesSinceBuild = 0;
 };
 
 constexpr std::size_t kMaxViewRasters = 8;
@@ -268,6 +285,141 @@ void colorize(ViewRaster& v) {
   }
 }
 
+// Background terrain builder for live-every-frame shells (standalone). DEM
+// sampling and hillshade colorize are CPU-heavy (~100 ms for a full 512x512
+// raster); doing them on the render thread pins the whole suite below 10 fps.
+// The worker never touches GL -- the render thread uploads the finished RGBA
+// buffer when the job completes.
+struct AsyncTerrainWorker {
+  std::mutex mu;
+  std::condition_variable cv;
+  std::thread thread;
+  bool stop = false;
+
+  enum class Phase { Idle, Running, Done };
+  Phase phase = Phase::Idle;
+  bool cancel = false;
+
+  const TerrainSource* terrain = nullptr;
+  Renderer* renderer = nullptr;
+  int keyX = 0;
+  int keyY = 0;
+  Snapshot target;
+  std::vector<float> elevFt;
+  std::vector<unsigned char> rgba;
+
+  void ensureStarted() {
+    if (!thread.joinable()) {
+      thread = std::thread([this] { run(); });
+    }
+  }
+
+  void shutdown() {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      stop = true;
+      cancel = true;
+    }
+    cv.notify_all();
+    if (thread.joinable()) {
+      thread.join();
+    }
+    stop = false;
+    phase = Phase::Idle;
+  }
+
+  void run() {
+    for (;;) {
+      const TerrainSource* ter = nullptr;
+      Snapshot snap;
+      {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait(lock, [this] { return stop || phase == Phase::Running; });
+        if (stop) return;
+        ter = terrain;
+        snap = target;
+      }
+
+      ViewRaster scratch;
+      scratch.target = snap;
+      scratch.rowsDone = 0;
+      scratch.elevFt.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize);
+      scratch.rgba.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize *
+                          4);
+
+      bool cancelled = false;
+      while (scratch.rowsDone < kRasterSize) {
+        {
+          std::lock_guard<std::mutex> lock(mu);
+          if (cancel) {
+            cancelled = true;
+            break;
+          }
+        }
+        sampleRows(scratch, *ter, kRowsPerFrame);
+      }
+
+      if (!cancelled) {
+        colorize(scratch);
+        std::lock_guard<std::mutex> lock(mu);
+        if (!cancel) {
+          elevFt = std::move(scratch.elevFt);
+          rgba = std::move(scratch.rgba);
+          phase = Phase::Done;
+        } else {
+          phase = Phase::Idle;
+        }
+      } else {
+        std::lock_guard<std::mutex> lock(mu);
+        phase = Phase::Idle;
+      }
+      cancel = false;
+      cv.notify_all();
+    }
+  }
+
+  bool busyFor(Renderer& r, int kx, int ky) {
+    std::lock_guard<std::mutex> lock(mu);
+    return phase == Phase::Running && renderer == &r && keyX == kx &&
+           keyY == ky;
+  }
+
+  void submit(const TerrainSource& ter, Renderer& r, int kx, int ky,
+              const Snapshot& snap) {
+    std::lock_guard<std::mutex> lock(mu);
+    if (phase == Phase::Running) {
+      cancel = true;
+    }
+    terrain = &ter;
+    renderer = &r;
+    keyX = kx;
+    keyY = ky;
+    target = snap;
+    elevFt.clear();
+    rgba.clear();
+    phase = Phase::Running;
+    cancel = false;
+    cv.notify_one();
+  }
+
+  bool tryConsume(Renderer& r, int kx, int ky, ViewRaster& v) {
+    std::lock_guard<std::mutex> lock(mu);
+    if (phase != Phase::Done || renderer != &r || keyX != kx || keyY != ky) {
+      return false;
+    }
+    v.elevFt = std::move(elevFt);
+    v.rgba = std::move(rgba);
+    v.target = target;
+    v.front = target;
+    v.rowsDone = kRasterSize;
+    phase = Phase::Idle;
+    return true;
+  }
+};
+
+bool g_asyncBuilds = false;
+AsyncTerrainWorker g_async;
+
 }  // namespace
 
 bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
@@ -278,6 +430,19 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   if (rangeNm > kTerrainMaxRangeNm) return false;
 
   ViewRaster& v = viewFor(r, cx, cy);
+
+  if (g_asyncBuilds) {
+    if (g_async.tryConsume(r, v.keyX, v.keyY, v)) {
+      if (v.imageId < 0) {
+        v.imageId = r.createImageRGBA(kRasterSize, kRasterSize, v.rgba.data());
+      } else {
+        r.updateImageRGBA(v.imageId, v.rgba.data());
+      }
+      v.frontValid = v.imageId >= 0;
+      v.building = false;
+      v.framesSinceBuild = 0;
+    }
+  }
 
   Snapshot desired;
   desired.centerLat = viewCenterLat;
@@ -290,20 +455,32 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
           : 0;
   desired.sourceRevision = terrain.revision();
 
-  const float driftLimitNm = rangeNm * kRecenterDriftFactor;
-  const bool frontFresh = v.frontValid && v.front.sameParams(desired) &&
-                          v.front.driftNm(desired) <= driftLimitNm;
+  ++v.framesSinceBuild;
 
-  if (!frontFresh) {
-    // (Re)start the build when there is none in flight or the in-flight target
-    // covers different ground than the view now needs. A pure revision bump (a
-    // newer DEM tile loaded) does NOT restart the build -- we let it finish and
-    // pick up the fresher data on the next rebuild, so streaming tiles can't
-    // pin the raster in a permanent from-scratch resample.
-    const bool targetStale =
-        !v.building || !v.target.sameGeometry(desired) ||
-        v.target.driftNm(desired) > driftLimitNm;
-    if (targetStale) {
+  const float driftLimitNm = rangeNm * kRecenterDriftFactor;
+  // Split freshness into geometry (the ground/scale/mode the raster covers) and
+  // data (the DEM revision). Geometry staleness must rebuild now; data-only
+  // staleness (a streaming tile bumped the revision) is rate-limited so it
+  // doesn't recolor/upload every few frames.
+  const bool geometryFresh = v.frontValid && v.front.sameGeometry(desired) &&
+                             v.front.driftNm(desired) <= driftLimitNm;
+  const bool revisionFresh = v.front.sourceRevision == desired.sourceRevision;
+  const bool needRebuild =
+      !geometryFresh ||
+      (!revisionFresh &&
+       v.framesSinceBuild >= kRevisionRebuildIntervalFrames);
+
+  const bool asyncBusy =
+      g_asyncBuilds && g_async.busyFor(r, v.keyX, v.keyY);
+
+  if (needRebuild) {
+    // Start a new build when idle, or restart mid-build only when zoom/mode/range
+    // changes. Position drift while a build is in flight must NOT reset
+    // rowsDone -- on a live-every-frame shell the view center moves every frame
+    // (track-up / ownship-centered map), so treating drift as a stale target
+    // restarted the build from row 0 every frame, sampled tens of thousands of
+    // DEM points at ~100 ms, and never reached the colorize/upload finish line.
+    if (!v.building && !asyncBusy) {
       v.building = true;
       v.target = desired;
       v.rowsDone = 0;
@@ -311,14 +488,21 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
         v.elevFt.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize);
         v.rgba.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize * 4);
       }
+      if (g_asyncBuilds) {
+        g_async.submit(terrain, r, v.keyX, v.keyY, desired);
+      }
+    } else if (!v.target.sameGeometry(desired)) {
+      v.target = desired;
+      v.rowsDone = 0;
+      if (g_asyncBuilds) {
+        g_async.submit(terrain, r, v.keyX, v.keyY, desired);
+      }
     }
   }
 
-  if (v.building) {
-    // First-ever raster for this view builds synchronously so the map never
-    // shows a bare background on entry; later rebuilds (pan/zoom/new tiles)
-    // spread across frames while the previous raster keeps drawing.
-    sampleRows(v, terrain, v.frontValid ? kRowsPerFrame : kRasterSize);
+  if (v.building && !g_asyncBuilds) {
+    // Plugin path: spread rebuild work across full-render frames.
+    sampleRows(v, terrain, kRowsPerFrame);
     if (v.rowsDone >= kRasterSize) {
       colorize(v);
       if (v.imageId < 0) {
@@ -329,6 +513,7 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
       v.front = v.target;
       v.frontValid = v.imageId >= 0;
       v.building = false;
+      v.framesSinceBuild = 0;
     }
   }
 
@@ -352,6 +537,17 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
               2.0f * halfPx, 1.0f);
   r.restore();
   return true;
+}
+
+void setAsyncTerrainBuilds(bool enabled) {
+  if (enabled == g_asyncBuilds) return;
+  if (!enabled) {
+    g_async.shutdown();
+  }
+  g_asyncBuilds = enabled;
+  if (enabled) {
+    g_async.ensureStarted();
+  }
 }
 
 }  // namespace avionics::map

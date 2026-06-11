@@ -23,7 +23,7 @@ constexpr int kKeyNearest = 3;
 constexpr int kKeyOrient = 4;
 constexpr int kKeyMapOpt = 5;
 constexpr int kKeyDetail = 6;
-constexpr int kKeyChecklist = 7;  // CHKLIST: selects the Checklist page group
+constexpr int kKeyChecklist = 7;  // Checklist: selects the Checklist page group
 constexpr int kKeyRangeDown = 10;
 constexpr int kKeyRangeUp = 11;
 
@@ -51,7 +51,7 @@ constexpr int kKeyRdrWeather = 2;
 constexpr int kKeyRdrGround = 3;
 constexpr int kKeyRdrModeBack = 11;
 
-// AUX - SIMBRIEF page extras on the root bar (free cells beside CHKLIST), and
+// AUX - SIMBRIEF page extras on the root bar (free cells beside Checklist), and
 // the Pilot ID digit-entry bar (0-9 / BKSP / Back, XPDR-code style).
 constexpr int kKeySimbriefId = 8;
 constexpr int kKeySimbriefFetch = 9;
@@ -187,7 +187,7 @@ void MfdController::rebuildLabels() {
   labels_[kKeyOrient] = "TRK";
   labels_[kKeyMapOpt] = "Map Opt";
   labels_[kKeyDetail] = mapDetailLabel(detail_);
-  labels_[kKeyChecklist] = "CHKLIST";
+  labels_[kKeyChecklist] = "Checklist";
   labels_[kKeyRangeDown] = "RNG-";
   labels_[kKeyRangeUp] = "RNG+";
   if (page() == MfdPage::SimBrief) {

@@ -103,7 +103,10 @@ void drawRpmDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
              colors::kLabelText);
   const bool overspeed =
       valid && gauge.hasRedline && rpm >= gauge.redline;
-  r.fillText(cx, cy + radius * 0.52f,
+  // Place the digital readout in the open area below the arc's bottom
+  // graduation labels (which sit near cy + 0.48*radius) so the large value
+  // does not overlap the max ("30") label, like a real tachometer's readout.
+  r.fillText(cx, cy + radius * 1.1f,
              valid ? fmt("%.0f", std::round(rpm / 10.0) * 10.0)
                    : std::string("____"),
              mfdFontPx(kRpmReadoutWt, displayH), TextAlign::Center,

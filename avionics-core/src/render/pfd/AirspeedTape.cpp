@@ -241,8 +241,10 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
                std::string(mbuf), machSize, TextAlign::Center, colors::kWhite);
   }
 
-  // TAS and GS (groundspeed) are shown in stacked black boxes at the bottom of
-  // the airspeed instrument (NXi airspeed-bottom-container).
+  // True airspeed is shown in a single black box at the bottom of the airspeed
+  // instrument (G1000 NXi Pilot's Guide, Fig. 2-1, callout 3). Ground speed is
+  // NOT on the airspeed tape on the real unit -- it lives in the MFD Navigation
+  // Data Bar / inset map -- so only TAS is drawn here.
   const float labelSize = fontPx(wt::kInfoLabel, h);
   const float valueSize = fontPx(wt::kInfoValue, h);
   const float boxH = 28.0f * L.s;
@@ -261,8 +263,9 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
                  (gap * 0.5f) / valueSize);
     putText(r, tx, boxCy, "KT", labelSize, colors::kLabelText);
   };
+  // Sit the single box in the lower margin of the airspeed instrument, just
+  // below the scroll strip (flush to the instrument bottom).
   const float tasBoxY = L.asiTop + L.asiH - boxH;
-  drawSpeedBox(tasBoxY - boxH - 2.0f * L.s, "GS", formatInt(d.groundSpeedKts));
   drawSpeedBox(tasBoxY, "TAS", formatInt(d.tasKts));
 }
 

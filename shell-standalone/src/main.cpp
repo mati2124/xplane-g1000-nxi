@@ -72,6 +72,7 @@
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/BootScreen.h"
+#include "avionics/Terrain.h"
 #include "avionics/render/NanoVgRenderer.h"
 #include "avionics/render/SoftkeyBezel.h"
 
@@ -115,12 +116,17 @@ inline int SoftkeyStripPx(int fbHeight) {
 // responsibility.
 inline void RenderSuite(avionics::NanoVgRenderer& renderer,
                         avionics::AvionicsEngine& eng, int fbWidth,
-                        int fbHeight, bool showBezel = true) {
+                        int fbHeight, bool showBezel = true,
+                        avionics::NanoVgRenderer::DrawStats* engineStats =
+                            nullptr) {
   // With the bezel hidden the screen fills the whole window (no physical key
   // strips to frame it), so the engine draws into the full framebuffer.
   if (!showBezel) {
     glViewport(0, 0, fbWidth, fbHeight);
     eng.renderFrame(fbWidth, fbHeight, 1.0f);
+    // Capture the engine's draw stats before any further beginFrame resets
+    // them (the bezel path below resets on its own beginFrame).
+    if (engineStats != nullptr) *engineStats = renderer.drawStats();
     return;
   }
 
@@ -133,6 +139,10 @@ inline void RenderSuite(avionics::NanoVgRenderer& renderer,
   // by the softkey strip's height to sit at the top of the window.
   glViewport(0, fbHeight - screenH, screenW, screenH);
   eng.renderFrame(screenW, screenH, 1.0f);
+  // Snapshot the engine's per-frame draw stats now: the bezel beginFrame below
+  // zeroes the counter, so reading it after RenderSuite would only show the
+  // bezel (a constant), not the map content we're profiling.
+  if (engineStats != nullptr) *engineStats = renderer.drawStats();
 
   glViewport(0, 0, fbWidth, fbHeight);
   renderer.beginFrame(fbWidth, fbHeight, 1.0f);
@@ -940,6 +950,13 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // DEM terrain rebuilds sample ~260k elevation points per raster. On the
+  // standalone that work must not run on the render thread (it pinned the MFD
+  // at ~100 ms/frame and the whole suite at ~8 fps). The plugin leaves async
+  // builds off and spreads synchronous sampling across its cached full-render
+  // frames instead.
+  avionics::map::setAsyncTerrainBuilds(true);
+
   // Offscreen single-frame capture mode for development/iteration:
   //   avionics-standalone --screenshot out.ppm [--time SECONDS]
   //       [--state STATE] [--fms-plan NAME] [--no-bezel]
@@ -1203,11 +1220,22 @@ int main(int argc, char** argv) {
   avionics::InstallViewMenu(viewMenu);
 #endif
 
+  // Optional per-display render profiler (AVIONICS_PROFILE=1): isolates the GPU
+  // cost of each window's draw with a glFinish so we can see whether the PFD or
+  // the MFD is what keeps the single-threaded, vsync-paced loop from holding 60
+  // fps. Off by default (glFinish serializes the pipeline, so it skews timing).
+  const bool profile = std::getenv("AVIONICS_PROFILE") != nullptr;
+
   // Renders one engine into its window: the avionics screen on the left and the
   // hardware bezel strip on the right. The gauge code draws directly in
-  // framebuffer pixels, so the NanoVG device-pixel-ratio is 1.0.
-  const auto renderWindow = [&app](GLFWwindow* win, avionics::AvionicsEngine& eng,
-                               avionics::NanoVgRenderer& renderer, double dt) {
+  // framebuffer pixels, so the NanoVG device-pixel-ratio is 1.0. Returns the
+  // render time in milliseconds when profiling (0 otherwise).
+  avionics::NanoVgRenderer::DrawStats mfdLastStats;
+  const auto renderWindow = [&app, profile](
+                                GLFWwindow* win, avionics::AvionicsEngine& eng,
+                                avionics::NanoVgRenderer& renderer, double dt,
+                                avionics::NanoVgRenderer::DrawStats* stats =
+                                    nullptr) -> double {
     glfwMakeContextCurrent(win);
     int fbWidth = 0, fbHeight = 0;
     glfwGetFramebufferSize(win, &fbWidth, &fbHeight);
@@ -1215,12 +1243,29 @@ int main(int argc, char** argv) {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     eng.update(dt);
-    RenderSuite(renderer, eng, fbWidth, fbHeight, app.showBezel);
+    const auto t0 = std::chrono::steady_clock::now();
+    RenderSuite(renderer, eng, fbWidth, fbHeight, app.showBezel, stats);
+    if (profile) glFinish();
+    const double ms =
+        profile ? std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count()
+                : 0.0;
     glfwSwapBuffers(win);
+    return ms;
   };
 
   using clock = std::chrono::steady_clock;
   auto previous = clock::now();
+
+  // Profiler accumulators (only used when AVIONICS_PROFILE is set). The MFD
+  // draw-stat sums are the engine's map content (captured before the bezel
+  // resets the counter), so they reflect the actual map cost, not the bezel.
+  double profPfdMs = 0.0, profMfdMs = 0.0;
+  std::uint64_t profFills = 0, profStrokes = 0, profTexts = 0, profImages = 0,
+                profVerts = 0;
+  int profFrames = 0;
+  auto profPrev = clock::now();
 
   // Closing either window exits: the PFD and MFD are one avionics suite.
   while (!glfwWindowShouldClose(pfdWindow) &&
@@ -1364,9 +1409,43 @@ int main(int argc, char** argv) {
       app.clrHoldEngine = nullptr;
     }
 
-    renderWindow(pfdWindow, pfdEngine, pfdRenderer, dt);
+    const double pfdMs = renderWindow(pfdWindow, pfdEngine, pfdRenderer, dt);
+    double mfdMs = 0.0;
     if (mfdWindow != nullptr && mfdEngine != nullptr) {
-      renderWindow(mfdWindow, *mfdEngine, *mfdRenderer, dt);
+      mfdMs = renderWindow(mfdWindow, *mfdEngine, *mfdRenderer, dt,
+                           profile ? &mfdLastStats : nullptr);
+    }
+    if (profile) {
+      profPfdMs += pfdMs;
+      profMfdMs += mfdMs;
+      profFills += static_cast<std::uint64_t>(mfdLastStats.fills);
+      profStrokes += static_cast<std::uint64_t>(mfdLastStats.strokes);
+      profTexts += static_cast<std::uint64_t>(mfdLastStats.texts);
+      profImages += static_cast<std::uint64_t>(mfdLastStats.images);
+      profVerts += static_cast<std::uint64_t>(mfdLastStats.verts);
+      ++profFrames;
+      const auto pnow = clock::now();
+      const double sinceMs =
+          std::chrono::duration<double, std::milli>(pnow - profPrev).count();
+      if (sinceMs >= 1000.0 && profFrames > 0) {
+        std::fprintf(
+            stderr,
+            "[profile] %.1f fps | PFD %.1f ms | MFD %.1f ms | MFD draw "
+            "fills %llu strokes %llu text %llu img %llu verts %llu "
+            "(avg/%d frames)\n",
+            profFrames * 1000.0 / sinceMs, profPfdMs / profFrames,
+            profMfdMs / profFrames,
+            static_cast<unsigned long long>(profFills / profFrames),
+            static_cast<unsigned long long>(profStrokes / profFrames),
+            static_cast<unsigned long long>(profTexts / profFrames),
+            static_cast<unsigned long long>(profImages / profFrames),
+            static_cast<unsigned long long>(profVerts / profFrames),
+            profFrames);
+        profPfdMs = profMfdMs = 0.0;
+        profFills = profStrokes = profTexts = profImages = profVerts = 0;
+        profFrames = 0;
+        profPrev = pnow;
+      }
     }
 
     // Persist durable display preferences whenever the pilot changes one (e.g.
@@ -1405,6 +1484,7 @@ int main(int argc, char** argv) {
   glfwDestroyWindow(pfdWindow);
   if (app.rotateCursor != nullptr) glfwDestroyCursor(app.rotateCursor);
   if (app.handCursor != nullptr) glfwDestroyCursor(app.handCursor);
+  avionics::map::setAsyncTerrainBuilds(false);
   glfwTerminate();
   return 0;
 }

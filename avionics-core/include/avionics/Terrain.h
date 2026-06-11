@@ -41,4 +41,14 @@ class ProceduralTerrain : public TerrainSource {
   float elevationFt(double lat, double lon) const override;
 };
 
+namespace map {
+
+// When enabled, DEM sampling and hillshade colorize for the map terrain
+// background run on a background thread; only the GPU texture upload happens
+// on the render thread. The standalone shell enables this; the X-Plane plugin
+// leaves it off.
+void setAsyncTerrainBuilds(bool enabled);
+
+}  // namespace map
+
 }  // namespace avionics

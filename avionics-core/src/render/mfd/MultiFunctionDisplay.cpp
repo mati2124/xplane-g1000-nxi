@@ -425,7 +425,11 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
   std::string title;
   if (ui.pageGroup() == MfdPageGroup::Checklist) {
     mfd::drawChecklistPage(r, checklist, ui, bodyX, bodyY, bodyW, bodyH, h);
-    title = "CHKLIST \xE2\x80\x93 Checklist";
+    if (const Checklist* cl = checklist.at(ui.checklistIndex())) {
+      title = std::string("Checklist \xE2\x80\x93 ") + cl->title;
+    } else {
+      title = "Checklist";
+    }
   } else {
   switch (ui.page()) {
     case MfdPage::NavigationMap:

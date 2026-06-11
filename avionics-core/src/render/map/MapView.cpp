@@ -172,10 +172,55 @@ struct Proj {
   }
 };
 
+// Per-pixel symbology (dashes, comb teeth, railroad ties) steps along a line's
+// full on-screen pixel length. At close map zoom an airspace/border edge can be
+// enormous in pixels and reach far off-screen, so without clipping it generates
+// hundreds of thousands of invisible segments (a ~100x cost cliff measured on
+// the MFD MAP page). This clips one segment to the viewport rect (expanded by
+// `margin`) and returns the visible distance interval [lo, hi] along it, so the
+// generators can iterate only the portion that can actually be seen. Liang-
+// Barsky parametric clip with t in [0, len] (direction is the unit vector).
+// Returns false when the segment is entirely outside the rect.
+inline bool segmentVisibleSpan(float ax, float ay, float ux, float uy,
+                               float len, float minX, float minY, float maxX,
+                               float maxY, float margin, float& lo, float& hi) {
+  lo = 0.0f;
+  hi = len;
+  const float x0 = minX - margin, x1 = maxX + margin;
+  const float y0 = minY - margin, y1 = maxY + margin;
+  const float p[4] = {-ux, ux, -uy, uy};
+  const float q[4] = {ax - x0, x1 - ax, ay - y0, y1 - ay};
+  for (int i = 0; i < 4; ++i) {
+    if (std::fabs(p[i]) < 1e-6f) {
+      if (q[i] < 0.0f) return false;  // parallel to this edge and outside it
+    } else {
+      const float t = q[i] / p[i];
+      if (p[i] < 0.0f) {
+        if (t > lo) lo = t;
+      } else {
+        if (t < hi) hi = t;
+      }
+    }
+  }
+  return hi >= lo;
+}
+
+// Viewport bounds passed to the per-pixel symbology generators so they can clip
+// each edge before stepping along it. A null clip disables clipping (used by
+// small, already-bounded callers like the fuel-reserve ring).
+struct ClipBounds {
+  float minX, minY, maxX, maxY;
+};
+
+// Margin (px) added around the viewport when clipping per-pixel symbology, so
+// teeth/dashes near the edge are not cut early.
+constexpr float kSymbologyClipMarginPx = 32.0f;
+
 // Strokes an open polyline emitting fixed-length dashes (screen-space), used
 // for borders and the fuel-reserve ring.
 void strokeDashedPolyline(Renderer& r, const Point* pts, int count,
-                          float widthPx, const Color& c) {
+                          float widthPx, const Color& c,
+                          const ClipBounds* clip = nullptr) {
   constexpr float kDashPx = 6.0f;
   constexpr float kGapPx = 5.0f;
   // Accumulate every dash as a disjoint segment and stroke them all in one
@@ -192,17 +237,29 @@ void strokeDashedPolyline(Renderer& r, const Point* pts, int count,
     if (len < 0.001f) continue;
     const float ux = dx / len;
     const float uy = dy / len;
-    float pos = -phase;
-    while (pos < len) {
-      const float dashStart = std::max(pos, 0.0f);
-      const float dashEnd = std::min(pos + kDashPx, len);
-      if (dashEnd > dashStart) {
-        segs.push_back({a.x + ux * dashStart, a.y + uy * dashStart});
-        segs.push_back({a.x + ux * dashEnd, a.y + uy * dashEnd});
-      }
-      pos += kDashPx + kGapPx;
+    constexpr float kPeriod = kDashPx + kGapPx;
+    // Restrict the dash walk to the visible span of this edge; off-screen
+    // portions would emit dashes that are never seen.
+    float lo = 0.0f, hi = len;
+    bool visible = true;
+    if (clip != nullptr) {
+      visible = segmentVisibleSpan(a.x, a.y, ux, uy, len, clip->minX,
+                                   clip->minY, clip->maxX, clip->maxY,
+                                   kSymbologyClipMarginPx, lo, hi);
     }
-    phase = std::fmod(phase + len, kDashPx + kGapPx);
+    if (visible) {
+      float pos = -phase;
+      if (pos < lo) pos += std::floor((lo - pos) / kPeriod) * kPeriod;
+      for (; pos < len && pos <= hi; pos += kPeriod) {
+        const float dashStart = std::max(pos, 0.0f);
+        const float dashEnd = std::min(pos + kDashPx, len);
+        if (dashEnd > dashStart) {
+          segs.push_back({a.x + ux * dashStart, a.y + uy * dashStart});
+          segs.push_back({a.x + ux * dashEnd, a.y + uy * dashEnd});
+        }
+      }
+    }
+    phase = std::fmod(phase + len, kPeriod);
   }
   if (!segs.empty()) {
     r.strokeSegments(segs.data(), static_cast<int>(segs.size() / 2), widthPx, c);
@@ -211,7 +268,8 @@ void strokeDashedPolyline(Renderer& r, const Point* pts, int count,
 
 // Railroad: a thin base line with periodic perpendicular crossties, matching
 // the G1000 railroad symbol.
-void drawRailroad(Renderer& r, const Point* pts, int count, const Color& c) {
+void drawRailroad(Renderer& r, const Point* pts, int count, const Color& c,
+                  const ClipBounds* clip = nullptr) {
   if (count < 2) return;
   r.strokePolyline(pts, count, 1.0f, c);
   constexpr float kTickStepPx = 8.0f;
@@ -231,15 +289,24 @@ void drawRailroad(Renderer& r, const Point* pts, int count, const Color& c) {
     const float uy = dy / len;
     const float nx = -uy;  // perpendicular for the crosstie
     const float ny = ux;
-    float pos = -phase;
-    while (pos < len) {
-      if (pos >= 0.0f) {
-        const float px = a.x + ux * pos;
-        const float py = a.y + uy * pos;
-        segs.push_back({px - nx * kTickHalfPx, py - ny * kTickHalfPx});
-        segs.push_back({px + nx * kTickHalfPx, py + ny * kTickHalfPx});
+    float lo = 0.0f, hi = len;
+    bool visible = true;
+    if (clip != nullptr) {
+      visible = segmentVisibleSpan(a.x, a.y, ux, uy, len, clip->minX,
+                                   clip->minY, clip->maxX, clip->maxY,
+                                   kSymbologyClipMarginPx, lo, hi);
+    }
+    if (visible) {
+      float pos = -phase;
+      if (pos < lo) pos += std::floor((lo - pos) / kTickStepPx) * kTickStepPx;
+      for (; pos < len && pos <= hi; pos += kTickStepPx) {
+        if (pos >= 0.0f) {
+          const float px = a.x + ux * pos;
+          const float py = a.y + uy * pos;
+          segs.push_back({px - nx * kTickHalfPx, py - ny * kTickHalfPx});
+          segs.push_back({px + nx * kTickHalfPx, py + ny * kTickHalfPx});
+        }
       }
-      pos += kTickStepPx;
     }
     phase = std::fmod(phase + len, kTickStepPx);
   }
@@ -252,6 +319,7 @@ void drawRailroad(Renderer& r, const Point* pts, int count, const Color& c) {
 // declutter. Drawn right above the map background so everything overlays it.
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
                   float rangeNm) {
+  const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
   std::vector<Point> pts;
   for (const MapLandLine& line : map.landLines) {
     if (line.points.size() < 2) continue;
@@ -296,16 +364,16 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
         r.strokePolyline(pts.data(), n, 1.2f, kRoadStroke);
         break;
       case LandClass::Border:
-        strokeDashedPolyline(r, pts.data(), n, 1.0f, kBorderStroke);
+        strokeDashedPolyline(r, pts.data(), n, 1.0f, kBorderStroke, &clip);
         break;
       case LandClass::StateBorder:
-        strokeDashedPolyline(r, pts.data(), n, 1.0f, kStateBorderStroke);
+        strokeDashedPolyline(r, pts.data(), n, 1.0f, kStateBorderStroke, &clip);
         break;
       case LandClass::Coast:
         r.strokePolyline(pts.data(), n, 1.0f, kCoastStroke);
         break;
       case LandClass::Railroad:
-        drawRailroad(r, pts.data(), n, kRailroadStroke);
+        drawRailroad(r, pts.data(), n, kRailroadStroke, &clip);
         break;
       case LandClass::City:
         break;  // cities are point features (MapData::cities)
@@ -844,7 +912,7 @@ AirspaceRenderStyle airspaceStyle(AirspaceClass cls) {
 // last point back to the first). Dashed mode walks each edge emitting fixed
 // pixel-length dashes so arcs and straight segments dash consistently.
 void drawBoundary(Renderer& r, const Point* pts, int count, float widthPx,
-                  const Color& c, bool dashed) {
+                  const Color& c, bool dashed, const ClipBounds* clip = nullptr) {
   if (count < 2) return;
   if (!dashed) {
     r.strokePolyline(pts, count, widthPx, c);
@@ -857,6 +925,7 @@ void drawBoundary(Renderer& r, const Point* pts, int count, float widthPx,
   // Garmin MapSingleLineAirspaceRenderer uses a 5/5 dash for Class D.
   constexpr float kDashPx = 5.0f;
   constexpr float kGapPx = 5.0f;
+  constexpr float kPeriod = kDashPx + kGapPx;
   static thread_local std::vector<Point> segs;
   segs.clear();
   float phase = 0.0f;  // distance carried across edges so dashes stay even
@@ -869,17 +938,26 @@ void drawBoundary(Renderer& r, const Point* pts, int count, float widthPx,
     if (len < 0.001f) continue;
     const float ux = dx / len;
     const float uy = dy / len;
-    float pos = -phase;  // start partway in to honor the carried phase
-    while (pos < len) {
-      const float dashStart = std::max(pos, 0.0f);
-      const float dashEnd = std::min(pos + kDashPx, len);
-      if (dashEnd > dashStart) {
-        segs.push_back({a.x + ux * dashStart, a.y + uy * dashStart});
-        segs.push_back({a.x + ux * dashEnd, a.y + uy * dashEnd});
-      }
-      pos += kDashPx + kGapPx;
+    float lo = 0.0f, hi = len;
+    bool visible = true;
+    if (clip != nullptr) {
+      visible = segmentVisibleSpan(a.x, a.y, ux, uy, len, clip->minX,
+                                   clip->minY, clip->maxX, clip->maxY,
+                                   kSymbologyClipMarginPx, lo, hi);
     }
-    phase = std::fmod(phase + len, kDashPx + kGapPx);
+    if (visible) {
+      float pos = -phase;  // start partway in to honor the carried phase
+      if (pos < lo) pos += std::floor((lo - pos) / kPeriod) * kPeriod;
+      for (; pos < len && pos <= hi; pos += kPeriod) {
+        const float dashStart = std::max(pos, 0.0f);
+        const float dashEnd = std::min(pos + kDashPx, len);
+        if (dashEnd > dashStart) {
+          segs.push_back({a.x + ux * dashStart, a.y + uy * dashStart});
+          segs.push_back({a.x + ux * dashEnd, a.y + uy * dashEnd});
+        }
+      }
+    }
+    phase = std::fmod(phase + len, kPeriod);
   }
   if (!segs.empty()) {
     r.strokeSegments(segs.data(), static_cast<int>(segs.size() / 2), widthPx, c);
@@ -890,7 +968,8 @@ void drawBoundary(Renderer& r, const Point* pts, int count, float widthPx,
 // with a comb of short teeth pointing into the airspace, matching the Garmin
 // SDK CombedAirspaceRenderer (a base line plus an inward-offset toothed line).
 void drawCombedBoundary(Renderer& r, const Point* pts, int count,
-                        float widthPx, const Color& c) {
+                        float widthPx, const Color& c,
+                        const ClipBounds* clip = nullptr) {
   if (count < 2) return;
   // Solid base ring.
   r.strokePolyline(pts, count, widthPx, c);
@@ -929,15 +1008,24 @@ void drawCombedBoundary(Renderer& r, const Point* pts, int count,
       nx = -nx;
       ny = -ny;
     }
-    float pos = -phase;  // carry the spacing across edges so teeth stay even
-    while (pos < len) {
-      if (pos >= 0.0f) {
-        const float px = a.x + ux * pos;
-        const float py = a.y + uy * pos;
-        segs.push_back({px, py});
-        segs.push_back({px + nx * kToothPx, py + ny * kToothPx});
+    float lo = 0.0f, hi = len;
+    bool visible = true;
+    if (clip != nullptr) {
+      visible = segmentVisibleSpan(a.x, a.y, ux, uy, len, clip->minX,
+                                   clip->minY, clip->maxX, clip->maxY,
+                                   kSymbologyClipMarginPx, lo, hi);
+    }
+    if (visible) {
+      float pos = -phase;  // carry the spacing across edges so teeth stay even
+      if (pos < lo) pos += std::floor((lo - pos) / kStepPx) * kStepPx;
+      for (; pos < len && pos <= hi; pos += kStepPx) {
+        if (pos >= 0.0f) {
+          const float px = a.x + ux * pos;
+          const float py = a.y + uy * pos;
+          segs.push_back({px, py});
+          segs.push_back({px + nx * kToothPx, py + ny * kToothPx});
+        }
       }
-      pos += kStepPx;
     }
     phase = std::fmod(phase + len, kStepPx);
   }
@@ -1130,11 +1218,12 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
         ring.push_back({x, y});
       }
       const int n = static_cast<int>(ring.size());
+      const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
       if (style.stroke == AirspaceStroke::Combed) {
-        drawCombedBoundary(r, ring.data(), n, 1.5f, style.color);
+        drawCombedBoundary(r, ring.data(), n, 1.5f, style.color, &clip);
       } else {
         drawBoundary(r, ring.data(), n, 1.5f, style.color,
-                     style.stroke == AirspaceStroke::Dashed);
+                     style.stroke == AirspaceStroke::Dashed, &clip);
       }
     }
   }
