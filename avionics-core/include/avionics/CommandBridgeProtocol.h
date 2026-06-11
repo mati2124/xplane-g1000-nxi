@@ -35,7 +35,9 @@ constexpr std::int32_t kProtocolVersion = 1;
 constexpr char kRegisterMagic[4] = {'C', 'M', 'D', 'R'};
 constexpr char kEventMagic[4] = {'B', 'T', 'N', 'E'};
 
-constexpr std::size_t kEventBytes = 24;
+// Wire size of one event datagram: magic(4) + version(4) + device(1) +
+// phase(1) + kind(1) + pad(1) + value(4) + value2(4).
+constexpr std::size_t kEventBytes = 20;
 
 enum class Device : std::uint8_t { Pfd = 0, Mfd = 1 };
 
