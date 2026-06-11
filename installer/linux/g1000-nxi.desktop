@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=G1000 NXi
+Comment=Garmin G1000 NXi avionics suite for X-Plane
+Exec=avionics-standalone
+Icon=g1000-nxi
+Terminal=false
+Categories=Simulation;

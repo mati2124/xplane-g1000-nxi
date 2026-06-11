@@ -1,3 +1,10 @@
+# Release staging / installer output (local + CI artifacts)
+/stage/
+/dist/
+/installer/macos/.work/
+/installer/linux/.work/
+/installer/windows/Output/
+
 # Build output
 /build/
 **/build/

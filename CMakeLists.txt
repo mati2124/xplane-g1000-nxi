@@ -75,6 +75,13 @@ endfunction()
 
 add_subdirectory(avionics-core)
 
+# HTTPS fetch for the notify-only update checker (GitHub Releases API).
+if(BUILD_XPLANE_SHELL OR BUILD_STANDALONE_SHELL)
+  find_package(CURL REQUIRED)
+  target_compile_definitions(avionics-core PRIVATE AVIONICS_HAS_CURL)
+  target_link_libraries(avionics-core PRIVATE CURL::libcurl)
+endif()
+
 # The NanoVG renderer is shared by both shells; build it whenever a shell that
 # needs to put pixels on screen is enabled.
 if(BUILD_XPLANE_SHELL OR BUILD_STANDALONE_SHELL)

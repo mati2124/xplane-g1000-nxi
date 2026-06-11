@@ -69,4 +69,9 @@ void InstallViewMenu(const ViewMenuConfig& config);
 // Updates the "Show Bezel Keys" checkmark to reflect the current state.
 void SetBezelVisibilityMenuSelection(bool showBezel);
 
+// Native alert when a newer GitHub release is detected. May be called from a
+// background thread; marshals to the AppKit main queue internally.
+void ShowUpdateAvailableAlert(const char* currentVersion,
+                              const char* latestVersion, const char* releaseUrl);
+
 }  // namespace avionics

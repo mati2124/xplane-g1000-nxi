@@ -74,6 +74,7 @@
 #include "ProcedureStore.h"
 #include "ShellNavMapData.h"
 #include "SimBriefStore.h"
+#include "UpdateNotify.h"
 #include "XPlaneConnection.h"
 #include "avionics/AssetPaths.h"
 #include "avionics/AvionicsEngine.h"
@@ -1274,6 +1275,7 @@ int main(int argc, char** argv) {
   // loads them (renderer fonts, land data, EIS, checklists), including the
   // offscreen --screenshot path below.
   RegisterAssetSearchDirs();
+  avionics::startUpdateCheckOnLaunch();
 
   const bool cliAlwaysOnTop = WantsAlwaysOnTop(argc, argv);
 

@@ -48,6 +48,7 @@ set(STANDALONE_SOURCES
   src/DsfTerrainStore.cpp
   src/SimBriefClient.cpp
   src/SimBriefStore.cpp
+  src/UpdateNotify.cpp
 )
 
 # The Web API client polls X-Plane on a background thread.

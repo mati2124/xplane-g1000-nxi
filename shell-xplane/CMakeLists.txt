@@ -17,6 +17,7 @@ endif()
 # exercised here.
 add_library(xplane-avionics MODULE
   src/plugin_main.cpp
+  src/UpdateNotify.cpp
   src/DatarefDataSource.cpp
   src/DatarefWeatherRadar.cpp
   src/FlightPlanBridge.cpp

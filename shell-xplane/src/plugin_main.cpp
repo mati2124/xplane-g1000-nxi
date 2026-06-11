@@ -44,6 +44,7 @@
 
 #include "DatarefDataSource.h"
 #include "FlightPlanBridge.h"
+#include "UpdateNotify.h"
 #include "avionics/AssetPaths.h"
 #include "avionics/EisStore.h"
 #include "XPLMDisplay.h"
@@ -1058,6 +1059,8 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
     RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
     RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
   }
+
+  avionics::startUpdateCheckOnLaunch();
   return 1;
 }
 

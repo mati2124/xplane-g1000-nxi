@@ -3,6 +3,7 @@
 # without the X-Plane SDK or a windowing/GPU stack present.
 add_library(avionics-core STATIC
   src/AssetPaths.cpp
+  src/UpdateChecker.cpp
   src/AvionicsEngine.cpp
   src/ChecklistParser.cpp
   src/EisParser.cpp

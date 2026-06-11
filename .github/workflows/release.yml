@@ -119,6 +119,29 @@ jobs:
           ( cd stage/standalone && cmake -E tar cf "../../dist/${STANDALONE_ZIP}" --format=zip . )
           ls -la dist
 
+      - name: Build Windows installer (Inno Setup)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc /DMyAppVersion="${{ steps.ver.outputs.version }}" `
+            /DRepoRoot="${{ github.workspace }}" `
+            "${{ github.workspace }}\installer\windows\g1000nxi.iss"
+          Copy-Item installer\windows\Output\*.exe dist\
+
+      - name: Build macOS installer (DMG)
+        if: matrix.platform == 'macos'
+        run: |
+          chmod +x installer/macos/build_dmg.sh
+          installer/macos/build_dmg.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Build Linux installer (tarball)
+        if: matrix.platform == 'linux'
+        run: |
+          chmod +x installer/linux/build_installer.sh
+          installer/linux/build_installer.sh "${{ steps.ver.outputs.version }}"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
