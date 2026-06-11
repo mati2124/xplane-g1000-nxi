@@ -7,9 +7,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# MSVC does not define M_PI unless this is set before <cmath>.
+# MSVC does not define M_PI unless this is set before <cmath>. NOMINMAX keeps the
+# Windows min/max macros from breaking std::min/std::max.
 if(MSVC)
-  add_compile_definitions(_USE_MATH_DEFINES)
+  add_compile_definitions(_USE_MATH_DEFINES NOMINMAX)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -28,6 +29,11 @@ set(AVIONICS_RELEASES_REPO "xplane-g1000-nxi" CACHE STRING "GitHub releases repo
 # it pulls in heavier platform dependencies (X-Plane SDK / windowing + GPU).
 option(BUILD_XPLANE_SHELL "Build the X-Plane plugin shell (requires XPLM SDK)" OFF)
 option(BUILD_STANDALONE_SHELL "Build the standalone desktop shell" ON)
+
+# Linux X-Plane plugins are shared objects; static libs they link must be -fPIC.
+if(BUILD_XPLANE_SHELL AND UNIX AND NOT APPLE)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 # --- Packaging: bundled runtime assets -------------------------------------
 # The binaries resolve these at runtime relative to the install location (see

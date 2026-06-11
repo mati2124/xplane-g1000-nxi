@@ -6,9 +6,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
-#include <sys/stat.h>
 #include <utility>
 
 #include "XPLMNavigation.h"
@@ -205,13 +205,13 @@ FmsEntry fmsEntry(int index) {
 std::string fmsEntryId(int index) { return fmsEntry(index).id; }
 
 bool dirExists(const std::string& path) {
-  struct stat st {};
-  return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+  std::error_code ec;
+  return std::filesystem::is_directory(path, ec);
 }
 
 bool fileExists(const std::string& path) {
-  struct stat st {};
-  return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec);
 }
 
 bool installRootLooksValid(const std::string& root) {
