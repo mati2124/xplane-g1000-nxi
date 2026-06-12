@@ -100,6 +100,13 @@ endif()
 # X-Plane UDP connection needs Winsock on Windows.
 if(WIN32)
   target_link_libraries(avionics-standalone PRIVATE ws2_32)
+  # Build as a GUI app so launching the standalone (or its shortcut) does not
+  # pop up a console window; it owns its own PFD/MFD windows. Keep the standard
+  # main() entry point under the Windows subsystem.
+  set_target_properties(avionics-standalone PROPERTIES WIN32_EXECUTABLE TRUE)
+  if(MSVC)
+    target_link_options(avionics-standalone PRIVATE "/ENTRY:mainCRTStartup")
+  endif()
 endif()
 
 # --- Install / packaging ----------------------------------------------------

@@ -68,13 +68,61 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\avionics-standalone.exe"; Working
 Filename: "{app}\avionics-standalone.exe"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent unchecked; Components: standalone
 
 [Code]
+type
+  TDisplayDeviceW = record
+    cb: DWORD;
+    DeviceName: array[0..31] of Char;
+    DeviceString: array[0..127] of Char;
+    StateFlags: DWORD;
+    DeviceID: array[0..127] of Char;
+    DeviceKey: array[0..127] of Char;
+  end;
+  TDevModeW = record
+    dmDeviceName: array[0..31] of Char;
+    dmSpecVersion: Word;
+    dmDriverVersion: Word;
+    dmSize: Word;
+    dmDriverExtra: Word;
+    dmFields: DWORD;
+    dmPositionX: Longint;
+    dmPositionY: Longint;
+    dmDisplayOrientation: DWORD;
+    dmDisplayFixedOutput: DWORD;
+    dmColor: SmallInt;
+    dmDuplex: SmallInt;
+    dmYResolution: SmallInt;
+    dmTTOption: SmallInt;
+    dmCollate: SmallInt;
+    dmFormName: array[0..31] of Char;
+    dmLogPixels: Word;
+    dmBitsPerPel: DWORD;
+    dmPelsWidth: DWORD;
+    dmPelsHeight: DWORD;
+    dmDisplayFlags: DWORD;
+    dmDisplayFrequency: DWORD;
+    dmICMMethod: DWORD;
+    dmICMIntent: DWORD;
+    dmMediaType: DWORD;
+    dmDitherType: DWORD;
+    dmReserved1: DWORD;
+    dmReserved2: DWORD;
+    dmPanningWidth: DWORD;
+    dmPanningHeight: DWORD;
+  end;
+
 const
-  SM_CXSCREEN = 0;
-  SM_CYSCREEN = 1;
+  ENUM_CURRENT_SETTINGS = $FFFFFFFF;
+  DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 1;
+  DISPLAY_DEVICE_PRIMARY_DEVICE = 4;
   SM_CMONITORS = 80;
 
-// Monitor count / primary resolution for the Display Setup page. Used only to
-// build the picker; the chosen indices are written to the app's settings file.
+// Monitor enumeration for the Display Setup page (resolution + primary flag).
+function EnumDisplayDevices(lpDevice: Cardinal; iDevNum: DWORD;
+  var lpDisplayDevice: TDisplayDeviceW; dwFlags: DWORD): Boolean;
+  external 'EnumDisplayDevicesW@user32.dll stdcall';
+function EnumDisplaySettings(lpszDeviceName: String; iModeNum: DWORD;
+  var lpDevMode: TDevModeW): Boolean;
+  external 'EnumDisplaySettingsW@user32.dll stdcall';
 function GetSystemMetrics(nIndex: Integer): Integer;
   external 'GetSystemMetrics@user32.dll stdcall';
 
@@ -85,7 +133,8 @@ var
   FullscreenCheck: TNewCheckBox;
   PfdCombo, MfdCombo: TNewComboBox;
   PfdLabel, MfdLabel, DisplayHelp: TNewStaticText;
-  MonitorCount: Integer;
+  MonLabels: TArrayOfString;
+  MonCount: Integer;
 
 function DirLooksLikeXPlane(const Dir: String): Boolean;
 begin
@@ -132,34 +181,129 @@ begin
   UpdateDisplayControls();
 end;
 
-// Fills both pickers with the connected monitors. Only the primary monitor's
-// resolution is shown (it is the one Windows reliably exposes here); the
-// secondary entries are listed by number. The list is primary-first so the
-// item index lines up with the app's monitor numbering (the app's F-key /
-// --list-monitors let the user correct a mismatch).
+// Enumerates the connected monitors with their current resolution and the
+// primary flag, building "Monitor k  -  W x H  (primary)" labels. The list is
+// ordered primary-first so the item index lines up with the app's monitor
+// numbering (the in-app F key / --list-monitors let the user fix a mismatch).
+procedure EnumerateMonitors();
+var
+  dd: TDisplayDeviceW;
+  dm: TDevModeW;
+  i, j, k, n, w, h, primaryIdx, src: Integer;
+  name, item: String;
+  labels: TArrayOfString;
+  prims, order: array of Integer;
+begin
+  MonCount := 0;
+  SetArrayLength(MonLabels, 0);
+  SetArrayLength(labels, 16);
+  SetArrayLength(prims, 16);
+  n := 0;
+  primaryIdx := -1;
+  i := 0;
+  while True do
+  begin
+    dd.cb := SizeOf(dd);
+    if not EnumDisplayDevices(0, i, dd, 0) then
+      Break;
+    if (dd.StateFlags and DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) <> 0 then
+    begin
+      name := '';
+      for j := 0 to 31 do
+      begin
+        if dd.DeviceName[j] = #0 then
+          Break;
+        name := name + dd.DeviceName[j];
+      end;
+
+      w := 0;
+      h := 0;
+      dm.dmSize := SizeOf(dm);
+      if EnumDisplaySettings(name, ENUM_CURRENT_SETTINGS, dm) then
+      begin
+        w := dm.dmPelsWidth;
+        h := dm.dmPelsHeight;
+      end;
+
+      if n >= GetArrayLength(labels) then
+      begin
+        SetArrayLength(labels, n + 8);
+        SetArrayLength(prims, n + 8);
+      end;
+      if (w > 0) and (h > 0) and (w < 32000) and (h < 32000) then
+        labels[n] := IntToStr(w) + ' x ' + IntToStr(h)
+      else
+        labels[n] := '(unknown resolution)';
+      if (dd.StateFlags and DISPLAY_DEVICE_PRIMARY_DEVICE) <> 0 then
+      begin
+        prims[n] := 1;
+        primaryIdx := n;
+      end
+      else
+        prims[n] := 0;
+      n := n + 1;
+    end;
+    i := i + 1;
+  end;
+
+  if n = 0 then
+  begin
+    // Fallback if enumeration failed: number the monitors without resolution.
+    MonCount := GetSystemMetrics(SM_CMONITORS);
+    if MonCount < 1 then
+      MonCount := 1;
+    SetArrayLength(MonLabels, MonCount);
+    for j := 0 to MonCount - 1 do
+    begin
+      if j = 0 then
+        MonLabels[j] := 'Monitor 1  (primary)'
+      else
+        MonLabels[j] := Format('Monitor %d', [j + 1]);
+    end;
+    Exit;
+  end;
+
+  // Primary first, then the rest in enumeration order.
+  SetArrayLength(order, n);
+  k := 0;
+  if primaryIdx >= 0 then
+  begin
+    order[0] := primaryIdx;
+    k := 1;
+  end;
+  for j := 0 to n - 1 do
+    if j <> primaryIdx then
+    begin
+      order[k] := j;
+      k := k + 1;
+    end;
+
+  SetArrayLength(MonLabels, n);
+  MonCount := n;
+  for j := 0 to n - 1 do
+  begin
+    src := order[j];
+    item := Format('Monitor %d  -  %s', [j + 1, labels[src]]);
+    if prims[src] = 1 then
+      item := item + '  (primary)';
+    MonLabels[j] := item;
+  end;
+end;
+
 procedure PopulateMonitors();
 var
-  i, cx, cy: Integer;
-  item: String;
+  i: Integer;
 begin
-  MonitorCount := GetSystemMetrics(SM_CMONITORS);
-  if MonitorCount < 1 then
-    MonitorCount := 1;
-  cx := GetSystemMetrics(SM_CXSCREEN);
-  cy := GetSystemMetrics(SM_CYSCREEN);
+  EnumerateMonitors();
   PfdCombo.Items.Clear();
   MfdCombo.Items.Clear();
-  for i := 0 to MonitorCount - 1 do
+  for i := 0 to MonCount - 1 do
   begin
-    if i = 0 then
-      item := Format('Monitor %d  -  %d x %d  (primary)', [i + 1, cx, cy])
-    else
-      item := Format('Monitor %d', [i + 1]);
-    PfdCombo.Items.Add(item);
-    MfdCombo.Items.Add(item);
+    PfdCombo.Items.Add(MonLabels[i]);
+    MfdCombo.Items.Add(MonLabels[i]);
   end;
   PfdCombo.ItemIndex := 0;
-  if MonitorCount > 1 then
+  if MonCount > 1 then
     MfdCombo.ItemIndex := 1
   else
     MfdCombo.ItemIndex := 0;

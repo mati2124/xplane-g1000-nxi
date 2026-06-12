@@ -552,10 +552,12 @@ void OnMenuToggleWindowChrome(void* context, bool showChrome) {
 void OnMenuToggleAlwaysOnTop(void* context, bool alwaysOnTop) {
   auto* app = static_cast<AppState*>(context);
   const int floating = alwaysOnTop ? GLFW_TRUE : GLFW_FALSE;
-  if (app->pfdWindow != nullptr) {
+  // Full-screen displays stay floating (always on top) regardless, so the P
+  // toggle only affects the windowed ones.
+  if (app->pfdWindow != nullptr && !app->pfdFullscreen) {
     glfwSetWindowAttrib(app->pfdWindow, GLFW_FLOATING, floating);
   }
-  if (app->mfdWindow != nullptr) {
+  if (app->mfdWindow != nullptr && !app->mfdFullscreen) {
     glfwSetWindowAttrib(app->mfdWindow, GLFW_FLOATING, floating);
   }
   app->settings.alwaysOnTop = alwaysOnTop;
@@ -566,7 +568,8 @@ void OnMenuToggleAlwaysOnTop(void* context, bool alwaysOnTop) {
 // F-key handler uses it.
 void SetDisplayFullscreen(GLFWwindow* window, bool fullscreen, bool& isFull,
                           int& restoreX, int& restoreY, int& restoreW,
-                          int& restoreH, int monitorIndex, bool showChrome);
+                          int& restoreH, int monitorIndex, bool showChrome,
+                          bool windowedFloating);
 
 // F-key action: toggles borderless full screen for the whole suite. Each
 // display takes over its pinned monitor (settings.pfd/mfdMonitor) or, when
@@ -578,11 +581,11 @@ void OnToggleFullscreen(AppState* app) {
   SetDisplayFullscreen(app->pfdWindow, target, app->pfdFullscreen,
                        app->pfdRestoreX, app->pfdRestoreY, app->pfdRestoreW,
                        app->pfdRestoreH, app->settings.pfdMonitor,
-                       app->settings.showWindowChrome);
+                       app->settings.showWindowChrome, app->settings.alwaysOnTop);
   SetDisplayFullscreen(app->mfdWindow, target, app->mfdFullscreen,
                        app->mfdRestoreX, app->mfdRestoreY, app->mfdRestoreW,
                        app->mfdRestoreH, app->settings.mfdMonitor,
-                       app->settings.showWindowChrome);
+                       app->settings.showWindowChrome, app->settings.alwaysOnTop);
   app->settings.pfdFullscreen = app->pfdFullscreen;
   app->settings.mfdFullscreen = app->mfdFullscreen;
   avionics::SaveAppSettings(app->settings);
@@ -1416,24 +1419,26 @@ GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-  glfwWindowHint(GLFW_FLOATING, alwaysOnTop ? GLFW_TRUE : GLFW_FALSE);
-  glfwWindowHint(GLFW_DECORATED, decorated ? GLFW_TRUE : GLFW_FALSE);
   glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-  // Full-screen request: match the monitor's current video mode so the takeover
-  // needs no resolution change (the bit-depth/refresh hints request the native
-  // mode), and size the window to the monitor.
   if (monitor != nullptr) {
+    // Borderless full screen: an undecorated window sized to the monitor and
+    // kept floating (always on top) so it covers the whole screen and never
+    // hides when the user clicks another app. (Exclusive full screen would
+    // minimize on focus loss and live in its own macOS Space.) The caller
+    // positions it at the monitor's top-left corner.
     const GLFWvidmode* mode = glfwGetVideoMode(monitor);
     if (mode != nullptr) {
-      glfwWindowHint(GLFW_RED_BITS, mode->redBits);
-      glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
-      glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
-      glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
       width = mode->width;
       height = mode->height;
     }
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
+    return glfwCreateWindow(width, height, title, nullptr, share);
   }
-  return glfwCreateWindow(width, height, title, monitor, share);
+  glfwWindowHint(GLFW_FLOATING, alwaysOnTop ? GLFW_TRUE : GLFW_FALSE);
+  glfwWindowHint(GLFW_DECORATED, decorated ? GLFW_TRUE : GLFW_FALSE);
+  return glfwCreateWindow(width, height, title, nullptr, share);
 }
 
 // Monitor at a given index into GLFW's list. A negative or out-of-range index
@@ -1478,7 +1483,8 @@ GLFWmonitor* MonitorForWindow(GLFWwindow* window) {
 // tracks the current state and is flipped on success.
 void SetDisplayFullscreen(GLFWwindow* window, bool fullscreen, bool& isFull,
                           int& restoreX, int& restoreY, int& restoreW,
-                          int& restoreH, int monitorIndex, bool showChrome) {
+                          int& restoreH, int monitorIndex, bool showChrome,
+                          bool windowedFloating) {
   if (window == nullptr || fullscreen == isFull) return;
   if (fullscreen) {
     glfwGetWindowPos(window, &restoreX, &restoreY);
@@ -1488,14 +1494,23 @@ void SetDisplayFullscreen(GLFWwindow* window, bool fullscreen, bool& isFull,
     if (monitor == nullptr) return;
     const GLFWvidmode* mode = glfwGetVideoMode(monitor);
     if (mode == nullptr) return;
-    glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height,
-                         mode->refreshRate);
+    int mx = 0, my = 0;
+    glfwGetMonitorPos(monitor, &mx, &my);
+    // Borderless + floating: cover the monitor and stay on top, so the display
+    // never disappears when another window is clicked.
+    glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
+    glfwSetWindowAttrib(window, GLFW_AUTO_ICONIFY, GLFW_FALSE);
+    glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_TRUE);
+    glfwSetWindowMonitor(window, nullptr, mx, my, mode->width, mode->height,
+                         GLFW_DONT_CARE);
     isFull = true;
   } else {
     glfwSetWindowMonitor(window, nullptr, restoreX, restoreY, restoreW,
                          restoreH, GLFW_DONT_CARE);
     glfwSetWindowAttrib(window, GLFW_DECORATED,
                         showChrome ? GLFW_TRUE : GLFW_FALSE);
+    glfwSetWindowAttrib(window, GLFW_FLOATING,
+                        windowedFloating ? GLFW_TRUE : GLFW_FALSE);
     isFull = false;
   }
 }
@@ -1670,6 +1685,19 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Borderless full-screen displays are placed at their monitor's top-left so
+  // the undecorated window covers exactly that screen.
+  if (pfdFullscreen && pfdMonitorHandle != nullptr) {
+    int mx = 0, my = 0;
+    glfwGetMonitorPos(pfdMonitorHandle, &mx, &my);
+    glfwSetWindowPos(pfdWindow, mx, my);
+  }
+  if (mfdWindow != nullptr && mfdFullscreen && mfdMonitorHandle != nullptr) {
+    int mx = 0, my = 0;
+    glfwGetMonitorPos(mfdMonitorHandle, &mx, &my);
+    glfwSetWindowPos(mfdWindow, mx, my);
+  }
+
   // Window placement, applied while the windowed displays are still hidden so
   // they first appear in their final spots: the saved positions when a layout
   // was remembered, otherwise the MFD docked just to the right of the PFD.
@@ -1692,6 +1720,11 @@ int main(int argc, char** argv) {
   }
   glfwShowWindow(pfdWindow);
   if (mfdWindow != nullptr) glfwShowWindow(mfdWindow);
+  // Bring both displays to the front immediately so they appear on their
+  // monitors without the user having to click each window (otherwise, launched
+  // over a terminal or onto a second monitor, they can open in the background).
+  if (mfdWindow != nullptr) glfwFocusWindow(mfdWindow);
+  glfwFocusWindow(pfdWindow);
 
   // Both feeds exist for the whole session; the engines are pointed at one at a
   // time and M swaps between them. Opening the X-Plane UDP socket up front is
