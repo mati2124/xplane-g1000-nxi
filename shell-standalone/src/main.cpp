@@ -12,6 +12,14 @@
 // iteration; it never appears in the interactive app.)
 //
 //   --no-mfd                  open only the PFD window (no MFD)
+//   --fullscreen              run both displays borderless full screen, each
+//                             taking over a monitor (the 4:3 image letterboxed)
+//   --no-fullscreen           force windowed, overriding the saved preference
+//   --pfd-monitor N           put the PFD full screen on monitor N (implies
+//                             --fullscreen for the PFD; see --list-monitors)
+//   --mfd-monitor N           put the MFD full screen on monitor N
+//   --list-monitors           print the connected monitors and indices, then
+//                             exit
 //   --xplane-host HOST        X-Plane host (default: 127.0.0.1)
 //   --xplane-port PORT        X-Plane UDP port (default: 49000)
 //   --fms-bridge-port PORT    UDP port of the in-sim flight-plan bridge
@@ -171,46 +179,63 @@ inline int SoftkeyStripPx(int fbHeight) {
 // labels. The gauge code draws in screen pixels (device-pixel-ratio 1.0); the
 // bezel is drawn in full-window pixels. update() is the caller's
 // responsibility.
-inline void RenderSuite(avionics::NanoVgRenderer& renderer,
-                        avionics::AvionicsEngine& eng, int fbWidth,
-                        int fbHeight, bool showBezel = true,
-                        avionics::NanoVgRenderer::DrawStats* engineStats =
-                            nullptr) {
-  // With the bezel hidden the screen fills the whole window (no physical key
-  // strips to frame it), so the engine draws into the full framebuffer.
+// Renders the suite into an arbitrary viewport sub-rectangle of the current
+// framebuffer (vpX/vpY are GL bottom-left anchored). The full-window path passes
+// the whole framebuffer; the full-screen path passes a centered, aspect-
+// preserving rectangle so the 4:3 image is letterboxed rather than stretched to
+// a wide monitor. All of the internal geometry (bezel strips, screen region) is
+// computed relative to the viewport, so it scales with the rectangle.
+inline void RenderSuiteViewport(avionics::NanoVgRenderer& renderer,
+                                avionics::AvionicsEngine& eng, int vpX, int vpY,
+                                int vpW, int vpH, bool showBezel,
+                                avionics::NanoVgRenderer::DrawStats*
+                                    engineStats = nullptr) {
+  // With the bezel hidden the screen fills the whole viewport (no physical key
+  // strips to frame it), so the engine draws into the full rectangle.
   if (!showBezel) {
-    glViewport(0, 0, fbWidth, fbHeight);
-    eng.renderFrame(fbWidth, fbHeight, 1.0f);
+    glViewport(vpX, vpY, vpW, vpH);
+    eng.renderFrame(vpW, vpH, 1.0f);
     // Capture the engine's draw stats before any further beginFrame resets
     // them (the bezel path below resets on its own beginFrame).
     if (engineStats != nullptr) *engineStats = renderer.drawStats();
     return;
   }
 
-  const int bezelPx = BezelStripPx(fbWidth);
-  const int softkeyPx = SoftkeyStripPx(fbHeight);
-  const int screenW = std::max(1, fbWidth - bezelPx);
-  const int screenH = std::max(1, fbHeight - softkeyPx);
+  const int bezelPx = BezelStripPx(vpW);
+  const int softkeyPx = SoftkeyStripPx(vpH);
+  const int screenW = std::max(1, vpW - bezelPx);
+  const int screenH = std::max(1, vpH - softkeyPx);
 
   // GL viewports are bottom-left anchored, so the screen's viewport is lifted
-  // by the softkey strip's height to sit at the top of the window.
-  glViewport(0, fbHeight - screenH, screenW, screenH);
+  // by the softkey strip's height to sit at the top of the rectangle.
+  glViewport(vpX, vpY + (vpH - screenH), screenW, screenH);
   eng.renderFrame(screenW, screenH, 1.0f);
   // Snapshot the engine's per-frame draw stats now: the bezel beginFrame below
   // zeroes the counter, so reading it after RenderSuite would only show the
   // bezel (a constant), not the map content we're profiling.
   if (engineStats != nullptr) *engineStats = renderer.drawStats();
 
-  glViewport(0, 0, fbWidth, fbHeight);
-  renderer.beginFrame(fbWidth, fbHeight, 1.0f);
+  glViewport(vpX, vpY, vpW, vpH);
+  renderer.beginFrame(vpW, vpH, 1.0f);
   avionics::BezelKeyPanel::render(
       renderer, static_cast<float>(screenW), 0.0f,
-      static_cast<float>(fbWidth - screenW), static_cast<float>(fbHeight),
+      static_cast<float>(vpW - screenW), static_cast<float>(vpH),
       static_cast<float>(screenH), eng.bezelPressLevels());
   avionics::SoftkeyBezelPanel::render(
       renderer, 0.0f, static_cast<float>(screenH), static_cast<float>(screenW),
-      static_cast<float>(fbHeight - screenH), eng.softkeyPressLevels());
+      static_cast<float>(vpH - screenH), eng.softkeyPressLevels());
   renderer.endFrame();
+}
+
+// Fills the whole framebuffer with the suite (the normal window path, where the
+// window is already sized to the suite's aspect ratio).
+inline void RenderSuite(avionics::NanoVgRenderer& renderer,
+                        avionics::AvionicsEngine& eng, int fbWidth,
+                        int fbHeight, bool showBezel = true,
+                        avionics::NanoVgRenderer::DrawStats* engineStats =
+                            nullptr) {
+  RenderSuiteViewport(renderer, eng, 0, 0, fbWidth, fbHeight, showBezel,
+                      engineStats);
 }
 
 constexpr const char* kSourceXPlane = "xplane";
@@ -264,6 +289,14 @@ struct AppState {
   // Whether the hardware bezel strips are drawn (and the windows sized to
   // include them). Mirrors settings.showBezel; toggled with the B key.
   bool showBezel = true;
+  // Whether each display currently fills a whole monitor (borderless full
+  // screen). Mirrors settings.pfd/mfdFullscreen; toggled with the F key.
+  bool pfdFullscreen = false;
+  bool mfdFullscreen = false;
+  // Windowed placement saved when a display enters full screen, restored when
+  // it leaves so the windows return to where they were.
+  int pfdRestoreX = 0, pfdRestoreY = 0, pfdRestoreW = 0, pfdRestoreH = 0;
+  int mfdRestoreX = 0, mfdRestoreY = 0, mfdRestoreW = 0, mfdRestoreH = 0;
   // Persisted user preferences, written back whenever the user changes the
   // feed or flips one of the View menu toggles.
   avionics::AppSettings settings;
@@ -296,17 +329,51 @@ inline int SuiteWindowHeight(bool showBezel) {
   return showBezel ? kSuiteHeight : kWindowHeight;
 }
 
+// Largest rectangle inside a framebuffer that keeps the suite's aspect ratio
+// (the 4:3 screen, plus the bezel strips when shown), centered with black bars.
+// For a window sized to the suite this is the whole framebuffer; for a
+// full-screen window on a monitor of a different shape it pillar/letterboxes the
+// image so the gauges keep their proportions instead of stretching. Returned in
+// framebuffer pixels with a top-left origin (so it composes with mouse
+// coordinates); the renderer flips y for the GL viewport.
+struct ContentRect {
+  int x, y, w, h;
+};
+inline ContentRect ComputeContentRect(int fbWidth, int fbHeight,
+                                      bool showBezel) {
+  ContentRect rect{0, 0, fbWidth, fbHeight};
+  if (fbWidth <= 0 || fbHeight <= 0) return rect;
+  const double aspect = static_cast<double>(SuiteWindowWidth(showBezel)) /
+                        static_cast<double>(SuiteWindowHeight(showBezel));
+  const double fbAspect =
+      static_cast<double>(fbWidth) / static_cast<double>(fbHeight);
+  if (fbAspect > aspect) {  // framebuffer wider than the suite: pillarbox
+    rect.h = fbHeight;
+    rect.w = static_cast<int>(std::lround(fbHeight * aspect));
+    rect.x = (fbWidth - rect.w) / 2;
+    rect.y = 0;
+  } else {  // framebuffer taller than the suite: letterbox
+    rect.w = fbWidth;
+    rect.h = static_cast<int>(std::lround(fbWidth / aspect));
+    rect.x = 0;
+    rect.y = (fbHeight - rect.h) / 2;
+  }
+  return rect;
+}
+
 // Records the current window placement into the settings (window positions are
 // always restored on the next launch). Positions are screen coordinates of the
 // content area's top-left corner, as reported by GLFW.
 void CaptureWindowPositions(AppState& app) {
-  if (app.pfdWindow == nullptr) return;
+  // A full-screen window sits at its monitor's origin; capturing that would
+  // clobber the saved windowed layout, so skip it and keep the prior values.
+  if (app.pfdWindow == nullptr || app.pfdFullscreen) return;
   glfwGetWindowPos(app.pfdWindow, &app.settings.pfdWindowX,
                    &app.settings.pfdWindowY);
-  if (app.mfdWindow != nullptr) {
+  if (app.mfdWindow != nullptr && !app.mfdFullscreen) {
     glfwGetWindowPos(app.mfdWindow, &app.settings.mfdWindowX,
                      &app.settings.mfdWindowY);
-  } else {
+  } else if (app.mfdWindow == nullptr) {
     // PFD-only run: save the docked position so a later dual-window launch
     // still puts the MFD beside the PFD.
     app.settings.mfdWindowX = app.settings.pfdWindowX +
@@ -321,10 +388,14 @@ void CaptureWindowPositions(AppState& app) {
 void ApplyBezelWindowSize(AppState& app) {
   const int w = SuiteWindowWidth(app.showBezel);
   const int h = SuiteWindowHeight(app.showBezel);
-  if (app.pfdWindow != nullptr) glfwSetWindowSize(app.pfdWindow, w, h);
-  if (app.mfdWindow != nullptr) {
+  // Full-screen displays keep filling their monitor; the bezel change only
+  // affects how the image is letterboxed within it, not the window size.
+  if (app.pfdWindow != nullptr && !app.pfdFullscreen) {
+    glfwSetWindowSize(app.pfdWindow, w, h);
+  }
+  if (app.mfdWindow != nullptr && !app.mfdFullscreen) {
     glfwSetWindowSize(app.mfdWindow, w, h);
-    if (app.pfdWindow != nullptr) {
+    if (app.pfdWindow != nullptr && !app.pfdFullscreen) {
       int px = 0, py = 0;
       glfwGetWindowPos(app.pfdWindow, &px, &py);
       glfwSetWindowPos(app.mfdWindow, px + w + kWindowGap, py);
@@ -464,10 +535,12 @@ void OnMenuToggleBezel(void* context, bool showBezel) {
 void OnMenuToggleWindowChrome(void* context, bool showChrome) {
   auto* app = static_cast<AppState*>(context);
   const int decorated = showChrome ? GLFW_TRUE : GLFW_FALSE;
-  if (app->pfdWindow != nullptr) {
+  // Full-screen displays have no chrome regardless; only retitle the windowed
+  // ones (the preference is still persisted and applied when they return).
+  if (app->pfdWindow != nullptr && !app->pfdFullscreen) {
     glfwSetWindowAttrib(app->pfdWindow, GLFW_DECORATED, decorated);
   }
-  if (app->mfdWindow != nullptr) {
+  if (app->mfdWindow != nullptr && !app->mfdFullscreen) {
     glfwSetWindowAttrib(app->mfdWindow, GLFW_DECORATED, decorated);
   }
   app->settings.showWindowChrome = showChrome;
@@ -486,6 +559,32 @@ void OnMenuToggleAlwaysOnTop(void* context, bool alwaysOnTop) {
     glfwSetWindowAttrib(app->mfdWindow, GLFW_FLOATING, floating);
   }
   app->settings.alwaysOnTop = alwaysOnTop;
+  avionics::SaveAppSettings(app->settings);
+}
+
+// Defined alongside the other window helpers below; declared here because the
+// F-key handler uses it.
+void SetDisplayFullscreen(GLFWwindow* window, bool fullscreen, bool& isFull,
+                          int& restoreX, int& restoreY, int& restoreW,
+                          int& restoreH, int monitorIndex, bool showChrome);
+
+// F-key action: toggles borderless full screen for the whole suite. Each
+// display takes over its pinned monitor (settings.pfd/mfdMonitor) or, when
+// unpinned, whichever monitor it is currently on. If either display is full
+// screen, the key returns both to their windowed placement. The choice is
+// remembered across runs.
+void OnToggleFullscreen(AppState* app) {
+  const bool target = !(app->pfdFullscreen || app->mfdFullscreen);
+  SetDisplayFullscreen(app->pfdWindow, target, app->pfdFullscreen,
+                       app->pfdRestoreX, app->pfdRestoreY, app->pfdRestoreW,
+                       app->pfdRestoreH, app->settings.pfdMonitor,
+                       app->settings.showWindowChrome);
+  SetDisplayFullscreen(app->mfdWindow, target, app->mfdFullscreen,
+                       app->mfdRestoreX, app->mfdRestoreY, app->mfdRestoreW,
+                       app->mfdRestoreH, app->settings.mfdMonitor,
+                       app->settings.showWindowChrome);
+  app->settings.pfdFullscreen = app->pfdFullscreen;
+  app->settings.mfdFullscreen = app->mfdFullscreen;
   avionics::SaveAppSettings(app->settings);
 }
 
@@ -977,6 +1076,9 @@ void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
     case GLFW_KEY_P:
       OnMenuToggleAlwaysOnTop(app, !app->settings.alwaysOnTop);
       break;
+    case GLFW_KEY_F:
+      OnToggleFullscreen(app);
+      break;
     default:
       break;
   }
@@ -1012,20 +1114,26 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
   glfwGetFramebufferSize(window, &fbW, &fbH);
   const double sx = winW > 0 ? static_cast<double>(fbW) / winW : 1.0;
   const double sy = winH > 0 ? static_cast<double>(fbH) / winH : 1.0;
-  const double fx = cursorX * sx;
-  const double fy = cursorY * sy;
+  // Hit-test in the letterboxed content rectangle, not the raw framebuffer, so
+  // clicks line up with what is drawn when the display is full screen (the
+  // image is centered with black bars). In a windowed display the rectangle is
+  // the whole framebuffer, so this is a no-op there.
+  const ContentRect cr = ComputeContentRect(fbW, fbH, app->showBezel);
+  const double fx = cursorX * sx - cr.x;
+  const double fy = cursorY * sy - cr.y;
+  if (fx < 0.0 || fy < 0.0 || fx >= cr.w || fy >= cr.h) return;  // on the bars
 
   // Only the physical bezel controls are clickable, like the real unit: the
   // key column on the right and the softkey row below the screen. Clicks on
   // the screen itself do nothing (it is just glass).
-  const int bezelPx = BezelStripPx(fbW);
-  const int screenW = fbW - bezelPx;
-  const int screenH = fbH - SoftkeyStripPx(fbH);
+  const int bezelPx = BezelStripPx(cr.w);
+  const int screenW = cr.w - bezelPx;
+  const int screenH = cr.h - SoftkeyStripPx(cr.h);
   if (fx >= screenW) {
     const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy),
         static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
-        static_cast<float>(fbH));
+        static_cast<float>(cr.h));
     if (key == avionics::BezelKey::Ent && AwaitingBootAck(*app)) {
       // Acknowledge the power-up page on both displays together.
       AcknowledgeBoot(*app);
@@ -1042,7 +1150,7 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
     const int key = avionics::SoftkeyBezelPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy), 0.0f,
         static_cast<float>(screenH), static_cast<float>(screenW),
-        static_cast<float>(fbH - screenH));
+        static_cast<float>(cr.h - screenH));
     if (key >= 0) engine->pressSoftkey(key);
   }
 }
@@ -1180,19 +1288,24 @@ void OnCursorPos(GLFWwindow* window, double cursorX, double cursorY) {
   glfwGetFramebufferSize(window, &fbW, &fbH);
   const double sx = winW > 0 ? static_cast<double>(fbW) / winW : 1.0;
   const double sy = winH > 0 ? static_cast<double>(fbH) / winH : 1.0;
-  const double fx = cursorX * sx;
-  const double fy = cursorY * sy;
+  const ContentRect cr = ComputeContentRect(fbW, fbH, app->showBezel);
+  const double fx = cursorX * sx - cr.x;
+  const double fy = cursorY * sy - cr.y;
+  if (fx < 0.0 || fy < 0.0 || fx >= cr.w || fy >= cr.h) {
+    glfwSetCursor(window, nullptr);  // over the letterbox bars
+    return;
+  }
 
-  const int bezelPx = BezelStripPx(fbW);
-  const int screenW = fbW - bezelPx;
-  const int screenH = fbH - SoftkeyStripPx(fbH);
+  const int bezelPx = BezelStripPx(cr.w);
+  const int screenW = cr.w - bezelPx;
+  const int screenH = cr.h - SoftkeyStripPx(cr.h);
 
   GLFWcursor* cursor = nullptr;  // default arrow over the glass screen
   if (fx >= screenW) {
     const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy),
         static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
-        static_cast<float>(fbH));
+        static_cast<float>(cr.h));
     if (key == avionics::BezelKey::RangeDown) {
       // Counter-clockwise side of the zoom ring (zoom in).
       cursor = app->rangeCcwCursor ? app->rangeCcwCursor : app->rotateCursor;
@@ -1207,7 +1320,7 @@ void OnCursorPos(GLFWwindow* window, double cursorX, double cursorY) {
     const int key = avionics::SoftkeyBezelPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy), 0.0f,
         static_cast<float>(screenH), static_cast<float>(screenW),
-        static_cast<float>(fbH - screenH));
+        static_cast<float>(cr.h - screenH));
     if (key >= 0) cursor = app->handCursor;
   }
   glfwSetCursor(window, cursor);
@@ -1236,17 +1349,22 @@ void OnScroll(GLFWwindow* window, double /*xoffset*/, double yoffset) {
   glfwGetFramebufferSize(window, &fbW, &fbH);
   const double sx = winW > 0 ? static_cast<double>(fbW) / winW : 1.0;
   const double sy = winH > 0 ? static_cast<double>(fbH) / winH : 1.0;
-  const double fx = cursorX * sx;
-  const double fy = cursorY * sy;
+  const ContentRect cr = ComputeContentRect(fbW, fbH, app->showBezel);
+  const double fx = cursorX * sx - cr.x;
+  const double fy = cursorY * sy - cr.y;
+  if (fx < 0.0 || fy < 0.0 || fx >= cr.w || fy >= cr.h) {
+    app->rangeScrollAccum = 0.0;
+    return;
+  }
 
-  const int bezelPx = BezelStripPx(fbW);
-  const int screenW = fbW - bezelPx;
+  const int bezelPx = BezelStripPx(cr.w);
+  const int screenW = cr.w - bezelPx;
   bool overRange = false;
   if (fx >= screenW) {
     const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy),
         static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
-        static_cast<float>(fbH));
+        static_cast<float>(cr.h));
     // Anywhere on the RANGE joystick cluster (zoom ring or the pan center)
     // scrolls the range, so the gesture is forgiving about exact placement.
     const int ki = static_cast<int>(key);
@@ -1293,7 +1411,7 @@ bool HasFlag(int argc, char** argv, const char* flag) {
 // placement) before its first appearance; the caller shows it when ready.
 GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
                                  bool decorated, GLFWwindow* share, int width,
-                                 int height) {
+                                 int height, GLFWmonitor* monitor) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -1301,7 +1419,104 @@ GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
   glfwWindowHint(GLFW_FLOATING, alwaysOnTop ? GLFW_TRUE : GLFW_FALSE);
   glfwWindowHint(GLFW_DECORATED, decorated ? GLFW_TRUE : GLFW_FALSE);
   glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-  return glfwCreateWindow(width, height, title, nullptr, share);
+  // Full-screen request: match the monitor's current video mode so the takeover
+  // needs no resolution change (the bit-depth/refresh hints request the native
+  // mode), and size the window to the monitor.
+  if (monitor != nullptr) {
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+    if (mode != nullptr) {
+      glfwWindowHint(GLFW_RED_BITS, mode->redBits);
+      glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
+      glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
+      glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+      width = mode->width;
+      height = mode->height;
+    }
+  }
+  return glfwCreateWindow(width, height, title, monitor, share);
+}
+
+// Monitor at a given index into GLFW's list. A negative or out-of-range index
+// (e.g. an unplugged monitor) falls back to the primary monitor so a saved
+// preference never leaves a display with nowhere to go. Null only when no
+// monitors are connected at all.
+GLFWmonitor* MonitorByIndex(int index) {
+  int count = 0;
+  GLFWmonitor** monitors = glfwGetMonitors(&count);
+  if (monitors == nullptr || count == 0) return nullptr;
+  if (index < 0 || index >= count) return glfwGetPrimaryMonitor();
+  return monitors[index];
+}
+
+// The monitor a window currently sits on (by its center point), used when the
+// user toggles full screen with the keyboard and hasn't pinned a specific
+// monitor: the display takes over whichever screen it is already on.
+GLFWmonitor* MonitorForWindow(GLFWwindow* window) {
+  int wx = 0, wy = 0, ww = 0, wh = 0;
+  glfwGetWindowPos(window, &wx, &wy);
+  glfwGetWindowSize(window, &ww, &wh);
+  const int cx = wx + ww / 2;
+  const int cy = wy + wh / 2;
+  int count = 0;
+  GLFWmonitor** monitors = glfwGetMonitors(&count);
+  for (int i = 0; i < count; ++i) {
+    int mx = 0, my = 0;
+    glfwGetMonitorPos(monitors[i], &mx, &my);
+    const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+    if (mode == nullptr) continue;
+    if (cx >= mx && cx < mx + mode->width && cy >= my &&
+        cy < my + mode->height) {
+      return monitors[i];
+    }
+  }
+  return glfwGetPrimaryMonitor();
+}
+
+// Switches one display between borderless full screen and its windowed
+// placement. Entering saves the current windowed geometry (so it can return);
+// leaving restores it and re-applies the window chrome preference. `isFull`
+// tracks the current state and is flipped on success.
+void SetDisplayFullscreen(GLFWwindow* window, bool fullscreen, bool& isFull,
+                          int& restoreX, int& restoreY, int& restoreW,
+                          int& restoreH, int monitorIndex, bool showChrome) {
+  if (window == nullptr || fullscreen == isFull) return;
+  if (fullscreen) {
+    glfwGetWindowPos(window, &restoreX, &restoreY);
+    glfwGetWindowSize(window, &restoreW, &restoreH);
+    GLFWmonitor* monitor =
+        monitorIndex >= 0 ? MonitorByIndex(monitorIndex) : MonitorForWindow(window);
+    if (monitor == nullptr) return;
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+    if (mode == nullptr) return;
+    glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height,
+                         mode->refreshRate);
+    isFull = true;
+  } else {
+    glfwSetWindowMonitor(window, nullptr, restoreX, restoreY, restoreW,
+                         restoreH, GLFW_DONT_CARE);
+    glfwSetWindowAttrib(window, GLFW_DECORATED,
+                        showChrome ? GLFW_TRUE : GLFW_FALSE);
+    isFull = false;
+  }
+}
+
+// Prints the connected monitors so the user can pick an index for
+// --pfd-monitor / --mfd-monitor. The primary monitor is flagged.
+void ListMonitors() {
+  int count = 0;
+  GLFWmonitor** monitors = glfwGetMonitors(&count);
+  GLFWmonitor* primary = glfwGetPrimaryMonitor();
+  std::fprintf(stderr, "Connected monitors (%d):\n", count);
+  for (int i = 0; i < count; ++i) {
+    int mx = 0, my = 0;
+    glfwGetMonitorPos(monitors[i], &mx, &my);
+    const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+    const char* name = glfwGetMonitorName(monitors[i]);
+    std::fprintf(stderr, "  [%d] %s  %dx%d @ (%d,%d)%s\n", i,
+                 name ? name : "(unnamed)", mode ? mode->width : 0,
+                 mode ? mode->height : 0, mx, my,
+                 monitors[i] == primary ? "  (primary)" : "");
+  }
 }
 
 }  // namespace
@@ -1343,6 +1558,14 @@ int main(int argc, char** argv) {
     return rc;
   }
 
+  // Lists the connected monitors and their indices, so the user can choose one
+  // for --pfd-monitor / --mfd-monitor, then exits.
+  if (HasFlag(argc, argv, "--list-monitors")) {
+    ListMonitors();
+    glfwTerminate();
+    return 0;
+  }
+
   const bool wantMfd = !HasFlag(argc, argv, "--no-mfd");
 
   // Restore persisted preferences unless the command line overrides them.
@@ -1355,10 +1578,49 @@ int main(int argc, char** argv) {
   const int winW = SuiteWindowWidth(showBezel);
   const int winH = SuiteWindowHeight(showBezel);
 
+  // Borderless full-screen: each display takes over a monitor with no title
+  // bar. Resolved from the persisted preference, overridden by the command
+  // line: --fullscreen turns both on, --no-fullscreen forces both off, and
+  // --pfd-monitor / --mfd-monitor pin a display to a monitor (implying full
+  // screen for it). When a monitor index is left unset (-1) the PFD takes the
+  // first monitor and the MFD the second one if a second exists.
+  bool pfdFullscreen = savedSettings.pfdFullscreen;
+  bool mfdFullscreen = savedSettings.mfdFullscreen;
+  int pfdMonitorIdx = savedSettings.pfdMonitor;
+  int mfdMonitorIdx = savedSettings.mfdMonitor;
+  if (HasFlag(argc, argv, "--fullscreen")) {
+    pfdFullscreen = true;
+    mfdFullscreen = true;
+  }
+  if (HasFlag(argc, argv, "--no-fullscreen")) {
+    pfdFullscreen = false;
+    mfdFullscreen = false;
+  }
+  if (const char* v = FlagValue(argc, argv, "--pfd-monitor")) {
+    pfdMonitorIdx = std::atoi(v);
+    pfdFullscreen = true;
+  }
+  if (const char* v = FlagValue(argc, argv, "--mfd-monitor")) {
+    mfdMonitorIdx = std::atoi(v);
+    mfdFullscreen = true;
+  }
+  int monitorCount = 0;
+  glfwGetMonitors(&monitorCount);
+  // Default monitor assignment when unpinned: PFD on monitor 0, MFD on monitor
+  // 1 (so two-screen cockpits get one display each without extra flags).
+  const int pfdMonitorResolved = pfdMonitorIdx >= 0 ? pfdMonitorIdx : 0;
+  const int mfdMonitorResolved =
+      mfdMonitorIdx >= 0 ? mfdMonitorIdx : (monitorCount > 1 ? 1 : 0);
+  GLFWmonitor* pfdMonitorHandle =
+      pfdFullscreen ? MonitorByIndex(pfdMonitorResolved) : nullptr;
+  GLFWmonitor* mfdMonitorHandle =
+      mfdFullscreen ? MonitorByIndex(mfdMonitorResolved) : nullptr;
+
   // The PFD window owns vsync (paces the whole loop). Its context is created
   // first; the renderer is constructed while that context is current.
   GLFWwindow* pfdWindow = CreateAvionicsWindow(
-      kWindowTitle, alwaysOnTop, showWindowChrome, nullptr, winW, winH);
+      kWindowTitle, alwaysOnTop, pfdFullscreen ? false : showWindowChrome,
+      nullptr, winW, winH, pfdMonitorHandle);
   if (!pfdWindow) {
     std::fprintf(stderr, "Failed to create window\n");
     glfwTerminate();
@@ -1386,8 +1648,9 @@ int main(int argc, char** argv) {
   GLFWwindow* mfdWindow = nullptr;
   avionics::NanoVgRenderer* mfdRenderer = nullptr;
   if (wantMfd) {
-    mfdWindow = CreateAvionicsWindow(kMfdWindowTitle, alwaysOnTop,
-                                     showWindowChrome, nullptr, winW, winH);
+    mfdWindow = CreateAvionicsWindow(
+        kMfdWindowTitle, alwaysOnTop, mfdFullscreen ? false : showWindowChrome,
+        nullptr, winW, winH, mfdMonitorHandle);
     if (mfdWindow) {
       glfwMakeContextCurrent(mfdWindow);
       avionics::render::ensureGlLoaded();
@@ -1407,20 +1670,25 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Window placement, applied while the windows are still hidden so they first
-  // appear in their final spots: the saved positions when "Remember Window
-  // Position" is on, otherwise the MFD docked just to the right of the PFD.
-  if (savedSettings.hasWindowPos) {
-    glfwSetWindowPos(pfdWindow, savedSettings.pfdWindowX,
-                     savedSettings.pfdWindowY);
-    if (mfdWindow != nullptr) {
+  // Window placement, applied while the windowed displays are still hidden so
+  // they first appear in their final spots: the saved positions when a layout
+  // was remembered, otherwise the MFD docked just to the right of the PFD.
+  // Full-screen displays already own their monitor, so they are left alone.
+  if (!pfdFullscreen) {
+    if (savedSettings.hasWindowPos) {
+      glfwSetWindowPos(pfdWindow, savedSettings.pfdWindowX,
+                       savedSettings.pfdWindowY);
+    }
+  }
+  if (mfdWindow != nullptr && !mfdFullscreen) {
+    if (savedSettings.hasWindowPos) {
       glfwSetWindowPos(mfdWindow, savedSettings.mfdWindowX,
                        savedSettings.mfdWindowY);
+    } else if (!pfdFullscreen) {
+      int px = 0, py = 0;
+      glfwGetWindowPos(pfdWindow, &px, &py);
+      glfwSetWindowPos(mfdWindow, px + winW + kWindowGap, py);
     }
-  } else if (mfdWindow != nullptr) {
-    int px = 0, py = 0;
-    glfwGetWindowPos(pfdWindow, &px, &py);
-    glfwSetWindowPos(mfdWindow, px + winW + kWindowGap, py);
   }
   glfwShowWindow(pfdWindow);
   if (mfdWindow != nullptr) glfwShowWindow(mfdWindow);
@@ -1547,8 +1815,33 @@ int main(int argc, char** argv) {
   app.showBezel = showBezel;
   app.settings = savedSettings;
   app.settings.alwaysOnTop = alwaysOnTop;
+  app.settings.pfdFullscreen = pfdFullscreen;
+  app.settings.mfdFullscreen = mfdFullscreen;
+  app.settings.pfdMonitor = pfdMonitorIdx;
+  app.settings.mfdMonitor = mfdMonitorIdx;
   if (!app.settings.loaded) {
     app.settings.showBezel = showBezel;
+  }
+  app.pfdFullscreen = pfdFullscreen;
+  app.mfdFullscreen = mfdFullscreen;
+  // Seed the windowed geometry to restore when the F key leaves full screen
+  // (the displays boot straight into full screen with no prior windowed pose),
+  // from the saved layout when there is one, otherwise the suite size docked
+  // side by side.
+  app.pfdRestoreW = winW;
+  app.pfdRestoreH = winH;
+  app.mfdRestoreW = winW;
+  app.mfdRestoreH = winH;
+  if (savedSettings.hasWindowPos) {
+    app.pfdRestoreX = savedSettings.pfdWindowX;
+    app.pfdRestoreY = savedSettings.pfdWindowY;
+    app.mfdRestoreX = savedSettings.mfdWindowX;
+    app.mfdRestoreY = savedSettings.mfdWindowY;
+  } else {
+    app.pfdRestoreX = 100;
+    app.pfdRestoreY = 100;
+    app.mfdRestoreX = 100 + winW + kWindowGap;
+    app.mfdRestoreY = 100;
   }
   app.pfdEngine = &pfdEngine;
   app.mfdEngine = mfdEngine;
@@ -1568,7 +1861,7 @@ int main(int argc, char** argv) {
   // restored on the next launch.
   std::fprintf(stderr,
                "Shortcuts: B = bezel, T = title bar, P = always-on-top, "
-               "Esc = quit.\n");
+               "F = full screen, Esc = quit.\n");
 
   // Optional per-display render profiler (AVIONICS_PROFILE=1): isolates the GPU
   // cost of each window's draw with a glFinish so we can see whether the PFD or
@@ -1594,7 +1887,13 @@ int main(int argc, char** argv) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     eng.update(dt);
     const auto t0 = std::chrono::steady_clock::now();
-    RenderSuite(renderer, eng, fbWidth, fbHeight, app.showBezel, stats);
+    // Draw into the aspect-preserving content rectangle, leaving the cleared
+    // black bars around it on a full-screen monitor of a different shape. For a
+    // windowed display the rectangle is the whole framebuffer.
+    const ContentRect cr = ComputeContentRect(fbWidth, fbHeight, app.showBezel);
+    const int glY = fbHeight - (cr.y + cr.h);  // GL viewport origin is bottom-left
+    RenderSuiteViewport(renderer, eng, cr.x, glY, cr.w, cr.h, app.showBezel,
+                        stats);
     if (profile) glFinish();
     const double ms =
         profile ? std::chrono::duration<double, std::milli>(

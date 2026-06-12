@@ -14,6 +14,10 @@ constexpr const char* kKeyShowBezel = "showBezel";
 constexpr const char* kKeySimbriefPilotId = "simbriefPilotId";
 constexpr const char* kKeyShowWindowChrome = "showWindowChrome";
 constexpr const char* kKeyAlwaysOnTop = "alwaysOnTop";
+constexpr const char* kKeyPfdFullscreen = "pfdFullscreen";
+constexpr const char* kKeyMfdFullscreen = "mfdFullscreen";
+constexpr const char* kKeyPfdMonitor = "pfdMonitor";
+constexpr const char* kKeyMfdMonitor = "mfdMonitor";
 constexpr const char* kKeyPfdWindowX = "pfdWindowX";
 constexpr const char* kKeyPfdWindowY = "pfdWindowY";
 constexpr const char* kKeyMfdWindowX = "mfdWindowX";
@@ -93,6 +97,20 @@ AppSettings LoadAppSettings() {
           ParseBool(value, settings.showWindowChrome);
     } else if (key == kKeyAlwaysOnTop) {
       settings.alwaysOnTop = ParseBool(value, settings.alwaysOnTop);
+    } else if (key == kKeyPfdFullscreen) {
+      settings.pfdFullscreen = ParseBool(value, settings.pfdFullscreen);
+    } else if (key == kKeyMfdFullscreen) {
+      settings.mfdFullscreen = ParseBool(value, settings.mfdFullscreen);
+    } else if (key == kKeyPfdMonitor) {
+      try {
+        settings.pfdMonitor = std::stoi(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyMfdMonitor) {
+      try {
+        settings.mfdMonitor = std::stoi(value);
+      } catch (...) {
+      }
     } else if (key == kKeyPfdWindowX) {
       ParseWindowCoord(value, settings.pfdWindowX, coordsValid);
       ++windowCoords;
@@ -130,6 +148,12 @@ void SaveAppSettings(const AppSettings& settings) {
   out << kKeyShowWindowChrome << '='
       << (settings.showWindowChrome ? '1' : '0') << '\n';
   out << kKeyAlwaysOnTop << '=' << (settings.alwaysOnTop ? '1' : '0') << '\n';
+  out << kKeyPfdFullscreen << '=' << (settings.pfdFullscreen ? '1' : '0')
+      << '\n';
+  out << kKeyMfdFullscreen << '=' << (settings.mfdFullscreen ? '1' : '0')
+      << '\n';
+  out << kKeyPfdMonitor << '=' << settings.pfdMonitor << '\n';
+  out << kKeyMfdMonitor << '=' << settings.mfdMonitor << '\n';
   // Window coordinates are only written once a position has been captured, so
   // a fresh install never restores a bogus (0, 0) placement.
   if (settings.hasWindowPos) {

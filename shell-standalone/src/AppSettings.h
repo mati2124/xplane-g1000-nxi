@@ -25,6 +25,14 @@ struct AppSettings {
   bool showWindowChrome = true;
   // Whether the PFD and MFD windows float above other windows (GLFW_FLOATING).
   bool alwaysOnTop = false;
+  // Borderless full-screen mode: each display takes over a whole monitor with
+  // no title bar, the 4:3 avionics image letterboxed to keep its proportions.
+  // The monitor index is into GLFW's monitor list; -1 means "let the app pick"
+  // (PFD on the first monitor, MFD on the second when one exists).
+  bool pfdFullscreen = false;
+  bool mfdFullscreen = false;
+  int pfdMonitor = -1;
+  int mfdMonitor = -1;
   // Last saved window positions (screen coordinates of the window's top-left
   // corner), only meaningful when hasWindowPos is true.
   bool hasWindowPos = false;
