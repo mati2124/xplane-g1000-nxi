@@ -7,27 +7,35 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "Ws2_32.lib")
-using SocketHandle = SOCKET;
 #else
 #include <arpa/inet.h>
+#include <cerrno>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
-using SocketHandle = int;
 #endif
 
+#include <cstdio>
 #include <cstring>
 #include <vector>
+
+#include "XPLMUtilities.h"
 
 namespace avionics {
 namespace {
 
 #ifdef _WIN32
+using SocketHandle = SOCKET;
 constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
 #else
+using SocketHandle = int;
 constexpr SocketHandle kInvalidSocket = -1;
 #endif
+
+// Routes diagnostics into X-Plane's Log.txt (grep "G1000 NXi"), unlike stderr
+// which the sim doesn't capture on a windowed/.app launch.
+void BridgeLog(const char* msg) { XPLMDebugString(msg); }
 
 // Standalone re-registers every few seconds; treat the client as gone after this
 // gap so we don't send to a stale address forever.
@@ -58,6 +66,12 @@ void setRecvTimeout(SocketHandle sock, int timeoutMs) {
 #endif
 }
 
+void setReuseAddr(SocketHandle sock) {
+  int reuse = 1;
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
+             sizeof(reuse));
+}
+
 }  // namespace
 
 CommandBridge::CommandBridge(std::uint16_t registrationPort)
@@ -66,16 +80,69 @@ CommandBridge::CommandBridge(std::uint16_t registrationPort)
 CommandBridge::~CommandBridge() { stop(); }
 
 void CommandBridge::start() {
-  if (thread_.joinable()) return;
+  if (started_) return;
   stop_.store(false);
-  thread_ = std::thread(&CommandBridge::serverLoop, this);
+
+#ifdef _WIN32
+  WSADATA wsa;
+  WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+
+  // Bind on the enable thread (XPluginEnable) so diagnostics always reach
+  // Log.txt and a short-lived worker thread cannot exit before we know the
+  // port is open.
+  listenSock_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (listenSock_ == kInvalidSocket) {
+    BridgeLog("G1000 NXi command bridge: failed to create UDP socket\n");
+    return;
+  }
+
+  setReuseAddr(listenSock_);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(registrationPort_);
+  if (::bind(listenSock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) !=
+      0) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "G1000 NXi command bridge: failed to bind UDP port %u "
+                  "(errno=%d); cockpit keys will not reach the standalone\n",
+                  static_cast<unsigned>(registrationPort_), errno);
+    BridgeLog(buf);
+    closeSocket(listenSock_);
+    listenSock_ = kInvalidSocket;
+    return;
+  }
+
+  char logBuf[160];
+  std::snprintf(logBuf, sizeof(logBuf),
+                "G1000 NXi command bridge: listening for standalone "
+                "registration on UDP %u\n",
+                static_cast<unsigned>(registrationPort_));
+  BridgeLog(logBuf);
+
+  setRecvTimeout(listenSock_, kRecvTimeoutMs);
+  thread_ = std::thread(&CommandBridge::recvLoop, this);
+  started_ = true;
 }
 
 void CommandBridge::stop() {
+  if (!started_) return;
   stop_.store(true);
   if (thread_.joinable()) thread_.join();
-  std::lock_guard<std::mutex> lock(mutex_);
-  hasClient_ = false;
+  if (listenSock_ != kInvalidSocket) {
+    closeSocket(listenSock_);
+    listenSock_ = kInvalidSocket;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    hasClient_ = false;
+  }
+  started_ = false;
+#ifdef _WIN32
+  WSACleanup();
+#endif
 }
 
 bool CommandBridge::sendEvent(const cmdbridge::Event& ev) {
@@ -105,53 +172,43 @@ bool CommandBridge::sendEvent(const cmdbridge::Event& ev) {
   return sent >= 0;
 }
 
-void CommandBridge::serverLoop() {
-#ifdef _WIN32
-  WSADATA wsa;
-  WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
+void CommandBridge::recvLoop() {
+  const std::vector<unsigned char> ack = cmdbridge::encodeAck();
+  unsigned char buf[64];
+  bool loggedFirstClient = false;
 
-  SocketHandle sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (sock != kInvalidSocket) {
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(registrationPort_);
-    if (::bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-      closeSocket(sock);
-      sock = kInvalidSocket;
-    }
-  }
-
-  if (sock != kInvalidSocket) {
-    setRecvTimeout(sock, kRecvTimeoutMs);
-    unsigned char buf[64];
-    while (!stop_.load()) {
-      sockaddr_storage src{};
+  while (!stop_.load()) {
+    sockaddr_storage src{};
 #ifdef _WIN32
-      int srcLen = sizeof(src);
-      const int n = ::recvfrom(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0,
-                               reinterpret_cast<sockaddr*>(&src), &srcLen);
+    int srcLen = sizeof(src);
+    const int n = ::recvfrom(listenSock_, reinterpret_cast<char*>(buf),
+                             sizeof(buf), 0,
+                             reinterpret_cast<sockaddr*>(&src), &srcLen);
 #else
-      socklen_t srcLen = sizeof(src);
-      const ssize_t n = ::recvfrom(sock, buf, sizeof(buf), 0,
-                                   reinterpret_cast<sockaddr*>(&src), &srcLen);
+    socklen_t srcLen = sizeof(src);
+    const ssize_t n = ::recvfrom(listenSock_, buf, sizeof(buf), 0,
+                                 reinterpret_cast<sockaddr*>(&src), &srcLen);
 #endif
-      if (n <= 0) continue;
-      if (!cmdbridge::isRegister(buf, static_cast<std::size_t>(n))) continue;
+    if (n <= 0) continue;
+    if (!cmdbridge::isRegister(buf, static_cast<std::size_t>(n))) continue;
 
-      std::lock_guard<std::mutex> lock(mutex_);
-      clientAddr_ = src;
-      clientLen_ = srcLen;
-      hasClient_ = true;
-      lastRegister_ = std::chrono::steady_clock::now();
+    ::sendto(listenSock_, reinterpret_cast<const char*>(ack.data()),
+             static_cast<int>(ack.size()), 0,
+             reinterpret_cast<sockaddr*>(&src), srcLen);
+
+    if (!loggedFirstClient) {
+      loggedFirstClient = true;
+      BridgeLog(
+          "G1000 NXi command bridge: standalone registered; cockpit keys "
+          "now forward to it\n");
     }
-    closeSocket(sock);
-  }
 
-#ifdef _WIN32
-  WSACleanup();
-#endif
+    std::lock_guard<std::mutex> lock(mutex_);
+    clientAddr_ = src;
+    clientLen_ = srcLen;
+    hasClient_ = true;
+    lastRegister_ = std::chrono::steady_clock::now();
+  }
 }
 
 }  // namespace avionics

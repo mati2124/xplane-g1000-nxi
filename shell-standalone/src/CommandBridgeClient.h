@@ -28,6 +28,14 @@ class CommandBridgeClient {
   // True once at least one event has been received from the plugin.
   bool connected() const;
 
+  // True once the plugin has acknowledged a registration datagram (the bridge
+  // is linked even before the first bezel press).
+  bool registered() const;
+
+  // True when the UDP listen socket bound successfully. When false the bridge
+  // thread exited immediately (usually the listen port is already in use).
+  bool listening() const;
+
   // Move all queued events into `out` and clear the queue. Call from the main
   // thread once per frame before applying input to the engines.
   void drainEvents(std::vector<cmdbridge::Event>& out);
@@ -42,6 +50,9 @@ class CommandBridgeClient {
   mutable std::mutex mutex_;
   std::deque<cmdbridge::Event> queue_;
   bool connected_ = false;
+  bool registered_ = false;
+  bool listening_ = false;
+  bool loggedLink_ = false;
 
   std::atomic<bool> stop_{false};
   std::thread thread_;

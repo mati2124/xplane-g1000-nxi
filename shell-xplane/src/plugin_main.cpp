@@ -1003,8 +1003,10 @@ void RegisterG1000Commands() {
   g_commandBindings.clear();
   g_customStrings.clear();
   // 2 devices x (12 softkeys + 18 named + 4 diagonal) stock + the same created.
-  g_commandBindings.reserve(256);
+  g_commandBindings.reserve(384);
   CollectDeviceCommands(g_pfd, "g1000n1", "pfd", "PFD");
+  // Copilot-side GDU keys (g1000n2) drive the same pilot PFD engine.
+  CollectDeviceCommands(g_pfd, "g1000n2", "pfd_copilot", "PFD (copilot GDU)");
   CollectDeviceCommands(g_mfd, "g1000n3", "mfd", "MFD");
   for (CommandBinding& b : g_commandBindings) {
     XPLMRegisterCommandHandler(b.cmd, &G1000CommandHandler, /*before=*/1, &b);
@@ -1015,6 +1017,7 @@ void RegisterG1000Commands() {
   g_radioBindings.clear();
   g_radioBindings.reserve(64);
   CollectRadioCommands("g1000n1");
+  CollectRadioCommands("g1000n2");
   CollectRadioCommands("g1000n3");
   CreateRadioCommands();
   for (RadioCommandBinding& b : g_radioBindings) {
@@ -1129,6 +1132,9 @@ void EnableGlassTakeover() {
   if (g_mfd.handle == nullptr) {
     RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
   }
+  // XPluginEnable already registered handlers; avoid stacking duplicates when
+  // the pilot turns display replacement back on from the Plugins menu.
+  UnregisterG1000Commands();
   RegisterG1000Commands();
 }
 
@@ -1174,6 +1180,14 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
       avionics::fpbridge::kDefaultPort);
   g_commandBridge = std::make_unique<avionics::CommandBridge>();
 
+  // Start the UDP bridges and intercept GDU commands as soon as the plugin
+  // loads. X-Plane does not always call XPluginEnable after a plugin reload
+  // (only "Loaded:" appears in Log.txt), so relying on Enable alone left the
+  // command bridge down and cockpit keys never reached the standalone shell.
+  g_flightPlanBridge->start();
+  g_commandBridge->start();
+  RegisterG1000Commands();
+
   // Restore the saved config (refresh-rate preset + durable display
   // preferences) before building the menu, so the right item starts checked
   // and the engines pick up the saved options when first created.
@@ -1190,6 +1204,9 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
 }
 
 PLUGIN_API void XPluginStop(void) {
+  UnregisterG1000Commands();
+  if (g_commandBridge) g_commandBridge->stop();
+  if (g_flightPlanBridge) g_flightPlanBridge->stop();
   DestroyRateMenu();
   ShutdownDevice(g_pfd);
   ShutdownDevice(g_mfd);
@@ -1204,8 +1221,8 @@ PLUGIN_API void XPluginStop(void) {
 PLUGIN_API int XPluginEnable(void) {
   if (g_flightPlanBridge) g_flightPlanBridge->start();
   if (g_commandBridge) g_commandBridge->start();
-  // Always intercept GDU keys so cockpit hardware can drive the standalone
-  // shell over the command bridge, even when the in-sim displays are off.
+  // Re-register after disable/re-enable so handlers are not duplicated.
+  UnregisterG1000Commands();
   RegisterG1000Commands();
   return 1;
 }

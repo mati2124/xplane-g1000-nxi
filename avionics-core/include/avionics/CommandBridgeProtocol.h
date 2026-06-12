@@ -18,6 +18,10 @@
 //   CMDR  announces the standalone's return address so the plugin knows where
 //         to send events. Re-sent periodically so a restart is picked up.
 //
+// Acknowledgement (plugin -> standalone):
+//   CMDA  confirms the plugin received the latest CMDR so the shell can tell
+//         the bridge is linked before the first bezel press.
+//
 // Events (plugin -> standalone):
 //   BTNE  one bezel key, softkey, diagonal pan, or radio-knob action.
 namespace avionics {
@@ -33,6 +37,7 @@ constexpr std::uint16_t kDefaultListenPort = 49101;
 constexpr std::int32_t kProtocolVersion = 1;
 
 constexpr char kRegisterMagic[4] = {'C', 'M', 'D', 'R'};
+constexpr char kAckMagic[4] = {'C', 'M', 'D', 'A'};
 constexpr char kEventMagic[4] = {'B', 'T', 'N', 'E'};
 
 // Wire size of one event datagram: magic(4) + version(4) + device(1) +
@@ -108,6 +113,18 @@ inline std::vector<unsigned char> encodeRegister() {
 
 inline bool isRegister(const unsigned char* data, std::size_t len) {
   return hasMagic(data, len, kRegisterMagic) && len >= 8 &&
+         getI32(data + 4) == kProtocolVersion;
+}
+
+inline std::vector<unsigned char> encodeAck() {
+  std::vector<unsigned char> out;
+  out.insert(out.end(), kAckMagic, kAckMagic + 4);
+  putI32(out, kProtocolVersion);
+  return out;
+}
+
+inline bool isAck(const unsigned char* data, std::size_t len) {
+  return hasMagic(data, len, kAckMagic) && len >= 8 &&
          getI32(data + 4) == kProtocolVersion;
 }
 

@@ -42,7 +42,15 @@ class CommandBridge {
   bool sendEvent(const cmdbridge::Event& ev);
 
  private:
-  void serverLoop();
+  void recvLoop();
+
+#ifdef _WIN32
+  using SocketHandle = SOCKET;
+  static constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
+#else
+  using SocketHandle = int;
+  static constexpr SocketHandle kInvalidSocket = -1;
+#endif
 
   std::uint16_t registrationPort_;
 
@@ -52,6 +60,8 @@ class CommandBridge {
   socklen_t clientLen_ = 0;
   std::chrono::steady_clock::time_point lastRegister_{};
 
+  bool started_ = false;
+  SocketHandle listenSock_ = kInvalidSocket;
   std::atomic<bool> stop_{false};
   std::thread thread_;
 };
