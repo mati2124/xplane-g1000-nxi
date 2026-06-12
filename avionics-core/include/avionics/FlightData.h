@@ -100,6 +100,16 @@ struct FlightData {
   float com2ActiveMhz = 119.250f;
   float com2StandbyMhz = 124.850f;
 
+  // Which COM radio is currently transmitting (active frequency shown green).
+  bool com1Transmitting = true;
+  bool com2Transmitting = false;
+
+  // Decoded Morse identifier of the active NAV station (up to 3 chars, e.g.
+  // "PSP"), shown to the right of the active NAV frequency. Empty when no
+  // station is being received.
+  std::string nav1Ident;
+  std::string nav2Ident;
+
   // Active CDI navigation source, annunciated on the HSI.
   CdiSource cdiSource = CdiSource::Gps;
 
@@ -194,18 +204,18 @@ struct FlightData {
   float windDirectionDeg = 0.0f;
   float windSpeedKts = 0.0f;
 
-  // FMA (center of the top NAV/COM bar): active leg, lateral/vertical modes.
+  // FMA (center NavCom panel): active leg, lateral/vertical modes.
   std::string fmaFromWpt;
   std::string fmaToWpt = "KFMY";
   float fmaLegDistanceNm = 12.4f;
   float fmaLegBearingDeg = 315.0f;
-  std::string fmaLateralActive = "GPS";
-  std::string fmaLateralArmed;
-  std::string fmaVerticalActive = "ALT";
+  std::string fmaLateralActive = "HDG";
+  std::string fmaLateralArmed = "GPS";
+  std::string fmaVerticalActive = "VS";
   std::string fmaVerticalArmed = "ALTS";
   std::string fmaVerticalApproachArmed;
-  int fmaVerticalValue = 6000;
-  std::string fmaVerticalUnits = "FT";
+  int fmaVerticalValue = 500;
+  std::string fmaVerticalUnits = "FPM";
   bool apEngaged = true;
   bool ydEngaged = true;
 

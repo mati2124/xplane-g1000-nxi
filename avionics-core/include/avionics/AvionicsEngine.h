@@ -21,16 +21,13 @@ enum class DisplayPage {
 // ScreenState leaves INIT. The logo is held while LRUs boot; 3s is a
 // representative minimum before the Power-up Page cross-fade begins.
 inline constexpr double kBootLogoSeconds = 3.0;
-// MFD Power-up Page opacity ramp (StartupLogo.css: transition opacity 2s
-// ease-in-out on .startup-confirm-screen).
+// MFD Power-up Page / PFD init opacity ramp (StartupLogo.css: transition opacity
+// 2s ease-in-out on .startup-confirm-screen).
 inline constexpr double kBootPowerUpFadeSeconds = 2.0;
-// After the fade completes, "INITIALIZING SYSTEM" is shown at full opacity
-// before the ENT acknowledgement prompt (live) or auto-advance (mock).
-inline constexpr double kBootInitSeconds = 2.0;
 // Total animated power-up before the unit is either live (mock) or awaiting the
 // ENT acknowledgement (live sim link).
 inline constexpr double kBootDurationSeconds =
-    kBootLogoSeconds + kBootPowerUpFadeSeconds + kBootInitSeconds;
+    kBootLogoSeconds + kBootPowerUpFadeSeconds;
 
 // Ties a DataSource and a Renderer together and owns the screen state machine
 // (boot -> live page / connection-lost). Both shells construct one of these and

@@ -33,10 +33,12 @@ add_library(avionics-core STATIC
   src/render/mfd/MultiFunctionDisplay.cpp
   src/nav/AptDatParser.cpp
   src/nav/AptDatGeometryCache.cpp
+  src/nav/FmsWaypointEntry.cpp
   src/nav/CifpParser.cpp
   src/nav/OpenAirParser.cpp
   src/nav/Terrain.cpp
   src/nav/WeatherRadar.cpp
+  src/nav/NexradWeatherRadar.cpp
   src/render/map/MapProjection.cpp
   src/render/map/MapSymbols.cpp
   src/render/map/MapView.cpp

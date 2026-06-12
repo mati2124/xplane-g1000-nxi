@@ -1,6 +1,7 @@
 #include "avionics/SoftkeyController.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 
@@ -373,6 +374,13 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
     windowAnim_[w] = approach(windowAnim_[w], target, dt / kWindowAnimSeconds);
   }
 
+  // The Direct-To window (bezel-key driven) eases the same way. Cache the map
+  // snapshot and the active waypoint so the window can resolve idents and seed
+  // its default destination.
+  mapData_ = &map;
+  activeWaypoint_ = data.fmaToWpt;
+  dtoAnim_ = approach(dtoAnim_, dtoOpen_ ? 1.0f : 0.0f, dt / kWindowAnimSeconds);
+
   // ~1 Hz blink phase for flashing annunciations (Alerts softkey, Baro
   // Transition Alert): on for the first half of each second.
   blinkSeconds_ += dtSeconds;
@@ -382,6 +390,16 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
   // then settles solid (Working Title NXi armed-border behavior).
   if (radioArmedSeconds_ > 0.0) {
     radioArmedSeconds_ = std::max(0.0, radioArmedSeconds_ - dtSeconds);
+  }
+
+  if (radioXferAnimActive_) {
+    radioXferAnim_.progress =
+        static_cast<float>(radioXferAnim_.progress +
+                           dtSeconds / kRadioTransferAnimSeconds);
+    if (radioXferAnim_.progress >= 1.0f) {
+      radioXferAnimActive_ = false;
+      radioXferAnim_.progress = 1.0f;
+    }
   }
 
   // Generic timer and the IDNT annunciation countdown.
@@ -417,6 +435,207 @@ void SoftkeyController::toggleWindow(PfdWindow w) {
   if (window_ == PfdWindow::Setup) setupCursor_ = PfdSetupField::PfdMode;
 }
 
+// ---- Direct-To window ----
+
+void SoftkeyController::directToOpen() {
+  dtoOpen_ = true;
+  dtoArmed_ = false;
+  // Close any open softkey pop-up so the Direct-To window does not overlap it.
+  window_ = PfdWindow::None;
+  // The destination defaults to the active flight-plan waypoint (Pilot's Guide:
+  // the field defaults to the active waypoint, or blank with no flight plan).
+  dtoEntry_.open(navSource_, mapData_, activeWaypoint_);
+}
+
+bool SoftkeyController::directToBezelKey(BezelKey key) {
+  if (!dtoOpen_) {
+    if (key != BezelKey::DirectTo) return false;
+    directToOpen();
+    return true;
+  }
+
+  // Pressing Direct-To again, CLR, or pushing the knob closes the window.
+  if (key == BezelKey::Clr || key == BezelKey::FmsPush ||
+      key == BezelKey::DirectTo) {
+    dtoOpen_ = false;
+    dtoArmed_ = false;
+    dtoEntry_.reset();
+    return true;
+  }
+
+  // Armed: the Activate? prompt is highlighted; ENT engages the direct course.
+  if (dtoArmed_) {
+    if (key == BezelKey::Ent) {
+      dtoRequestTarget_.lat = dtoEntry_.match.lat;
+      dtoRequestTarget_.lon = dtoEntry_.match.lon;
+      dtoRequestTarget_.id = dtoEntry_.match.id;
+      dtoRequestPending_ = true;
+      dtoOpen_ = false;
+      dtoArmed_ = false;
+      dtoEntry_.reset();
+    }
+    return true;
+  }
+
+  // Entering the destination identifier.
+  switch (key) {
+    case BezelKey::Ent:
+      // First ENT confirms the waypoint and arms Activate? (an unknown ident
+      // keeps the window open so it can be corrected).
+      if (dtoEntry_.chars.empty()) {
+        break;
+      } else if (dtoEntry_.hasMatch) {
+        dtoEntry_.active = false;
+        dtoArmed_ = true;
+      } else {
+        dtoEntry_.notFound = true;
+      }
+      break;
+    case BezelKey::FmsInnerCw:
+      dtoEntry_.turnChar(navSource_, mapData_, +1);
+      break;
+    case BezelKey::FmsInnerCcw:
+      dtoEntry_.turnChar(navSource_, mapData_, -1);
+      break;
+    case BezelKey::FmsOuterCw:
+      dtoEntry_.moveCursor(navSource_, mapData_, +1);
+      break;
+    case BezelKey::FmsOuterCcw:
+      dtoEntry_.moveCursor(navSource_, mapData_, -1);
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
+bool SoftkeyController::directToHasGeo() const {
+  return dtoEntry_.hasMatch && mapData_ != nullptr && mapData_->positionValid;
+}
+
+float SoftkeyController::directToBearingDeg() const {
+  if (!directToHasGeo()) return 0.0f;
+  return static_cast<float>(navBearingDeg(mapData_->ownshipLat,
+                                          mapData_->ownshipLon,
+                                          dtoEntry_.match.lat,
+                                          dtoEntry_.match.lon));
+}
+
+float SoftkeyController::directToDistanceNm() const {
+  if (!directToHasGeo()) return 0.0f;
+  return static_cast<float>(navDistanceNm(mapData_->ownshipLat,
+                                          mapData_->ownshipLon,
+                                          dtoEntry_.match.lat,
+                                          dtoEntry_.match.lon));
+}
+
+bool SoftkeyController::consumeDirectToRequest(MapLeg& out) {
+  if (!dtoRequestPending_) return false;
+  dtoRequestPending_ = false;
+  out = dtoRequestTarget_;
+  return true;
+}
+
+namespace {
+
+int approachTypeRank(const std::string& type) {
+  if (type == "ILS") return 0;
+  if (type == "LOC") return 1;
+  if (type == "RNA") return 2;
+  if (type == "VOR") return 3;
+  if (type == "NDB") return 4;
+  return 5;  // VFR
+}
+
+std::string normalizeApproachPrefix(const std::string& name) {
+  if (name.size() < 3) return {};
+  std::string prefix = name.substr(0, 3);
+  for (char& c : prefix) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+  if (prefix == "ILS" || prefix == "LOC" || prefix == "RNA" ||
+      prefix == "VOR" || prefix == "NDB") {
+    return prefix;
+  }
+  return {};
+}
+
+std::string approachTypeFromKind(const std::string& kind) {
+  if (kind == "I") return "ILS";
+  if (kind == "L") return "LOC";
+  if (kind == "R") return "RNA";
+  if (kind == "V") return "VOR";
+  if (kind == "N") return "NDB";
+  return {};
+}
+
+// Best approach on the longest runway, matching WT NearestStore priority.
+std::string bestApproachType(const std::vector<MapProcedure>& procedures) {
+  std::string best = "VFR";
+  for (const MapProcedure& proc : procedures) {
+    std::string candidate = normalizeApproachPrefix(proc.name);
+    if (candidate.empty()) candidate = approachTypeFromKind(proc.approachKind);
+    if (candidate.empty()) continue;
+    if (approachTypeRank(candidate) < approachTypeRank(best)) {
+      best = std::move(candidate);
+    }
+  }
+  return best;
+}
+
+int contactFreqRank(AirportCommService service) {
+  switch (service) {
+    case AirportCommService::Tower:
+      return 0;
+    case AirportCommService::Unicom:
+      return 1;
+    default:
+      return 99;
+  }
+}
+
+const char* contactFreqLabel(AirportCommService service) {
+  switch (service) {
+    case AirportCommService::Tower:
+      return "TOWER";
+    case AirportCommService::Unicom:
+      return "UNICOM";
+    default:
+      return "MULTICOM";
+  }
+}
+
+void pickContactFrequency(const std::vector<MapAirportFrequency>& frequencies,
+                          float& mhzOut, std::string& labelOut) {
+  mhzOut = 0.0f;
+  labelOut.clear();
+  const MapAirportFrequency* best = nullptr;
+  int bestRank = 99;
+  for (const MapAirportFrequency& freq : frequencies) {
+    if (freq.mhz <= 0.0f) continue;
+    const int rank = contactFreqRank(freq.service);
+    if (rank < bestRank) {
+      bestRank = rank;
+      best = &freq;
+    } else if (rank == bestRank && best == nullptr) {
+      best = &freq;
+    }
+  }
+  if (best == nullptr) {
+    for (const MapAirportFrequency& freq : frequencies) {
+      if (freq.mhz > 0.0f) {
+        best = &freq;
+        break;
+      }
+    }
+  }
+  if (best == nullptr) return;
+  mhzOut = best->mhz;
+  labelOut = contactFreqLabel(best->service);
+}
+
+}  // namespace
+
 void SoftkeyController::rebuildNearest(const MapData& map) {
   nearest_.clear();
   if (!map.positionValid) {
@@ -433,8 +652,27 @@ void SoftkeyController::rebuildNearest(const MapData& map) {
     a.distanceNm = static_cast<float>(distNm);
     a.bearingDeg = static_cast<float>(
         navBearingDeg(map.ownshipLat, map.ownshipLon, f.lat, f.lon));
-    a.frequencyMhz = f.frequency;
     a.longestRunwayFt = f.longestRunwayFt;
+    a.airportTowered = f.airportTowered;
+    a.airportServiced = f.airportServiced;
+    a.airportKind = f.airportKind;
+    if (navSource_ != nullptr && navSource_->ready()) {
+      pickContactFrequency(navSource_->airportFrequencies(f.id), a.frequencyMhz,
+                           a.comLabel);
+      a.approachType = bestApproachType(navSource_->proceduresForAirport(
+          f.id, ProcedureType::Approach));
+      if (a.approachType == "VFR") {
+        for (const MapApproach& ap : navSource_->approachesForAirport(f.id)) {
+          const std::string ils = ap.hasGlideslope ? "ILS" : "LOC";
+          if (approachTypeRank(ils) < approachTypeRank(a.approachType)) {
+            a.approachType = ils;
+          }
+        }
+      }
+    } else {
+      a.frequencyMhz = f.frequency;
+      a.approachType = "VFR";
+    }
     nearest_.push_back(std::move(a));
   }
   std::sort(nearest_.begin(), nearest_.end(),
@@ -580,6 +818,11 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
   const int i = static_cast<int>(key);
   if (i < 0 || i >= kBezelKeyCount) return;
   bezelPress_[i] = 1.0f;  // trigger the press-flash animation
+
+  // The Direct-To window is modal over the FMS knob: opened by the Direct-To
+  // key, it owns the knob / ENT / CLR until it is closed or activated.
+  if (directToBezelKey(key)) return;
+
   if (key == BezelKey::RangeUp) {
     insetRangeIndex_ = std::min(kMapRangeLadderCount - 1, insetRangeIndex_ + 1);
     return;
@@ -1072,6 +1315,13 @@ void SoftkeyController::rebuildAlerts(const FlightData& data) {
     if (data.*(m.condition)) annunciations_.push_back({m.text, m.level});
   }
 
+  // Built-in demo feed: keep a persistent banner in the always-on CAS window so
+  // it is obvious the displays are not driven by the sim, and how to leave it.
+  if (demoBanner_) {
+    annunciations_.push_back({"DEMO MODE", AlertLevel::Caution});
+    annunciations_.push_back({"ESC TO EXIT", AlertLevel::Advisory});
+  }
+
   // Real crew alerting stacks the highest-severity messages at the top
   // (warnings, then cautions, then advisories). stable_sort keeps the relative
   // order within each level the one defined above.
@@ -1145,6 +1395,46 @@ float SoftkeyController::standbyMhzFor(RadioUnit unit,
   return d.nav1StandbyMhz;
 }
 
+namespace {
+float activeMhzFor(RadioUnit unit, const FlightData& d) {
+  switch (unit) {
+    case RadioUnit::Nav1:
+      return d.nav1ActiveMhz;
+    case RadioUnit::Nav2:
+      return d.nav2ActiveMhz;
+    case RadioUnit::Com1:
+      return d.com1ActiveMhz;
+    case RadioUnit::Com2:
+      return d.com2ActiveMhz;
+  }
+  return d.nav1ActiveMhz;
+}
+
+int radioDecimals(RadioUnit unit) {
+  return (unit == RadioUnit::Com1 || unit == RadioUnit::Com2) ? 3 : 2;
+}
+}  // namespace
+
+float SoftkeyController::radioTransferAnim(RadioUnit unit) const {
+  if (!radioXferAnimActive_ || radioXferAnim_.unit != unit) return 0.0f;
+  return radioXferAnim_.progress;
+}
+
+float SoftkeyController::radioTransferFromActive(RadioUnit unit) const {
+  if (radioXferAnim_.unit != unit) return 0.0f;
+  return radioXferAnim_.fromActiveMhz;
+}
+
+float SoftkeyController::radioTransferFromStandby(RadioUnit unit) const {
+  if (radioXferAnim_.unit != unit) return 0.0f;
+  return radioXferAnim_.fromStandbyMhz;
+}
+
+int SoftkeyController::radioTransferDecimals(RadioUnit unit) const {
+  if (radioXferAnim_.unit != unit) return 2;
+  return radioXferAnim_.decimals;
+}
+
 void SoftkeyController::setStandbyMhzFor(RadioUnit unit, float mhz) {
   radioTuneUnit_ = unit;
   radioTuneMhz_ = mhz;
@@ -1156,10 +1446,17 @@ void SoftkeyController::queueRadioTune(RadioUnit unit, float standbyMhz) {
   armRadioBand(radioBandOf(unit));
 }
 
-void SoftkeyController::queueRadioTransfer(RadioUnit unit) {
+void SoftkeyController::queueRadioTransfer(RadioUnit unit,
+                                            const FlightData& d) {
   radioTransferUnit_ = unit;
   radioTransferPending_ = true;
   armRadioBand(radioBandOf(unit));
+  radioXferAnim_.unit = unit;
+  radioXferAnim_.progress = 0.0f;
+  radioXferAnim_.fromActiveMhz = activeMhzFor(unit, d);
+  radioXferAnim_.fromStandbyMhz = standbyMhzFor(unit, d);
+  radioXferAnim_.decimals = radioDecimals(unit);
+  radioXferAnimActive_ = true;
 }
 
 void SoftkeyController::armRadioBand(RadioBand band) {
@@ -1220,9 +1517,13 @@ void SoftkeyController::tuneNav(int direction, bool coarse, const FlightData& d)
   queueRadioTune(navSelected_, next);
 }
 
-void SoftkeyController::transferCom() { queueRadioTransfer(comSelected_); }
+void SoftkeyController::transferCom(const FlightData& d) {
+  queueRadioTransfer(comSelected_, d);
+}
 
-void SoftkeyController::transferNav() { queueRadioTransfer(navSelected_); }
+void SoftkeyController::transferNav(const FlightData& d) {
+  queueRadioTransfer(navSelected_, d);
+}
 
 bool SoftkeyController::radioBezelKey(BezelKey key, const FlightData& d) {
   if (!canUseRadioBezel()) return false;
@@ -1232,7 +1533,7 @@ bool SoftkeyController::radioBezelKey(BezelKey key, const FlightData& d) {
       cycleRadioSelect();
       return true;
     case BezelKey::Ent:
-      queueRadioTransfer(radioSelected_);
+      queueRadioTransfer(radioSelected_, d);
       return true;
     case BezelKey::FmsInnerCw:
     case BezelKey::FmsInnerCcw: {

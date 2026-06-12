@@ -57,8 +57,9 @@ void drawAirportSymbol(Renderer& r, float x, float y, float s, const Color& c,
     r.fillCircle(x, y, rad, c);
     strokeCircle(r, x, y, rad, 1.2f, colors::kMapSymbolOutline);
     const char* glyph = kind == AirportFacilityKind::Heliport ? "H" : "R";
-    r.fillText(x, y + s * 0.42f, glyph, s * 1.25f, TextAlign::Center,
-               colors::kWhite);
+    // fillText is vertically centered (NVG_ALIGN_MIDDLE), so the glyph centers
+    // on the circle's center; size it to sit inside the disc (diameter 1.7*s).
+    r.fillText(x, y, glyph, s * 1.2f, TextAlign::Center, colors::kWhite);
     return;
   }
 

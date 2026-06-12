@@ -8,6 +8,16 @@ namespace avionics {
 
 enum class TextAlign { Left, Center, Right };
 
+// Axis-aligned bounds of text as it would be drawn by fillText at (x, y).
+struct TextRect {
+  float left = 0.0f;
+  float top = 0.0f;
+  float right = 0.0f;
+  float bottom = 0.0f;
+  float width() const { return right - left; }
+  float height() const { return bottom - top; }
+};
+
 // Selectable text face. Default is the primary UI font (Roboto, matching the
 // Working Title G1000 NXi). DejaVuSemiBold is the bundled secondary face used
 // where a closer match to the real unit's display typeface is wanted (e.g. the
@@ -138,6 +148,22 @@ class Renderer {
   // text will be drawn with so the measured width and the draw agree.
   virtual float measureTextWidth(const std::string& text, float sizePx,
                                  FontFace face = FontFace::Default) = 0;
+
+  // Pixel bounds of `text` drawn at (x, y) with the given alignment and face.
+  // Backends without font metrics may approximate from measureTextWidth.
+  virtual TextRect measureTextRect(float x, float y, const std::string& text,
+                                   float sizePx, TextAlign align,
+                                   FontFace face = FontFace::Default) {
+    const float w = measureTextWidth(text, sizePx, face);
+    float left = x;
+    if (align == TextAlign::Center) {
+      left = x - w * 0.5f;
+    } else if (align == TextAlign::Right) {
+      left = x - w;
+    }
+    const float halfH = sizePx * 0.40f;
+    return {left, y - halfH, left + w, y + halfH};
+  }
 };
 
 // RAII guard that pushes a default-font-face override for its lifetime, so all

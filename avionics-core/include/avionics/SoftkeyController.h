@@ -5,7 +5,9 @@
 #include <vector>
 
 #include "avionics/FlightData.h"
+#include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
+#include "avionics/NavFeatureSource.h"
 #include "avionics/MapRange.h"
 #include "avionics/Radio.h"
 #include "avionics/render/BezelKeys.h"
@@ -38,6 +40,16 @@ struct NearestAirport {
   float distanceNm = 0.0f;
   float frequencyMhz = 0.0f;  // 0 = unknown (shown dashed)
   int longestRunwayFt = 0;    // 0 = unknown (shown dashed)
+  // Map-symbol attributes for the waypoint icon (towered = cyan, else magenta).
+  bool airportTowered = false;
+  bool airportServiced = false;
+  AirportFacilityKind airportKind = AirportFacilityKind::Land;
+  // Primary contact frequency label (TOWER / UNICOM / MULTICOM), empty when
+  // none is published.
+  std::string comLabel;
+  // Best available approach on the longest runway (ILS, LOC, RNA, VOR, NDB,
+  // or VFR when none), per the WT NearestStore priority.
+  std::string approachType;
 };
 
 // The softkey bar is a menu stack: the root (top-level) menu can open submenus,
@@ -277,12 +289,48 @@ class SoftkeyController {
                             kTempCompFtPerCPer1000Ft;
   }
 
+  // Nav database for airport comm frequencies and approach types (Nearest
+  // Airports window, Fig. 5-28). Optional; fields dash when unset.
+  void setNavFeatureSource(const NavFeatureSource* source) {
+    navSource_ = source;
+  }
+
   // ---- Nearest Airports window state ----
   const std::vector<NearestAirport>& nearestAirports() const {
     return nearest_;
   }
   // Index of the FMS-cursor-selected entry in nearestAirports().
   int nearestCursor() const { return nearestCursor_; }
+
+  // ---- Direct-To window (Direct-To bezel key) ----
+  // The GPS Direct-To window (Pilot's Guide Fig. 5-45, "Direct-to Window -
+  // PFD"): the Direct-To key opens it over the PFD, pre-filled with the active
+  // flight-plan waypoint. The FMS knob spells the destination ident; the first
+  // ENT confirms the waypoint and arms Activate?, the second ENT engages the
+  // direct course. CLR (or the knob push) cancels the window.
+  bool directToWindowOpen() const { return dtoOpen_; }
+  // 0..1 open progress for the slide+fade animation (1 fully open, eases back
+  // to 0 on close so the window animates out as well as in).
+  float directToWindowAnim() const { return dtoAnim_; }
+  bool directToEntryActive() const { return dtoEntry_.active; }
+  std::string directToIdent() const { return dtoEntry_.ident(); }
+  int directToCursor() const { return dtoEntry_.pos; }
+  int directToTypedCount() const { return dtoEntry_.typedCount(); }
+  bool directToNotFound() const { return dtoEntry_.notFound; }
+  bool directToHasMatch() const { return dtoEntry_.hasMatch; }
+  const MapFeature& directToMatch() const { return dtoEntry_.match; }
+  // Geographic readouts (Pilot's Guide Fig. 5-45 BRG/DIS/CRS): bearing,
+  // distance, and the GPS desired course (equal to the bearing until the
+  // direct-to is activated) from the present position to the resolved waypoint.
+  // Valid only when a match and ownship position are both available.
+  bool directToHasGeo() const;
+  float directToBearingDeg() const;
+  float directToDistanceNm() const;
+  // True once the waypoint is confirmed and the Activate? prompt is armed.
+  bool directToArmed() const { return dtoArmed_; }
+  // Activation latch for the shell: true once after ENT on Activate?, copying
+  // out the target waypoint so the shell engages the direct course.
+  bool consumeDirectToRequest(MapLeg& out);
 
   // ---- PFD Setup Menu state ----
   // FMS-cursor field currently highlighted in the PFD Setup Menu.
@@ -318,6 +366,11 @@ class SoftkeyController {
   const std::vector<AlertMessage>& annunciations() const {
     return annunciations_;
   }
+
+  // When active, a persistent advisory annunciation is added to the always-on
+  // CAS window telling the pilot the displays are running on the built-in demo
+  // feed and how to leave it. Set by the standalone shell's demo-feed toggle.
+  void setDemoBanner(bool active) { demoBanner_ = active; }
 
   // Which softkey menu is currently displayed (top of the menu stack).
   SoftkeyMenu currentMenu() const { return menuStack_.back(); }
@@ -377,8 +430,11 @@ class SoftkeyController {
   // selected radio, the small knob steps its standby frequency, and ENT swaps
   // active and standby (the cyan transfer arrow). Returns true when consumed.
   bool radioBezelKey(BezelKey key, const FlightData& d);
-  // True when no pop-up window is using the FMS knob on the PFD.
-  bool canUseRadioBezel() const { return window_ == PfdWindow::None; }
+  // True when no pop-up window or the Direct-To window is using the FMS knob on
+  // the PFD.
+  bool canUseRadioBezel() const {
+    return window_ == PfdWindow::None && !dtoOpen_;
+  }
   RadioUnit radioSelected() const { return radioSelected_; }
 
   // Dedicated NAV/COM tuning knobs (the real GDU has a COM knob and a NAV knob,
@@ -391,8 +447,8 @@ class SoftkeyController {
   void selectNav();
   void tuneCom(int direction, bool coarse, const FlightData& d);
   void tuneNav(int direction, bool coarse, const FlightData& d);
-  void transferCom();
-  void transferNav();
+  void transferCom(const FlightData& d);
+  void transferNav(const FlightData& d);
 
   // Currently selected COM and NAV unit (each side's cyan tuning cursor).
   RadioUnit comSelected() const { return comSelected_; }
@@ -403,6 +459,12 @@ class SoftkeyController {
   // armed and draws it solid otherwise.
   RadioBand radioArmedBand() const { return this->radioArmedBand_; }
   bool radioArmed() const { return radioArmedSeconds_ > 0.0; }
+
+  // Active/standby transfer slide animation (0..1 for `unit`, 0 when idle).
+  float radioTransferAnim(RadioUnit unit) const;
+  float radioTransferFromActive(RadioUnit unit) const;
+  float radioTransferFromStandby(RadioUnit unit) const;
+  int radioTransferDecimals(RadioUnit unit) const;
 
   // Transponder commits for the sim feed. Mode values use the X-Plane
   // transponder_mode enum (off=0, stdby=1, on=2, alt=3).
@@ -427,6 +489,11 @@ class SoftkeyController {
   // Rebuild the Nearest Airports list from the map snapshot (airports sorted
   // by distance from ownship).
   void rebuildNearest(const MapData& map);
+  // Direct-To window (Direct-To bezel key): open the window seeded with the
+  // active waypoint, then route the FMS knob / ENT / CLR while it is open.
+  // Returns true when the key was consumed by the Direct-To window.
+  bool directToBezelKey(BezelKey key);
+  void directToOpen();
   // Advance the Selected Altitude alerting state machine (Pilot's Guide,
   // Altitude Alerting).
   void updateAltAlert(double dtSeconds, const FlightData& data);
@@ -451,7 +518,7 @@ class SoftkeyController {
   float standbyMhzFor(RadioUnit unit, const FlightData& d) const;
   void setStandbyMhzFor(RadioUnit unit, float mhz);
   void queueRadioTune(RadioUnit unit, float standbyMhz);
-  void queueRadioTransfer(RadioUnit unit);
+  void queueRadioTransfer(RadioUnit unit, const FlightData& d);
   void cycleRadioSelect();
   // Flash the given band's tuning cursor for kRadioArmedSeconds.
   void armRadioBand(RadioBand band);
@@ -493,6 +560,9 @@ class SoftkeyController {
   std::array<float, kPfdWindowCount> windowAnim_{};
   std::vector<AlertMessage> alerts_;
   std::vector<AlertMessage> annunciations_;
+  // Demo-feed banner: when set, rebuildAlerts() injects a persistent advisory
+  // into the always-on CAS window (see setDemoBanner()).
+  bool demoBanner_ = false;
 
   // Timer/References window state: FMS cursor, generic timer, V-speed bug
   // enables (all on by default, like the delivered unit), and minimums.
@@ -507,9 +577,23 @@ class SoftkeyController {
   float minsAltFt_ = 0.0f;
   float minsTempC_ = kMinsTempDefaultC;
 
+  const NavFeatureSource* navSource_ = nullptr;
+
   // Nearest Airports window: distance-sorted list and the FMS cursor index.
   std::vector<NearestAirport> nearest_;
   int nearestCursor_ = 0;
+
+  // Direct-To window state. Latest map snapshot (for ident lookups / geographic
+  // readouts) and the active flight-plan waypoint (the default destination) are
+  // cached each update().
+  const MapData* mapData_ = nullptr;
+  std::string activeWaypoint_;
+  bool dtoOpen_ = false;
+  float dtoAnim_ = 0.0f;   // 0..1 open progress, eased by update()
+  bool dtoArmed_ = false;  // waypoint confirmed, Activate? highlighted
+  FmsWaypointEntry dtoEntry_;
+  bool dtoRequestPending_ = false;
+  MapLeg dtoRequestTarget_;
 
   // PFD Setup Menu state: the highlighted field plus each row's backlight
   // target, mode, and intensity. Backlighting has no visible effect in this
@@ -548,6 +632,18 @@ class SoftkeyController {
   static constexpr double kRadioArmedSeconds = 5.0;
   RadioBand radioArmedBand_ = RadioBand::None;
   double radioArmedSeconds_ = 0.0;
+
+  // Brief slide when active and standby swap (Pilot's Guide flip-flop).
+  struct RadioXferAnim {
+    RadioUnit unit = RadioUnit::Nav1;
+    float progress = 0.0f;
+    float fromActiveMhz = 0.0f;
+    float fromStandbyMhz = 0.0f;
+    int decimals = 2;
+  };
+  static constexpr double kRadioTransferAnimSeconds = 0.30;
+  bool radioXferAnimActive_ = false;
+  RadioXferAnim radioXferAnim_{};
 
   // Selected Altitude alerting state: phase, remaining flash time for the
   // current phase's five-second flash, and the reference the alerter was last

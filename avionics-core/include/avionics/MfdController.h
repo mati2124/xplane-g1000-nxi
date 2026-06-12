@@ -7,6 +7,7 @@
 
 #include "avionics/Checklist.h"
 #include "avionics/FlightData.h"
+#include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
 #include "avionics/MapRange.h"
 #include "avionics/NavFeatureSource.h"
@@ -222,9 +223,20 @@ class MfdController {
 
   // Number of pages in a group and the index of the page currently selected
   // within the active group (the FMS rocker / repeated group-softkey presses
-  // step it, like the small FMS knob).
-  static int pageCount(MfdPageGroup group);
+  // step it, like the small FMS knob). The MAP group drops its Weather Radar
+  // page when the airframe is not equipped (see setWeatherRadarAvailable), so
+  // this depends on instance state and is not static.
+  int pageCount(MfdPageGroup group) const;
   int pageIndex() const;
+
+  // Whether the airframe carries an airborne weather radar. When false, the
+  // dedicated MAP - Weather Radar page is removed from the page rotation (the
+  // real unit only lists it on radar-equipped installations); the NEXRAD map
+  // overlay is unaffected. The shell sets this from the sim (the X-Plane plugin
+  // probes the radar return texture). Defaults to true so the standalone shell
+  // and unit tests keep the page.
+  void setWeatherRadarAvailable(bool available);
+  bool weatherRadarAvailable() const { return weatherRadarAvailable_; }
   // The specific page on screen, resolved from the group + page index.
   MfdPage page() const;
 
@@ -315,27 +327,12 @@ class MfdController {
   bool checklistItemChecked(int checklistIndex, int itemIndex) const;
 
   // ---- FMS waypoint identifier entry ----
-  // Shared character-entry state for the FPL insert window and the Direct-To
-  // window (Pilot's Guide, "Using the FMS Knob to enter data"): the small knob
-  // selects the character under the cursor, the large knob moves the cursor,
-  // and the database spell-ahead completes the typed prefix.
-  struct FmsWaypointEntry {
-    bool active = false;
-    std::string chars;     // typed characters, contiguous from cell 0
-    int pos = 0;           // cell under the entry cursor
-    std::string autofill;  // full database ident completing the prefix
-    MapFeature match;
-    bool hasMatch = false;
-    bool notFound = false;
-
-    // The displayed identifier: the spell-ahead completion when present, else
-    // the typed prefix.
-    std::string ident() const { return autofill.empty() ? chars : autofill; }
-    int typedCount() const { return static_cast<int>(chars.size()); }
-  };
+  // The character-entry state for the FPL insert window, the Direct-To window,
+  // and the Waypoint pages is the shared avionics::FmsWaypointEntry (also used
+  // by the PFD's Direct-To window), so entry behaves identically everywhere.
 
   // Longest identifier enterable (covers ICAO airports, navaids, fixes).
-  static constexpr int kFplEntryMaxChars = 6;
+  static constexpr int kFplEntryMaxChars = FmsWaypointEntry::kMaxChars;
 
   // ---- Active Flight Plan page (FPL group) ----
   // The G1000 flight-plan editing flow (Pilot's Guide for Cessna Nav III,
@@ -624,18 +621,6 @@ class MfdController {
   // ENT: parse the digits and set (or clear, when 0) the leg's constraint.
   void fplAltEntryCommit();
 
-  // ---- shared FMS waypoint entry helpers (FPL insert + Direct-To) ----
-  // Open a fresh entry, optionally seeded with an initial identifier.
-  void entryOpen(FmsWaypointEntry& e, const std::string& initial = "");
-  // Small knob: step the character under the cursor (blank starts at K).
-  void entryTurnChar(FmsWaypointEntry& e, int step);
-  // Large knob: move the character cursor, adopting the auto-filled character
-  // into the typed prefix when stepping right.
-  void entryMoveCursor(FmsWaypointEntry& e, int step);
-  // Recompute the spell-ahead auto-fill + matched waypoint for the typed
-  // prefix, from the nav database (or the nearby map features without one).
-  void entryUpdateAutofill(FmsWaypointEntry& e);
-
   // ---- Direct-To ----
   // Direct-To bezel-key handling (open the window, route keys while open).
   // Returns true when the key was consumed by the Direct-To window.
@@ -672,6 +657,9 @@ class MfdController {
   AirwayDisplay airways_ = AirwayDisplay::Off;
   bool showTraffic_ = false;
   bool showWeather_ = false;
+  // Airframe radar fit; gates the MAP - Weather Radar page (see
+  // setWeatherRadarAvailable). Defaults to available.
+  bool weatherRadarAvailable_ = true;
   MapDetail detail_ = MapDetail::All;
   MapOrientation mapOrientation_ = MapOrientation::NorthUp;
 

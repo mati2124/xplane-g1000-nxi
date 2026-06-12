@@ -109,6 +109,16 @@ void DatarefWeatherRadar::syncFromController(const MfdController& ui) {
 void DatarefWeatherRadar::update(double dtSeconds) {
   mode_ = weatherMode_ ? XPLMGetDatai(weatherMode_) : 0;
 
+  // Detect the airframe's radar fit. The sim only hands out the radar return
+  // texture for aircraft configured with a weather radar in PlaneMaker, so a
+  // valid texture id means this airframe is equipped. Latched so the answer is
+  // stable regardless of the current radar mode (resetEquipment clears it on an
+  // aircraft change). Requires a current GL context, which the avionics draw
+  // path that calls update() always has.
+  if (!equipped_ && XPLMGetTexture(xplm_Tex_Radar_Pilot) > 0) {
+    equipped_ = true;
+  }
+
   if (mapRangeSelector_) {
     rangeNm_ = rangeFromSelector(XPLMGetDatai(mapRangeSelector_));
   } else {

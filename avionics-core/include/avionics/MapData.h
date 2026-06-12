@@ -332,9 +332,15 @@ struct MapData {
   // (the map then keeps its plain black background).
   const TerrainSource* terrain = nullptr;
 
-  // Optional weather-radar / NEXRAD precipitation source for the map overlay.
-  // Owned by the DataSource (not this struct); null when unavailable.
+  // Optional onboard weather-radar source (the dedicated MFD Weather Radar
+  // page, and the map NEXRAD overlay when no datalink source is wired). Owned by
+  // the DataSource (not this struct); null when unavailable.
   const WeatherRadarSource* weather = nullptr;
+
+  // Optional datalink NEXRAD source for the map precipitation overlay (real
+  // ground weather radar). When set the overlay prefers this over `weather`.
+  // Owned by the DataSource; null when unavailable.
+  const WeatherRadarSource* nexrad = nullptr;
 };
 
 }  // namespace avionics

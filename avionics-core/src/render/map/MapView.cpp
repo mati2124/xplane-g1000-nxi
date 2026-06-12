@@ -26,6 +26,11 @@ constexpr float kWtCanvasHeight = 768.0f;
 // ballooning on the larger viewport.
 constexpr float kFeatureSymbolWt = 8.0f;
 
+// Ownship airplane symbol size, in the same 768-px-canvas units. The G1000 NXi
+// ownship icon is drawn noticeably larger than the nav-feature symbols so the
+// aircraft stands out from the airports/navaids it overflies.
+constexpr float kOwnshipSymbolWt = 15.0f;
+
 // Range-based feature declutter (NM): each class is hidden once the map range
 // exceeds its threshold, matching the G1000's progressive decluttering. Fixes
 // (intersections) are the densest, so they only appear when zoomed well in, and
@@ -865,17 +870,50 @@ void drawFuelRing(Renderer& r, const FlightData& flight, float ownX,
 
 // Ownship symbol, rotated to the aircraft heading in screen space. On a
 // north-up map it turns with the aircraft; on a track-up map it shows the
-// crab angle (heading minus track).
+// crab angle (heading minus track). Drawn as the G1000 NXi top-down airplane
+// silhouette (a single-engine plan view: nose, main wing forward, horizontal
+// stabilizer near the tail, fuselage spine), filled white with a dark outline
+// so it reads over any map layer. Modeled off the Working Title NXi
+// own_airplane_icon (nose toward -y at rotation 0, i.e. up = heading up).
 void drawOwnshipSymbol(Renderer& r, float cx, float cy, float size,
                        float rotationDeg) {
-  const Point nose{0.0f, -size};
-  const Point left{-size * 0.55f, size * 0.45f};
-  const Point right{size * 0.55f, size * 0.45f};
-  const Point tri[3] = {nose, left, right};
+  const float s = size;
+  // Closed outline traced from the nose down the right side to the tail, then
+  // mirrored back up the left. Coordinates are in symbol-local space (x right,
+  // nose toward -y), scaled by the symbol size.
+  const Point body[] = {
+      {0.00f * s, -0.92f * s},   // nose
+      {0.13f * s, -0.62f * s},   // right cockpit / fuselage ahead of the wing
+      {0.16f * s, -0.50f * s},   // right fuselage at wing leading edge
+      {0.95f * s, -0.40f * s},   // right wingtip leading edge (slight sweep)
+      {0.95f * s, -0.24f * s},   // right wingtip trailing edge
+      {0.18f * s, -0.30f * s},   // right fuselage at wing trailing edge
+      {0.15f * s, 0.52f * s},    // right fuselage at stabilizer leading edge
+      {0.40f * s, 0.60f * s},    // right stabilizer tip leading edge
+      {0.40f * s, 0.72f * s},    // right stabilizer tip trailing edge
+      {0.09f * s, 0.74f * s},    // right fuselage at stabilizer trailing edge
+      {0.07f * s, 0.84f * s},    // right tail end
+      {-0.07f * s, 0.84f * s},   // left tail end
+      {-0.09f * s, 0.74f * s},   // left fuselage at stabilizer trailing edge
+      {-0.40f * s, 0.72f * s},   // left stabilizer tip trailing edge
+      {-0.40f * s, 0.60f * s},   // left stabilizer tip leading edge
+      {-0.15f * s, 0.52f * s},   // left fuselage at stabilizer leading edge
+      {-0.18f * s, -0.30f * s},  // left fuselage at wing trailing edge
+      {-0.95f * s, -0.24f * s},  // left wingtip trailing edge
+      {-0.95f * s, -0.40f * s},  // left wingtip leading edge
+      {-0.16f * s, -0.50f * s},  // left fuselage at wing leading edge
+      {-0.13f * s, -0.62f * s},  // left cockpit / fuselage ahead of the wing
+  };
+  constexpr int kCount = static_cast<int>(sizeof(body) / sizeof(body[0]));
+  Point outline[kCount + 1];
+  for (int i = 0; i < kCount; ++i) outline[i] = body[i];
+  outline[kCount] = body[0];
+
   r.save();
   r.translate(cx, cy);
   r.rotateDegrees(rotationDeg);
-  r.fillPolygon(tri, 3, colors::kWhite);
+  r.fillPolygon(body, kCount, colors::kWhite);
+  r.strokePolyline(outline, kCount + 1, 1.2f, colors::kMapSymbolOutline);
   r.restore();
 }
 
@@ -1162,16 +1200,41 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
         viewCenterLat, viewCenterLon, cx, cy, pixelsPerNm, rotation, rangeNm);
   }
 
-  if (config.style.showWeather && map.weather != nullptr &&
-      map.weather->active() && map.positionValid) {
-    map::drawWeatherRaster(r, *map.weather, cx, cy, pixelsPerNm, rotation);
+  // Plain background fill when no terrain raster is shown. Drawn here -- before
+  // the weather overlay -- so it sits behind the NEXRAD returns rather than
+  // dimming them.
+  if (config.style.showChrome && !terrainDrawn) {
+    r.fillRect(config.x, config.y, config.w, config.h,
+               Color{0.0f, 0.0f, 0.0f, 0.82f});
+  }
+
+  // Map precipitation overlay: prefer the datalink NEXRAD source (real ground
+  // radar) when available, falling back to the onboard radar source.
+  const WeatherRadarSource* overlayWx =
+      map.nexrad != nullptr ? map.nexrad : map.weather;
+  if (config.style.showWeather && overlayWx != nullptr &&
+      overlayWx->active() && map.positionValid) {
+    // The overlay is anchored to the aircraft: datalink NEXRAD is geo-referenced
+    // and centered on ownship, and the onboard radar sweep emanates from it.
+    // Draw it at ownship's *screen* location (not the view center) so it stays
+    // fixed to the ground/aircraft when the map is panned away from ownship.
+    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+    const double rot = static_cast<double>(rotation) * kDegToRad;
+    const double cosR = std::cos(rot);
+    const double sinR = std::sin(rot);
+    const double northNm = (map.ownshipLat - viewCenterLat) * map::kNmPerDegLat;
+    const double eastNm =
+        (map.ownshipLon - viewCenterLon) * map::nmPerDegLon(viewCenterLat);
+    const double mapEast = eastNm * cosR - northNm * sinR;
+    const double mapNorth = eastNm * sinR + northNm * cosR;
+    const float wx =
+        cx + static_cast<float>(mapEast * static_cast<double>(pixelsPerNm));
+    const float wy =
+        cy - static_cast<float>(mapNorth * static_cast<double>(pixelsPerNm));
+    map::drawWeatherRaster(r, *overlayWx, wx, wy, pixelsPerNm, rotation);
   }
 
   if (config.style.showChrome) {
-    if (!terrainDrawn) {
-      r.fillRect(config.x, config.y, config.w, config.h,
-                 Color{0.0f, 0.0f, 0.0f, 0.82f});
-    }
     r.strokeLine(config.x, config.y, config.x + config.w, config.y, 2.0f,
                  colors::kTapeTopBorder);
     r.strokeLine(config.x, config.y + config.h, config.x + config.w,
@@ -1456,7 +1519,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     drawTraffic(r, map, proj, symSize, labelSize);
   }
 
-  drawOwnshipSymbol(r, ownX, ownY, symSize, flight.headingDeg - rotation);
+  const float ownSize = std::max(8.0f, fontPx(kOwnshipSymbolWt, displayH));
+  drawOwnshipSymbol(r, ownX, ownY, ownSize, flight.headingDeg - rotation);
 
   if (config.style.showWindVector) {
     drawWindVector(r, flight, config, rotation, labelSize);

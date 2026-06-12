@@ -75,11 +75,22 @@ endfunction()
 
 add_subdirectory(avionics-core)
 
-# HTTPS fetch for the notify-only update checker (GitHub Releases API).
+# HTTPS fetch for the notify-only update checker (GitHub Releases API) and the
+# live datalink NEXRAD overlay (RainViewer radar tiles).
 if(BUILD_XPLANE_SHELL OR BUILD_STANDALONE_SHELL)
   find_package(CURL REQUIRED)
   target_compile_definitions(avionics-core PRIVATE AVIONICS_HAS_CURL)
   target_link_libraries(avionics-core PRIVATE CURL::libcurl)
+
+  # stb_image (single-header PNG decoder) for the NEXRAD radar tiles. Fetched
+  # like the other third-party deps; only the header is used.
+  include(FetchContent)
+  FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG f0569113c93ad095470c54bf34a17b36646bbbb5)
+  FetchContent_MakeAvailable(stb)
+  target_include_directories(avionics-core PRIVATE ${stb_SOURCE_DIR})
+  target_compile_definitions(avionics-core PRIVATE AVIONICS_HAS_STBIMAGE)
 endif()
 
 # The NanoVG renderer is shared by both shells; build it whenever a shell that

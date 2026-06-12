@@ -72,6 +72,12 @@ constexpr double kSecondsPerDay = 86400.0;
 //   "RREF\0" + int32 frequency + int32 index + char[400] dataref name.
 constexpr int kDatarefNameSize = 400;
 constexpr int kRrefRequestSize = 5 + 4 + 4 + kDatarefNameSize;  // 413 bytes
+// DREF (write) wire format is distinct from RREF: X-Plane expects a 500-byte
+// dataref-path field, so the packet is "DREF\0" + float value + char[500] =
+// 509 bytes. Sending the shorter RREF path size (404-byte payload) makes
+// X-Plane reject the write ("received 404 bytes but needed 504 bytes").
+constexpr int kDrefNameSize = 500;
+constexpr int kDrefMessageSize = 5 + 4 + kDrefNameSize;  // 509 bytes
 // RREF reply payload after the 5-byte "RREF\0" header is a sequence of
 // (int32 index, float32 value) records.
 constexpr int kRrefHeaderSize = 5;
@@ -821,6 +827,8 @@ void XPlaneConnection::update(double dtSeconds) {
     // dataref, so the leg renders direct-to ("->KXXX").
     data_.fmaToWpt = webApi_.destinationId();
     data_.fmaFromWpt.clear();
+    data_.nav1Ident = webApi_.nav1Ident();
+    data_.nav2Ident = webApi_.nav2Ident();
     // Sim date passes straight through (it only changes at midnight).
     data_.utcDayOfYear = target_.utcDayOfYear;
     updateZuluClock(dtSeconds);
@@ -1042,6 +1050,8 @@ void XPlaneConnection::updateFmaModes() {
     vertActive = "FLC";
   } else if (mode(kApVerticalSpeed) == kApModeActive) {
     vertActive = "VS";
+    vertValue = static_cast<int>(std::lround(data_.selectedVerticalSpeedFpm));
+    vertUnits = "FPM";
   } else if (mode(kApPitch) == kApModeActive) {
     vertActive = "PIT";
   }
@@ -1128,6 +1138,14 @@ RadioPaths radioPaths(RadioUnit unit) {
 
 constexpr float kMhzToRadioHz = 100.0f;
 
+// Radio frequency datarefs are integers (MHz x 100). A float MHz like 114.15f
+// is actually ~114.1499996, so 114.15 * 100 = 11414.9996; writing that to the
+// integer dataref truncates to 11414 (-> 114.14). Round to the nearest 10 kHz
+// channel first so the active frequency lands exactly where the pilot tuned it.
+float radioMhzToHz(float mhz) {
+  return static_cast<float>(std::lround(mhz * kMhzToRadioHz));
+}
+
 }  // namespace
 
 void XPlaneConnection::sendDataref(const char* path, float value) {
@@ -1143,12 +1161,12 @@ void XPlaneConnection::sendDataref(const char* path, float value) {
   dest.sin_addr.s_addr = inet_addr(host_.c_str());
 #endif
 
-  unsigned char msg[5 + 4 + kDatarefNameSize] = {0};
+  unsigned char msg[kDrefMessageSize] = {0};
   std::memcpy(msg, "DREF", 4);
   std::int32_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));
   writeLe32(msg + 5, bits);
-  std::strncpy(reinterpret_cast<char*>(msg + 9), path, kDatarefNameSize - 1);
+  std::strncpy(reinterpret_cast<char*>(msg + 9), path, kDrefNameSize - 1);
   ::sendto(sock, reinterpret_cast<const char*>(msg),
            static_cast<int>(sizeof(msg)), 0,
            reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
@@ -1166,7 +1184,7 @@ void XPlaneConnection::setMapPanCenter(bool active, double lat, double lon) {
 
 void XPlaneConnection::tuneRadioStandby(RadioUnit unit, float standbyMhz) {
   const RadioPaths paths = radioPaths(unit);
-  sendDataref(paths.standby, standbyMhz * kMhzToRadioHz);
+  sendDataref(paths.standby, radioMhzToHz(standbyMhz));
   target_.*(paths.standbyMember) = standbyMhz;
   data_.*(paths.standbyMember) = standbyMhz;
 }
@@ -1175,8 +1193,8 @@ void XPlaneConnection::transferRadio(RadioUnit unit) {
   const RadioPaths paths = radioPaths(unit);
   const float active = target_.*(paths.activeMember);
   const float standby = target_.*(paths.standbyMember);
-  sendDataref(paths.active, standby * kMhzToRadioHz);
-  sendDataref(paths.standby, active * kMhzToRadioHz);
+  sendDataref(paths.active, radioMhzToHz(standby));
+  sendDataref(paths.standby, radioMhzToHz(active));
   target_.*(paths.activeMember) = standby;
   target_.*(paths.standbyMember) = active;
   data_.*(paths.activeMember) = standby;

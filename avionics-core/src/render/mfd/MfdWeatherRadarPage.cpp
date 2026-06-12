@@ -96,17 +96,30 @@ void writePixel(unsigned char* px, const Color& c, float alpha) {
 // halfWidthNm. Out-of-range samples read 0.
 float sampleStrength(const WeatherRadarSource& src, float forwardNm,
                      float crossNm) {
-  const float range = std::max(1.0f, src.rangeNm());
-  const float half = std::max(1.0f, src.halfWidthNm());
-  const float ff = forwardNm / range;
-  const float cf = 0.5f + crossNm / (2.0f * half);
-  if (ff < 0.0f || ff > 1.0f || cf < 0.0f || cf > 1.0f) return 0.0f;
   const int w = src.width();
   const int h = src.height();
   if (w <= 0 || h <= 0) return 0.0f;
-  // Row 0 is the far edge (top), row h-1 is the aircraft (bottom).
-  const int col = std::min(w - 1, static_cast<int>(cf * (w - 1)));
-  const int row = std::min(h - 1, static_cast<int>((1.0f - ff) * (h - 1)));
+
+  float uf;  // 0..1 across the grid (left->right)
+  float vf;  // 0..1 down the grid (top->bottom)
+  if (src.layout() == WeatherRadarLayout::Centered) {
+    // Aircraft at the texture center; forward is toward the top (north), the
+    // cross-track axis runs east (+) across the middle.
+    const float radius = std::max(1.0f, src.rangeNm());
+    uf = 0.5f + crossNm / (2.0f * radius);
+    vf = 0.5f - forwardNm / (2.0f * radius);
+  } else {
+    // Forward sweep: aircraft at the bottom edge, forward toward the top.
+    const float range = std::max(1.0f, src.rangeNm());
+    const float half = std::max(1.0f, src.halfWidthNm());
+    const float ff = forwardNm / range;
+    if (ff < 0.0f || ff > 1.0f) return 0.0f;
+    uf = 0.5f + crossNm / (2.0f * half);
+    vf = 1.0f - ff;  // row 0 is the far edge (top), row h-1 the aircraft.
+  }
+  if (uf < 0.0f || uf > 1.0f || vf < 0.0f || vf > 1.0f) return 0.0f;
+  const int col = std::min(w - 1, static_cast<int>(uf * (w - 1)));
+  const int row = std::min(h - 1, static_cast<int>(vf * (h - 1)));
   return static_cast<float>(src.returnStrength()[row * w + col]) / 255.0f;
 }
 

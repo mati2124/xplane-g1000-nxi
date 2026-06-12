@@ -87,6 +87,9 @@ class NanoVgRenderer : public Renderer {
                 FontFace face = FontFace::Default) override;
   float measureTextWidth(const std::string& text, float sizePx,
                          FontFace face = FontFace::Default) override;
+  TextRect measureTextRect(float x, float y, const std::string& text,
+                           float sizePx, TextAlign align,
+                           FontFace face = FontFace::Default) override;
 
  private:
   // Resolve a requested face to a loaded NanoVG font id, falling back to the

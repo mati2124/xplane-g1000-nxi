@@ -18,6 +18,7 @@
 #include "avionics/Eis.h"
 #include "avionics/EisLegacy.h"
 #include "avionics/MapData.h"
+#include "avionics/NexradWeatherRadar.h"
 #include "avionics/Radio.h"
 
 namespace avionics {
@@ -47,6 +48,11 @@ class DatarefDataSource : public DataSource {
   // the EFIS weather mode, antenna tilt, and sector width to the sim based on
   // the MFD's NEXRAD overlay state and dedicated Weather Radar page controls.
   void syncWeatherRadar(const MfdController& ui);
+
+  // Whether the current airframe carries a weather radar (probed from the sim's
+  // radar return texture; see DatarefWeatherRadar::equipped). The MFD uses this
+  // to hide its dedicated Weather Radar page on unequipped aircraft.
+  bool weatherRadarEquipped() const { return weather_.equipped(); }
 
   void setMapPanCenter(bool active, double lat, double lon) override;
 
@@ -101,8 +107,12 @@ class DatarefDataSource : public DataSource {
 
   bool installDataStarted_ = false;
 
-  // X-Plane 12.3 weather radar return-strength texture for the NEXRAD overlay.
+  // X-Plane 12.3 onboard weather-radar return-strength texture (dedicated MFD
+  // Weather Radar page, and the map overlay fallback before datalink arrives).
   DatarefWeatherRadar weather_;
+
+  // Live datalink NEXRAD (real ground radar) for the map precipitation overlay.
+  NexradWeatherRadar nexrad_;
 
   std::vector<MapFeature> navCache_;
   bool navCacheBuilt_ = false;
@@ -153,6 +163,13 @@ class DatarefDataSource : public DataSource {
   XPLMDataRef gpsDistance_ = nullptr;
   XPLMDataRef gpsBearing_ = nullptr;
   XPLMDataRef gpsNavId_ = nullptr;
+
+  // Decoded Morse idents of the stations being received on NAV1/2 (byte[]
+  // strings). navN_dme_id is the fallback for standalone DME/TACAN (XP12).
+  XPLMDataRef nav1NavId_ = nullptr;
+  XPLMDataRef nav2NavId_ = nullptr;
+  XPLMDataRef nav1DmeId_ = nullptr;
+  XPLMDataRef nav2DmeId_ = nullptr;
 
   // NAV/COM active + standby frequency datarefs (int, value = MHz x 100) read
   // each frame so the glass shows the live radios, and written by the bezel

@@ -311,6 +311,10 @@ void MockDataSource::update(double dtSeconds) {
   data_.bearing2Source = "VOR2";
   data_.bearing2Ident = "SFO";
 
+  // Decoded idents of the active NAV stations, shown beside their frequencies.
+  data_.nav1Ident = "SAU";
+  data_.nav2Ident = "PYE";
+
   // Vertical deviation: demo a GPS Glidepath that drifts gently around centre
   // (magenta diamond), plus the matching VNAV required-VS chevron on the VSI.
   data_.vdiKind = VerticalDeviationKind::Glidepath;
@@ -516,8 +520,6 @@ void MockDataSource::publishEisChannels() {
 
 void MockDataSource::advanceClockFields() {
   const float t = static_cast<float>(elapsedSeconds_);
-  data_.fmaVerticalValue =
-      static_cast<int>(std::lround(data_.selectedAltitudeFt));
   data_.timerSeconds = static_cast<int>(t) % 36000;
   const int totalSec = 18 * 3600 + static_cast<int>(t) % 86400;
   data_.utcHour = (totalSec / 3600) % 24;
@@ -537,6 +539,17 @@ void MockDataSource::publishMapBackground(double dtSeconds) {
     weather_.advance(dtSeconds);
     map_.weather = &weather_;
   }
+
+  // Live datalink NEXRAD overlay, centered on the aircraft -- real ground radar
+  // even on the mock feed. Pointed at the source unconditionally so the overlay
+  // shows real weather (or nothing until tiles load / when offline) rather than
+  // a synthetic field. The procedural weather_ above remains only for the
+  // dedicated onboard Weather Radar page.
+  if (map_.positionValid) {
+    nexrad_.setCenter(map_.ownshipLat, map_.ownshipLon);
+  }
+  nexrad_.advance(dtSeconds);
+  map_.nexrad = &nexrad_;
 }
 
 void MockDataSource::setRoute(std::vector<MapLeg> route) {

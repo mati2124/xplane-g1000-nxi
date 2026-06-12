@@ -290,6 +290,28 @@ to key off, so point it at the file explicitly:
 ./build/shell-standalone/avionics-standalone --eis /path/to/MyAircraft/g1000_eis.txt
 ```
 
+## NEXRAD weather (real datalink radar)
+
+The MFD **NEXRAD** map overlay (Map Opt → NEXRAD) shows **real-world** ground
+weather radar, not a simulation of it. X-Plane exposes no datalink/NEXRAD
+product through any of its APIs (the SDK only offers the *onboard* airborne
+radar texture, which is empty on aircraft without a radar), so the overlay is
+fed from live public weather-radar tiles
+([RainViewer](https://www.rainviewer.com/api.html) composite reflectivity,
+~10-minute frames) fetched over HTTPS on a background thread and resampled onto
+the moving map around the aircraft.
+
+Because it is **actual current weather keyed to the aircraft's latitude /
+longitude**, it reflects what is really happening on the ground there right now
+and **will not match the weather set in the simulator** (X-Plane's clouds,
+storms, or a custom weather preset). Fly near real precipitation and it appears;
+set a thunderstorm in a clear-sky region and the overlay still shows clear.
+
+This works identically in both shells (the X-Plane plugin and the standalone),
+needs an internet connection, and falls back to nothing when offline. The
+dedicated MFD **Weather Radar** page is separate and still driven by the
+airframe's onboard radar.
+
 ## Status / next steps
 
 The shared core renders a basic PFD (attitude indicator,
@@ -400,6 +422,13 @@ Still to wire up:
       lat/lon entries, present-position Direct-To), applied on the sim thread
       with an acknowledgement + retry. `--no-fms-write` keeps edits
       display-only.
+- [x] Real datalink **NEXRAD** map overlay: X-Plane has no NEXRAD API, so the
+      overlay pulls live public weather-radar tiles (RainViewer composite
+      reflectivity) over HTTPS on a background thread and resamples them onto the
+      map around the aircraft. It is therefore **real current weather for the
+      aircraft's position and may not match the sim's weather**. Works in both
+      shells (needs internet); the dedicated Weather Radar page still uses the
+      onboard radar. Needs libcurl (bundled with macOS).
 - [ ] Bind the NanoVG renderer inside the plugin via the X-Plane Avionics
       Device API (`XPLMCreateAvionicsEx`), replacing the legacy draw callback.
 

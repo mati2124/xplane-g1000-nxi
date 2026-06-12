@@ -82,6 +82,18 @@ inline constexpr const char* kNav2FrequencyHz =
     "sim/cockpit2/radios/actuators/nav2_frequency_hz";
 inline constexpr const char* kNav2StandbyFrequencyHz =
     "sim/cockpit2/radios/actuators/nav2_standby_frequency_hz";
+// Decoded Morse identifier of the station being received on each NAV radio
+// (byte[] string, up to 3 chars). Empty when out of range or not tuned to a
+// VOR/LOC. In X-Plane 12 standalone DME/TACAN idents appear only in the
+// matching navN_dme_id datarefs, not navN_nav_id.
+inline constexpr const char* kNav1NavId =
+    "sim/cockpit2/radios/indicators/nav1_nav_id";
+inline constexpr const char* kNav2NavId =
+    "sim/cockpit2/radios/indicators/nav2_nav_id";
+inline constexpr const char* kNav1DmeId =
+    "sim/cockpit2/radios/indicators/nav1_dme_id";
+inline constexpr const char* kNav2DmeId =
+    "sim/cockpit2/radios/indicators/nav2_dme_id";
 inline constexpr const char* kCom1FrequencyHz =
     "sim/cockpit2/radios/actuators/com1_frequency_hz";
 inline constexpr const char* kCom1StandbyFrequencyHz =

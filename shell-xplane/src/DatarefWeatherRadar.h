@@ -24,6 +24,18 @@ class DatarefWeatherRadar : public WeatherRadarSource {
   void syncFromController(const MfdController& ui);
 
   bool active() const override;
+
+  // True once this airframe has been seen to carry a weather radar. X-Plane has
+  // no "radar installed" dataref, so this is inferred by probing the pilot-side
+  // radar return texture (xplm_Tex_Radar_Pilot): the sim only allocates that
+  // texture for aircraft whose PlaneMaker EFIS map radar is set to X-Plane or
+  // Plugin (not "None"). Latched true once seen so it stays stable while the
+  // pilot powers the radar off; cleared on an aircraft change (resetEquipment).
+  bool equipped() const { return equipped_; }
+  // Forget the detected radar fit (call on aircraft swap so the next probe
+  // re-evaluates the new airframe).
+  void resetEquipment() { equipped_ = false; }
+
   int width() const override { return width_; }
   int height() const override { return height_; }
   const unsigned char* returnStrength() const override {
@@ -43,6 +55,7 @@ class DatarefWeatherRadar : public WeatherRadarSource {
   XPLMDataRef gain_ = nullptr;
 
   int mode_ = 0;
+  bool equipped_ = false;
   float rangeNm_ = 80.0f;
   float halfWidthNm_ = 80.0f;
   int width_ = 0;

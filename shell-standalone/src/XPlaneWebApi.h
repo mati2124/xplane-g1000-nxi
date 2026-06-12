@@ -9,9 +9,9 @@
 namespace avionics {
 
 // Minimal client for X-Plane's local Web API (REST), used only to read the
-// string datarefs that the float-only RREF UDP protocol cannot carry --
-// currently the active GPS destination identifier for the navigation status
-// box.
+// string datarefs that the float-only RREF UDP protocol cannot carry: the
+// active GPS destination identifier (navigation status box) and the decoded
+// NAV1/2 station idents shown beside the active frequencies on the PFD.
 //
 // Why this exists alongside the UDP link: X-Plane streams telemetry to the
 // standalone shell over UDP RREF, but an RREF record is a fixed (int index,
@@ -39,6 +39,11 @@ class XPlaneWebApi {
   // Web API is unreachable or no destination is currently selected.
   std::string destinationId() const;
 
+  // Decoded Morse idents of the stations being received on NAV1/2 (e.g. "SAU"),
+  // or empty when out of range / Web API unavailable.
+  std::string nav1Ident() const;
+  std::string nav2Ident() const;
+
  private:
   void run();  // background polling loop
 
@@ -47,6 +52,8 @@ class XPlaneWebApi {
 
   mutable std::mutex mutex_;
   std::string destinationId_;
+  std::string nav1Ident_;
+  std::string nav2Ident_;
 
   std::atomic<bool> stop_{false};
   std::thread thread_;

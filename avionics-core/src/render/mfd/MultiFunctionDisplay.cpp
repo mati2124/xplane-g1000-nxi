@@ -10,6 +10,7 @@
 #include "render/mfd/EisStrip.h"
 #include "render/mfd/MfdPages.h"
 #include "render/mfd/MfdStyle.h"
+#include "render/pfd/PfdInternal.h"
 
 namespace avionics {
 namespace {
@@ -19,24 +20,17 @@ using mfd::mfdFontPx;
 
 // Top bar height and typography match the PFD's NAV/COM bar (56 px, 24/16 px
 // fonts on the 768 canvas) -- on the real unit both GDUs share the same bar.
-constexpr float kTopBarHeightPx = 56.0f;
+constexpr float kTopBarHeightPx = 48.0f;
 constexpr float kBottomBarHeightPx = 35.0f;
 
 // EIS engine strip width as a fraction of the screen, matching the dedicated
 // engine column on the left edge of the real MFD.
 constexpr float kEisWidthFrac = 150.0f / 1024.0f;
 
-constexpr float kFreqLabelWt = 16.0f;
-constexpr float kFreqValueWt = 24.0f;
 constexpr float kDataFieldLabelWt = 15.0f;
 constexpr float kDataFieldValueWt = 20.0f;
 constexpr float kPageTitleWt = 16.0f;
 constexpr float kSoftkeyFontWt = 17.0f;
-
-// Placeholders shown for the frequency readouts when the data link is down,
-// matching the PFD chrome (unknown rather than stale).
-constexpr const char* kFreqDash2 = "---.--";
-constexpr const char* kFreqDash3 = "---.---";
 
 // Group-prefixed page title shown in the navigation data bar, verbatim from
 // the WT NXi MFDUiPage titles ("Map – Navigation Map" mixed case).
@@ -100,16 +94,6 @@ const char* const kNrstPages[] = {"Nearest Airports", "Nearest Intersections",
                                   "Nearest Frequencies", "Nearest Airspaces"};
 const char* const kFplPages[] = {"Active Flight Plan"};
 
-// Double-headed cyan frequency transfer arrow, identical to the PFD's.
-void drawTransferArrow(Renderer& r, float cx, float cy, float halfW) {
-  const float a = halfW * 0.55f;
-  r.strokeLine(cx - halfW, cy, cx + halfW, cy, 1.5f, colors::kCyan);
-  r.strokeLine(cx - halfW, cy, cx - halfW + a, cy - a, 1.5f, colors::kCyan);
-  r.strokeLine(cx - halfW, cy, cx - halfW + a, cy + a, 1.5f, colors::kCyan);
-  r.strokeLine(cx + halfW, cy, cx + halfW - a, cy - a, 1.5f, colors::kCyan);
-  r.strokeLine(cx + halfW, cy, cx + halfW - a, cy + a, 1.5f, colors::kCyan);
-}
-
 // 3-digit bearing/track with degree sign; north reads 360, never 000.
 std::string formatBearing(float deg) {
   int v = static_cast<int>(std::lround(deg)) % 360;
@@ -137,65 +121,30 @@ std::string formatEte(float distNm, float gsKts) {
   return buf;
 }
 
-// Top data bar, mirroring the real NXi MFD: NAV1/NAV2 pairs (left, active
-// nearest center), the navigation data bar (GS/DTK/TRK/ETE fields over the
-// cyan page title) in the middle, COM1/COM2 pairs (right, active nearest
-// center). Frequency cells share the PFD's layout fractions so the two
-// displays' bars line up when side by side.
+// Top data bar, mirroring the real NXi MFD: NAV1/NAV2 cells (left), the
+// navigation data bar (GS/DTK/TRK/ETE fields over the cyan page title) in the
+// middle, COM1/COM2 cells (right). The NAV/COM cells are drawn by the shared
+// PFD routine (pfd::drawNavComFreqCells) so the two displays render identical
+// radios -- same boxes, carets, idents, colors, and transfer animation.
 void drawNavComBar(Renderer& r, float w, float h, float barH,
-                   const FlightData& d, const std::string& title) {
+                   const FlightData& d, const SoftkeyController& radios,
+                   const std::string& title) {
   r.fillRectVerticalGradient(0.0f, 0.0f, w, barH, 0.0f, barH,
                              colors::kPanelBackground,
                              colors::kPanelBackgroundBottom);
   r.strokeLine(0.0f, barH, w, barH, 2.0f, colors::kPanelBorder);
 
-  // Same row fractions as the PFD bar so the rows line up across displays.
+  // Same row fractions / panel geometry as the PFD bar so the rows line up
+  // across displays.
   const float row1 = barH * 0.27f;
   const float row2 = barH * 0.73f;
-  const float labelSize = mfdFontPx(kFreqLabelWt, h);
-  const float freqSize = mfdFontPx(kFreqValueWt, h);
+  const float navLeft = 0.0f;
+  const float navW = w * (250.0f / 1024.0f);
+  const float comLeft = w * (774.0f / 1024.0f);
+  const float comW = w - comLeft;
+  pfd::drawNavComFreqCells(r, h, barH, navLeft, navW, comLeft, comW, d, radios);
 
-  // With the link down the tuned frequencies are unknown: amber dashes in
-  // place of the active/standby readouts (labels and arrows stay).
   const bool linkValid = d.dataLinkValid;
-  const Color activeColor =
-      linkValid ? colors::kActiveGreen : colors::kBandYellow;
-  const Color standbyColor = linkValid ? colors::kWhite : colors::kBandYellow;
-  auto freqText = [&](float mhz, int decimals) -> std::string {
-    if (!linkValid) return decimals >= 3 ? kFreqDash3 : kFreqDash2;
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%.*f", decimals,
-                  static_cast<double>(mhz));
-    return buf;
-  };
-
-  struct Pair {
-    const char* label;
-    float active, standby, cy;
-  };
-  const Pair navs[2] = {{"NAV1", d.nav1ActiveMhz, d.nav1StandbyMhz, row1},
-                        {"NAV2", d.nav2ActiveMhz, d.nav2StandbyMhz, row2}};
-  for (const Pair& n : navs) {
-    r.fillText(w * 0.012f, n.cy, n.label, labelSize, TextAlign::Left,
-               colors::kLabelText);
-    r.fillText(w * 0.140f, n.cy, freqText(n.standby, 2), freqSize,
-               TextAlign::Right, standbyColor);
-    drawTransferArrow(r, w * 0.158f, n.cy, w * 0.011f);
-    r.fillText(w * 0.245f, n.cy, freqText(n.active, 2), freqSize,
-               TextAlign::Right, activeColor);
-  }
-
-  const Pair coms[2] = {{"COM1", d.com1ActiveMhz, d.com1StandbyMhz, row1},
-                        {"COM2", d.com2ActiveMhz, d.com2StandbyMhz, row2}};
-  for (const Pair& c : coms) {
-    r.fillText(w * 0.832f, c.cy, freqText(c.active, 3), freqSize,
-               TextAlign::Right, activeColor);
-    drawTransferArrow(r, w * 0.844f, c.cy, w * 0.011f);
-    r.fillText(w * 0.940f, c.cy, freqText(c.standby, 3), freqSize,
-               TextAlign::Right, standbyColor);
-    r.fillText(w * 0.996f, c.cy, c.label, labelSize, TextAlign::Right,
-               colors::kLabelText);
-  }
 
   // Navigation data bar fields (default NXi set: GS, DTK, TRK, ETE), grey
   // labels with magenta GPS-derived values, dashed when unknown.
@@ -267,7 +216,9 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
   switch (ui.pageGroup()) {
     case MfdPageGroup::Map:
       pages = kMapPages;
-      pageCount = 3;
+      // Drops to 2 when the airframe has no weather radar (the Weather Radar
+      // page, last in kMapPages, is not offered then).
+      pageCount = ui.pageCount(MfdPageGroup::Map);
       break;
     case MfdPageGroup::Waypoint:
       pages = kWptPages;
@@ -477,7 +428,8 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
                                   const MapData& map,
                                   const ChecklistData& checklist,
                                   const EisLayout& eisLayout,
-                                  const MfdController& ui, int widthPx,
+                                  const MfdController& ui,
+                                  const SoftkeyController& radios, int widthPx,
                                   int heightPx) {
   const float w = static_cast<float>(widthPx);
   const float h = static_cast<float>(heightPx);
@@ -613,7 +565,7 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
     r.restore();
   }
   drawPageIndicator(r, w, h, h - bottomBarH, ui, checklist.totalChecklists());
-  drawNavComBar(r, w, h, topBarH, d, title);
+  drawNavComBar(r, w, h, topBarH, d, radios, title);
   drawSoftkeyBar(r, w, h, bottomBarH, ui);
 }
 

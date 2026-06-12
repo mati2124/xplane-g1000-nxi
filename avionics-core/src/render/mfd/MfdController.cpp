@@ -124,24 +124,6 @@ constexpr int kGroupPageCount[] = {
     1,  // FlightPlan: Active Flight Plan
 };
 
-// The FMS data-entry character sequence: the alphabet then the digits, with
-// the small knob starting "in the middle at K" on a blank placeholder
-// (Pilot's Guide, "Using the FMS Knob to enter data").
-constexpr char kEntryChars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-constexpr int kEntryCharCount = 36;
-
-char stepEntryChar(char c, int step) {
-  int idx = 0;
-  for (int i = 0; i < kEntryCharCount; ++i) {
-    if (kEntryChars[i] == c) {
-      idx = i;
-      break;
-    }
-  }
-  return kEntryChars[((idx + step) % kEntryCharCount + kEntryCharCount) %
-                     kEntryCharCount];
-}
-
 bool legsEqual(const std::vector<MapLeg>& a, const std::vector<MapLeg>& b) {
   if (a.size() != b.size()) return false;
   for (std::size_t i = 0; i < a.size(); ++i) {
@@ -211,6 +193,10 @@ MfdController::MfdController() {
   setToggle(MapSetting::UserWaypointOn, true);
   setRange(MapSetting::UserWaypointRange, 25.0f);
 
+  // The FPL insert window can load a published airway by name (the Direct-To
+  // and Waypoint pages cannot), so only its entry resolves airway idents.
+  fplEntry_.allowAirways = true;
+
   rebuildLabels();
 }
 
@@ -276,8 +262,29 @@ void MfdController::rebuildLabels() {
 
 float MfdController::rangeNm() const { return mapRangeNmAt(rangeIndex_); }
 
-int MfdController::pageCount(MfdPageGroup group) {
-  return kGroupPageCount[static_cast<int>(group)];
+int MfdController::pageCount(MfdPageGroup group) const {
+  int count = kGroupPageCount[static_cast<int>(group)];
+  // The Weather Radar page is the last page in the MAP group; drop it when the
+  // airframe has no radar so it never enters the rotation.
+  if (group == MfdPageGroup::Map && !weatherRadarAvailable_) --count;
+  return count;
+}
+
+void MfdController::setWeatherRadarAvailable(bool available) {
+  if (weatherRadarAvailable_ == available) return;
+  weatherRadarAvailable_ = available;
+  // If the Weather Radar page is no longer offered while it (or a now-invalid
+  // index) is selected, fall back to the Navigation Map and close any
+  // radar-specific submenu so the bar rebuilds for the visible page.
+  if (!available && pageGroup_ == MfdPageGroup::Map) {
+    int& index = pageIndex_[static_cast<int>(MfdPageGroup::Map)];
+    if (index >= pageCount(MfdPageGroup::Map)) {
+      index = 0;
+      if (menu_ == Menu::RadarMode) menu_ = Menu::Root;
+      mapResetPointer();
+    }
+  }
+  rebuildLabels();
 }
 
 int MfdController::pageIndex() const {
@@ -698,7 +705,7 @@ void MfdController::clrDefaultMap() {
   mapResetPointer();
   dtoOpen_ = false;
   dtoArmed_ = false;
-  dtoEntry_ = FmsWaypointEntry{};
+  dtoEntry_.reset();
   menu_ = Menu::Root;
   pageMenuOpen_ = false;
   mapSettingsOpen_ = false;
@@ -1347,116 +1354,6 @@ std::vector<MapLeg> MfdController::procPreviewLegs() const {
   return navSource_->expandProcedure(icao, procCategory_, name, transition);
 }
 
-// ---- shared FMS waypoint entry ----
-
-void MfdController::entryOpen(FmsWaypointEntry& e, const std::string& initial) {
-  e.active = true;
-  e.chars = initial;
-  e.pos = 0;
-  e.autofill.clear();
-  e.match = MapFeature{};
-  e.hasMatch = false;
-  e.notFound = false;
-  if (!e.chars.empty()) entryUpdateAutofill(e);
-}
-
-void MfdController::entryUpdateAutofill(FmsWaypointEntry& e) {
-  e.autofill.clear();
-  e.hasMatch = false;
-
-  if (e.chars.empty()) return;
-
-  // Spell-ahead: the alphabetically-first database ident extending the typed
-  // prefix. Without a nav database, fall back to the nearby map features so
-  // entry still works on the demo feed.
-  if (navSource_ != nullptr && navSource_->ready()) {
-    e.autofill = navSource_->firstIdentWithPrefix(e.chars);
-  }
-  if (e.autofill.empty() && mapData_ != nullptr) {
-    for (const MapFeature& f : mapData_->features) {
-      if (f.id.compare(0, e.chars.size(), e.chars) != 0) continue;
-      if (e.autofill.empty() || f.id < e.autofill) e.autofill = f.id;
-    }
-  }
-  if (e.autofill.empty()) return;
-
-  // Resolve the filled ident to a waypoint, nearest to ownship when the same
-  // ident names several (a fix and a VOR, duplicates across regions).
-  std::vector<MapFeature> candidates;
-  if (navSource_ != nullptr && navSource_->ready()) {
-    candidates = navSource_->lookupIdent(e.autofill, 16);
-  }
-  if (candidates.empty() && mapData_ != nullptr) {
-    for (const MapFeature& f : mapData_->features) {
-      if (f.id == e.autofill) candidates.push_back(f);
-    }
-  }
-  if (candidates.empty()) {
-    if (!e.hasMatch && navSource_ != nullptr && navSource_->ready() &&
-        &e == &fplEntry_ && navSource_->isAirwayName(e.chars)) {
-      e.hasMatch = true;
-      e.match = MapFeature{};
-      e.match.id = e.chars;
-    }
-    return;
-  }
-
-  const MapFeature* best = &candidates.front();
-  if (mapData_ != nullptr && mapData_->positionValid) {
-    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-    const double cosLat =
-        std::max(0.05, std::cos(mapData_->ownshipLat * kDegToRad));
-    double bestSq = 0.0;
-    bool first = true;
-    for (const MapFeature& f : candidates) {
-      const double dLat = f.lat - mapData_->ownshipLat;
-      const double dLon = (f.lon - mapData_->ownshipLon) * cosLat;
-      const double dSq = dLat * dLat + dLon * dLon;
-      if (first || dSq < bestSq) {
-        best = &f;
-        bestSq = dSq;
-        first = false;
-      }
-    }
-  }
-  e.match = *best;
-  e.hasMatch = true;
-}
-
-void MfdController::entryTurnChar(FmsWaypointEntry& e, int step) {
-  const std::string shown = e.ident();
-  const char base =
-      e.pos < static_cast<int>(shown.size()) ? shown[e.pos] : '\0';
-  // A blank placeholder starts "in the middle at K"; a filled one steps from
-  // the displayed character (Pilot's Guide data-entry procedure).
-  const char next =
-      base == '\0' ? (step > 0 ? 'K' : 'J') : stepEntryChar(base, step);
-  if (static_cast<int>(e.chars.size()) <= e.pos) {
-    e.chars.push_back(next);
-  } else {
-    e.chars[e.pos] = next;
-  }
-  e.notFound = false;
-  entryUpdateAutofill(e);
-}
-
-void MfdController::entryMoveCursor(FmsWaypointEntry& e, int step) {
-  if (step < 0) {
-    e.pos = std::max(0, e.pos - 1);
-    return;
-  }
-  if (e.pos + 1 >= kFplEntryMaxChars) return;
-  // Moving right adopts the character under the cursor into the typed prefix
-  // (stepping through the auto-filled ident, like the real unit).
-  if (static_cast<int>(e.chars.size()) <= e.pos) {
-    const std::string shown = e.ident();
-    e.chars.push_back(e.pos < static_cast<int>(shown.size()) ? shown[e.pos]
-                                                             : 'A');
-  }
-  ++e.pos;
-  entryUpdateAutofill(e);
-}
-
 // ---- Active Flight Plan page ----
 
 void MfdController::syncFlightPlan(const MapData& map,
@@ -1501,7 +1398,7 @@ void MfdController::fplResetInteraction() {
   fplCursorOn_ = false;
   fplCursorRow_ = std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_);
   fplCursorCol_ = FplCursorCol::Ident;
-  fplEntry_ = FmsWaypointEntry{};
+  fplEntry_.reset();
   fplAltEntry_ = FplAltEntry{};
   fplConfirm_ = FplConfirm::None;
   fplMenuOpen_ = false;
@@ -1789,16 +1686,16 @@ bool MfdController::fplBezelKey(BezelKey key) {
         fplEntry_.notFound = false;
         break;
       case BezelKey::FmsInnerCw:
-        entryTurnChar(fplEntry_, +1);
+        fplEntry_.turnChar(navSource_, mapData_, +1);
         break;
       case BezelKey::FmsInnerCcw:
-        entryTurnChar(fplEntry_, -1);
+        fplEntry_.turnChar(navSource_, mapData_, -1);
         break;
       case BezelKey::FmsOuterCw:
-        entryMoveCursor(fplEntry_, +1);
+        fplEntry_.moveCursor(navSource_, mapData_, +1);
         break;
       case BezelKey::FmsOuterCcw:
-        entryMoveCursor(fplEntry_, -1);
+        fplEntry_.moveCursor(navSource_, mapData_, -1);
         break;
       default:
         break;
@@ -1889,7 +1786,7 @@ bool MfdController::fplBezelKey(BezelKey key) {
       } else {
         // Small knob on the IDENT column opens the Waypoint Information window
         // for an insertion before that row.
-        entryOpen(fplEntry_);
+        fplEntry_.open(navSource_, mapData_);
       }
       return true;
     case BezelKey::Clr:
@@ -1927,7 +1824,7 @@ void MfdController::directToOpen() {
   if (mapPointerActive_) {
     const MapFeature* sel = mapPointerFeature();
     if (sel != nullptr) {
-      entryOpen(dtoEntry_, sel->id);
+      dtoEntry_.open(navSource_, mapData_, sel->id);
       dtoEntry_.match = *sel;
       dtoEntry_.hasMatch = true;
       dtoEntry_.autofill = sel->id;
@@ -1943,7 +1840,7 @@ void MfdController::directToOpen() {
   } else if (!activeWaypoint_.empty()) {
     initial = activeWaypoint_;
   }
-  entryOpen(dtoEntry_, initial);
+  dtoEntry_.open(navSource_, mapData_, initial);
 }
 
 bool MfdController::directToBezelKey(BezelKey key) {
@@ -1958,7 +1855,7 @@ bool MfdController::directToBezelKey(BezelKey key) {
       key == BezelKey::DirectTo) {
     dtoOpen_ = false;
     dtoArmed_ = false;
-    dtoEntry_ = FmsWaypointEntry{};
+    dtoEntry_.reset();
     return true;
   }
 
@@ -1971,7 +1868,7 @@ bool MfdController::directToBezelKey(BezelKey key) {
       dtoRequestPending_ = true;
       dtoOpen_ = false;
       dtoArmed_ = false;
-      dtoEntry_ = FmsWaypointEntry{};
+      dtoEntry_.reset();
     }
     return true;
   }
@@ -1991,16 +1888,16 @@ bool MfdController::directToBezelKey(BezelKey key) {
       }
       break;
     case BezelKey::FmsInnerCw:
-      entryTurnChar(dtoEntry_, +1);
+      dtoEntry_.turnChar(navSource_, mapData_, +1);
       break;
     case BezelKey::FmsInnerCcw:
-      entryTurnChar(dtoEntry_, -1);
+      dtoEntry_.turnChar(navSource_, mapData_, -1);
       break;
     case BezelKey::FmsOuterCw:
-      entryMoveCursor(dtoEntry_, +1);
+      dtoEntry_.moveCursor(navSource_, mapData_, +1);
       break;
     case BezelKey::FmsOuterCcw:
-      entryMoveCursor(dtoEntry_, -1);
+      dtoEntry_.moveCursor(navSource_, mapData_, -1);
       break;
     default:
       break;
@@ -2103,7 +2000,7 @@ bool MfdController::mapBezelKey(BezelKey key) {
   if (key == BezelKey::Ent) {
     const MapFeature* sel = mapPointerFeature();
     if (sel != nullptr) {
-      wptEntry_ = FmsWaypointEntry{};
+      wptEntry_.reset();
       wptFeature_ = *sel;
       wptHasSelection_ = true;
       pageIndex_[static_cast<int>(MfdPageGroup::Waypoint)] =
@@ -2171,7 +2068,7 @@ bool MfdController::radarBezelKey(BezelKey key) {
 // ---- WPT ident search ----
 
 void MfdController::wptResetInteraction() {
-  wptEntry_ = FmsWaypointEntry{};
+  wptEntry_.reset();
   wptHasSelection_ = false;
   wptFeature_ = MapFeature{};
 }
@@ -2203,16 +2100,16 @@ bool MfdController::wptBezelKey(BezelKey key) {
         wptEntry_.notFound = false;
         break;
       case BezelKey::FmsInnerCw:
-        entryTurnChar(wptEntry_, +1);
+        wptEntry_.turnChar(navSource_, mapData_, +1);
         break;
       case BezelKey::FmsInnerCcw:
-        entryTurnChar(wptEntry_, -1);
+        wptEntry_.turnChar(navSource_, mapData_, -1);
         break;
       case BezelKey::FmsOuterCw:
-        entryMoveCursor(wptEntry_, +1);
+        wptEntry_.moveCursor(navSource_, mapData_, +1);
         break;
       case BezelKey::FmsOuterCcw:
-        entryMoveCursor(wptEntry_, -1);
+        wptEntry_.moveCursor(navSource_, mapData_, -1);
         break;
       default:
         break;
@@ -2222,11 +2119,11 @@ bool MfdController::wptBezelKey(BezelKey key) {
 
   switch (key) {
     case BezelKey::FmsPush:
-      entryOpen(wptEntry_, wptHasSelection_ ? wptFeature_.id : "");
+      wptEntry_.open(navSource_, mapData_, wptHasSelection_ ? wptFeature_.id : "");
       return true;
     case BezelKey::FmsInnerCw:
     case BezelKey::FmsInnerCcw:
-      entryOpen(wptEntry_);
+      wptEntry_.open(navSource_, mapData_);
       return true;
     default:
       return false;

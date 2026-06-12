@@ -2,34 +2,40 @@
 
 #include <string>
 
+#include "avionics/FlightData.h"
+#include "avionics/MapData.h"
+#include "avionics/MfdController.h"
 #include "avionics/NavDatabase.h"
 #include "avionics/Renderer.h"
+#include "avionics/SoftkeyController.h"
 
 namespace avionics {
 
 // Power-on initialization shown for the first few seconds after the display
 // comes up, mirroring the real G1000 NXi sequence: a centered Garmin logo
-// splash, then the MFD Power-up Page (database currency table). Stateless like
-// the other page renderers; the engine owns the timer/phase and the renderer
-// just draws what it is told.
+// splash on both GDUs, then the MFD Power-up Page (database currency review)
+// or the PFD initialization view (red-X instruments + AHRS align message).
 class BootScreen {
  public:
   enum class Phase {
-    Logo,     // centered Garmin logo on black
-    PowerUp,  // MFD Power-up Page: database currency table + status prompt
+    Logo,     // centered Garmin logo on black (both displays)
+    PowerUp,  // post-logo screen: MFD database page or PFD init
   };
 
-  // sourceLabel names the data feed being brought online (e.g. "X-PLANE",
-  // "MOCK DATA"). navDatabase fills the AVIATION row of the database table; an
-  // expired database is shown in amber so the pilot is alerted before
-  // acknowledging, as on the real unit. awaitingAck applies on the PowerUp
-  // phase: true once initialization is complete and the unit is waiting for the
-  // pilot to press ENT to acknowledge the database information; false shows
-  // "INITIALIZING SYSTEM" (still coming up, or a feed that advances on its own).
-  // powerUpAlpha in [0, 1] ramps the Power-up Page opacity during the 2s
-  // ease-in-out cross-fade from the logo splash (StartupLogo.css); ignored on
-  // the Logo phase.
-  static void render(Renderer& r, Phase phase, const std::string& sourceLabel,
+  enum class Target {
+    Pfd,
+    Mfd,
+  };
+
+  // Logo splash (phase Logo) or the post-logo screen for the given GDU.
+  // navDatabase fills the Navigation row on the MFD page. awaitingAck on the MFD
+  // shows the ENT / right-softkey continue prompt once the boot timer has
+  // elapsed (live sources); the mock feed advances on its own. powerUpAlpha in
+  // [0, 1] ramps the post-logo opacity during the ease-in-out cross-fade from
+  // the logo splash; ignored on the Logo phase.
+  static void render(Renderer& r, Target target, Phase phase,
+                     const FlightData& flightData, const MapData& map,
+                     const SoftkeyController& pfdUi, const MfdController& mfdUi,
                      const NavDatabaseInfo& navDatabase, bool awaitingAck,
                      float powerUpAlpha, int widthPx, int heightPx);
 };

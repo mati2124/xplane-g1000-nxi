@@ -160,6 +160,13 @@ struct AvionicsDevice {
   // Offscreen render-to-texture cache.
   GLuint fbo = 0;
   GLuint tex = 0;
+  // Stencil buffer for the FBO. NanoVG fills concave/complex paths (e.g. the
+  // HSI ownship symbol) with a stencil-then-cover pass, so without a stencil
+  // attachment those fills render nothing while convex shapes still draw. The
+  // standalone shell's GLFW window has a stencil buffer by default; our own FBO
+  // must attach one explicitly. A packed depth24-stencil8 renderbuffer is the
+  // most broadly supported way to get an 8-bit stencil on an FBO.
+  GLuint depthStencilRbo = 0;
   int texW = 0;
   int texH = 0;
   bool cacheReady = false;     // tex has at least one rendered frame
@@ -296,7 +303,8 @@ bool EnsureCache(AvionicsDevice& dev, int width, int height, bool smooth) {
 
   if (dev.fbo == 0) glGenFramebuffersEXT(1, &dev.fbo);
   if (dev.tex == 0) glGenTextures(1, &dev.tex);
-  if (dev.fbo == 0 || dev.tex == 0) return false;
+  if (dev.depthStencilRbo == 0) glGenRenderbuffersEXT(1, &dev.depthStencilRbo);
+  if (dev.fbo == 0 || dev.tex == 0 || dev.depthStencilRbo == 0) return false;
 
   const GLint filter = smooth ? GL_LINEAR : GL_NEAREST;
   glBindTexture(GL_TEXTURE_2D, dev.tex);
@@ -308,11 +316,24 @@ bool EnsureCache(AvionicsDevice& dev, int width, int height, bool smooth) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glBindTexture(GL_TEXTURE_2D, 0);
 
+  // Size the depth-stencil renderbuffer to match the color texture (resized
+  // alongside it when the render scale changes).
+  glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, dev.depthStencilRbo);
+  glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8, width,
+                           height);
+  glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, 0);
+
   GLint prevFbo = 0;
   glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &prevFbo);
   glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, dev.fbo);
   glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
                             GL_TEXTURE_2D, dev.tex, 0);
+  // A packed depth24-stencil8 renderbuffer attaches to both the depth and
+  // stencil attachment points; NanoVG only needs the stencil half.
+  glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
+                               GL_RENDERBUFFER_EXT, dev.depthStencilRbo);
+  glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT,
+                               GL_RENDERBUFFER_EXT, dev.depthStencilRbo);
   const GLenum status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
   glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, static_cast<GLuint>(prevFbo));
   if (status != GL_FRAMEBUFFER_COMPLETE_EXT) return false;
@@ -335,7 +356,8 @@ void RenderSceneToCache(AvionicsDevice& dev, int width, int height, double dt,
                        /*alphaTest=*/0, /*alphaBlend=*/1, /*depthTest=*/0,
                        /*depthWrite=*/0);
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
+  glClearStencil(0);
+  glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
   dev.engine->update(dt);
   dev.engine->renderFrame(width, height, 1.0f);
@@ -410,7 +432,10 @@ int DrawDevice(AvionicsDevice& dev) {
   if (!g_dataSource || dev.rendererFailed) return 1;
 
   if (g_dataSource && g_mfd.engine) {
-    const avionics::MfdController& ui = g_mfd.engine->mfdController();
+    avionics::MfdController& ui = g_mfd.engine->mfdController();
+    // Hide the dedicated Weather Radar page on airframes with no radar fit; the
+    // NEXRAD map overlay is independent and stays available.
+    ui.setWeatherRadarAvailable(g_dataSource->weatherRadarEquipped());
     g_dataSource->syncWeatherRadar(ui);
     // Keep the moving-map feature/airspace queries centered on the Map Pointer
     // while panning so the panned-to area loads data, not just around ownship.
@@ -1119,6 +1144,7 @@ void ShutdownDevice(AvionicsDevice& dev) {
   if (dev.renderer) dev.renderer.release();
   dev.fbo = 0;
   dev.tex = 0;
+  dev.depthStencilRbo = 0;
   dev.texW = 0;
   dev.texH = 0;
   dev.cacheReady = false;

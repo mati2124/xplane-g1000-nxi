@@ -334,6 +334,51 @@ std::string decodeIdentifier(const std::string& base64) {
   return bytes;
 }
 
+// Resolve a dataref's numeric Web API id (once per session) and read its value.
+// Returns false when the server is unreachable so the caller can drop the id.
+bool pollStringDataref(const std::string& host, std::uint16_t port,
+                       const char* path, long long& datarefId,
+                       std::string& valueOut) {
+  if (datarefId < 0) {
+    std::string body;
+    if (httpGet(host, port, std::string(kDatarefsByName) + path, body)) {
+      long long id = -1;
+      if (extractId(body, id)) datarefId = id;
+    }
+  }
+  if (datarefId < 0) {
+    valueOut.clear();
+    return false;
+  }
+
+  std::string body;
+  const std::string valuePath = std::string(kDatarefsPrefix) +
+                                std::to_string(datarefId) + kValueSuffix;
+  if (!httpGet(host, port, valuePath, body)) {
+    datarefId = -1;
+    valueOut.clear();
+    return false;
+  }
+
+  std::string base64;
+  if (extractDataString(body, base64)) {
+    valueOut = decodeIdentifier(base64);
+  } else {
+    valueOut.clear();
+  }
+  return true;
+}
+
+std::string readNavStationIdent(const std::string& host, std::uint16_t port,
+                                const char* navPath, const char* dmePath,
+                                long long& navId, long long& dmeId) {
+  std::string id;
+  pollStringDataref(host, port, navPath, navId, id);
+  if (!id.empty()) return id;
+  pollStringDataref(host, port, dmePath, dmeId, id);
+  return id;
+}
+
 }  // namespace
 
 XPlaneWebApi::XPlaneWebApi(std::string host, std::uint16_t port)
@@ -358,37 +403,42 @@ std::string XPlaneWebApi::destinationId() const {
   return destinationId_;
 }
 
-void XPlaneWebApi::run() {
-  long long datarefId = -1;
-  while (!stop_.load()) {
-    // Resolve the numeric id for gps_nav_id once per session (the id is stable
-    // within an X-Plane run, even across aircraft reloads).
-    if (datarefId < 0) {
-      std::string body;
-      if (httpGet(host_, port_,
-                  std::string(kDatarefsByName) + datarefs::kGpsNavId, body)) {
-        long long id = -1;
-        if (extractId(body, id)) datarefId = id;
-      }
-    }
+std::string XPlaneWebApi::nav1Ident() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return nav1Ident_;
+}
 
-    if (datarefId >= 0) {
-      std::string body;
-      const std::string path = std::string(kDatarefsPrefix) +
-                               std::to_string(datarefId) + kValueSuffix;
-      if (httpGet(host_, port_, path, body)) {
-        std::string base64;
-        std::string id;
-        if (extractDataString(body, base64)) id = decodeIdentifier(base64);
-        std::lock_guard<std::mutex> lock(mutex_);
-        destinationId_ = id;
+std::string XPlaneWebApi::nav2Ident() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return nav2Ident_;
+}
+
+void XPlaneWebApi::run() {
+  long long gpsNavId = -1;
+  long long nav1NavId = -1;
+  long long nav1DmeId = -1;
+  long long nav2NavId = -1;
+  long long nav2DmeId = -1;
+  while (!stop_.load()) {
+    std::string gps;
+    std::string nav1;
+    std::string nav2;
+    const bool gpsOk =
+        pollStringDataref(host_, port_, datarefs::kGpsNavId, gpsNavId, gps);
+    nav1 = readNavStationIdent(host_, port_, datarefs::kNav1NavId,
+                               datarefs::kNav1DmeId, nav1NavId, nav1DmeId);
+    nav2 = readNavStationIdent(host_, port_, datarefs::kNav2NavId,
+                               datarefs::kNav2DmeId, nav2NavId, nav2DmeId);
+
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (gpsOk) {
+        destinationId_ = std::move(gps);
       } else {
-        // The request failed (server gone or session changed): drop the id so
-        // it is re-resolved, and clear the stale identifier.
-        datarefId = -1;
-        std::lock_guard<std::mutex> lock(mutex_);
         destinationId_.clear();
       }
+      nav1Ident_ = std::move(nav1);
+      nav2Ident_ = std::move(nav2);
     }
 
     for (int waited = 0; waited < kPollIntervalMs && !stop_.load();

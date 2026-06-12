@@ -149,6 +149,8 @@ FlightData withAllSensorsFailed(FlightData data) {
   // transponder, OAT, clock) are unknown too: blank them / dash them out
   // rather than leaving the last-received values on screen.
   data.dataLinkValid = false;
+  data.nav1Ident.clear();
+  data.nav2Ident.clear();
   return data;
 }
 
@@ -279,12 +281,12 @@ void AvionicsEngine::tuneNavRadio(int direction, bool coarse) {
 
 void AvionicsEngine::transferComRadio() {
   if (!isLivePageUp()) return;
-  softkeys_.transferCom();
+  softkeys_.transferCom(dataSource_->snapshot());
 }
 
 void AvionicsEngine::transferNavRadio() {
   if (!isLivePageUp()) return;
-  softkeys_.transferNav();
+  softkeys_.transferNav(dataSource_->snapshot());
 }
 
 const float* AvionicsEngine::bezelPressLevels() const {
@@ -297,9 +299,9 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
 
   if (!bootComplete()) {
     // Phase 1: logo at full opacity (no fade, per StartupLogo.css). Phase 2:
-    // Power-up Page fades in over kBootPowerUpFadeSeconds ease-in-out while the
-    // logo is removed; then "INITIALIZING SYSTEM" until kBootDurationSeconds,
-    // then (live sources) the ENT acknowledgement prompt.
+    // the MFD Power-up Page or PFD initialization view fades in over
+    // kBootPowerUpFadeSeconds; once the timer elapses, live sources show the ENT
+    // acknowledgement prompt on the MFD.
     const BootScreen::Phase phase = bootElapsedSeconds_ < kBootLogoSeconds
                                         ? BootScreen::Phase::Logo
                                         : BootScreen::Phase::PowerUp;
@@ -315,7 +317,11 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
         powerUpAlpha = 1.0f;
       }
     }
-    BootScreen::render(renderer_, phase, sourceLabel_,
+    const BootScreen::Target target =
+        page_ == DisplayPage::MultiFunctionDisplay ? BootScreen::Target::Mfd
+                                                   : BootScreen::Target::Pfd;
+    BootScreen::render(renderer_, target, phase, dataSource_->snapshot(),
+                       dataSource_->mapSnapshot(), softkeys_, mfd_,
                        dataSource_->mapSnapshot().navDatabase,
                        awaitingPowerUpAck(), powerUpAlpha, widthPx, heightPx);
     renderer_.endFrame();
@@ -345,7 +351,7 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
       MultiFunctionDisplay::render(renderer_, data, dataSource_->mapSnapshot(),
                                    dataSource_->checklistSnapshot(),
                                    dataSource_->eisLayoutSnapshot(), mfd_,
-                                   widthPx, heightPx);
+                                   softkeys_, widthPx, heightPx);
       break;
   }
 

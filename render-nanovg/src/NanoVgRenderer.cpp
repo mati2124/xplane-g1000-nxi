@@ -337,4 +337,32 @@ float NanoVgRenderer::measureTextWidth(const std::string& text, float sizePx,
   return nvgTextBounds(vg_, 0.0f, 0.0f, text.c_str(), nullptr, bounds);
 }
 
+TextRect NanoVgRenderer::measureTextRect(float x, float y,
+                                         const std::string& text, float sizePx,
+                                         TextAlign align, FontFace face) {
+  if (!vg_ || fontId_ < 0) {
+    return Renderer::measureTextRect(x, y, text, sizePx, align, face);
+  }
+
+  int hAlign = NVG_ALIGN_LEFT;
+  switch (align) {
+    case TextAlign::Left:
+      hAlign = NVG_ALIGN_LEFT;
+      break;
+    case TextAlign::Center:
+      hAlign = NVG_ALIGN_CENTER;
+      break;
+    case TextAlign::Right:
+      hAlign = NVG_ALIGN_RIGHT;
+      break;
+  }
+
+  nvgFontSize(vg_, sizePx);
+  nvgFontFaceId(vg_, fontIdFor(face));
+  nvgTextAlign(vg_, hAlign | NVG_ALIGN_MIDDLE);
+  float bounds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  nvgTextBounds(vg_, x, y, text.c_str(), nullptr, bounds);
+  return {bounds[0], bounds[1], bounds[2], bounds[3]};
+}
+
 }  // namespace avionics

@@ -8,6 +8,7 @@
 #include "avionics/DataSource.h"
 #include "avionics/MapData.h"
 #include "avionics/NavFeatureSource.h"
+#include "avionics/NexradWeatherRadar.h"
 #include "avionics/Radio.h"
 #include "avionics/Terrain.h"
 #include "avionics/WeatherRadar.h"
@@ -121,7 +122,8 @@ class MockDataSource : public DataSource {
   FlightData data_;
   MapData map_;
   ProceduralTerrain terrain_;  // synthetic topo background for the mock map
-  ProceduralWeatherRadar weather_;
+  ProceduralWeatherRadar weather_;  // onboard radar (WX page + offline overlay)
+  NexradWeatherRadar nexrad_;       // live datalink NEXRAD map overlay
   double elapsedSeconds_ = 0.0;
 
   std::vector<MapLeg> route_;

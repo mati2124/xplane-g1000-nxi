@@ -3,13 +3,38 @@
 namespace avionics::pfd {
 namespace {
 
+// Fixed ownship symbol at the rose center: the G1000 NXi HSI airplane
+// silhouette (top-down plan view, nose up toward the lubber line, main wing
+// forward, horizontal stabilizer at the tail). It does not rotate -- the card
+// turns beneath it. Vertices are taken from the Working Title NXi HSIRose
+// symbol path (rose radius 149 in that coordinate space) and expressed as
+// fractions of our rose radius; filled white with no outline like the real
+// unit.
 void drawHsiAircraftSymbol(Renderer& r, float cx, float cy, float radius) {
-  const float wing = radius * 0.22f;
-  const float nose = radius * 0.14f;
-  const float thick = radius * 0.06f;
-  r.strokeLine(cx - wing, cy, cx + wing, cy, thick, colors::kWhite);
-  r.strokeLine(cx, cy - nose, cx, cy + nose * 0.35f, thick, colors::kWhite);
-  r.fillCircle(cx, cy, radius * 0.04f, colors::kWhite);
+  const float s = radius;
+  const Point body[] = {
+      {-0.134f * s, 0.007f * s},   // left wing trailing edge at fuselage
+      {-0.134f * s, -0.020f * s},  // left wingtip
+      {-0.027f * s, -0.067f * s},  // left fuselage at wing leading edge
+      {-0.027f * s, -0.134f * s},  // left cockpit
+      {0.000f * s, -0.154f * s},   // nose
+      {0.027f * s, -0.134f * s},   // right cockpit
+      {0.027f * s, -0.067f * s},   // right fuselage at wing leading edge
+      {0.134f * s, -0.020f * s},   // right wingtip
+      {0.134f * s, 0.007f * s},    // right wing trailing edge
+      {0.027f * s, 0.007f * s},    // right fuselage below wing
+      {0.027f * s, 0.087f * s},    // right fuselage at stabilizer leading edge
+      {0.060f * s, 0.121f * s},    // right stabilizer tip
+      {0.060f * s, 0.134f * s},    // right tail trailing edge
+      {-0.060f * s, 0.134f * s},   // left tail trailing edge
+      {-0.060f * s, 0.121f * s},   // left stabilizer tip
+      {-0.027f * s, 0.087f * s},   // left fuselage at stabilizer leading edge
+      {-0.027f * s, 0.007f * s},   // left fuselage below wing
+  };
+  constexpr int kCount = static_cast<int>(sizeof(body) / sizeof(body[0]));
+  Point pts[kCount];
+  for (int i = 0; i < kCount; ++i) pts[i] = {cx + body[i].x, cy + body[i].y};
+  r.fillPolygon(pts, kCount, colors::kWhite);
 }
 
 void drawTurnRateIndicator(Renderer& r, float cx, float cy, float radius,

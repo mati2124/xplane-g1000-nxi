@@ -240,6 +240,7 @@ inline void RenderSuite(avionics::NanoVgRenderer& renderer,
 
 constexpr const char* kSourceXPlane = "xplane";
 constexpr const char* kLabelMock = "MOCK DATA";  // --screenshot dev mode only
+constexpr const char* kLabelDemo = "DEMO DATA";  // built-in demo feed toggle
 constexpr const char* kDefaultXPlaneHost = "127.0.0.1";
 constexpr std::uint16_t kDefaultXPlanePort = 49000;
 
@@ -282,10 +283,16 @@ struct AppState {
   avionics::AvionicsEngine* mfdEngine = nullptr;  // null when --no-mfd
   GLFWwindow* pfdWindow = nullptr;
   GLFWwindow* mfdWindow = nullptr;
-  // The standalone always reads the live X-Plane connection (no mock feed): the
-  // engine shows the power-up / waiting screen until the sim starts delivering
-  // data, then the live pages.
+  // The standalone normally reads the live X-Plane connection: the engine shows
+  // the power-up / waiting screen until the sim starts delivering data, then the
+  // live pages. The built-in demo (mock) feed lets the displays show believable
+  // motion without a running sim; Ctrl+Shift+D toggles between them (a
+  // deliberately awkward chord so it isn't pressed by accident). activeSource
+  // points at whichever feed is currently driving the displays.
   avionics::SimulatorConnection* xplane = nullptr;
+  avionics::MockDataSource* demoSource = nullptr;
+  avionics::DataSource* activeSource = nullptr;
+  bool demoMode = false;
   // Whether the hardware bezel strips are drawn (and the windows sized to
   // include them). Mirrors settings.showBezel; toggled with the B key.
   bool showBezel = true;
@@ -415,6 +422,33 @@ void AcknowledgeBoot(AppState& app) {
 bool AwaitingBootAck(const AppState& app) {
   return (app.pfdEngine != nullptr && app.pfdEngine->awaitingPowerUpAck()) ||
          (app.mfdEngine != nullptr && app.mfdEngine->awaitingPowerUpAck());
+}
+
+// Swaps both displays between the live X-Plane feed and the built-in demo
+// (mock) feed. Bound to Ctrl+Shift+D (an awkward chord so it isn't hit by
+// accident). Both engines take the new source and skip the power-up animation
+// so the switch is immediate rather than re-running the boot sequence.
+void ToggleDemoSource(AppState& app) {
+  if (app.xplane == nullptr || app.demoSource == nullptr) return;
+  app.demoMode = !app.demoMode;
+  avionics::DataSource* next =
+      app.demoMode ? static_cast<avionics::DataSource*>(app.demoSource)
+                   : static_cast<avionics::DataSource*>(app.xplane);
+  const std::string label =
+      app.demoMode ? kLabelDemo : std::string(app.xplane->simulatorName());
+  app.activeSource = next;
+  if (app.pfdEngine != nullptr) {
+    app.pfdEngine->setDataSource(*next, label);
+    app.pfdEngine->skipBoot();
+    // Persistent CAS banner on the PFD while the demo feed drives the displays.
+    app.pfdEngine->softkeyController().setDemoBanner(app.demoMode);
+  }
+  if (app.mfdEngine != nullptr) {
+    app.mfdEngine->setDataSource(*next, label);
+    app.mfdEngine->skipBoot();
+  }
+  std::fprintf(stderr, "Data source: %s\n",
+               app.demoMode ? "DEMO (built-in mock feed)" : "X-PLANE (live)");
 }
 
 void ApplyRadioBridgeAction(avionics::AvionicsEngine& engine,
@@ -685,6 +719,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
 
   avionics::AvionicsEngine engine(dataSource, renderer, kLabelMock);
   engine.mfdController().setNavFeatureSource(&navMapData);
+  engine.softkeyController().setNavFeatureSource(&navMapData);
 
   int fbWidth = 0;
   int fbHeight = 0;
@@ -699,33 +734,53 @@ int RunScreenshot(const char* path, double seconds, const char* state,
 
   // --state selects which screen to capture (default: the live PFD):
   //   pfd    - skip the boot animation and show the live page
-  //   boot   - the power-on initialization screen
+  //   boot   - MFD power-up page (database review + ENT prompt)
+  //   bootpfd - PFD initialization (red-X instruments + AHRS align)
   //   failed - the connection-lost display (link down: instruments red-X'd,
   //            chrome readouts dashed)
   if (state != nullptr && std::strcmp(state, "bootlogo") == 0) {
     // The initial Garmin logo splash (phase 1 of power-up).
     renderer.beginFrame(fbWidth, fbHeight, 1.0f);
-    avionics::BootScreen::render(renderer, avionics::BootScreen::Phase::Logo,
-                                 kLabelMock, dataSource.mapSnapshot().navDatabase,
-                                 false, 1.0f, fbWidth, fbHeight);
+    avionics::BootScreen::render(
+        renderer, avionics::BootScreen::Target::Mfd,
+        avionics::BootScreen::Phase::Logo, dataSource.snapshot(),
+        dataSource.mapSnapshot(), engine.softkeyController(),
+        engine.mfdController(), dataSource.mapSnapshot().navDatabase, false,
+        1.0f, fbWidth, fbHeight);
     renderer.endFrame();
   } else if (state != nullptr && std::strcmp(state, "bootfade") == 0) {
-    // Mid cross-fade: Power-up Page at ~50% opacity (1s into the 2s fade).
+    // Mid cross-fade: MFD Power-up Page at ~50% opacity (1s into the 2s fade).
     dataSource.update(0.0);
     renderer.beginFrame(fbWidth, fbHeight, 1.0f);
-    avionics::BootScreen::render(renderer, avionics::BootScreen::Phase::PowerUp,
-                                 kLabelMock, dataSource.mapSnapshot().navDatabase,
-                                 false, 0.5f, fbWidth, fbHeight);
+    avionics::BootScreen::render(
+        renderer, avionics::BootScreen::Target::Mfd,
+        avionics::BootScreen::Phase::PowerUp, dataSource.snapshot(),
+        dataSource.mapSnapshot(), engine.softkeyController(),
+        engine.mfdController(), dataSource.mapSnapshot().navDatabase, false,
+        0.5f, fbWidth, fbHeight);
     renderer.endFrame();
   } else if (state != nullptr && std::strcmp(state, "boot") == 0) {
-    // The MFD Power-up Page (phase 2). Pump the source once so the database
-    // currency block is populated (from the parsed nav data when available, the
-    // demo cycle otherwise), and show the ENT acknowledgement prompt.
+    // MFD Power-up Page (phase 2). Pump the source once so the Navigation row
+    // reflects the loaded nav database, and show the ENT acknowledgement prompt.
     dataSource.update(0.0);
     renderer.beginFrame(fbWidth, fbHeight, 1.0f);
-    avionics::BootScreen::render(renderer, avionics::BootScreen::Phase::PowerUp,
-                                 kLabelMock, dataSource.mapSnapshot().navDatabase,
-                                 true, 1.0f, fbWidth, fbHeight);
+    avionics::BootScreen::render(
+        renderer, avionics::BootScreen::Target::Mfd,
+        avionics::BootScreen::Phase::PowerUp, dataSource.snapshot(),
+        dataSource.mapSnapshot(), engine.softkeyController(),
+        engine.mfdController(), dataSource.mapSnapshot().navDatabase, true,
+        1.0f, fbWidth, fbHeight);
+    renderer.endFrame();
+  } else if (state != nullptr && std::strcmp(state, "bootpfd") == 0) {
+    // PFD initialization (Figure 1-7): instruments red-X'd, AHRS align message.
+    dataSource.update(0.0);
+    renderer.beginFrame(fbWidth, fbHeight, 1.0f);
+    avionics::BootScreen::render(
+        renderer, avionics::BootScreen::Target::Pfd,
+        avionics::BootScreen::Phase::PowerUp, dataSource.snapshot(),
+        dataSource.mapSnapshot(), engine.softkeyController(),
+        engine.mfdController(), dataSource.mapSnapshot().navDatabase, false,
+        1.0f, fbWidth, fbHeight);
     renderer.endFrame();
   } else if (state != nullptr && std::strcmp(state, "alerts") == 0) {
     // Drive the real interaction path: bring up the live page, press the
@@ -806,11 +861,31 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::Menu);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfddto") == 0) {
+    // The PFD Direct-To window (Direct-To bezel key, Pilot's Guide Fig. 5-45):
+    // opens pre-filled with the active waypoint (resolved from the nav data),
+    // ready to ACTIVATE.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::DirectTo);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
     // The MFD full-screen MAP page (its own window in normal operation).
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdnrst") == 0) {
+    // The MFD NRST - Nearest Airports page (Pilot's Guide Fig. 5-30): select
+    // the NRST page group (first page is Nearest Airports), step the cursor to
+    // the second airport so the white selection arrow is captured.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(3);  // NRST -> Nearest Airports page group
+    // Let the 3 s page-select popup fade so the Approaches box is captured.
+    for (int i = 0; i < 260; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdsimbrief") == 0) {
     // The AUX - SIMBRIEF page with a Pilot ID entry in progress: step to the
@@ -854,15 +929,19 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdwx") == 0) {
-    // The MAP page with the NEXRAD precipitation overlay enabled, zoomed out
-    // so the (forward-range) mock weather cells are on screen. Zoom first on
-    // the root bar (RNG+ steps the range ladder), then open Map Opt and toggle
-    // NEXRAD, leaving the submenu open so the highlighted key is captured.
+    // The MAP page with the datalink NEXRAD overlay enabled, zoomed out so the
+    // mock precipitation (a 360-degree field centered on the aircraft) fills the
+    // map. Zoom first on the root bar (RNG+ steps the range ladder), then open
+    // Map Opt and toggle NEXRAD, leaving the submenu open so the highlighted key
+    // is captured.
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
     for (int p = 0; p < 4; ++p) engine.pressSoftkey(11);  // RNG+ -> ~100 NM
     engine.pressSoftkey(5);  // "Map Opt" -> open submenu
+    // TER cycles Off -> Topo -> Rel -> Off; press three times back to Off for a
+    // clean background under the weather overlay.
+    engine.pressSoftkey(2);  // TER Off -> Topo
     engine.pressSoftkey(2);  // TER Topo -> Rel
     engine.pressSoftkey(2);  // TER Rel -> Off (clean background)
     engine.pressSoftkey(4);  // "NEXRAD" on
@@ -1051,21 +1130,34 @@ int RunScreenshot(const char* path, double seconds, const char* state,
 }
 
 void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
-           int /*mods*/) {
+           int mods) {
   if (action != GLFW_PRESS) return;
+  auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
   if (key == GLFW_KEY_ESCAPE) {
+    // While the built-in demo feed is active, Esc returns to the live feed
+    // rather than quitting (this is what the demo CAS banner tells the pilot);
+    // a second press, now live, quits.
+    if (app != nullptr && app->demoMode) {
+      ToggleDemoSource(*app);
+      return;
+    }
     glfwSetWindowShouldClose(window, GLFW_TRUE);
     return;
   }
   // ENT acknowledges the power-up page (live sim link); the keyboard Enter key
   // is a convenience alongside clicking the ENT bezel key.
   if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
-    auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (app != nullptr) AcknowledgeBoot(*app);
     return;
   }
-  auto* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
   if (app == nullptr) return;
+  // Ctrl+Shift+D toggles the built-in demo feed (an awkward chord so it isn't
+  // hit by accident). Handled before the single-key view toggles below.
+  if (key == GLFW_KEY_D && (mods & GLFW_MOD_CONTROL) != 0 &&
+      (mods & GLFW_MOD_SHIFT) != 0) {
+    ToggleDemoSource(*app);
+    return;
+  }
   // View toggles (persisted). No on-screen menu: these are the standalone's
   // keyboard shortcuts for the bezel strips, the OS window title bar, and
   // keep-on-top. Each affects both windows at once.
@@ -1795,6 +1887,16 @@ int main(int argc, char** argv) {
                                     &eisStore, &obstacles, bridgePort,
                                     fmsWriteEnabled);
 
+  // Built-in demo feed: the same motion-only mock the screenshot path uses,
+  // wired to the same real nav databases (it never fabricates navigation data)
+  // so toggling to it (Ctrl+Shift+D) shows believable motion on the real map
+  // without a running sim.
+  avionics::MockDataSource demoSource;
+  demoSource.setNavFeatureSource(&navMapData);
+  demoSource.setTerrainSource(&terrain);
+  demoSource.setChecklistSource(&checklists);
+  demoSource.setEisSource(&eisStore);
+
   // SimBrief OFP fetch (AUX - SIMBRIEF page). The Pilot ID comes from the
   // command line, falling back to the persisted setting; when one is known the
   // latest OFP is fetched once at startup, and the page's FETCH softkey
@@ -1821,6 +1923,7 @@ int main(int argc, char** argv) {
   // MFD engine renders the MFD page from the same data without pumping again.
   avionics::AvionicsEngine pfdEngine(initialSource, pfdRenderer, initialLabel);
   pfdEngine.setPage(avionics::DisplayPage::PrimaryFlightDisplay);
+  pfdEngine.softkeyController().setNavFeatureSource(&navMapData);
 
   avionics::AvionicsEngine* mfdEngine = nullptr;
   if (mfdRenderer != nullptr) {
@@ -1845,6 +1948,8 @@ int main(int argc, char** argv) {
 
   AppState app;
   app.xplane = &xplane;
+  app.demoSource = &demoSource;
+  app.activeSource = &xplane;
   app.showBezel = showBezel;
   app.settings = savedSettings;
   app.settings.alwaysOnTop = alwaysOnTop;
@@ -1894,7 +1999,7 @@ int main(int argc, char** argv) {
   // restored on the next launch.
   std::fprintf(stderr,
                "Shortcuts: B = bezel, T = title bar, P = always-on-top, "
-               "F = full screen, Esc = quit.\n");
+               "F = full screen, Ctrl+Shift+D = demo feed, Esc = quit.\n");
 
   // Optional per-display render profiler (AVIONICS_PROFILE=1): isolates the GPU
   // cost of each window's draw with a glFinish so we can see whether the PFD or
@@ -2002,6 +2107,15 @@ int main(int argc, char** argv) {
       mfdEngine->mfdController().setSimbriefState(simbriefState);
     }
 
+    // PFD Direct-To activation (the PFD has its own Direct-To window): engage
+    // the direct course the same way the MFD's window does.
+    {
+      avionics::MapLeg pfdDto;
+      if (pfdEngine.softkeyController().consumeDirectToRequest(pfdDto)) {
+        xplane.setDirectTo(pfdDto);
+      }
+    }
+
     // FPL page edits override the X-Plane feed's displayed plan, mirroring the
     // SimBrief flow above.
     if (mfdEngine != nullptr) {
@@ -2027,8 +2141,14 @@ int main(int argc, char** argv) {
       // Map Pointer while panning, so the panned-to area loads features /
       // airspaces instead of staying empty around the aircraft.
       const avionics::MfdController& mapUi = mfdEngine->mfdController();
-      xplane.setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
-                             mapUi.mapPointerLon());
+      // Route to whichever feed is live so panning the demo map recenters its
+      // nearby-data queries too, not just the X-Plane feed's.
+      avionics::DataSource* mapSource =
+          app.activeSource != nullptr
+              ? app.activeSource
+              : static_cast<avionics::DataSource*>(&xplane);
+      mapSource->setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
+                                 mapUi.mapPointerLon());
     }
 
     // Cockpit bezel / softkey / radio events forwarded from the in-sim plugin.

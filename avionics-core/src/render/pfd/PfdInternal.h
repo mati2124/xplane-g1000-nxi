@@ -24,9 +24,6 @@ struct Layout {
   float sx, sy, s;
 
   float topBarH, infoPanelH, infoPanelTop, bottomBarH;
-  // PFD Navigation Status Box: a strip just below the top NAV/COM bar (and the
-  // AFCS Status Box) carrying the active flight-plan leg and DIS/BRG.
-  float navStatusTop, navStatusH;
   float attTop, attBottom;
   float attCx, attCy;
   float attRegionH;
@@ -133,11 +130,11 @@ constexpr float kHeadingBox = 30.0f;
 // under the rose's numeric labels, matching the G1000 NXi.
 constexpr float kHsiBug = 18.0f;
 constexpr float kHsiSource = 14.0f;
-constexpr float kNavComFreq = 24.0f;
-constexpr float kNavComLabel = 16.0f;
-constexpr float kFmaActive = 24.0f;
-constexpr float kFmaArmed = 20.0f;
-constexpr float kFmaSmall = 14.0f;
+constexpr float kNavComFreq = 18.0f;
+constexpr float kNavComLabel = 15.0f;
+constexpr float kFmaActive = 23.0f;
+constexpr float kFmaArmed = 19.0f;
+constexpr float kFmaSmall = 13.0f;
 constexpr float kInfoLabel = 16.0f;
 constexpr float kInfoValue = 20.0f;
 constexpr float kSoftkey = 17.0f;
@@ -205,5 +202,16 @@ void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
                     bool hsiMapMode = false);
 void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
                 const SoftkeyController& ui, float w, float h);
+
+// Draws the NAV (left) and COM (right) frequency cells of the top bar: vertical
+// band labels with 1/2, the boxed standby frequency, the transfer carets, the
+// active frequency, and (NAV) the decoded station ident. The NAV cells fill
+// [navLeft, navLeft+navW] and the COM cells fill [comLeft, comLeft+comW]; the
+// caller owns the box/background and the bar's center content. Shared by the
+// PFD top bar and the MFD top data bar so the two displays render identical
+// radios. `barH` is the bar height; font sizes are derived from `h`.
+void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
+                         float navW, float comLeft, float comW,
+                         const FlightData& d, const SoftkeyController& ui);
 
 }  // namespace avionics::pfd

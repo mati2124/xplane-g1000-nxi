@@ -11,9 +11,9 @@ namespace avionics::pfd {
 // kDefaultVspeedKt so the controller and this table never drift apart.
 const VSpeedRef kVSpeedRefs[kVspeedRefCount] = {
     {"G", "GLIDE", kDefaultVspeedKt[0]},
-    {"R", "VR", kDefaultVspeedKt[1]},
-    {"X", "VX", kDefaultVspeedKt[2]},
-    {"Y", "VY", kDefaultVspeedKt[3]},
+    {"R", "Vr", kDefaultVspeedKt[1]},
+    {"X", "Vx", kDefaultVspeedKt[2]},
+    {"Y", "Vy", kDefaultVspeedKt[3]},
 };
 const int kVSpeedRefCount = kVspeedRefCount;
 
@@ -25,16 +25,12 @@ Layout computeLayout(float w, float h) {
   const auto X = [&](float px) { return px * L.sx; };
   const auto Y = [&](float px) { return px * L.sy; };
 
-  // Top NavComBox 56 px; bottom info panel 55 px at y=679; softkey bar 35 px.
-  L.topBarH = Y(56.0f);
+  // Top NavComBox: the real unit is 56 px, trimmed slightly here so the two-row
+  // center panel reads less heavy. Bottom info panel 55 px at y=679.
+  L.topBarH = Y(50.0f);
   L.infoPanelTop = Y(679.0f);
   L.infoPanelH = Y(55.0f);
   L.bottomBarH = Y(kWtCanvasHeightPx - 733.0f);
-
-  // Navigation Status Box overlays the top of the attitude window, just below
-  // the top bar / AFCS Status Box.
-  L.navStatusTop = L.topBarH;
-  L.navStatusH = Y(22.0f);
 
   // Airspeed indicator x=154 w=87 y=82 h=390; tape (scroll) area y=113 h=330.
   L.asiX = X(154.0f);
@@ -154,7 +150,7 @@ std::string formatTimer(int totalSeconds) {
   const int m = (totalSeconds % 3600) / 60;
   const int s = totalSeconds % 60;
   char buf[16];
-  std::snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, s);
+  std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
   return std::string(buf);
 }
 

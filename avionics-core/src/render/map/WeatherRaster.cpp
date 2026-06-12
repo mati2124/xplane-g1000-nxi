@@ -12,40 +12,38 @@
 namespace avionics::map {
 namespace {
 
-// NEXRAD precipitation intensity ramp (G1000 datalink weather legend):
-// light/heavy green -> yellow -> red -> magenta, with rising opacity so heavy
-// cells read as solid while light returns stay translucent over the map.
+// NEXRAD precipitation coloring, matched verbatim to the real G1000 NXi
+// datalink NEXRAD legend (Pilot's Guide Fig. 6-8, "Rain" column). Reflectivity
+// runs in discrete bands by dBZ: green (light) -> yellow -> orange -> red. The
+// real unit's rain scale tops out at red (magenta/purple there denotes *mixed*
+// precip, which this data source can't distinguish), so we cap at red. Rising
+// opacity keeps heavy cells solid while light returns stay translucent.
 Color nexradColor(unsigned char strength) {
-  const float t = static_cast<float>(strength) / 255.0f;
-  // Below the lightest return threshold the cell is clear (fully transparent),
-  // so the overlay shows discrete precipitation rather than a uniform haze.
-  if (t < 0.12f) return {0.0f, 0.0f, 0.0f, 0.0f};
+  // returnStrength() packs reflectivity as a fraction of full scale (see
+  // kNexradFullScaleDbz); unpack it back to dBZ to pick the legend band.
+  const float dbz = (static_cast<float>(strength) / 255.0f) * kNexradFullScaleDbz;
 
-  struct Stop {
-    float t;
+  struct Band {
+    float minDbz;
     Color c;  // alpha carries the per-band opacity
   };
-  // Bands span the return-strength range; colors are vivid NEXRAD tones.
-  static constexpr Stop kStops[] = {
-      {0.12f, {0.10f, 0.55f, 0.10f, 0.70f}},  // light green
-      {0.35f, {0.00f, 0.85f, 0.00f, 0.80f}},  // green
-      {0.55f, {0.95f, 0.95f, 0.00f, 0.88f}},  // yellow
-      {0.75f, {1.00f, 0.55f, 0.00f, 0.92f}},  // orange
-      {0.90f, {1.00f, 0.00f, 0.00f, 0.95f}},  // red
-      {1.00f, {1.00f, 0.00f, 1.00f, 0.97f}},  // magenta (extreme)
+  // Garmin G1000 "Rain" legend swatches (Fig. 6-8), sampled from the Pilot's
+  // Guide and applied per dBZ threshold.
+  static constexpr Band kBands[] = {
+      {55.0f, {0.937f, 0.263f, 0.149f, 0.95f}},  // >55 dBZ: red
+      {50.0f, {0.949f, 0.451f, 0.161f, 0.93f}},  // >50: red-orange
+      {45.0f, {0.973f, 0.643f, 0.169f, 0.91f}},  // >45: orange
+      {40.0f, {1.000f, 0.859f, 0.169f, 0.86f}},  // >40: yellow
+      {30.0f, {0.992f, 0.867f, 0.169f, 0.84f}},  // >30: yellow
+      {20.0f, {0.345f, 0.682f, 0.278f, 0.78f}},  // >20: green
+      {10.0f, {0.416f, 0.741f, 0.290f, 0.70f}},  // >10: light green
   };
-  constexpr int n = static_cast<int>(sizeof(kStops) / sizeof(kStops[0]));
-  if (t <= kStops[0].t) return kStops[0].c;
-  for (int i = 1; i < n; ++i) {
-    if (t <= kStops[i].t) {
-      const Color& a = kStops[i - 1].c;
-      const Color& b = kStops[i].c;
-      const float u = (t - kStops[i - 1].t) / (kStops[i].t - kStops[i - 1].t);
-      return {a.r + (b.r - a.r) * u, a.g + (b.g - a.g) * u,
-              a.b + (b.b - a.b) * u, a.a + (b.a - a.a) * u};
-    }
+  // Below the lightest band (>10 dBZ) the cell is clear, so the overlay shows
+  // discrete precipitation (matching the legend) rather than a uniform haze.
+  for (const Band& band : kBands) {
+    if (dbz >= band.minDbz) return band.c;
   }
-  return kStops[n - 1].c;
+  return {0.0f, 0.0f, 0.0f, 0.0f};
 }
 
 void writePixel(unsigned char* px, const Color& c) {
@@ -111,10 +109,21 @@ ViewWeather& viewFor(Renderer& r, float cx, float cy) {
 void colorize(ViewWeather& v, const WeatherRadarSource& weather) {
   const int w = weather.width();
   const int h = weather.height();
-  const unsigned char* src = weather.returnStrength();
-  if (w <= 0 || h <= 0 || src == nullptr) return;
+  if (w <= 0 || h <= 0) return;
 
-  v.rgba.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
+  const std::size_t bytes =
+      static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4;
+
+  // Datalink NEXRAD (and any source carrying its own palette) provides a
+  // pre-colorized RGBA grid: blit it straight through.
+  if (const unsigned char* rgba = weather.colorRgba()) {
+    v.rgba.assign(rgba, rgba + bytes);
+    return;
+  }
+
+  const unsigned char* src = weather.returnStrength();
+  if (src == nullptr) return;
+  v.rgba.resize(bytes);
   for (int row = 0; row < h; ++row) {
     unsigned char* px =
         v.rgba.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(w) * 4;
@@ -134,7 +143,10 @@ bool drawWeatherRaster(Renderer& r, const WeatherRadarSource& weather, float cx,
 
   const int w = weather.width();
   const int h = weather.height();
-  if (w <= 0 || h <= 0 || weather.returnStrength() == nullptr) return false;
+  if (w <= 0 || h <= 0 ||
+      (weather.returnStrength() == nullptr && weather.colorRgba() == nullptr)) {
+    return false;
+  }
 
   ViewWeather& v = viewFor(r, cx, cy);
   const int rev = static_cast<int>(weather.revision());
@@ -154,19 +166,26 @@ bool drawWeatherRaster(Renderer& r, const WeatherRadarSource& weather, float cx,
 
   if (v.imageId < 0) return false;
 
-  // X-Plane's radar texture places the aircraft at the bottom center; forward
-  // is toward the top of the texture. Scale to the source's geographic extent
-  // and rotate into the map's current orientation.
-  const float forwardPx = std::max(1.0f, weather.rangeNm() * pixelsPerNm);
-  const float halfWidthPx =
-      std::max(1.0f, weather.halfWidthNm() * pixelsPerNm);
-  const float drawW = 2.0f * halfWidthPx;
-  const float drawH = forwardPx;
-
   r.save();
   r.translate(cx, cy);
   r.rotateDegrees(-rotationDeg);
-  r.drawImage(v.imageId, -halfWidthPx, -drawH, drawW, drawH, 1.0f);
+  if (weather.layout() == WeatherRadarLayout::Centered) {
+    // Datalink NEXRAD: the aircraft is at the texture center, north toward the
+    // top, covering rangeNm in every direction. Draw a square spanning the full
+    // diameter centered on ownship and rotate into the map's orientation.
+    const float halfPx = std::max(1.0f, weather.rangeNm() * pixelsPerNm);
+    const float side = 2.0f * halfPx;
+    r.drawImage(v.imageId, -halfPx, -halfPx, side, side, 1.0f);
+  } else {
+    // X-Plane's radar texture places the aircraft at the bottom center; forward
+    // is toward the top of the texture. Scale to the source's geographic extent.
+    const float forwardPx = std::max(1.0f, weather.rangeNm() * pixelsPerNm);
+    const float halfWidthPx =
+        std::max(1.0f, weather.halfWidthNm() * pixelsPerNm);
+    const float drawW = 2.0f * halfWidthPx;
+    const float drawH = forwardPx;
+    r.drawImage(v.imageId, -halfWidthPx, -drawH, drawW, drawH, 1.0f);
+  }
   r.restore();
   return true;
 }

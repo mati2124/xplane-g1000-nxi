@@ -2,6 +2,7 @@
 #include "avionics/EisLegacy.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -77,6 +78,28 @@ constexpr float kMhzToRadioHz = 100.0f;
 // 6/7 the TCAS traffic modes). The G1000 annunciates Mode C as ALT, and the
 // traffic modes still squawk altitude, so they map to ALT / TA / TA-RA rather
 // than a bare "ON". Mirrors the standalone shell's decode.
+// Read a null-terminated byte[] nav ident and trim trailing whitespace.
+std::string readNavIdentDataref(XPLMDataRef ref) {
+  if (ref == nullptr) return {};
+  char buf[8] = {};
+  int n = XPLMGetDatab(ref, buf, 0, static_cast<int>(sizeof(buf)) - 1);
+  if (n < 0) n = 0;
+  buf[n] = '\0';
+  std::string id(buf);
+  while (!id.empty() &&
+         std::isspace(static_cast<unsigned char>(id.back()))) {
+    id.pop_back();
+  }
+  return id;
+}
+
+// navN_nav_id for VOR/LOC; navN_dme_id for standalone DME/TACAN (XP12).
+std::string readNavStationIdent(XPLMDataRef navId, XPLMDataRef dmeId) {
+  std::string id = readNavIdentDataref(navId);
+  if (!id.empty()) return id;
+  return readNavIdentDataref(dmeId);
+}
+
 const char* xpdrModeString(int mode) {
   switch (mode) {
     case 0:
@@ -294,6 +317,10 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   gpsDistance_ = XPLMFindDataRef(datarefs::kGpsDistanceNm);
   gpsBearing_ = XPLMFindDataRef(datarefs::kGpsBearingDegMag);
   gpsNavId_ = XPLMFindDataRef(datarefs::kGpsNavId);
+  nav1NavId_ = XPLMFindDataRef(datarefs::kNav1NavId);
+  nav2NavId_ = XPLMFindDataRef(datarefs::kNav2NavId);
+  nav1DmeId_ = XPLMFindDataRef(datarefs::kNav1DmeId);
+  nav2DmeId_ = XPLMFindDataRef(datarefs::kNav2DmeId);
 
   radios_[static_cast<int>(RadioUnit::Nav1)] = {
       XPLMFindDataRef(datarefs::kNav1FrequencyHz),
@@ -342,6 +369,9 @@ void DatarefDataSource::updateAircraftEisPath() {
   const std::string acfPath(buf);
   if (acfPath == lastAircraftAcfPath_) return;
   lastAircraftAcfPath_ = acfPath;
+
+  // Re-probe the radar fit for the newly loaded airframe.
+  weather_.resetEquipment();
 
   if (eisSource_ != nullptr) {
     eisSource_->setAircraftAcfRelativePath(acfPath);
@@ -481,6 +511,8 @@ void DatarefDataSource::update(double dtSeconds) {
     if (r.standby)
       data_.*(r.standbyMember) = XPLMGetDatai(r.standby) * kRadioHzToMhz;
   }
+  data_.nav1Ident = readNavStationIdent(nav1NavId_, nav1DmeId_);
+  data_.nav2Ident = readNavStationIdent(nav2NavId_, nav2DmeId_);
   if (transponderCode_) data_.transponderCode = XPLMGetDatai(transponderCode_);
   if (transponderMode_)
     data_.transponderMode = xpdrModeString(XPLMGetDatai(transponderMode_));
@@ -630,6 +662,17 @@ void DatarefDataSource::updateMap(double dtSeconds) {
     map_.ownshipLon = XPLMGetDatad(longitude_);
     map_.positionValid = true;
   }
+
+  // Live datalink NEXRAD overlay centered on the aircraft (real ground radar,
+  // independent of whether this airframe has an onboard radar). Pointed at the
+  // source unconditionally so the overlay is real datalink weather (or nothing
+  // until tiles load / when offline), never the onboard radar texture; the
+  // latter still drives the dedicated Weather Radar page via map_.weather.
+  if (map_.positionValid) {
+    nexrad_.setCenter(map_.ownshipLat, map_.ownshipLon);
+  }
+  nexrad_.advance(dtSeconds);
+  map_.nexrad = &nexrad_;
 
   // Active flight-plan route: every FMS entry as a lat/lon leg with its id. The
   // PFD inset and the future MFD MAP page both render this via the shared
