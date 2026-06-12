@@ -62,6 +62,18 @@ if [[ "${INSTALL_STANDALONE}" -eq 1 ]]; then
   ln -sf "${STANDALONE_DEST}/avionics-standalone" "${BIN_DIR}/avionics-standalone"
   echo "Installed standalone to ${STANDALONE_DEST}"
 
+  # Install the app icon into the user's icon theme so the .desktop entry
+  # (Icon=g1000-nxi) resolves in the menu / launcher / taskbar.
+  if [[ -f "${SCRIPT_DIR}/g1000-nxi.png" ]]; then
+    ICON_DIR="${HOME}/.local/share/icons/hicolor/256x256/apps"
+    mkdir -p "${ICON_DIR}"
+    cp "${SCRIPT_DIR}/g1000-nxi.png" "${ICON_DIR}/g1000-nxi.png"
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache -q -t "${HOME}/.local/share/icons/hicolor" || true
+    fi
+    echo "Installed app icon"
+  fi
+
   if [[ "${DESKTOP_ICON}" -eq 1 ]]; then
     DESKTOP_DIR="${HOME}/.local/share/applications"
     DESKTOP_FILE="${DESKTOP_DIR}/g1000-nxi.desktop"

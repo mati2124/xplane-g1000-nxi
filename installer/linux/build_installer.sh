@@ -18,6 +18,7 @@ mkdir -p "${WORK}/installer/standalone"
 cp -a "${STAGE_STANDALONE}/." "${WORK}/installer/standalone/"
 cp "${REPO_ROOT}/installer/linux/install.sh" "${WORK}/installer/"
 cp "${REPO_ROOT}/installer/linux/g1000-nxi.desktop" "${WORK}/installer/"
+cp "${REPO_ROOT}/installer/linux/g1000-nxi.png" "${WORK}/installer/"
 chmod +x "${WORK}/installer/install.sh"
 
 tar -C "${WORK}" -czf "${DIST}/${ARCHIVE}" installer

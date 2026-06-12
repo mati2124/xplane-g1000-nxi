@@ -36,6 +36,8 @@ sed "s/VERSION_PLACEHOLDER/${VERSION}/g" \
 cp "${STAGE_STANDALONE}/avionics-standalone" "${APP_DIR}/Contents/MacOS/"
 chmod +x "${APP_DIR}/Contents/MacOS/avionics-standalone"
 cp -R "${STAGE_STANDALONE}/assets" "${APP_DIR}/Contents/Resources/"
+# App icon (referenced by CFBundleIconFile in Info.plist).
+cp "${REPO_ROOT}/installer/assets/g1000-nxi.icns" "${APP_DIR}/Contents/Resources/"
 
 # Double-clickable installer for the plugin.
 cat > "${WORK}/payload/Install Plugin.command" <<'EOF'
