@@ -259,8 +259,11 @@ void strokeDashedPolyline(Renderer& r, const Point* pts, int count,
       float pos = -phase;
       if (pos < lo) pos += std::floor((lo - pos) / kPeriod) * kPeriod;
       for (; pos < len && pos <= hi; pos += kPeriod) {
-        const float dashStart = std::max(pos, 0.0f);
-        const float dashEnd = std::min(pos + kDashPx, len);
+        // Clamp the dash to the visible span [lo, hi], not the full segment
+        // [0, len]: a dash that starts before the visible region must be cut
+        // at lo, otherwise it would extend into off-screen pixels.
+        const float dashStart = std::max(pos, lo);
+        const float dashEnd = std::min(pos + kDashPx, hi);
         if (dashEnd > dashStart) {
           segs.push_back({a.x + ux * dashStart, a.y + uy * dashStart});
           segs.push_back({a.x + ux * dashEnd, a.y + uy * dashEnd});
@@ -974,8 +977,11 @@ void drawBoundary(Renderer& r, const Point* pts, int count, float widthPx,
       float pos = -phase;  // start partway in to honor the carried phase
       if (pos < lo) pos += std::floor((lo - pos) / kPeriod) * kPeriod;
       for (; pos < len && pos <= hi; pos += kPeriod) {
-        const float dashStart = std::max(pos, 0.0f);
-        const float dashEnd = std::min(pos + kDashPx, len);
+        // Clamp the dash to the visible span [lo, hi], not the full segment
+        // [0, len]: a dash that starts before the visible region must be cut
+        // at lo, otherwise it would extend into off-screen pixels.
+        const float dashStart = std::max(pos, lo);
+        const float dashEnd = std::min(pos + kDashPx, hi);
         if (dashEnd > dashStart) {
           segs.push_back({a.x + ux * dashStart, a.y + uy * dashStart});
           segs.push_back({a.x + ux * dashEnd, a.y + uy * dashEnd});
