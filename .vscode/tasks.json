@@ -4,15 +4,18 @@
     {
       "label": "Configure standalone",
       "type": "shell",
-      "command": "${env:HOME}/Library/Python/3.9/bin/cmake",
+      "command": "cmake",
       "args": ["-S", ".", "-B", "build-standalone"],
-      "options": { "cwd": "${workspaceFolder}" },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+      },
       "problemMatcher": []
     },
     {
       "label": "Build standalone",
       "type": "shell",
-      "command": "${env:HOME}/Library/Python/3.9/bin/cmake",
+      "command": "cmake",
       "args": [
         "--build",
         "build-standalone",
@@ -20,7 +23,10 @@
         "avionics-standalone",
         "-j8"
       ],
-      "options": { "cwd": "${workspaceFolder}" },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+      },
       "group": "build",
       "dependsOn": ["Configure standalone"],
       "problemMatcher": ["$gcc"]
