@@ -1,0 +1,72 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Configure standalone",
+      "type": "shell",
+      "command": "${env:HOME}/Library/Python/3.9/bin/cmake",
+      "args": ["-S", ".", "-B", "build-standalone"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build standalone",
+      "type": "shell",
+      "command": "${env:HOME}/Library/Python/3.9/bin/cmake",
+      "args": [
+        "--build",
+        "build-standalone",
+        "--target",
+        "avionics-standalone",
+        "-j8"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "dependsOn": ["Configure standalone"],
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Run PFD (demo)",
+      "detail": "Build, then launch the PFD window only, booting into the demo feed.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--demo"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": ["Build standalone"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run MFD (demo)",
+      "detail": "Build, then launch the MFD window only, booting into the demo feed.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--demo"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": ["Build standalone"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD + MFD (demo)",
+      "detail": "Build, then launch both display tasks together in demo mode.",
+      "dependsOn": ["Run PFD (demo)", "Run MFD (demo)"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

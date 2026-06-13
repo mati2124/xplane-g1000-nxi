@@ -25,7 +25,9 @@ compile_commands.json
 # IDE / OS
 .DS_Store
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 .cursor/
 *.user
 

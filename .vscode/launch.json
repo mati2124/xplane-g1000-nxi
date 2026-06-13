@@ -1,0 +1,55 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug PFD (demo)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--demo"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug MFD (demo)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--demo"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug PFD (X-Plane)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug MFD (X-Plane)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Debug PFD + MFD (demo)",
+      "configurations": ["Debug PFD (demo)", "Debug MFD (demo)"],
+      "preLaunchTask": "Build standalone",
+      "stopAll": true
+    },
+    {
+      "name": "Debug PFD + MFD (X-Plane)",
+      "configurations": ["Debug PFD (X-Plane)", "Debug MFD (X-Plane)"],
+      "preLaunchTask": "Build standalone",
+      "stopAll": true
+    }
+  ]
+}
