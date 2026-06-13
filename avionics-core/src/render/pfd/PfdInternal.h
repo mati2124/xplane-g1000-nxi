@@ -130,8 +130,8 @@ constexpr float kHeadingBox = 30.0f;
 // under the rose's numeric labels, matching the G1000 NXi.
 constexpr float kHsiBug = 18.0f;
 constexpr float kHsiSource = 14.0f;
-constexpr float kNavComFreq = 18.0f;
-constexpr float kNavComLabel = 15.0f;
+constexpr float kNavComFreq = 19.0f;
+constexpr float kNavComLabel = 16.0f;
 constexpr float kFmaActive = 23.0f;
 constexpr float kFmaArmed = 19.0f;
 constexpr float kFmaSmall = 13.0f;
@@ -213,5 +213,17 @@ void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
 void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
                          float navW, float comLeft, float comW,
                          const FlightData& d, const SoftkeyController& ui);
+
+// Decoded COM station identifier currently shown beneath the COM box (e.g.
+// "KTRM UNICOM"), or empty when nothing is decoded. The selected/transmitting
+// COM transceiver wins.
+std::string navComDecodeIdent(const FlightData& d);
+
+// Draws the decoded COM station identifier in its own black rounded panel below
+// the COM box, separated by a gap so the sky shows through between the two
+// (G1000 NXi COM box). No-op when `ident` is empty. `comLeft`/`comW` match the
+// COM box; `cornerR` is the panel corner radius; font size derives from `h`.
+void drawComDecodePanel(Renderer& r, float h, float barH, float comLeft,
+                        float comW, float cornerR, const std::string& ident);
 
 }  // namespace avionics::pfd

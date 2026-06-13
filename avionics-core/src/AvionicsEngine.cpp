@@ -4,6 +4,7 @@
 #include <cmath>
 #include <utility>
 
+#include "avionics/ComDecode.h"
 #include "avionics/MapData.h"
 #include "avionics/NavMath.h"
 #include "avionics/render/BootScreen.h"
@@ -234,6 +235,9 @@ void AvionicsEngine::pressBezelKey(BezelKey key) {
     return;
   }
   if (!isLivePageUp()) return;
+  // The dedicated NAV/COM/CRS/BARO/HDG knobs work on either page (both GDUs
+  // carry them), so handle them before the page-specific routing.
+  if (handleBezelKnob(key)) return;
   // NAV/COM tuning uses the FMS knob on the PFD bezel only (the MFD uses the
   // same knob for page navigation, map pointer, and FPL editing).
   if (page_ == DisplayPage::PrimaryFlightDisplay &&
@@ -249,6 +253,96 @@ void AvionicsEngine::pressBezelKey(BezelKey key) {
       mfd_.pressBezelKey(key);
       break;
   }
+}
+
+bool AvionicsEngine::handleBezelKnob(BezelKey key) {
+  const FlightData& d = dataSource_->snapshot();
+  switch (key) {
+    case BezelKey::ComOuterCw:
+      softkeys_.tuneCom(+1, /*coarse=*/true, d);
+      break;
+    case BezelKey::ComOuterCcw:
+      softkeys_.tuneCom(-1, /*coarse=*/true, d);
+      break;
+    case BezelKey::ComInnerCw:
+      softkeys_.tuneCom(+1, /*coarse=*/false, d);
+      break;
+    case BezelKey::ComInnerCcw:
+      softkeys_.tuneCom(-1, /*coarse=*/false, d);
+      break;
+    case BezelKey::ComPush:
+      softkeys_.selectCom();
+      break;
+    case BezelKey::ComTransfer:
+      softkeys_.transferCom(d);
+      break;
+    case BezelKey::NavOuterCw:
+      softkeys_.tuneNav(+1, /*coarse=*/true, d);
+      break;
+    case BezelKey::NavOuterCcw:
+      softkeys_.tuneNav(-1, /*coarse=*/true, d);
+      break;
+    case BezelKey::NavInnerCw:
+      softkeys_.tuneNav(+1, /*coarse=*/false, d);
+      break;
+    case BezelKey::NavInnerCcw:
+      softkeys_.tuneNav(-1, /*coarse=*/false, d);
+      break;
+    case BezelKey::NavPush:
+      softkeys_.selectNav();
+      break;
+    case BezelKey::NavTransfer:
+      softkeys_.transferNav(d);
+      break;
+    case BezelKey::BaroCw:
+      softkeys_.adjustBaro(+1, d);
+      break;
+    case BezelKey::BaroCcw:
+      softkeys_.adjustBaro(-1, d);
+      break;
+    case BezelKey::CrsCw:
+      softkeys_.adjustCourse(+1, d);
+      break;
+    case BezelKey::CrsCcw:
+      softkeys_.adjustCourse(-1, d);
+      break;
+    case BezelKey::CrsPush:
+      softkeys_.setBaroStandard();
+      break;
+    case BezelKey::HdgCw:
+      softkeys_.adjustHeadingBug(+1, d);
+      break;
+    case BezelKey::HdgCcw:
+      softkeys_.adjustHeadingBug(-1, d);
+      break;
+    case BezelKey::HdgPush:
+      softkeys_.syncHeadingBug(d);
+      break;
+  // Audio VOL/SQ/ID knobs: turn sets the selected radio's volume (shown as a
+  // percentage in the NavCom box). The NAV VOL/ID push toggles Morse ident
+  // audio; the COM VOL/SQ push is inert (X-Plane has no squelch dataref).
+    case BezelKey::ComVolCw:
+      softkeys_.adjustComVolume(+1, d);
+      break;
+    case BezelKey::ComVolCcw:
+      softkeys_.adjustComVolume(-1, d);
+      break;
+    case BezelKey::ComVolPush:
+      break;
+    case BezelKey::NavVolCw:
+      softkeys_.adjustNavVolume(+1, d);
+      break;
+    case BezelKey::NavVolCcw:
+      softkeys_.adjustNavVolume(-1, d);
+      break;
+    case BezelKey::NavVolPush:
+      softkeys_.toggleNavIdent(d);
+      break;
+    default:
+      return false;
+  }
+  softkeys_.flashBezelKey(key);
+  return true;
 }
 
 void AvionicsEngine::holdBezelKey(BezelKey key) {
@@ -339,6 +433,8 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
   // (GPS/VOR1/VOR2); resolve the effective source here so both the HSI and the
   // CDI annunciation draw consistently.
   data.cdiSource = softkeys_.cdiSourceFor(data.cdiSource);
+  applyComDecodedIdents(data, dataSource_->mapSnapshot(),
+                        softkeys_.navFeatureSource());
   // VNAV profile (FPL "Active VNV Profile" box + PFD vertical deviation) is
   // computed from the live plan and state; skip it when the link is down.
   if (connected) applyVnav(data, dataSource_->mapSnapshot());

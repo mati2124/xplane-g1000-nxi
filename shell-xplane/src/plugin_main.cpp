@@ -45,6 +45,7 @@
 
 #include "CommandBridge.h"
 #include "DatarefDataSource.h"
+#include "PluginNavMapData.h"
 #include "FlightPlanBridge.h"
 #include "UpdateNotify.h"
 #include "avionics/AssetPaths.h"
@@ -80,6 +81,7 @@ constexpr int kFallbackScreenH = 768;
 // The data source is shared by both device engines; the PFD engine pumps it,
 // the MFD engine reads the same snapshot without double-stepping it.
 std::unique_ptr<avionics::DatarefDataSource> g_dataSource;
+std::unique_ptr<avionics::PluginNavMapData> g_navMapData;
 std::unique_ptr<avionics::EisStore> g_eisStore;
 std::uint32_t g_mapGeometryEpoch = 0;
 
@@ -427,6 +429,12 @@ void AccumulateDrawStats(AvionicsDevice& dev) {
   dev.profVerts += s.verts;
 }
 
+void WireNavMapData(avionics::AvionicsEngine& engine) {
+  if (!g_navMapData) return;
+  engine.softkeyController().setNavFeatureSource(g_navMapData.get());
+  engine.mfdController().setNavFeatureSource(g_navMapData.get());
+}
+
 int DrawDevice(AvionicsDevice& dev) {
   InvalidateAvionicsCacheIfMapGeometryChanged();
   if (!g_dataSource || dev.rendererFailed) return 1;
@@ -468,6 +476,7 @@ int DrawDevice(AvionicsDevice& dev) {
     } else {
       avionics::applyMfdState(dev.engine->mfdController(), g_avionicsState.mfd);
     }
+    WireNavMapData(*dev.engine);
     dev.lastRenderElapsed = XPLMGetElapsedTime();
   }
 
@@ -759,6 +768,14 @@ void ApplyQueuedRadioCommands() {
   }
   if (sk.consumeRadioTransfer(unit)) {
     g_dataSource->transferRadio(unit);
+  }
+  float volume = 0.0f;
+  if (sk.consumeRadioVolume(unit, volume)) {
+    g_dataSource->setRadioVolume(unit, volume);
+  }
+  bool identOn = false;
+  if (sk.consumeNavIdent(unit, identOn)) {
+    g_dataSource->setNavIdent(unit, identOn);
   }
 
   int xpdrCode = 0;
@@ -1201,6 +1218,7 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
 
   g_eisStore = std::make_unique<avionics::EisStore>();
   g_dataSource = std::make_unique<avionics::DatarefDataSource>(g_eisStore.get());
+  g_navMapData = std::make_unique<avionics::PluginNavMapData>(g_dataSource.get());
 
   g_flightPlanBridge = std::make_unique<avionics::FlightPlanBridge>(
       avionics::fpbridge::kDefaultPort);
@@ -1239,6 +1257,7 @@ PLUGIN_API void XPluginStop(void) {
   g_commandBridge.reset();
   g_flightPlanBridge.reset();
   g_dataSource.reset();
+  g_navMapData.reset();
   g_eisStore.reset();
 }
 

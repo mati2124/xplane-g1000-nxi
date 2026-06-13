@@ -4,7 +4,8 @@
 // sim). Puts the shared PFD and MFD on screen as two GLFW windows (each with its
 // own GL context + NanoVgRenderer + AvionicsEngine, both reading one shared data
 // source), fed by a live X-Plane connection (UDP RREF). Pass --no-mfd to run the
-// PFD window only.
+// PFD window only, or --no-pfd to run the MFD window only (so the two displays
+// can be launched as separate processes).
 //
 // The displays always read the live X-Plane link: until the sim starts
 // delivering data the engine shows the power-up / waiting screen, then the live
@@ -12,6 +13,11 @@
 // iteration; it never appears in the interactive app.)
 //
 //   --no-mfd                  open only the PFD window (no MFD)
+//   --no-pfd                  open only the MFD window (no PFD); the MFD then
+//                             drives the shared data source and owns vsync
+//   --demo                    boot straight into the built-in demo feed (the
+//                             same motion-only mock Ctrl+Shift+D toggles), so
+//                             the displays show believable motion with no sim
 //   --fullscreen              run both displays borderless full screen, each
 //                             taking over a monitor (the 4:3 image letterboxed)
 //   --no-fullscreen           force windowed, overriding the saved preference
@@ -91,6 +97,7 @@
 #include "avionics/CommandBridgeProtocol.h"
 #include "avionics/AvionicsEngine.h"
 #include "avionics/ConnectionState.h"
+#include "avionics/ComDecode.h"
 #include "avionics/MockDataSource.h"
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
@@ -150,11 +157,14 @@ void RegisterAssetSearchDirs() {
 constexpr int kWindowWidth = 1024;   // avionics "screen" region (4:3)
 constexpr int kWindowHeight = 768;
 // The hardware bezel strips are part of the window, the way a GDU's physical
-// keys frame the display: the key column on the right and the row of twelve
-// softkey selection keys below the screen. The window is screen + strips.
+// keys frame the display (G1000 NXi Pilot's Guide Figure 1-2): the NAV/HDG knob
+// column on the left, the COM/CRS-BARO/RANGE/FMS key column on the right, and
+// the row of twelve softkey selection keys below the screen. The window is the
+// screen plus those strips.
+constexpr int kLeftBezelStripWidth = 112;
 constexpr int kBezelStripWidth = 112;
 constexpr int kSoftkeyStripHeight = 72;
-constexpr int kSuiteWidth = kWindowWidth + kBezelStripWidth;
+constexpr int kSuiteWidth = kLeftBezelStripWidth + kWindowWidth + kBezelStripWidth;
 constexpr int kSuiteHeight = kWindowHeight + kSoftkeyStripHeight;
 constexpr const char* kWindowTitle = "XPlane Avionics - PFD";
 constexpr const char* kMfdWindowTitle = "XPlane Avionics - MFD";
@@ -167,6 +177,10 @@ constexpr int kWindowGap = 24;
 inline int BezelStripPx(int fbWidth) {
   return static_cast<int>(std::lround(static_cast<double>(fbWidth) *
                                       kBezelStripWidth / kSuiteWidth));
+}
+inline int LeftBezelStripPx(int fbWidth) {
+  return static_cast<int>(std::lround(static_cast<double>(fbWidth) *
+                                      kLeftBezelStripWidth / kSuiteWidth));
 }
 inline int SoftkeyStripPx(int fbHeight) {
   return static_cast<int>(std::lround(static_cast<double>(fbHeight) *
@@ -201,14 +215,16 @@ inline void RenderSuiteViewport(avionics::NanoVgRenderer& renderer,
     return;
   }
 
+  const int leftPx = LeftBezelStripPx(vpW);
   const int bezelPx = BezelStripPx(vpW);
   const int softkeyPx = SoftkeyStripPx(vpH);
-  const int screenW = std::max(1, vpW - bezelPx);
+  const int screenW = std::max(1, vpW - leftPx - bezelPx);
   const int screenH = std::max(1, vpH - softkeyPx);
 
   // GL viewports are bottom-left anchored, so the screen's viewport is lifted
-  // by the softkey strip's height to sit at the top of the rectangle.
-  glViewport(vpX, vpY + (vpH - screenH), screenW, screenH);
+  // by the softkey strip's height to sit at the top of the rectangle, and
+  // shifted right by the left key column.
+  glViewport(vpX + leftPx, vpY + (vpH - screenH), screenW, screenH);
   eng.renderFrame(screenW, screenH, 1.0f);
   // Snapshot the engine's per-frame draw stats now: the bezel beginFrame below
   // zeroes the counter, so reading it after RenderSuite would only show the
@@ -217,13 +233,19 @@ inline void RenderSuiteViewport(avionics::NanoVgRenderer& renderer,
 
   glViewport(vpX, vpY, vpW, vpH);
   renderer.beginFrame(vpW, vpH, 1.0f);
+  avionics::BezelKeyPanel::renderLeft(renderer, 0.0f, 0.0f,
+                                      static_cast<float>(leftPx),
+                                      static_cast<float>(vpH),
+                                      static_cast<float>(screenH),
+                                      eng.bezelPressLevels());
   avionics::BezelKeyPanel::render(
-      renderer, static_cast<float>(screenW), 0.0f,
-      static_cast<float>(vpW - screenW), static_cast<float>(vpH),
+      renderer, static_cast<float>(leftPx + screenW), 0.0f,
+      static_cast<float>(vpW - leftPx - screenW), static_cast<float>(vpH),
       static_cast<float>(screenH), eng.bezelPressLevels());
   avionics::SoftkeyBezelPanel::render(
-      renderer, 0.0f, static_cast<float>(screenH), static_cast<float>(screenW),
-      static_cast<float>(vpH - screenH), eng.softkeyPressLevels());
+      renderer, static_cast<float>(leftPx), static_cast<float>(screenH),
+      static_cast<float>(screenW), static_cast<float>(vpH - screenH),
+      eng.softkeyPressLevels());
   renderer.endFrame();
 }
 
@@ -279,7 +301,7 @@ class StaleSource : public avionics::DataSource {
 // own engine/renderer, but both read the same data source (the PFD engine pumps
 // it; the MFD engine does not, to avoid double-stepping it).
 struct AppState {
-  avionics::AvionicsEngine* pfdEngine = nullptr;
+  avionics::AvionicsEngine* pfdEngine = nullptr;  // null when --no-pfd
   avionics::AvionicsEngine* mfdEngine = nullptr;  // null when --no-mfd
   GLFWwindow* pfdWindow = nullptr;
   GLFWwindow* mfdWindow = nullptr;
@@ -374,20 +396,28 @@ inline ContentRect ComputeContentRect(int fbWidth, int fbHeight,
 void CaptureWindowPositions(AppState& app) {
   // A full-screen window sits at its monitor's origin; capturing that would
   // clobber the saved windowed layout, so skip it and keep the prior values.
-  if (app.pfdWindow == nullptr || app.pfdFullscreen) return;
-  glfwGetWindowPos(app.pfdWindow, &app.settings.pfdWindowX,
-                   &app.settings.pfdWindowY);
+  // Each display is captured independently so a single-display run (--no-mfd or
+  // --no-pfd) still remembers its own window placement.
+  bool captured = false;
+  if (app.pfdWindow != nullptr && !app.pfdFullscreen) {
+    glfwGetWindowPos(app.pfdWindow, &app.settings.pfdWindowX,
+                     &app.settings.pfdWindowY);
+    captured = true;
+  }
   if (app.mfdWindow != nullptr && !app.mfdFullscreen) {
     glfwGetWindowPos(app.mfdWindow, &app.settings.mfdWindowX,
                      &app.settings.mfdWindowY);
-  } else if (app.mfdWindow == nullptr) {
+    captured = true;
+  } else if (app.mfdWindow == nullptr && app.pfdWindow != nullptr &&
+             !app.pfdFullscreen) {
     // PFD-only run: save the docked position so a later dual-window launch
     // still puts the MFD beside the PFD.
     app.settings.mfdWindowX = app.settings.pfdWindowX +
                               SuiteWindowWidth(app.showBezel) + kWindowGap;
     app.settings.mfdWindowY = app.settings.pfdWindowY;
+    captured = true;
   }
-  app.settings.hasWindowPos = true;
+  if (captured) app.settings.hasWindowPos = true;
 }
 
 // Resizes both windows to match the current bezel state and keeps the MFD
@@ -845,6 +875,58 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(5);  // digit 5
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "comvol") == 0) {
+    // COM VOL/SQ knob turned: the COM audio level replaces the COM standby
+    // frequency as a cyan percentage + white "VOL" (Pilot's Guide Fig. 4-3).
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::ComVolCcw);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "navvol") == 0) {
+    // NAV VOL/ID knob turned: the NAV audio level replaces the NAV standby
+    // frequency as a white "VOL" + cyan percentage (Pilot's Guide Fig. 4-8).
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::NavVolCcw);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "comdecode") == 0) {
+    // Decoded COM station identifier: tune COM1 active to a real nearby
+    // airport's published comm frequency so the green decode line (e.g.
+    // "KFMY TOWER") shows centered beneath the COM box.
+    engine.skipBoot();
+    engine.update(seconds);
+    const avionics::MapData& comMap = dataSource.mapSnapshot();
+    for (const avionics::MapFeature& f : comMap.features) {
+      if (f.type != avionics::MapFeatureType::Airport) continue;
+      bool tuned = false;
+      for (const avionics::MapAirportFrequency& fr :
+           navMapData.airportFrequencies(f.id)) {
+        if (fr.mhz > 0.0f &&
+            avionics::airportCommServiceLabel(fr.service) != nullptr) {
+          dataSource.tuneRadioStandby(avionics::RadioUnit::Com1, fr.mhz);
+          dataSource.transferRadio(avionics::RadioUnit::Com1);
+          tuned = true;
+          break;
+        }
+      }
+      if (tuned) break;
+    }
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "radioann") == 0) {
+    // Selected NAV Morse ident audio on: a white "ID" replaces the transfer
+    // carets by the active NAV (Pilot's Guide Fig. 4-8). The NAV VOL/ID push
+    // queues the audio_selection_nav write, which the mock applies here. (The
+    // COM VOL/SQ push is inert -- X-Plane has no squelch dataref.)
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::NavVolPush);  // NAV ident on -> ID
+    avionics::RadioUnit identUnit;
+    bool identOn = false;
+    if (engine.softkeyController().consumeNavIdent(identUnit, identOn)) {
+      dataSource.setNavIdent(identUnit, identOn);
+    }
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "map") == 0) {
     // The PFD with its inset map (on by default) and the Map/HSI submenu open,
     // showing the Detail / Traffic / Topo / Rel Ter map option keys.
@@ -868,6 +950,15 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.skipBoot();
     engine.update(seconds);
     engine.pressBezelKey(avionics::BezelKey::DirectTo);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfddtoarmed") == 0) {
+    // PFD Direct-To with the waypoint confirmed and Activate? armed (first ENT).
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::DirectTo);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Ent);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
@@ -1219,20 +1310,34 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
   if (fx < 0.0 || fy < 0.0 || fx >= cr.w || fy >= cr.h) return;  // on the bars
 
   // Only the physical bezel controls are clickable, like the real unit: the
-  // key column on the right and the softkey row below the screen. Clicks on
-  // the screen itself do nothing (it is just glass).
+  // NAV/HDG key column on the left, the COM/RANGE/FMS key column on the right
+  // and the softkey row below the screen. Clicks on the screen itself do
+  // nothing (it is just glass).
+  const int leftPx = LeftBezelStripPx(cr.w);
   const int bezelPx = BezelStripPx(cr.w);
-  const int screenW = cr.w - bezelPx;
+  const int screenW = cr.w - leftPx - bezelPx;
+  const int screenRight = leftPx + screenW;
   const int screenH = cr.h - SoftkeyStripPx(cr.h);
-  if (fx >= screenW) {
-    const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
-        static_cast<float>(fx), static_cast<float>(fy),
-        static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
-        static_cast<float>(cr.h));
+  if (fx >= screenRight || fx < leftPx) {
+    const avionics::BezelKey key =
+        fx >= screenRight
+            ? avionics::BezelKeyPanel::hitTest(
+                  static_cast<float>(fx), static_cast<float>(fy),
+                  static_cast<float>(screenRight), 0.0f,
+                  static_cast<float>(cr.w - screenRight),
+                  static_cast<float>(cr.h))
+            : avionics::BezelKeyPanel::hitTestLeft(
+                  static_cast<float>(fx), static_cast<float>(fy), 0.0f, 0.0f,
+                  static_cast<float>(leftPx), static_cast<float>(cr.h));
     if (key == avionics::BezelKey::Ent && AwaitingBootAck(*app)) {
       // Acknowledge the power-up page on both displays together.
       AcknowledgeBoot(*app);
     } else if (key != avionics::BezelKey::Count) {
+      // A click on a knob ring steps it once: the hit-test resolves the left or
+      // right half of the ring to its counter-clockwise / clockwise key, so a
+      // click is a clean single detent. The scroll wheel still spins the same
+      // knobs continuously (handy for big changes); the center push caps, the
+      // RANGE ring, and the molded keys click normally too.
       engine->pressBezelKey(key);
       // Arm the CLR press-and-hold; the main loop fires CLR (DFLT MAP) if the
       // button is still down after kClrDefaultMapHoldSeconds.
@@ -1243,9 +1348,9 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int /*mods*/) {
     }
   } else if (fy >= screenH) {
     const int key = avionics::SoftkeyBezelPanel::hitTest(
-        static_cast<float>(fx), static_cast<float>(fy), 0.0f,
-        static_cast<float>(screenH), static_cast<float>(screenW),
-        static_cast<float>(cr.h - screenH));
+        static_cast<float>(fx), static_cast<float>(fy),
+        static_cast<float>(leftPx), static_cast<float>(screenH),
+        static_cast<float>(screenW), static_cast<float>(cr.h - screenH));
     if (key >= 0) engine->pressSoftkey(key);
   }
 }
@@ -1391,31 +1496,49 @@ void OnCursorPos(GLFWwindow* window, double cursorX, double cursorY) {
     return;
   }
 
+  const int leftPx = LeftBezelStripPx(cr.w);
   const int bezelPx = BezelStripPx(cr.w);
-  const int screenW = cr.w - bezelPx;
+  const int screenW = cr.w - leftPx - bezelPx;
+  const int screenRight = leftPx + screenW;
   const int screenH = cr.h - SoftkeyStripPx(cr.h);
 
   GLFWcursor* cursor = nullptr;  // default arrow over the glass screen
-  if (fx >= screenW) {
-    const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
-        static_cast<float>(fx), static_cast<float>(fy),
-        static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
-        static_cast<float>(cr.h));
+  if (fx >= screenRight || fx < leftPx) {
+    const avionics::BezelKey key =
+        fx >= screenRight
+            ? avionics::BezelKeyPanel::hitTest(
+                  static_cast<float>(fx), static_cast<float>(fy),
+                  static_cast<float>(screenRight), 0.0f,
+                  static_cast<float>(cr.w - screenRight),
+                  static_cast<float>(cr.h))
+            : avionics::BezelKeyPanel::hitTestLeft(
+                  static_cast<float>(fx), static_cast<float>(fy), 0.0f, 0.0f,
+                  static_cast<float>(leftPx), static_cast<float>(cr.h));
     if (key == avionics::BezelKey::RangeDown) {
       // Counter-clockwise side of the zoom ring (zoom in).
       cursor = app->rangeCcwCursor ? app->rangeCcwCursor : app->rotateCursor;
     } else if (key == avionics::BezelKey::RangeUp) {
       // Clockwise side of the zoom ring (zoom out).
       cursor = app->rangeCwCursor ? app->rangeCwCursor : app->rotateCursor;
+    } else if (avionics::rotatedBezelKey(key, /*clockwise=*/true) !=
+               avionics::BezelKey::Count) {
+      // A turnable knob ring (FMS / COM / NAV / VOL / CRS-BARO / HDG): show the
+      // same circular rotate cursor as the RANGE ring -- the clockwise variant
+      // on the right half, the counter-clockwise variant on the left. The knob
+      // is turned with the scroll wheel.
+      const bool cw = avionics::rotatedBezelKey(key, true) == key;
+      cursor = cw
+                   ? (app->rangeCwCursor ? app->rangeCwCursor : app->rotateCursor)
+                   : (app->rangeCcwCursor ? app->rangeCcwCursor
+                                          : app->rotateCursor);
     } else if (key != avionics::BezelKey::Count) {
-      cursor = avionics::isRotatableBezelKey(key) ? app->rotateCursor
-                                                  : app->handCursor;
+      cursor = app->handCursor;
     }
   } else if (fy >= screenH) {
     const int key = avionics::SoftkeyBezelPanel::hitTest(
-        static_cast<float>(fx), static_cast<float>(fy), 0.0f,
-        static_cast<float>(screenH), static_cast<float>(screenW),
-        static_cast<float>(cr.h - screenH));
+        static_cast<float>(fx), static_cast<float>(fy),
+        static_cast<float>(leftPx), static_cast<float>(screenH),
+        static_cast<float>(screenW), static_cast<float>(cr.h - screenH));
     if (key >= 0) cursor = app->handCursor;
   }
   glfwSetCursor(window, cursor);
@@ -1452,31 +1575,59 @@ void OnScroll(GLFWwindow* window, double /*xoffset*/, double yoffset) {
     return;
   }
 
+  const int leftPx = LeftBezelStripPx(cr.w);
   const int bezelPx = BezelStripPx(cr.w);
-  const int screenW = cr.w - bezelPx;
-  bool overRange = false;
-  if (fx >= screenW) {
-    const avionics::BezelKey key = avionics::BezelKeyPanel::hitTest(
+  const int screenW = cr.w - leftPx - bezelPx;
+  const int screenRight = leftPx + screenW;
+
+  // Which bezel control is under the pointer (right strip carries the COM /
+  // CRS-BARO / RANGE / FMS cluster; the left strip the NAV / HDG knobs).
+  avionics::BezelKey key = avionics::BezelKey::Count;
+  if (fx >= screenRight) {
+    key = avionics::BezelKeyPanel::hitTest(
         static_cast<float>(fx), static_cast<float>(fy),
-        static_cast<float>(screenW), 0.0f, static_cast<float>(bezelPx),
-        static_cast<float>(cr.h));
-    // Anywhere on the RANGE joystick cluster (zoom ring or the pan center)
-    // scrolls the range, so the gesture is forgiving about exact placement.
-    const int ki = static_cast<int>(key);
-    overRange = ki >= avionics::kRangeJoyFirst && ki < avionics::kFmsKnobFirst;
+        static_cast<float>(screenRight), 0.0f,
+        static_cast<float>(cr.w - screenRight), static_cast<float>(cr.h));
+  } else if (fx < leftPx) {
+    key = avionics::BezelKeyPanel::hitTestLeft(
+        static_cast<float>(fx), static_cast<float>(fy), 0.0f, 0.0f,
+        static_cast<float>(leftPx), static_cast<float>(cr.h));
   }
-  if (!overRange) {
-    app->rangeScrollAccum = 0.0;
+
+  // Anywhere on the RANGE joystick cluster (zoom ring or the pan center)
+  // scrolls the map range, so the gesture is forgiving about exact placement.
+  const int ki = static_cast<int>(key);
+  const bool overRange =
+      ki >= avionics::kRangeJoyFirst && ki < avionics::kFmsKnobFirst;
+
+  if (overRange) {
+    app->rangeScrollAccum += yoffset;
+    while (app->rangeScrollAccum >= 1.0) {
+      engine->pressBezelKey(avionics::BezelKey::RangeDown);  // wheel up: zoom in
+      app->rangeScrollAccum -= 1.0;
+    }
+    while (app->rangeScrollAccum <= -1.0) {
+      engine->pressBezelKey(avionics::BezelKey::RangeUp);  // wheel down: zoom out
+      app->rangeScrollAccum += 1.0;
+    }
     return;
   }
 
+  // Any other rotatable knob (FMS, COM, NAV, VOL, CRS/BARO, HDG): scrolling
+  // spins it, which is far easier than repeatedly clicking the thin ring.
+  // Wheel up turns clockwise, wheel down counter-clockwise -- the affordance
+  // the rotate hover cursor advertises.
+  if (!avionics::isRotatableBezelKey(key)) {
+    app->rangeScrollAccum = 0.0;
+    return;
+  }
   app->rangeScrollAccum += yoffset;
   while (app->rangeScrollAccum >= 1.0) {
-    engine->pressBezelKey(avionics::BezelKey::RangeDown);  // wheel up: zoom in
+    engine->pressBezelKey(avionics::rotatedBezelKey(key, /*clockwise=*/true));
     app->rangeScrollAccum -= 1.0;
   }
   while (app->rangeScrollAccum <= -1.0) {
-    engine->pressBezelKey(avionics::BezelKey::RangeUp);  // wheel down: zoom out
+    engine->pressBezelKey(avionics::rotatedBezelKey(key, /*clockwise=*/false));
     app->rangeScrollAccum += 1.0;
   }
 }
@@ -1673,7 +1824,16 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  const bool wantMfd = !HasFlag(argc, argv, "--no-mfd");
+  // --no-mfd / --no-pfd suppress one display so the PFD and MFD can be launched
+  // as separate processes. At least one must remain; if both are suppressed the
+  // PFD is kept. With no PFD the MFD becomes the primary display (it drives the
+  // shared data source and owns vsync). --demo boots straight into the built-in
+  // demo feed (same as the Ctrl+Shift+D toggle) so the displays show motion
+  // without a running sim.
+  bool wantMfd = !HasFlag(argc, argv, "--no-mfd");
+  bool wantPfd = !HasFlag(argc, argv, "--no-pfd");
+  if (!wantMfd && !wantPfd) wantPfd = true;
+  const bool demoStart = HasFlag(argc, argv, "--demo");
 
   // Restore persisted preferences unless the command line overrides them.
   const avionics::AppSettings savedSettings = avionics::LoadAppSettings();
@@ -1723,63 +1883,67 @@ int main(int argc, char** argv) {
   GLFWmonitor* mfdMonitorHandle =
       mfdFullscreen ? MonitorByIndex(mfdMonitorResolved) : nullptr;
 
-  // The PFD window owns vsync (paces the whole loop). Its context is created
-  // first; the renderer is constructed while that context is current.
-  GLFWwindow* pfdWindow = CreateAvionicsWindow(
-      kWindowTitle, alwaysOnTop, pfdFullscreen ? false : showWindowChrome,
-      nullptr, winW, winH, pfdMonitorHandle);
-  if (!pfdWindow) {
-    std::fprintf(stderr, "Failed to create window\n");
-    glfwTerminate();
-    return 1;
-  }
-  glfwMakeContextCurrent(pfdWindow);
-  avionics::render::ensureGlLoaded();
-  glfwSwapInterval(1);  // vsync on the PFD paces the loop to the display refresh
-  glfwSetKeyCallback(pfdWindow, OnKey);
-  glfwSetMouseButtonCallback(pfdWindow, OnMouseButton);
-  glfwSetCursorPosCallback(pfdWindow, OnCursorPos);
-  glfwSetScrollCallback(pfdWindow, OnScroll);
-
-  avionics::NanoVgRenderer pfdRenderer;
-  if (!pfdRenderer.valid()) {
-    std::fprintf(stderr, "Failed to create NanoVG renderer\n");
-    glfwDestroyWindow(pfdWindow);
-    glfwTerminate();
-    return 1;
-  }
-
-  // The MFD is a second window with its own GL context and renderer. Its swap
-  // interval is 0 so its buffer swap does not block on a second vsync (which
-  // would otherwise halve the frame rate); the PFD's vsync still paces things.
+  // Each display is its own GLFW window with its own GL context + renderer. The
+  // first one created owns vsync (swap interval 1) and paces the whole loop;
+  // any second display uses swap interval 0 so its buffer swap does not block on
+  // a second vsync (which would otherwise halve the frame rate). With both
+  // displays this makes the PFD primary, as before; with --no-pfd the MFD is the
+  // sole display and becomes primary.
+  GLFWwindow* pfdWindow = nullptr;
+  avionics::NanoVgRenderer* pfdRenderer = nullptr;
   GLFWwindow* mfdWindow = nullptr;
   avionics::NanoVgRenderer* mfdRenderer = nullptr;
-  if (wantMfd) {
-    mfdWindow = CreateAvionicsWindow(
-        kMfdWindowTitle, alwaysOnTop, mfdFullscreen ? false : showWindowChrome,
-        nullptr, winW, winH, mfdMonitorHandle);
-    if (mfdWindow) {
-      glfwMakeContextCurrent(mfdWindow);
-      avionics::render::ensureGlLoaded();
-      glfwSwapInterval(0);
-      glfwSetKeyCallback(mfdWindow, OnKey);
-      glfwSetMouseButtonCallback(mfdWindow, OnMouseButton);
-      glfwSetCursorPosCallback(mfdWindow, OnCursorPos);
-      glfwSetScrollCallback(mfdWindow, OnScroll);
-      mfdRenderer = new avionics::NanoVgRenderer();
-      if (!mfdRenderer->valid()) {
-        std::fprintf(stderr, "Failed to create MFD renderer; running PFD only\n");
-        delete mfdRenderer;
-        mfdRenderer = nullptr;
-        glfwDestroyWindow(mfdWindow);
-        mfdWindow = nullptr;
-      }
+  bool primaryCreated = false;
+  const auto createDisplay = [&](const char* title, bool fullscreen,
+                                 GLFWmonitor* monitor, GLFWwindow** outWindow,
+                                 avionics::NanoVgRenderer** outRenderer) -> bool {
+    GLFWwindow* window = CreateAvionicsWindow(
+        title, alwaysOnTop, fullscreen ? false : showWindowChrome, nullptr, winW,
+        winH, monitor);
+    if (window == nullptr) return false;
+    glfwMakeContextCurrent(window);
+    avionics::render::ensureGlLoaded();
+    glfwSwapInterval(primaryCreated ? 0 : 1);  // first window's vsync paces the loop
+    glfwSetKeyCallback(window, OnKey);
+    glfwSetMouseButtonCallback(window, OnMouseButton);
+    glfwSetCursorPosCallback(window, OnCursorPos);
+    glfwSetScrollCallback(window, OnScroll);
+    auto* renderer = new avionics::NanoVgRenderer();
+    if (!renderer->valid()) {
+      delete renderer;
+      glfwDestroyWindow(window);
+      return false;
     }
+    *outWindow = window;
+    *outRenderer = renderer;
+    primaryCreated = true;
+    return true;
+  };
+
+  // The PFD is created first when present, keeping it the vsync-owning primary.
+  if (wantPfd &&
+      !createDisplay(kWindowTitle, pfdFullscreen, pfdMonitorHandle, &pfdWindow,
+                     &pfdRenderer)) {
+    std::fprintf(stderr, "Failed to create PFD window\n");
+    glfwTerminate();
+    return 1;
+  }
+  if (wantMfd &&
+      !createDisplay(kMfdWindowTitle, mfdFullscreen, mfdMonitorHandle,
+                     &mfdWindow, &mfdRenderer)) {
+    // A PFD-less run has no fallback display, so the MFD failing is fatal;
+    // otherwise fall back to running the PFD on its own.
+    if (!wantPfd) {
+      std::fprintf(stderr, "Failed to create MFD window\n");
+      glfwTerminate();
+      return 1;
+    }
+    std::fprintf(stderr, "Failed to create MFD renderer; running PFD only\n");
   }
 
   // Borderless full-screen displays are placed at their monitor's top-left so
   // the undecorated window covers exactly that screen.
-  if (pfdFullscreen && pfdMonitorHandle != nullptr) {
+  if (pfdWindow != nullptr && pfdFullscreen && pfdMonitorHandle != nullptr) {
     int mx = 0, my = 0;
     glfwGetMonitorPos(pfdMonitorHandle, &mx, &my);
     glfwSetWindowPos(pfdWindow, mx, my);
@@ -1794,7 +1958,7 @@ int main(int argc, char** argv) {
   // they first appear in their final spots: the saved positions when a layout
   // was remembered, otherwise the MFD docked just to the right of the PFD.
   // Full-screen displays already own their monitor, so they are left alone.
-  if (!pfdFullscreen) {
+  if (pfdWindow != nullptr && !pfdFullscreen) {
     if (savedSettings.hasWindowPos) {
       glfwSetWindowPos(pfdWindow, savedSettings.pfdWindowX,
                        savedSettings.pfdWindowY);
@@ -1804,19 +1968,19 @@ int main(int argc, char** argv) {
     if (savedSettings.hasWindowPos) {
       glfwSetWindowPos(mfdWindow, savedSettings.mfdWindowX,
                        savedSettings.mfdWindowY);
-    } else if (!pfdFullscreen) {
+    } else if (pfdWindow != nullptr && !pfdFullscreen) {
       int px = 0, py = 0;
       glfwGetWindowPos(pfdWindow, &px, &py);
       glfwSetWindowPos(mfdWindow, px + winW + kWindowGap, py);
     }
   }
-  glfwShowWindow(pfdWindow);
+  if (pfdWindow != nullptr) glfwShowWindow(pfdWindow);
   if (mfdWindow != nullptr) glfwShowWindow(mfdWindow);
   // Bring both displays to the front immediately so they appear on their
   // monitors without the user having to click each window (otherwise, launched
   // over a terminal or onto a second monitor, they can open in the background).
   if (mfdWindow != nullptr) glfwFocusWindow(mfdWindow);
-  glfwFocusWindow(pfdWindow);
+  if (pfdWindow != nullptr) glfwFocusWindow(pfdWindow);
 
   // Both feeds exist for the whole session; the engines are pointed at one at a
   // time and M swaps between them. Opening the X-Plane UDP socket up front is
@@ -1919,18 +2083,25 @@ int main(int argc, char** argv) {
   avionics::DataSource& initialSource = xplane;
   const std::string initialLabel = xplane.simulatorName();
 
-  // Both displays read the same source. The PFD engine pumps it each frame; the
-  // MFD engine renders the MFD page from the same data without pumping again.
-  avionics::AvionicsEngine pfdEngine(initialSource, pfdRenderer, initialLabel);
-  pfdEngine.setPage(avionics::DisplayPage::PrimaryFlightDisplay);
-  pfdEngine.softkeyController().setNavFeatureSource(&navMapData);
+  // Both displays read the same source. Exactly one engine pumps it each frame
+  // (the primary display); the other renders the same data without stepping it
+  // again. The PFD is that pump when present; with --no-pfd the MFD takes over.
+  avionics::AvionicsEngine* pfdEngine = nullptr;
+  if (pfdRenderer != nullptr) {
+    pfdEngine =
+        new avionics::AvionicsEngine(initialSource, *pfdRenderer, initialLabel);
+    pfdEngine->setPage(avionics::DisplayPage::PrimaryFlightDisplay);
+    pfdEngine->softkeyController().setNavFeatureSource(&navMapData);
+  }
 
   avionics::AvionicsEngine* mfdEngine = nullptr;
   if (mfdRenderer != nullptr) {
     mfdEngine =
         new avionics::AvionicsEngine(initialSource, *mfdRenderer, initialLabel);
     mfdEngine->setPage(avionics::DisplayPage::MultiFunctionDisplay);
-    mfdEngine->setDrivesDataSource(false);
+    // The MFD only pumps the source when it is the sole display (--no-pfd);
+    // otherwise the PFD drives it.
+    mfdEngine->setDrivesDataSource(pfdEngine == nullptr);
     mfdEngine->mfdController().setSimbriefPilotId(simbriefPilotId);
     // Ident lookups for FPL waypoint entry come from the parsed nav database.
     mfdEngine->mfdController().setNavFeatureSource(&navMapData);
@@ -1939,8 +2110,10 @@ int main(int argc, char** argv) {
   // Restore the durable display preferences from the last run (e.g. the PFD
   // inset map on/off, map ranges, declutter) so the avionics come up the way
   // the pilot left them.
-  avionics::applyPfdState(pfdEngine.softkeyController(),
-                          savedSettings.avionics.pfd);
+  if (pfdEngine != nullptr) {
+    avionics::applyPfdState(pfdEngine->softkeyController(),
+                            savedSettings.avionics.pfd);
+  }
   if (mfdEngine != nullptr) {
     avionics::applyMfdState(mfdEngine->mfdController(),
                             savedSettings.avionics.mfd);
@@ -1981,7 +2154,7 @@ int main(int argc, char** argv) {
     app.mfdRestoreX = 100 + winW + kWindowGap;
     app.mfdRestoreY = 100;
   }
-  app.pfdEngine = &pfdEngine;
+  app.pfdEngine = pfdEngine;
   app.mfdEngine = mfdEngine;
   app.pfdWindow = pfdWindow;
   app.mfdWindow = mfdWindow;
@@ -1991,7 +2164,7 @@ int main(int argc, char** argv) {
   app.handCursor = glfwCreateStandardCursor(GLFW_POINTING_HAND_CURSOR);
   app.rangeCwCursor = MakeRotateCursor(true);
   app.rangeCcwCursor = MakeRotateCursor(false);
-  glfwSetWindowUserPointer(pfdWindow, &app);
+  if (pfdWindow != nullptr) glfwSetWindowUserPointer(pfdWindow, &app);
   if (mfdWindow != nullptr) glfwSetWindowUserPointer(mfdWindow, &app);
 
   // View toggles are keyboard shortcuts (persisted): B = bezel strips, T = OS
@@ -2000,6 +2173,10 @@ int main(int argc, char** argv) {
   std::fprintf(stderr,
                "Shortcuts: B = bezel, T = title bar, P = always-on-top, "
                "F = full screen, Ctrl+Shift+D = demo feed, Esc = quit.\n");
+
+  // --demo boots straight into the built-in demo feed, reusing the same path as
+  // the Ctrl+Shift+D toggle (which flips demoMode from its false default on).
+  if (demoStart) ToggleDemoSource(app);
 
   // Optional per-display render profiler (AVIONICS_PROFILE=1): isolates the GPU
   // cost of each window's draw with a glFinish so we can see whether the PFD or
@@ -2054,8 +2231,9 @@ int main(int argc, char** argv) {
   int profFrames = 0;
   auto profPrev = clock::now();
 
-  // Closing either window exits: the PFD and MFD are one avionics suite.
-  while (!glfwWindowShouldClose(pfdWindow) &&
+  // Closing either window exits: the PFD and MFD are one avionics suite. A
+  // suppressed display is null and simply ignored here.
+  while ((pfdWindow == nullptr || !glfwWindowShouldClose(pfdWindow)) &&
          (mfdWindow == nullptr || !glfwWindowShouldClose(mfdWindow))) {
     const auto now = clock::now();
     const double dt = std::chrono::duration<double>(now - previous).count();
@@ -2109,9 +2287,9 @@ int main(int argc, char** argv) {
 
     // PFD Direct-To activation (the PFD has its own Direct-To window): engage
     // the direct course the same way the MFD's window does.
-    {
+    if (pfdEngine != nullptr) {
       avionics::MapLeg pfdDto;
-      if (pfdEngine.softkeyController().consumeDirectToRequest(pfdDto)) {
+      if (pfdEngine->softkeyController().consumeDirectToRequest(pfdDto)) {
         xplane.setDirectTo(pfdDto);
       }
     }
@@ -2158,25 +2336,71 @@ int main(int argc, char** argv) {
       ApplyBridgeEvents(app, bridgeEvents);
     }
 
-    // PFD radio / transponder commands from the bezel and XPDR softkeys.
+    // Radio / transponder / HDG / CRS / BARO commands from the bezel and XPDR
+    // softkeys. The transponder lives on the PFD; the NAV/COM/CRS/BARO/HDG
+    // knobs exist on both GDU bezels, so both engines' controllers are drained.
     {
-      avionics::SoftkeyController& pfdUi = pfdEngine.softkeyController();
-      avionics::RadioUnit radioUnit;
-      float standbyMhz = 0.0f;
-      if (pfdUi.consumeRadioTune(radioUnit, standbyMhz)) {
-        xplane.tuneRadioStandby(radioUnit, standbyMhz);
+      // In demo mode the displays read the mock feed, so radio swaps/tunes,
+      // transponder edits and the HDG/CRS/BARO knobs must be applied there;
+      // otherwise they'd update the (hidden) X-Plane feed and the on-glass
+      // values would never change even though the press animation plays. (The
+      // mock auto-drives course along the active leg, so a manual course set is
+      // transient there, but the heading bug and baro setting hold.)
+      avionics::MockDataSource* demoRadio =
+          app.demoMode ? app.demoSource : nullptr;
+      const auto commitKnobs = [&xplane,
+                                demoRadio](avionics::SoftkeyController& ui) {
+        avionics::RadioUnit unit;
+        float mhz = 0.0f;
+        if (ui.consumeRadioTune(unit, mhz)) {
+          if (demoRadio != nullptr) demoRadio->tuneRadioStandby(unit, mhz);
+          else xplane.tuneRadioStandby(unit, mhz);
+        }
+        if (ui.consumeRadioTransfer(unit)) {
+          if (demoRadio != nullptr) demoRadio->transferRadio(unit);
+          else xplane.transferRadio(unit);
+        }
+        float volume = 0.0f;
+        if (ui.consumeRadioVolume(unit, volume)) {
+          if (demoRadio != nullptr) demoRadio->setRadioVolume(unit, volume);
+          else xplane.setRadioVolume(unit, volume);
+        }
+        bool identOn = false;
+        if (ui.consumeNavIdent(unit, identOn)) {
+          if (demoRadio != nullptr) demoRadio->setNavIdent(unit, identOn);
+          else xplane.setNavIdent(unit, identOn);
+        }
+        float deg = 0.0f;
+        if (ui.consumeHeadingBug(deg)) {
+          if (demoRadio != nullptr) demoRadio->setHeadingBug(deg);
+          else xplane.setHeadingBug(deg);
+        }
+        if (ui.consumeCourse(deg)) {
+          if (demoRadio != nullptr) demoRadio->setSelectedCourse(deg);
+          else xplane.setSelectedCourse(deg);
+        }
+        float inHg = 0.0f;
+        if (ui.consumeBaro(inHg)) {
+          if (demoRadio != nullptr) demoRadio->setBaroInHg(inHg);
+          else xplane.setBaroInHg(inHg);
+        }
+      };
+      // The transponder lives only on the PFD; drain it there when present.
+      if (pfdEngine != nullptr) {
+        avionics::SoftkeyController& pfdUi = pfdEngine->softkeyController();
+        int xpdrCode = 0;
+        if (pfdUi.consumeXpdrCodeCommit(xpdrCode)) {
+          if (demoRadio != nullptr) demoRadio->setTransponderCode(xpdrCode);
+          else xplane.setTransponderCode(xpdrCode);
+        }
+        int xpdrMode = 0;
+        if (pfdUi.consumeXpdrModeCommit(xpdrMode)) {
+          if (demoRadio != nullptr) demoRadio->setTransponderMode(xpdrMode);
+          else xplane.setTransponderMode(xpdrMode);
+        }
+        commitKnobs(pfdUi);
       }
-      if (pfdUi.consumeRadioTransfer(radioUnit)) {
-        xplane.transferRadio(radioUnit);
-      }
-      int xpdrCode = 0;
-      if (pfdUi.consumeXpdrCodeCommit(xpdrCode)) {
-        xplane.setTransponderCode(xpdrCode);
-      }
-      int xpdrMode = 0;
-      if (pfdUi.consumeXpdrModeCommit(xpdrMode)) {
-        xplane.setTransponderMode(xpdrMode);
-      }
+      if (mfdEngine != nullptr) commitKnobs(mfdEngine->softkeyController());
     }
 
     // CLR held past the threshold acts as CLR (DFLT MAP): display the MFD
@@ -2188,8 +2412,14 @@ int main(int argc, char** argv) {
       app.clrHoldEngine = nullptr;
     }
 
-    const double pfdMs = renderWindow(pfdWindow, pfdEngine, pfdRenderer, dt);
+    // Render the data-driving (primary) display first so the shared source is
+    // pumped once before the secondary draws the same frame. The PFD is primary
+    // when present; with --no-pfd the MFD is the lone, primary display.
+    double pfdMs = 0.0;
     double mfdMs = 0.0;
+    if (pfdWindow != nullptr && pfdEngine != nullptr) {
+      pfdMs = renderWindow(pfdWindow, *pfdEngine, *pfdRenderer, dt);
+    }
     if (mfdWindow != nullptr && mfdEngine != nullptr) {
       mfdMs = renderWindow(mfdWindow, *mfdEngine, *mfdRenderer, dt,
                            profile ? &mfdLastStats : nullptr);
@@ -2233,7 +2463,9 @@ int main(int argc, char** argv) {
     // struct compare.
     {
       avionics::AvionicsPersistentState current = app.settings.avionics;
-      avionics::capturePfdState(pfdEngine.softkeyController(), current.pfd);
+      if (pfdEngine != nullptr) {
+        avionics::capturePfdState(pfdEngine->softkeyController(), current.pfd);
+      }
       if (mfdEngine != nullptr) {
         avionics::captureMfdState(mfdEngine->mfdController(), current.mfd);
       }
@@ -2252,13 +2484,18 @@ int main(int argc, char** argv) {
   avionics::SaveAppSettings(app.settings);
 
   // Tear down GL objects while their contexts are still current.
+  if (pfdWindow != nullptr) {
+    glfwMakeContextCurrent(pfdWindow);
+    delete pfdEngine;
+    delete pfdRenderer;
+    glfwDestroyWindow(pfdWindow);
+  }
   if (mfdWindow != nullptr) {
     glfwMakeContextCurrent(mfdWindow);
     delete mfdEngine;
     delete mfdRenderer;
     glfwDestroyWindow(mfdWindow);
   }
-  glfwDestroyWindow(pfdWindow);
   if (app.rotateCursor != nullptr) glfwDestroyCursor(app.rotateCursor);
   if (app.handCursor != nullptr) glfwDestroyCursor(app.handCursor);
   if (app.rangeCwCursor != nullptr) glfwDestroyCursor(app.rangeCwCursor);

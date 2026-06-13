@@ -307,16 +307,19 @@ void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
 
   // ---- Activate? / Hold? buttons ----
   // Text-sized rounded-rect buttons with a thin gray outline; Activate? at the
-  // left, Hold? at the right. Activate? fills cyan once the waypoint is armed.
+  // left, Hold? at the right. Activate? pulses cyan when armed (~1 Hz).
   auto drawButton = [&](float leftX, const char* label, bool armed) {
     const float bw = r.measureTextWidth(label, valueSize) + valueSize * 1.3f;
     const Rect b{leftX, buttonsY, bw, buttonsH};
     Point pts[kRoundedRectPoints + 1];
     const int closed = buildRoundedRect(pts, b, buttonsH * 0.32f);
-    if (armed) r.fillPolygon(pts, kRoundedRectPoints, colors::kCyan);
+    const bool blinkOn = ui.blinkOn();
+    if (armed && blinkOn) r.fillPolygon(pts, kRoundedRectPoints, colors::kCyan);
     r.strokePolyline(pts, closed, 1.0f, colors::kGroupBoxBorder);
+    const Color textColor =
+        armed ? (blinkOn ? colors::kBlack : colors::kCyan) : colors::kWhitesmoke;
     r.fillText(b.x + b.w * 0.5f, b.y + b.h * 0.5f, label, valueSize,
-               TextAlign::Center, armed ? colors::kBlack : colors::kWhitesmoke);
+               TextAlign::Center, textColor);
     return bw;
   };
   drawButton(inner.x + P(6.0f), "Activate?", ui.directToArmed());

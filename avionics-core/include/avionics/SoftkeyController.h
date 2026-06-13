@@ -294,6 +294,7 @@ class SoftkeyController {
   void setNavFeatureSource(const NavFeatureSource* source) {
     navSource_ = source;
   }
+  const NavFeatureSource* navFeatureSource() const { return navSource_; }
 
   // ---- Nearest Airports window state ----
   const std::vector<NearestAirport>& nearestAirports() const {
@@ -450,6 +451,40 @@ class SoftkeyController {
   void transferCom(const FlightData& d);
   void transferNav(const FlightData& d);
 
+  // Dedicated COM VOL/SQ and NAV VOL/ID knobs (Pilot's Guide Fig. 4-3 / 4-8).
+  // Turning steps the selected radio's audio volume one click (0..100%, queued
+  // as a sim write) and shows the level in place of its standby frequency for
+  // two seconds. The NAV VOL/ID push toggles the selected NAV's Morse ident
+  // audio (queued as a sim write; white "ID" while on). The COM VOL/SQ push
+  // would toggle automatic squelch on the real unit, but X-Plane has no squelch
+  // dataref, so it is inert.
+  void adjustComVolume(int direction, const FlightData& d);
+  void adjustNavVolume(int direction, const FlightData& d);
+  void toggleNavIdent(const FlightData& d);
+
+  // Volume indication shown in the NavCom box: true while the given band's
+  // percentage is replacing the selected radio's standby frequency. The renderer
+  // queries radioVolumeUnit()/radioVolumePct() for the value to draw.
+  bool radioVolumeShown(RadioBand band) const;
+  RadioUnit radioVolumeUnit() const { return radioVolumeUnit_; }
+  int radioVolumePct() const { return radioVolumePct_; }
+
+  // Dedicated HDG knob (left bezel) and CRS/BARO knob (right bezel). These step
+  // the selected-heading bug, selected course, and altimeter barometric setting
+  // by one click and queue the new value as a sim write, consumed like the
+  // radio/transponder commits below. The push caps sync the bug/course to the
+  // current heading.
+  void adjustHeadingBug(int direction, const FlightData& d);
+  void syncHeadingBug(const FlightData& d);
+  void adjustCourse(int direction, const FlightData& d);
+  void adjustBaro(int direction, const FlightData& d);
+  // CRS/BARO knob push ("PUSH STD"): set the altimeter to standard pressure.
+  void setBaroStandard();
+
+  // Flash a bezel control's press-feedback without any other effect (the audio
+  // VOL/SQ/ID knobs, which the display does not model beyond the animation).
+  void flashBezelKey(BezelKey key);
+
   // Currently selected COM and NAV unit (each side's cyan tuning cursor).
   RadioUnit comSelected() const { return comSelected_; }
   RadioUnit navSelected() const { return navSelected_; }
@@ -474,6 +509,18 @@ class SoftkeyController {
   // NAV/COM commits for the sim feed.
   bool consumeRadioTune(RadioUnit& unit, float& standbyMhz);
   bool consumeRadioTransfer(RadioUnit& unit);
+  // Audio-volume commit for the sim feed (0..1 ratio for the audio_volume_*
+  // dataref of `unit`).
+  bool consumeRadioVolume(RadioUnit& unit, float& volume);
+  // NAV Morse-ident audio commit for the sim feed (audio_selection_nav* of
+  // `unit`, on/off), queued by the NAV VOL/ID knob press.
+  bool consumeNavIdent(RadioUnit& unit, bool& on);
+
+  // HDG bug / selected course / baro commits for the sim feed (degrees magnetic
+  // and inches of mercury).
+  bool consumeHeadingBug(float& deg);
+  bool consumeCourse(float& deg);
+  bool consumeBaro(float& inHg);
 
  private:
   // The persistence helpers read/write the durable display options directly.
@@ -519,6 +566,9 @@ class SoftkeyController {
   void setStandbyMhzFor(RadioUnit unit, float mhz);
   void queueRadioTune(RadioUnit unit, float standbyMhz);
   void queueRadioTransfer(RadioUnit unit, const FlightData& d);
+  // Step `unit`'s audio volume one click, queue the write, and show the level.
+  void adjustRadioVolume(RadioUnit unit, RadioBand band, int direction,
+                         const FlightData& d);
   void cycleRadioSelect();
   // Flash the given band's tuning cursor for kRadioArmedSeconds.
   void armRadioBand(RadioBand band);
@@ -633,6 +683,22 @@ class SoftkeyController {
   RadioBand radioArmedBand_ = RadioBand::None;
   double radioArmedSeconds_ = 0.0;
 
+  // Audio volume (VOL/SQ, VOL/ID knobs). The percentage replaces the selected
+  // radio's standby frequency for kRadioVolumeShownSeconds after a turn;
+  // radioVolume*Commit_ is the pending sim write. navIdent*Commit_ is the
+  // pending sim write for the NAV VOL/ID push (the "ID" state itself is read
+  // back from FlightData's nav?IdentAudio, so the annunciation tracks the sim).
+  double radioVolumeShownSeconds_ = 0.0;
+  RadioBand radioVolumeBand_ = RadioBand::None;
+  RadioUnit radioVolumeUnit_ = RadioUnit::Com1;
+  int radioVolumePct_ = 0;
+  bool radioVolumePending_ = false;
+  RadioUnit radioVolumeCommitUnit_ = RadioUnit::Com1;
+  float radioVolumeCommitValue_ = 0.0f;
+  bool navIdentPending_ = false;
+  RadioUnit navIdentCommitUnit_ = RadioUnit::Nav1;
+  bool navIdentCommitValue_ = false;
+
   // Brief slide when active and standby swap (Pilot's Guide flip-flop).
   struct RadioXferAnim {
     RadioUnit unit = RadioUnit::Nav1;
@@ -644,6 +710,15 @@ class SoftkeyController {
   static constexpr double kRadioTransferAnimSeconds = 0.30;
   bool radioXferAnimActive_ = false;
   RadioXferAnim radioXferAnim_{};
+
+  // Pending HDG bug / selected course / baro writes from the dedicated knobs,
+  // committed to the sim feed by the shell (consumeHeadingBug/Course/Baro).
+  bool headingBugPending_ = false;
+  float headingBugDeg_ = 0.0f;
+  bool coursePending_ = false;
+  float coursePendingDeg_ = 0.0f;
+  bool baroPending_ = false;
+  float baroPendingInHg_ = 0.0f;
 
   // Selected Altitude alerting state: phase, remaining flash time for the
   // current phase's five-second flash, and the reference the alerter was last

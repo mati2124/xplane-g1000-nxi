@@ -38,6 +38,58 @@ enum class BezelKey {
   FmsInnerCcw,  // small FMS knob, one click counter-clockwise
   FmsInnerCw,   // small FMS knob, one click clockwise
   FmsPush,      // press the FMS knob (cursor on/off, cancel entry)
+
+  // The remaining hardware controls on the GDU bezel (Figure 1-2 "PFD/MFD
+  // Controls"). The right bezel carries the COM controls and the CRS/BARO knob
+  // (above the RANGE joystick); the left bezel carries the NAV controls and the
+  // HDG knob. These are added after the FMS keys so the historical index ranges
+  // above (grid / RANGE joystick / FMS knob) stay fixed.
+
+  // COM knob (right bezel): large knob tunes whole MHz, small knob tunes the
+  // channel; pressing toggles COM1/COM2.
+  ComOuterCcw,
+  ComOuterCw,
+  ComInnerCcw,
+  ComInnerCw,
+  ComPush,
+  ComTransfer,  // COM frequency transfer key (flip-flop; EMERG on hold)
+
+  // COM VOL/SQ knob (right bezel): turn sets COM audio volume. The press would
+  // toggle automatic squelch on the real unit, but X-Plane has no squelch
+  // dataref, so the press is inert beyond the press-flash.
+  ComVolCcw,
+  ComVolCw,
+  ComVolPush,
+
+  // CRS/BARO knob (right bezel): large knob sets the altimeter barometric
+  // setting, small knob sets the selected course; pressing syncs the course.
+  BaroCcw,
+  BaroCw,
+  CrsCcw,
+  CrsCw,
+  CrsPush,
+
+  // NAV knob (left bezel): large knob tunes whole MHz, small knob tunes the
+  // channel; pressing toggles NAV1/NAV2.
+  NavOuterCcw,
+  NavOuterCw,
+  NavInnerCcw,
+  NavInnerCw,
+  NavPush,
+  NavTransfer,  // NAV frequency transfer key (flip-flop)
+
+  // NAV VOL/ID knob (left bezel): turn sets NAV audio volume, press toggles the
+  // selected NAV's Morse identifier audio (audio_selection_nav*, "ID").
+  NavVolCcw,
+  NavVolCw,
+  NavVolPush,
+
+  // HDG knob (left bezel): turn moves the selected-heading bug, press syncs the
+  // bug to the current heading.
+  HdgCcw,
+  HdgCw,
+  HdgPush,
+
   Count,
 };
 inline constexpr int kBezelKeyCount = static_cast<int>(BezelKey::Count);
@@ -47,9 +99,12 @@ inline constexpr int kBezelKeyCount = static_cast<int>(BezelKey::Count);
 inline constexpr int kBezelButtonCount = static_cast<int>(BezelKey::RangeUp);
 
 // The RANGE joystick widget spans [kRangeJoyFirst, kFmsKnobFirst); the FMS knob
-// widget spans [kFmsKnobFirst, Count).
+// widget spans [kFmsKnobFirst, kRightExtraFirst).
 inline constexpr int kRangeJoyFirst = static_cast<int>(BezelKey::RangeUp);
 inline constexpr int kFmsKnobFirst = static_cast<int>(BezelKey::FmsOuterCcw);
+
+// First of the COM / CRS-BARO / NAV / HDG controls added for the full bezel.
+inline constexpr int kRightExtraFirst = static_cast<int>(BezelKey::ComOuterCcw);
 
 // True for the bezel controls operated by rotation: the FMS knob's inner/outer
 // rings and the RANGE joystick's outer zoom ring. A shell can use this to show
@@ -63,9 +118,73 @@ inline bool isRotatableBezelKey(BezelKey key) {
     case BezelKey::FmsOuterCw:
     case BezelKey::FmsInnerCcw:
     case BezelKey::FmsInnerCw:
+    case BezelKey::ComOuterCcw:
+    case BezelKey::ComOuterCw:
+    case BezelKey::ComInnerCcw:
+    case BezelKey::ComInnerCw:
+    case BezelKey::ComVolCcw:
+    case BezelKey::ComVolCw:
+    case BezelKey::BaroCcw:
+    case BezelKey::BaroCw:
+    case BezelKey::CrsCcw:
+    case BezelKey::CrsCw:
+    case BezelKey::NavOuterCcw:
+    case BezelKey::NavOuterCw:
+    case BezelKey::NavInnerCcw:
+    case BezelKey::NavInnerCw:
+    case BezelKey::NavVolCcw:
+    case BezelKey::NavVolCw:
+    case BezelKey::HdgCcw:
+    case BezelKey::HdgCw:
       return true;
     default:
       return false;
+  }
+}
+
+// For a rotatable bezel key (one side of a knob ring), returns the same knob's
+// clockwise variant when `clockwise` is true, else its counter-clockwise
+// variant. Lets a shell spin the hovered knob with the scroll wheel regardless
+// of which side of the ring the pointer rests on. Returns BezelKey::Count for
+// non-rotatable keys. (The RANGE joystick keeps its own scroll convention, so
+// it is intentionally not handled here.)
+inline BezelKey rotatedBezelKey(BezelKey key, bool clockwise) {
+  switch (key) {
+    case BezelKey::FmsOuterCcw:
+    case BezelKey::FmsOuterCw:
+      return clockwise ? BezelKey::FmsOuterCw : BezelKey::FmsOuterCcw;
+    case BezelKey::FmsInnerCcw:
+    case BezelKey::FmsInnerCw:
+      return clockwise ? BezelKey::FmsInnerCw : BezelKey::FmsInnerCcw;
+    case BezelKey::ComOuterCcw:
+    case BezelKey::ComOuterCw:
+      return clockwise ? BezelKey::ComOuterCw : BezelKey::ComOuterCcw;
+    case BezelKey::ComInnerCcw:
+    case BezelKey::ComInnerCw:
+      return clockwise ? BezelKey::ComInnerCw : BezelKey::ComInnerCcw;
+    case BezelKey::ComVolCcw:
+    case BezelKey::ComVolCw:
+      return clockwise ? BezelKey::ComVolCw : BezelKey::ComVolCcw;
+    case BezelKey::BaroCcw:
+    case BezelKey::BaroCw:
+      return clockwise ? BezelKey::BaroCw : BezelKey::BaroCcw;
+    case BezelKey::CrsCcw:
+    case BezelKey::CrsCw:
+      return clockwise ? BezelKey::CrsCw : BezelKey::CrsCcw;
+    case BezelKey::NavOuterCcw:
+    case BezelKey::NavOuterCw:
+      return clockwise ? BezelKey::NavOuterCw : BezelKey::NavOuterCcw;
+    case BezelKey::NavInnerCcw:
+    case BezelKey::NavInnerCw:
+      return clockwise ? BezelKey::NavInnerCw : BezelKey::NavInnerCcw;
+    case BezelKey::NavVolCcw:
+    case BezelKey::NavVolCw:
+      return clockwise ? BezelKey::NavVolCw : BezelKey::NavVolCcw;
+    case BezelKey::HdgCcw:
+    case BezelKey::HdgCw:
+      return clockwise ? BezelKey::HdgCw : BezelKey::HdgCcw;
+    default:
+      return BezelKey::Count;
   }
 }
 
@@ -80,15 +199,28 @@ inline constexpr double kClrDefaultMapHoldSeconds = 1.0;
 // Render and hit-test share one layout so they always agree.
 class BezelKeyPanel {
  public:
-  // Draws the bezel face and keys filling [x, x+w] x [y, y+h]. pressLevels
-  // points at kBezelKeyCount floats (0..1) for the press-flash; displayH scales
-  // the label fonts to the physical display height.
+  // Draws the right bezel strip (COM VOL/SQ + COM transfer, the COM knob, the
+  // CRS/BARO knob, the RANGE joystick, the 2x3 key grid and the FMS knob)
+  // filling [x, x+w] x [y, y+h]. pressLevels points at kBezelKeyCount floats
+  // (0..1) for the press-flash; displayH scales the label fonts to the physical
+  // display height.
   static void render(Renderer& r, float x, float y, float w, float h,
                      float displayH, const float* pressLevels);
 
-  // Returns the key under the pointer, or BezelKey::Count if outside any key.
+  // Returns the key under the pointer in the right strip, or BezelKey::Count if
+  // outside any control.
   static BezelKey hitTest(float xPx, float yPx, float x, float y, float w,
                           float h);
+
+  // Draws the left bezel strip (NAV VOL/ID + NAV transfer, the NAV knob and the
+  // HDG knob). Same conventions as render().
+  static void renderLeft(Renderer& r, float x, float y, float w, float h,
+                         float displayH, const float* pressLevels);
+
+  // Returns the key under the pointer in the left strip, or BezelKey::Count if
+  // outside any control.
+  static BezelKey hitTestLeft(float xPx, float yPx, float x, float y, float w,
+                              float h);
 };
 
 }  // namespace avionics

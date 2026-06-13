@@ -107,8 +107,16 @@ class MockDataSource : public DataSource {
   // Local stand-in for sim commands while the mock feed is active.
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
   void transferRadio(RadioUnit unit);
+  void setRadioVolume(RadioUnit unit, float volume);
+  void setNavIdent(RadioUnit unit, bool on);
   void setTransponderCode(int code);
   void setTransponderMode(int mode);
+  // HDG bug / selected course / baro knobs (the demo has no autopilot or weather
+  // model, so these just hold the value the knob sets). The course tracks the
+  // active leg while navigating, so a manual course set is transient in demo.
+  void setHeadingBug(float deg);
+  void setSelectedCourse(float deg);
+  void setBaroInHg(float inHg);
 
  private:
   void ensureRoute();              // lazily seed route + initial position

@@ -142,7 +142,12 @@ void drawNavComBar(Renderer& r, float w, float h, float barH,
   const float navW = w * (250.0f / 1024.0f);
   const float comLeft = w * (774.0f / 1024.0f);
   const float comW = w - comLeft;
+
   pfd::drawNavComFreqCells(r, h, barH, navLeft, navW, comLeft, comW, d, radios);
+  // Decoded COM station identifier sits in its own black rounded panel below the
+  // COM column, matching the PFD COM box.
+  pfd::drawComDecodePanel(r, h, barH, comLeft, comW, barH * (10.0f / 56.0f),
+                          pfd::navComDecodeIdent(d));
 
   const bool linkValid = d.dataLinkValid;
 

@@ -115,6 +115,12 @@ class AvionicsEngine {
   SoftkeyController& softkeyController() { return softkeys_; }
 
  private:
+  // The dedicated NAV/COM/CRS/BARO/HDG knobs on the GDU bezel act on the PFD's
+  // radio bar and selected references no matter which page this engine shows
+  // (both GDUs carry the same knobs). Returns true when `key` was one of those
+  // controls and was handled.
+  bool handleBezelKnob(BezelKey key);
+
   // True once the animated power-up has run and (for sources that require it)
   // the power-up page has been acknowledged with ENT, independent of link
   // health.

@@ -109,8 +109,14 @@ class XPlaneConnection : public SimulatorConnection {
   // Pilot commands from the PFD bezel / softkeys (UDP DREF writes).
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
   void transferRadio(RadioUnit unit);
+  void setRadioVolume(RadioUnit unit, float volume);
+  void setNavIdent(RadioUnit unit, bool on);
   void setTransponderCode(int code);
   void setTransponderMode(int mode);
+  // Dedicated HDG / CRS / BARO knob commits (degrees magnetic, inches Hg).
+  void setHeadingBug(float deg);
+  void setSelectedCourse(float deg);
+  void setBaroInHg(float inHg);
 
  private:
   void sendDataref(const char* path, float value);

@@ -62,11 +62,20 @@ class DatarefDataSource : public DataSource {
   // arrow). These mirror the standalone shell's XPlaneConnection writers.
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
   void transferRadio(RadioUnit unit);
+  void setRadioVolume(RadioUnit unit, float volume);
+  void setNavIdent(RadioUnit unit, bool on);
 
   // Transponder commits from the XPDR softkeys. Mode uses the X-Plane
   // transponder_mode enum (off=0, stdby=1, on=2, alt=3).
   void setTransponderCode(int code);
   void setTransponderMode(int mode);
+
+  // apt.dat airport metadata (tower/fuel/kind and published comm frequencies).
+  // Used by the plugin NavFeatureSource for COM frequency decode and WPT/NRST
+  // frequency lists once the background apt.dat load finishes.
+  bool aptDatReady() const { return aptDatLoaded_.load(); }
+  std::vector<MapAirportFrequency> airportFrequencies(
+      const std::string& icao) const;
 
  private:
   // Rebuild the moving-map snapshot (ownship position, active flight plan, and
@@ -180,6 +189,14 @@ class DatarefDataSource : public DataSource {
     XPLMDataRef standby = nullptr;
     float FlightData::* activeMember = nullptr;
     float FlightData::* standbyMember = nullptr;
+    // Per-radio audio volume (float 0..1), read each frame and written by the
+    // VOL/SQ / VOL/ID knobs.
+    XPLMDataRef volume = nullptr;
+    float FlightData::* volumeMember = nullptr;
+    // NAV Morse-ident audio selection (int 0/1), toggled by the NAV VOL/ID
+    // push. Null for COM rows (the COM VOL/SQ push is inert).
+    XPLMDataRef identAudio = nullptr;
+    bool FlightData::* identMember = nullptr;
   };
   std::array<RadioRef, 4> radios_{};
 

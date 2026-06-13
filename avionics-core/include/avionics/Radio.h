@@ -1,5 +1,7 @@
 #pragma once
 
+#include "avionics/FlightData.h"
+
 namespace avionics {
 
 // NAV/COM units on the PFD/MFD top bar (Pilot's Guide, Audio Panel).
@@ -13,6 +15,37 @@ enum class RadioBand { None, Com, Nav };
 inline constexpr RadioBand radioBandOf(RadioUnit unit) {
   return (unit == RadioUnit::Com1 || unit == RadioUnit::Com2) ? RadioBand::Com
                                                               : RadioBand::Nav;
+}
+
+// Audio volume range (0..1) and one-click step for the VOL/SQ and VOL/ID knobs.
+inline constexpr float kRadioVolumeMin = 0.0f;
+inline constexpr float kRadioVolumeMax = 1.0f;
+inline constexpr float kRadioVolumeStep = 0.05f;
+// How long the volume percentage stays shown in the NavCom box after a change
+// (Pilot's Guide: "Volume level indication remains for two seconds").
+inline constexpr double kRadioVolumeShownSeconds = 2.0;
+
+// The FlightData volume field backing each radio unit's audio level.
+inline constexpr float FlightData::* radioVolumeMember(RadioUnit unit) {
+  switch (unit) {
+    case RadioUnit::Nav1:
+      return &FlightData::nav1Volume;
+    case RadioUnit::Nav2:
+      return &FlightData::nav2Volume;
+    case RadioUnit::Com1:
+      return &FlightData::com1Volume;
+    case RadioUnit::Com2:
+      return &FlightData::com2Volume;
+  }
+  return &FlightData::com1Volume;
+}
+
+// The FlightData Morse-ident audio flag backing each NAV unit (the NAV VOL/ID
+// knob press). COM units have no ident audio, so they map to NAV1's flag (the
+// COM VOL/SQ press is inert -- X-Plane has no squelch dataref).
+inline constexpr bool FlightData::* navIdentAudioMember(RadioUnit unit) {
+  return unit == RadioUnit::Nav2 ? &FlightData::nav2IdentAudio
+                                 : &FlightData::nav1IdentAudio;
 }
 
 inline constexpr float kNavFreqMinMhz = 108.0f;

@@ -104,11 +104,31 @@ struct FlightData {
   bool com1Transmitting = true;
   bool com2Transmitting = false;
 
+  // Per-radio audio volume (0..1), set by the COM VOL/SQ and NAV VOL/ID knobs.
+  // The PFD NavCom box shows the level as a percentage in place of the standby
+  // frequency for two seconds after a change (Pilot's Guide Fig. 4-3 / 4-8).
+  float com1Volume = 1.0f;
+  float com2Volume = 1.0f;
+  float nav1Volume = 1.0f;
+  float nav2Volume = 1.0f;
+
+  // Whether each NAV receiver's audio (its Morse identifier) is selected,
+  // toggled by the NAV VOL/ID knob press. A white "ID" annunciates beside the
+  // active NAV frequency while on (Pilot's Guide Fig. 4-8).
+  bool nav1IdentAudio = false;
+  bool nav2IdentAudio = false;
+
   // Decoded Morse identifier of the active NAV station (up to 3 chars, e.g.
   // "PSP"), shown to the right of the active NAV frequency. Empty when no
   // station is being received.
   std::string nav1Ident;
   std::string nav2Ident;
+
+  // Decoded COM station identifier for each active frequency (e.g. "KTRM
+  // UNICOM"), shown in a green bar beneath the active COM row when the tuned
+  // frequency matches a published airport comm frequency in the nav database.
+  std::string com1Ident;
+  std::string com2Ident;
 
   // Active CDI navigation source, annunciated on the HSI.
   CdiSource cdiSource = CdiSource::Gps;
@@ -206,7 +226,7 @@ struct FlightData {
 
   // FMA (center NavCom panel): active leg, lateral/vertical modes.
   std::string fmaFromWpt;
-  std::string fmaToWpt = "KFMY";
+  std::string fmaToWpt = "KRSW";
   float fmaLegDistanceNm = 12.4f;
   float fmaLegBearingDeg = 315.0f;
   std::string fmaLateralActive = "HDG";

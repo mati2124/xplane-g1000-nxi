@@ -160,6 +160,13 @@ const DatarefBinding kBindings[] = {
      Smooth::Snap},
     {datarefs::kCom2StandbyFrequencyHz, kRadioHzToMhz,
      &FlightData::com2StandbyMhz, Smooth::Snap},
+
+    // Per-radio audio volume (0..1), so the NavCom box shows the live level
+    // (and reflects the VOL/SQ / VOL/ID knob writes we send back).
+    {datarefs::kCom1Volume, 1.0f, &FlightData::com1Volume, Smooth::Snap},
+    {datarefs::kCom2Volume, 1.0f, &FlightData::com2Volume, Smooth::Snap},
+    {datarefs::kNav1Volume, 1.0f, &FlightData::nav1Volume, Smooth::Snap},
+    {datarefs::kNav2Volume, 1.0f, &FlightData::nav2Volume, Smooth::Snap},
 };
 constexpr int kBindingCount =
     static_cast<int>(sizeof(kBindings) / sizeof(kBindings[0]));
@@ -189,6 +196,8 @@ enum DiscreteRef {
   kDiscCasIce,
   kDiscCasGearUnsafe,
   kDiscCasStallWarning,
+  kDiscNav1IdentAudio,
+  kDiscNav2IdentAudio,
   kDiscreteCount,
 };
 
@@ -203,7 +212,8 @@ const char* const kDiscretePaths[kDiscreteCount] = {
     datarefs::kAnnunOilPressureLow,  datarefs::kAnnunOilTempHigh,
     datarefs::kAnnunFuelPressureLow, datarefs::kAnnunPitotHeat,
     datarefs::kAnnunIce,             datarefs::kAnnunGearUnsafe,
-    datarefs::kAnnunStallWarning,
+    datarefs::kAnnunStallWarning,    datarefs::kNav1IdentAudio,
+    datarefs::kNav2IdentAudio,
 };
 
 // The continuous zulu-time subscription rides one index past the float and
@@ -445,6 +455,12 @@ void applyDiscrete(FlightData& d, int discrete, float value) {
     case kDiscCasStallWarning:
       d.casStallWarning = v != 0;
       break;
+    case kDiscNav1IdentAudio:
+      d.nav1IdentAudio = v != 0;
+      break;
+    case kDiscNav2IdentAudio:
+      d.nav2IdentAudio = v != 0;
+      break;
     default:
       break;
   }
@@ -474,6 +490,8 @@ void copyDiscreteFields(FlightData& dst, const FlightData& src) {
   dst.casIcing = src.casIcing;
   dst.casGearUnsafe = src.casGearUnsafe;
   dst.casStallWarning = src.casStallWarning;
+  dst.nav1IdentAudio = src.nav1IdentAudio;
+  dst.nav2IdentAudio = src.nav2IdentAudio;
 }
 
 float wrap360(float deg) {
@@ -1201,6 +1219,42 @@ void XPlaneConnection::transferRadio(RadioUnit unit) {
   data_.*(paths.standbyMember) = active;
 }
 
+void XPlaneConnection::setRadioVolume(RadioUnit unit, float volume) {
+  const char* path = nullptr;
+  float FlightData::* member = nullptr;
+  switch (unit) {
+    case RadioUnit::Nav1:
+      path = datarefs::kNav1Volume;
+      member = &FlightData::nav1Volume;
+      break;
+    case RadioUnit::Nav2:
+      path = datarefs::kNav2Volume;
+      member = &FlightData::nav2Volume;
+      break;
+    case RadioUnit::Com1:
+      path = datarefs::kCom1Volume;
+      member = &FlightData::com1Volume;
+      break;
+    case RadioUnit::Com2:
+      path = datarefs::kCom2Volume;
+      member = &FlightData::com2Volume;
+      break;
+  }
+  sendDataref(path, volume);
+  target_.*member = volume;
+  data_.*member = volume;
+}
+
+void XPlaneConnection::setNavIdent(RadioUnit unit, bool on) {
+  const char* path =
+      unit == RadioUnit::Nav2 ? datarefs::kNav2IdentAudio
+                              : datarefs::kNav1IdentAudio;
+  bool FlightData::* member = navIdentAudioMember(unit);
+  sendDataref(path, on ? 1.0f : 0.0f);
+  target_.*member = on;
+  data_.*member = on;
+}
+
 void XPlaneConnection::setTransponderCode(int code) {
   sendDataref(datarefs::kTransponderCode, static_cast<float>(code));
   target_.transponderCode = code;
@@ -1211,6 +1265,24 @@ void XPlaneConnection::setTransponderMode(int mode) {
   sendDataref(datarefs::kTransponderMode, static_cast<float>(mode));
   applyDiscrete(target_, kDiscTransponderMode, static_cast<float>(mode));
   applyDiscrete(data_, kDiscTransponderMode, static_cast<float>(mode));
+}
+
+void XPlaneConnection::setHeadingBug(float deg) {
+  sendDataref(datarefs::kSelectedHeadingDegMag, deg);
+  target_.selectedHeadingDeg = deg;
+  data_.selectedHeadingDeg = deg;
+}
+
+void XPlaneConnection::setSelectedCourse(float deg) {
+  sendDataref(datarefs::kHsiObsCourseDegMag, deg);
+  target_.courseDeg = deg;
+  data_.courseDeg = deg;
+}
+
+void XPlaneConnection::setBaroInHg(float inHg) {
+  sendDataref(datarefs::kBaroSettingInHg, inHg);
+  target_.baroSettingInHg = inHg;
+  data_.baroSettingInHg = inHg;
 }
 
 }  // namespace avionics

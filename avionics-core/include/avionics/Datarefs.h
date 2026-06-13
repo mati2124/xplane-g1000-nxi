@@ -103,6 +103,27 @@ inline constexpr const char* kCom2FrequencyHz =
 inline constexpr const char* kCom2StandbyFrequencyHz =
     "sim/cockpit2/radios/actuators/com2_standby_frequency_hz";
 
+// Per-radio audio volume (float 0..1), driven by the COM VOL/SQ and NAV VOL/ID
+// knobs. Writable actuators: turning a knob reads the current level, steps it,
+// and writes it back. X-Plane has no per-COM squelch dataref (squelch is
+// handled internally), so the COM VOL/SQ knob press is inert.
+inline constexpr const char* kCom1Volume =
+    "sim/cockpit2/radios/actuators/audio_volume_com1";
+inline constexpr const char* kCom2Volume =
+    "sim/cockpit2/radios/actuators/audio_volume_com2";
+inline constexpr const char* kNav1Volume =
+    "sim/cockpit2/radios/actuators/audio_volume_nav1";
+inline constexpr const char* kNav2Volume =
+    "sim/cockpit2/radios/actuators/audio_volume_nav2";
+
+// Per-NAV audio (Morse ident) selection (int 0/1): whether that NAV receiver's
+// audio is routed to the audio panel, which is what the NAV VOL/ID knob press
+// toggles ("ID" annunciates while on). Writable, so the press flips it.
+inline constexpr const char* kNav1IdentAudio =
+    "sim/cockpit2/radios/actuators/audio_selection_nav1";
+inline constexpr const char* kNav2IdentAudio =
+    "sim/cockpit2/radios/actuators/audio_selection_nav2";
+
 // HSI / CDI for the pilot's selected nav source. The hsi_* indicators always
 // reflect whatever source HSI_source_select_pilot has selected.
 inline constexpr const char* kHsiSourceSelect =

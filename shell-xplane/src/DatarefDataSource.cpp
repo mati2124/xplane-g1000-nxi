@@ -325,19 +325,25 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   radios_[static_cast<int>(RadioUnit::Nav1)] = {
       XPLMFindDataRef(datarefs::kNav1FrequencyHz),
       XPLMFindDataRef(datarefs::kNav1StandbyFrequencyHz),
-      &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz};
+      &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz,
+      XPLMFindDataRef(datarefs::kNav1Volume), &FlightData::nav1Volume,
+      XPLMFindDataRef(datarefs::kNav1IdentAudio), &FlightData::nav1IdentAudio};
   radios_[static_cast<int>(RadioUnit::Nav2)] = {
       XPLMFindDataRef(datarefs::kNav2FrequencyHz),
       XPLMFindDataRef(datarefs::kNav2StandbyFrequencyHz),
-      &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz};
+      &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz,
+      XPLMFindDataRef(datarefs::kNav2Volume), &FlightData::nav2Volume,
+      XPLMFindDataRef(datarefs::kNav2IdentAudio), &FlightData::nav2IdentAudio};
   radios_[static_cast<int>(RadioUnit::Com1)] = {
       XPLMFindDataRef(datarefs::kCom1FrequencyHz),
       XPLMFindDataRef(datarefs::kCom1StandbyFrequencyHz),
-      &FlightData::com1ActiveMhz, &FlightData::com1StandbyMhz};
+      &FlightData::com1ActiveMhz, &FlightData::com1StandbyMhz,
+      XPLMFindDataRef(datarefs::kCom1Volume), &FlightData::com1Volume};
   radios_[static_cast<int>(RadioUnit::Com2)] = {
       XPLMFindDataRef(datarefs::kCom2FrequencyHz),
       XPLMFindDataRef(datarefs::kCom2StandbyFrequencyHz),
-      &FlightData::com2ActiveMhz, &FlightData::com2StandbyMhz};
+      &FlightData::com2ActiveMhz, &FlightData::com2StandbyMhz,
+      XPLMFindDataRef(datarefs::kCom2Volume), &FlightData::com2Volume};
 
   transponderCode_ = XPLMFindDataRef(datarefs::kTransponderCode);
   transponderMode_ = XPLMFindDataRef(datarefs::kTransponderMode);
@@ -510,6 +516,10 @@ void DatarefDataSource::update(double dtSeconds) {
     if (r.active) data_.*(r.activeMember) = XPLMGetDatai(r.active) * kRadioHzToMhz;
     if (r.standby)
       data_.*(r.standbyMember) = XPLMGetDatai(r.standby) * kRadioHzToMhz;
+    // Audio volume is a float dataref (0..1).
+    if (r.volume) data_.*(r.volumeMember) = XPLMGetDataf(r.volume);
+    // NAV Morse-ident audio selection is an int dataref (0/1).
+    if (r.identAudio) data_.*(r.identMember) = XPLMGetDatai(r.identAudio) != 0;
   }
   data_.nav1Ident = readNavStationIdent(nav1NavId_, nav1DmeId_);
   data_.nav2Ident = readNavStationIdent(nav2NavId_, nav2DmeId_);
@@ -580,6 +590,18 @@ void DatarefDataSource::transferRadio(RadioUnit unit) {
   }
   data_.*(r.activeMember) = standby;
   data_.*(r.standbyMember) = active;
+}
+
+void DatarefDataSource::setRadioVolume(RadioUnit unit, float volume) {
+  const RadioRef& r = radios_[static_cast<int>(unit)];
+  if (r.volume) XPLMSetDataf(r.volume, volume);
+  data_.*(r.volumeMember) = volume;
+}
+
+void DatarefDataSource::setNavIdent(RadioUnit unit, bool on) {
+  const RadioRef& r = radios_[static_cast<int>(unit)];
+  if (r.identAudio) XPLMSetDatai(r.identAudio, on ? 1 : 0);
+  if (r.identMember) data_.*(r.identMember) = on;
 }
 
 void DatarefDataSource::setTransponderCode(int code) {
@@ -758,6 +780,13 @@ void DatarefDataSource::setMapPanCenter(bool active, double lat, double lon) {
   mapPanActive_ = active;
   mapPanLat_ = lat;
   mapPanLon_ = lon;
+}
+
+std::vector<MapAirportFrequency> DatarefDataSource::airportFrequencies(
+    const std::string& icao) const {
+  const auto it = aptMetaByIcao_.find(icao);
+  if (it == aptMetaByIcao_.end()) return {};
+  return it->second.frequencies;
 }
 
 }  // namespace avionics

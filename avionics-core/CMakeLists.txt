@@ -12,6 +12,7 @@ add_library(avionics-core STATIC
   src/MockDataSource.cpp
   src/PersistentState.cpp
   src/Radio.cpp
+  src/ComDecode.cpp
   src/NavDatabase.cpp
   src/SoftkeyController.cpp
   src/render/BezelKeys.cpp

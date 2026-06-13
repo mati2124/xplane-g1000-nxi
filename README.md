@@ -1,5 +1,11 @@
 # X-Plane G1000 NXi
 
+> 🚫 **FOR FLIGHT SIMULATOR USE ONLY.** Under no circumstances should this
+> software be used for real-life aviation, navigation, or flight operations of
+> any kind. It is **not** a certified avionics device, contains no airworthiness
+> guarantees, and must never be relied upon in an actual aircraft. This is a
+> hobby project intended solely for use with flight simulators.
+
 > ⚠️ **Work in progress — not complete.** This project is currently more of a
 > proof of concept than a finished product. By no means is it complete, expect
 > bugs, missing features, and rough edges. It is, however, actively planned to be

@@ -72,6 +72,24 @@ void drawNavComPanelBg(Renderer& r, float x, float y, float pw, float ph,
   r.strokeRoundedRect(x, y, pw, ph, radius, 1.0f, colors::kPanelBorder);
 }
 
+// Garmin Direct-To icon (a "D" with a horizontal arrow piercing it) drawn to
+// the left of the active waypoint when a GPS Direct-To is active, matching the
+// look of the "D" bezel key. Returns the x just past the glyph.
+float drawDirectToIcon(Renderer& r, float x, float cy, float size,
+                       const Color& color) {
+  r.fillText(x, cy, "D", size, TextAlign::Left, color);
+  const float dW = r.measureTextWidth("D", size);
+  const float shaftL = x + dW * 0.42f;          // pierce through the D's bowl
+  const float shaftR = x + dW + size * 0.34f;   // exit to the right of the D
+  const float head = size * 0.20f;
+  r.strokeLine(shaftL, cy, shaftR, cy, std::max(1.6f, size * 0.08f), color);
+  const Point tri[3] = {{shaftR + head * 0.20f, cy},
+                        {shaftR - head * 0.40f, cy - head},
+                        {shaftR - head * 0.40f, cy + head}};
+  r.fillPolygon(tri, 3, color);
+  return shaftR + head * 0.5f;
+}
+
 // Magenta flight-plan leg arrow between the FROM and TO fields (WT FmaLegIcon).
 void drawFmaLegArrow(Renderer& r, float tipX, float cy, float size) {
   const float hh = size * 0.36f;
@@ -115,23 +133,38 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
 
   if (!d.dataLinkValid) return;
 
+  // No FROM waypoint with an active TO means a GPS Direct-To: show the Direct-To
+  // icon followed by the target identifier instead of a FROM -> TO leg.
+  const bool directTo = d.fmaFromWpt.empty() && !d.fmaToWpt.empty();
+
   float legWidth = 0.0f;
-  if (!d.fmaFromWpt.empty()) {
-    legWidth += r.measureTextWidth(d.fmaFromWpt, dataSize) + dataSize * 0.12f;
-  }
-  if (!d.fmaToWpt.empty()) {
-    legWidth += dataSize * 0.52f + dataSize * 0.12f;
+  if (directTo) {
+    legWidth += dataSize * 0.95f;  // Direct-To icon + gap
     legWidth += r.measureTextWidth(d.fmaToWpt, dataSize);
+  } else {
+    if (!d.fmaFromWpt.empty()) {
+      legWidth += r.measureTextWidth(d.fmaFromWpt, dataSize) + dataSize * 0.12f;
+    }
+    if (!d.fmaToWpt.empty()) {
+      legWidth += dataSize * 0.52f + dataSize * 0.12f;
+      legWidth += r.measureTextWidth(d.fmaToWpt, dataSize);
+    }
   }
   float x = centerL + std::max(centerW * 0.01f, (legW - legWidth) * 0.5f);
-  if (!d.fmaFromWpt.empty()) {
-    x = putText(r, x, cy, d.fmaFromWpt, dataSize, colors::kMagenta, 0.12f);
-  }
-  if (!d.fmaToWpt.empty()) {
-    const float arrowTip = x + dataSize * 0.40f;
-    drawFmaLegArrow(r, arrowTip, cy, dataSize * 0.70f);
-    x = arrowTip + dataSize * 0.12f;
+  if (directTo) {
+    x = drawDirectToIcon(r, x, cy, dataSize, colors::kMagenta);
+    x += dataSize * 0.18f;
     putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
+  } else {
+    if (!d.fmaFromWpt.empty()) {
+      x = putText(r, x, cy, d.fmaFromWpt, dataSize, colors::kMagenta, 0.12f);
+    }
+    if (!d.fmaToWpt.empty()) {
+      const float arrowTip = x + dataSize * 0.40f;
+      drawFmaLegArrow(r, arrowTip, cy, dataSize * 0.70f);
+      x = arrowTip + dataSize * 0.12f;
+      putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
+    }
   }
 
   if (!d.fmaToWpt.empty()) {
@@ -239,6 +272,9 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
   drawNavComPanelBg(r, comPanelL, 0.0f, comPanelW, barH, cornerR);
 
   drawNavComFreqCells(r, h, barH, 0.0f, navPanelW, comPanelL, comPanelW, d, ui);
+  // Decoded COM station identifier sits in its own panel below the COM box.
+  drawComDecodePanel(r, h, barH, comPanelL, comPanelW, cornerR,
+                     navComDecodeIdent(d));
   drawNavStatusBox(r, centerL, centerW, centerRowH, h, d);
   drawAfcsStatusBox(r, centerL, centerRowH, centerW, centerRowH, h, d);
 }
@@ -1107,17 +1143,24 @@ void drawDtoBox(Renderer& r, float x, float y, float w, float h) {
   r.strokePolyline(box, 5, 1.0f, colors::kGroupBoxBorder);
 }
 
-// One text-sized rounded-rect command button (Activate? / Hold?). The
-// highlighted (armed) button gets a bright white outline; the others a dim grey
-// outline, matching the focus treatment in Fig. 5-45. Returns the button width.
+// One text-sized rounded-rect command button (Activate? / Hold?). When armed
+// (highlight-select) the button pulses ~1 Hz: cyan fill with black text, then
+// cyan text on black (WT highlight-select / Pilot's Guide Fig. 5-45).
 float drawDtoButton(Renderer& r, float leftX, float cy, const char* label,
-                    float size, bool highlighted) {
+                    float size, bool armed, bool blinkOn) {
   const float bw = r.measureTextWidth(label, size) + size * 1.3f;
   const float bh = size * 1.7f;
-  r.strokeRoundedRect(leftX, cy - bh * 0.5f, bw, bh, bh * 0.32f, 1.5f,
-                      highlighted ? colors::kWhite : colors::kGroupBoxBorder);
-  r.fillText(leftX + bw * 0.5f, cy, label, size, TextAlign::Center,
-             colors::kWhite);
+  const float bx = leftX;
+  const float by = cy - bh * 0.5f;
+  const float radius = bh * 0.32f;
+  if (armed && blinkOn) {
+    r.fillRoundedRect(bx, by, bw, bh, radius, colors::kCyan);
+  }
+  r.strokeRoundedRect(bx, by, bw, bh, radius, 1.5f,
+                      armed ? colors::kWhite : colors::kGroupBoxBorder);
+  const Color textColor =
+      armed ? (blinkOn ? colors::kBlack : colors::kCyan) : colors::kWhite;
+  r.fillText(leftX + bw * 0.5f, cy, label, size, TextAlign::Center, textColor);
   return bw;
 }
 
@@ -1128,9 +1171,11 @@ float drawDtoButton(Renderer& r, float leftX, float cy, const char* label,
 void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
                         const SoftkeyController& ui) {
   const FontScope fs(r, FontFace::DejaVuSemiBold);
+  // Pilot's Guide Fig. 5-45: the PFD Direct-To window is wider than it is tall
+  // (~1.35 aspect on the 4:3 glass), sized like the other lower-right popouts.
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.directToWindowAnim(), "Direct To",
-                      w * 0.40f, h * 0.52f);
+                      w * 0.36f, h * 0.36f);
   if (f.a <= 0.0f) return;
   const float a = f.a;
 
@@ -1141,12 +1186,12 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
   const bool entryActive = ui.directToEntryActive();
   const bool blinkOn = ui.blinkOn();
 
-  const float identSize = fontPx(26.0f, h);
-  const float faceSize = fontPx(20.0f, h);
+  const float identSize = fontPx(wt::kInfoValue, h);  // prominent ident
+  const float faceSize = fontPx(wt::kInfoLabel, h);   // facility / city
   const float labelSize = fontPx(wt::kInfoLabel, h);  // grey field labels
   const float valueSize = fontPx(wt::kInfoValue, h);
-  const float readoutSize = fontPx(24.0f, h);  // BRG/DIS/CRS numbers
-  const float smallSize = fontPx(14.0f, h);    // FT/NM unit suffixes
+  const float readoutSize = fontPx(wt::kInfoValue, h);  // BRG/DIS/CRS numbers
+  const float smallSize = labelSize * 0.72f;           // FT/NM unit suffixes
 
   const float pad = f.w * 0.045f;
   const float left = f.x + pad;
@@ -1166,10 +1211,23 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
   {
     const float ix = left + pad * 0.5f;
     const float cy1 = y + fontPx(8.0f, h) + identSize * 0.5f;
-    const int cursor = entryActive ? ui.directToCursor() : -1;
-    const float identEnd =
-        drawDtoIdentCells(r, ix, cy1, ui.directToIdent(), cursor,
-                          ui.directToTypedCount(), blinkOn, identSize);
+    const bool armed = ui.directToArmed();
+    float identEnd = ix;
+    if (armed && hasMatch) {
+      // Confirmed waypoint: full ident on a cyan plate (Fig. 5-45).
+      const std::string& id = ui.directToIdent();
+      const float tracking = identSize * 0.06f;
+      const float tw = r.measureTextWidth(id.c_str(), identSize);
+      r.fillRect(ix - tracking * 0.5f, cy1 - identSize * 0.62f, tw + tracking,
+                 identSize * 1.24f, colors::kCyan);
+      r.fillText(ix, cy1, id.c_str(), identSize, TextAlign::Left,
+                 colors::kBlack);
+      identEnd = ix + tw + tracking;
+    } else {
+      const int cursor = entryActive ? ui.directToCursor() : -1;
+      identEnd = drawDtoIdentCells(r, ix, cy1, ui.directToIdent(), cursor,
+                                   ui.directToTypedCount(), blinkOn, identSize);
+    }
     if (hasMatch) {
       const MapFeature& wpt = ui.directToMatch();
       const float symR = fontPx(15.0f, h) * 0.6f;
@@ -1266,21 +1324,55 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
   }
 
   // ---- Activate? / Hold? buttons ----
-  drawDtoButton(r, left, buttonsCy, "Activate?", valueSize, ui.directToArmed());
+  drawDtoButton(r, left, buttonsCy, "Activate?", valueSize, ui.directToArmed(),
+                blinkOn);
   const float holdW =
       r.measureTextWidth("Hold?", valueSize) + valueSize * 1.3f;
-  drawDtoButton(r, right - holdW, buttonsCy, "Hold?", valueSize, false);
+  drawDtoButton(r, right - holdW, buttonsCy, "Hold?", valueSize, false,
+                blinkOn);
 
   r.restore();
 }
 
 }  // namespace
 
+std::string navComDecodeIdent(const FlightData& d) {
+  if (!d.dataLinkValid) return {};
+  if (d.com1Transmitting && !d.com1Ident.empty()) return d.com1Ident;
+  if (d.com2Transmitting && !d.com2Ident.empty()) return d.com2Ident;
+  return {};
+}
+
+void drawComDecodePanel(Renderer& r, float h, float barH, float comLeft,
+                        float comW, float cornerR, const std::string& ident) {
+  if (ident.empty()) return;
+  // A separate rounded panel below the COM box, with a small gap above it so the
+  // sky shows through between the two -- it is not an extension of the COM box.
+  const float gap = barH * 0.06f;
+  const float panelH = barH * 0.40f;
+  const float top = barH + gap;
+  drawNavComPanelBg(r, comLeft, top, comW, panelH, cornerR);
+  FontScope navComFont(r, FontFace::DejaVuSemiBold);
+  // Centered over the frequency columns (the 1/2 COM label column sits to the
+  // right), matching the real unit. The +size*0.10 descender correction
+  // recenters the glyph ink, since the font centers its line box (which includes
+  // an empty descender span) on the draw point.
+  const float identCx = comLeft + comW * 0.465f;
+  const float size = fontPx(wt::kNavComFreq, h) * 0.86f;
+  r.fillText(identCx, top + panelH * 0.5f + size * 0.10f, ident, size,
+             TextAlign::Center, colors::kActiveGreen);
+}
+
 void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
                          float navW, float comLeft, float comW,
                          const FlightData& d, const SoftkeyController& ui) {
-  const float row1Cy = barH * 0.32f;
-  const float row2Cy = barH * 0.68f;
+  // Rows are nudged down from the symmetric 0.27/0.73 split by a small descender
+  // correction: the font centers its line box (which includes the empty
+  // descender span below the digits) on the draw point, so digits -- which have
+  // no descenders -- otherwise sit visually high. The +0.04 recenters the glyph
+  // ink within the panel while preserving the row-to-row spacing.
+  const float row1Cy = barH * 0.31f;
+  const float row2Cy = barH * 0.77f;
   const float freqSize = fontPx(wt::kNavComFreq, h);
   const float labelSize = fontPx(wt::kNavComLabel, h);
 
@@ -1344,16 +1436,42 @@ void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
     r.fillText(rightX, cy, text, freqSize, TextAlign::Right, standbyColor);
   };
 
+  // Audio volume indication (Pilot's Guide Fig. 4-3 / 4-8): while a VOL/SQ or
+  // VOL/ID knob is turned, the level replaces the selected radio's standby
+  // frequency for two seconds -- a cyan percentage toward the active frequency
+  // and a smaller white "VOL" label toward the band label. The percent and
+  // label swap sides between the two boxes because the standby field sits on the
+  // right of the COM box but on the left of the NAV box.
+  const float volLabelSize = freqSize * 0.62f;
+  const float volGap = freqSize * 0.18f;
+  // NAV box: "VOL" (white) to the left of the cyan percentage, the group
+  // right-aligned where the NAV standby frequency normally sits.
+  auto drawNavVolume = [&](float rightX, float cy, int pct) {
+    const std::string p = std::to_string(pct) + "%";
+    r.fillText(rightX, cy, p, freqSize, TextAlign::Right, colors::kCyan);
+    const float pctLeft = rightX - r.measureTextWidth(p, freqSize);
+    r.fillText(pctLeft - volGap, cy, "VOL", volLabelSize, TextAlign::Right,
+               colors::kWhite);
+  };
+  // COM box: cyan percentage to the left of the white "VOL" label, the group
+  // right-aligned where the COM standby frequency normally sits.
+  auto drawComVolume = [&](float rightX, float cy, int pct) {
+    r.fillText(rightX, cy, "VOL", volLabelSize, TextAlign::Right, colors::kWhite);
+    const float volLeft = rightX - r.measureTextWidth("VOL", volLabelSize);
+    const std::string p = std::to_string(pct) + "%";
+    r.fillText(volLeft - volGap, cy, p, freqSize, TextAlign::Right, colors::kCyan);
+  };
+
   // NAV side (mirror of COM): 'NAV' + 1/2 labels at the far left, then the
   // boxed standby frequency, the transfer carets, the active frequency, and
   // the station ident at the panel's right edge.
-  drawBandLabel(r, "NAV", navLeft + navW * 0.035f, navLeft + navW * 0.12f,
+  drawBandLabel(r, "NAV", navLeft + navW * 0.035f, navLeft + navW * 0.10f,
                 barH, row1Cy, row2Cy, labelSize);
-  const float navStandbyRightX = navLeft + navW * 0.41f;
-  const float navActiveLeftX = navLeft + navW * 0.53f;
+  const float navStandbyRightX = navLeft + navW * 0.415f;
+  const float navActiveLeftX = navLeft + navW * 0.505f;
   // Left edge of the active station's decoded Morse ident slot (up to 3 chars,
   // e.g. "PSP"); sits a clear gap to the right of the active frequency.
-  const float navIdentLeftX = navLeft + navW * 0.82f;
+  const float navIdentLeftX = navLeft + navW * 0.795f;
   const float identGap = freqSize * 0.55f;
   struct NavRow {
     float active, standby, cy;
@@ -1383,8 +1501,15 @@ void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
           navStandbyRightX + (navActiveLeftX + twActive - navStandbyRightX) * t;
       activeLX = navActiveLeftX + (standbyLeft0 - navActiveLeftX) * t;
     }
+    const bool showVol = anim <= 0.0f &&
+                         ui.radioVolumeShown(RadioBand::Nav) &&
+                         ui.radioVolumeUnit() == unit;
     float boxLeft = 0.0f, boxRight = 0.0f;
-    drawStandbyBoxed(standbyRX, n.cy, standbyStr, sel, boxLeft, boxRight);
+    if (showVol) {
+      drawNavVolume(navStandbyRightX, n.cy, ui.radioVolumePct());
+    } else {
+      drawStandbyBoxed(standbyRX, n.cy, standbyStr, sel, boxLeft, boxRight);
+    }
     r.fillText(activeLX, n.cy, activeStr, freqSize, TextAlign::Left,
                navActiveColor(unit));
     if (!n.ident.empty()) {
@@ -1394,16 +1519,27 @@ void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
       r.fillText(identX, n.cy, n.ident, freqSize, TextAlign::Left,
                  navActiveColor(unit));
     }
-    if (sel && anim <= 0.0f) {
-      drawTransferCarets(r, (boxRight + activeLX) * 0.5f, n.cy, caretHalf);
+    // Middle slot: a white "ID" replaces the transfer arrow while Morse ident
+    // audio is on for this NAV (Pilot's Guide Fig. 4-8), otherwise the carets.
+    if (sel && anim <= 0.0f && !showVol) {
+      const float midX = (boxRight + activeLX) * 0.5f;
+      if (d.*navIdentAudioMember(unit)) {
+        r.fillText(midX, n.cy, "ID", volLabelSize, TextAlign::Center,
+                   colors::kWhite);
+      } else {
+        drawTransferCarets(r, midX, n.cy, caretHalf);
+      }
     }
   }
 
   // COM side: active frequency left-aligned inside the panel (so it never
   // spills over the center box), the carets, the boxed standby, then the 1/2
   // and 'COM' labels packed at the far right.
-  const float comActiveLeftX = comLeft + comW * 0.03f;
-  const float comStandbyRightX = comLeft + comW * 0.73f;
+  // Both COM frequencies are shifted toward the 1/2 channel labels on the
+  // right, leaving a clear gap at the panel's left edge for a future RX/TX
+  // transmit/receive annunciation beside the active frequency.
+  const float comActiveLeftX = comLeft + comW * 0.10f;
+  const float comStandbyRightX = comLeft + comW * 0.83f;
   struct RadioRow {
     float active, standby, cy;
   };
@@ -1432,15 +1568,29 @@ void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
     }
     r.fillText(activeLX, c.cy, activeStr, freqSize, TextAlign::Left,
                comActiveColor(unit));
+    const bool showVol = anim <= 0.0f &&
+                         ui.radioVolumeShown(RadioBand::Com) &&
+                         ui.radioVolumeUnit() == unit;
     float boxLeft = 0.0f, boxRight = 0.0f;
-    drawStandbyBoxed(standbyRX, c.cy, standbyStr, sel, boxLeft, boxRight);
-    if (sel && anim <= 0.0f) {
+    if (showVol) {
+      drawComVolume(comStandbyRightX, c.cy, ui.radioVolumePct());
+    } else {
+      drawStandbyBoxed(standbyRX, c.cy, standbyStr, sel, boxLeft, boxRight);
+    }
+    if (sel && anim <= 0.0f && !showVol) {
       const float aRight =
           comActiveLeftX + r.measureTextWidth(activeStr, freqSize);
+      // The transfer carets between the active and boxed standby frequency.
+      // (The COM VOL/SQ press has no annunciation: X-Plane has no squelch
+      // dataref, so automatic squelch is never modeled as disabled.)
       drawTransferCarets(r, (aRight + boxLeft) * 0.5f, c.cy, caretHalf);
     }
   }
-  drawBandLabel(r, "COM", comLeft + comW * 0.95f, comLeft + comW * 0.82f, barH,
+
+  // The decoded COM station identifier is drawn by the caller in its own panel
+  // below the COM box (drawComDecodePanel).
+
+  drawBandLabel(r, "COM", comLeft + comW * 0.95f, comLeft + comW * 0.88f, barH,
                 row1Cy, row2Cy, labelSize);
 }
 

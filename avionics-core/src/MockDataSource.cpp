@@ -101,11 +101,12 @@ void seedDemoAirspace(MapData& map, double lat, double lon) {
 }
 
 // Built-in route flown when the shell does not supply a real flight plan.
-// A short loop around Page Field (KFMY) in Southwest Florida, sized to frame
-// nicely at the default 10 NM map range, so the demo still looks plausible.
+// A short loop in Southwest Florida, sized to frame nicely at the default 10 NM
+// map range, so the demo still looks plausible. The demo starts on a GPS
+// Direct-To straight to KRSW (the first leg), so the PFD top bar shows the
+// Direct-To icon -> KRSW (see ensureRoute()).
 const std::vector<MapLeg>& defaultRoute() {
   static const std::vector<MapLeg> kRoute = {
-      {kKfmyLat, kKfmyLon, "KFMY"},
       {26.5362, -81.7552, "KRSW"},
       // ESTRO carries a demo VNAV altitude constraint so the Active VNV Profile
       // box and PFD vertical deviation have something to track in the standalone
@@ -595,15 +596,32 @@ void MockDataSource::updateRoute(std::vector<MapLeg> route) {
 void MockDataSource::ensureRoute() {
   if (routeInitialized_) return;
 
-  if (route_.size() < 2) route_ = defaultRoute();
+  bool usingDefault = false;
+  if (route_.size() < 2) {
+    route_ = defaultRoute();
+    usingDefault = true;
+  }
   map_.flightPlan = route_;
   map_.rangeNm = 10.0f;
-  map_.ownshipLat = route_.front().lat;
-  map_.ownshipLon = route_.front().lon;
-  map_.positionValid = true;
   legIndex_ = 1;
-  data_.headingDeg = static_cast<float>(
-      navBearingDeg(route_[0].lat, route_[0].lon, route_[1].lat, route_[1].lon));
+
+  if (usingDefault) {
+    // Built-in demo: start near Page Field and fly a GPS Direct-To straight to
+    // KRSW (the first leg) so the PFD top bar shows the Direct-To icon -> KRSW
+    // with no FROM waypoint. KFMY is only the geographic start, not a leg.
+    map_.ownshipLat = kKfmyLat;
+    map_.ownshipLon = kKfmyLon;
+    directToActive_ = true;
+    directToTarget_ = route_.front();  // KRSW
+    data_.headingDeg = static_cast<float>(navBearingDeg(
+        kKfmyLat, kKfmyLon, route_.front().lat, route_.front().lon));
+  } else {
+    map_.ownshipLat = route_.front().lat;
+    map_.ownshipLon = route_.front().lon;
+    data_.headingDeg = static_cast<float>(navBearingDeg(
+        route_[0].lat, route_[0].lon, route_[1].lat, route_[1].lon));
+  }
+  map_.positionValid = true;
 
   // Hand-placed demo nav data is used ONLY when no real nav source is wired in
   // (e.g. a bare unit test). When a source is set -- which the standalone shell
@@ -846,6 +864,14 @@ void MockDataSource::transferRadio(RadioUnit unit) {
   *standby = tmp;
 }
 
+void MockDataSource::setRadioVolume(RadioUnit unit, float volume) {
+  data_.*radioVolumeMember(unit) = volume;
+}
+
+void MockDataSource::setNavIdent(RadioUnit unit, bool on) {
+  data_.*navIdentAudioMember(unit) = on;
+}
+
 void MockDataSource::setTransponderCode(int code) {
   data_.transponderCode = code;
 }
@@ -853,5 +879,11 @@ void MockDataSource::setTransponderCode(int code) {
 void MockDataSource::setTransponderMode(int mode) {
   applyXpdrModeString(data_, mode);
 }
+
+void MockDataSource::setHeadingBug(float deg) { data_.selectedHeadingDeg = deg; }
+
+void MockDataSource::setSelectedCourse(float deg) { data_.courseDeg = deg; }
+
+void MockDataSource::setBaroInHg(float inHg) { data_.baroSettingInHg = inHg; }
 
 }  // namespace avionics

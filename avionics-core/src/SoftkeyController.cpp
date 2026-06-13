@@ -392,6 +392,13 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
     radioArmedSeconds_ = std::max(0.0, radioArmedSeconds_ - dtSeconds);
   }
 
+  // The audio volume percentage replaces the standby frequency for two seconds
+  // after a VOL/SQ or VOL/ID knob turn, then the standby frequency returns.
+  if (radioVolumeShownSeconds_ > 0.0) {
+    radioVolumeShownSeconds_ = std::max(0.0, radioVolumeShownSeconds_ - dtSeconds);
+    if (radioVolumeShownSeconds_ == 0.0) radioVolumeBand_ = RadioBand::None;
+  }
+
   if (radioXferAnimActive_) {
     radioXferAnim_.progress =
         static_cast<float>(radioXferAnim_.progress +
@@ -1523,6 +1530,135 @@ void SoftkeyController::transferCom(const FlightData& d) {
 
 void SoftkeyController::transferNav(const FlightData& d) {
   queueRadioTransfer(navSelected_, d);
+}
+
+namespace {
+// Step a radio's audio level one knob click and show it as a 0..100 percent.
+float stepRadioVolume(float current, int direction) {
+  return std::clamp(current + static_cast<float>(direction) * kRadioVolumeStep,
+                    kRadioVolumeMin, kRadioVolumeMax);
+}
+}  // namespace
+
+void SoftkeyController::adjustRadioVolume(RadioUnit unit, RadioBand band,
+                                          int direction, const FlightData& d) {
+  const float next = stepRadioVolume(d.*radioVolumeMember(unit), direction);
+  radioVolumeCommitUnit_ = unit;
+  radioVolumeCommitValue_ = next;
+  radioVolumePending_ = true;
+  // Show the percentage in place of the selected radio's standby frequency.
+  radioVolumeBand_ = band;
+  radioVolumeUnit_ = unit;
+  radioVolumePct_ = static_cast<int>(std::lround(next * 100.0f));
+  radioVolumeShownSeconds_ = kRadioVolumeShownSeconds;
+}
+
+void SoftkeyController::adjustComVolume(int direction, const FlightData& d) {
+  adjustRadioVolume(comSelected_, RadioBand::Com, direction, d);
+}
+
+void SoftkeyController::adjustNavVolume(int direction, const FlightData& d) {
+  adjustRadioVolume(navSelected_, RadioBand::Nav, direction, d);
+}
+
+void SoftkeyController::toggleNavIdent(const FlightData& d) {
+  // The NAV VOL/ID press toggles Morse ident audio for the selected NAV radio;
+  // "ID" annunciates while it is on (Pilot's Guide Fig. 4-8). The state lives in
+  // the sim (audio_selection_nav*), so flip the current value and queue the
+  // write; the annunciation reads back from FlightData.
+  navIdentCommitUnit_ = navSelected_;
+  navIdentCommitValue_ = !(d.*navIdentAudioMember(navSelected_));
+  navIdentPending_ = true;
+}
+
+bool SoftkeyController::consumeRadioVolume(RadioUnit& unit, float& volume) {
+  if (!radioVolumePending_) return false;
+  radioVolumePending_ = false;
+  unit = radioVolumeCommitUnit_;
+  volume = radioVolumeCommitValue_;
+  return true;
+}
+
+bool SoftkeyController::consumeNavIdent(RadioUnit& unit, bool& on) {
+  if (!navIdentPending_) return false;
+  navIdentPending_ = false;
+  unit = navIdentCommitUnit_;
+  on = navIdentCommitValue_;
+  return true;
+}
+
+bool SoftkeyController::radioVolumeShown(RadioBand band) const {
+  return radioVolumeShownSeconds_ > 0.0 && radioVolumeBand_ == band;
+}
+
+namespace {
+// One click of the HDG / CRS knob steps one degree; the BARO knob steps 0.01
+// inHg per click. The barometric setting clamps to the GDU's settable range.
+constexpr float kBaroStepInHg = 0.01f;
+constexpr float kBaroMinInHg = 27.50f;
+constexpr float kBaroMaxInHg = 31.50f;
+constexpr float kBaroStandardInHg = 29.92f;
+
+float wrapHeadingDeg(float deg) {
+  deg = std::fmod(deg, 360.0f);
+  if (deg < 0.0f) deg += 360.0f;
+  return deg;
+}
+}  // namespace
+
+void SoftkeyController::adjustHeadingBug(int direction, const FlightData& d) {
+  headingBugDeg_ = wrapHeadingDeg(std::round(d.selectedHeadingDeg) +
+                                  static_cast<float>(direction));
+  headingBugPending_ = true;
+}
+
+void SoftkeyController::syncHeadingBug(const FlightData& d) {
+  headingBugDeg_ = wrapHeadingDeg(std::round(d.headingDeg));
+  headingBugPending_ = true;
+}
+
+void SoftkeyController::adjustCourse(int direction, const FlightData& d) {
+  coursePendingDeg_ =
+      wrapHeadingDeg(std::round(d.courseDeg) + static_cast<float>(direction));
+  coursePending_ = true;
+}
+
+void SoftkeyController::adjustBaro(int direction, const FlightData& d) {
+  baroPendingInHg_ = std::clamp(
+      d.baroSettingInHg + static_cast<float>(direction) * kBaroStepInHg,
+      kBaroMinInHg, kBaroMaxInHg);
+  baroPending_ = true;
+}
+
+void SoftkeyController::setBaroStandard() {
+  baroPendingInHg_ = kBaroStandardInHg;
+  baroPending_ = true;
+}
+
+void SoftkeyController::flashBezelKey(BezelKey key) {
+  const int i = static_cast<int>(key);
+  if (i >= 0 && i < kBezelKeyCount) bezelPress_[i] = 1.0f;
+}
+
+bool SoftkeyController::consumeHeadingBug(float& deg) {
+  if (!headingBugPending_) return false;
+  deg = headingBugDeg_;
+  headingBugPending_ = false;
+  return true;
+}
+
+bool SoftkeyController::consumeCourse(float& deg) {
+  if (!coursePending_) return false;
+  deg = coursePendingDeg_;
+  coursePending_ = false;
+  return true;
+}
+
+bool SoftkeyController::consumeBaro(float& inHg) {
+  if (!baroPending_) return false;
+  inHg = baroPendingInHg_;
+  baroPending_ = false;
+  return true;
 }
 
 bool SoftkeyController::radioBezelKey(BezelKey key, const FlightData& d) {

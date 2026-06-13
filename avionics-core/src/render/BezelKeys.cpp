@@ -12,15 +12,23 @@ namespace {
 constexpr float kCanvasHeight = 768.0f;
 constexpr float kPi = 3.14159265f;
 
-// Layout fractions of the bezel-strip rectangle. The real GDU right bezel
-// stacks RANGE, the 2×3 key grid, and the FMS knob from bottom to top; the
-// upper strip is plain face (COM/BARO live on a full GDU but are not emulated
-// here). See G1000 NXi Pilot's Guide Figure 1-2.
+// Layout fractions of the bezel-strip rectangle, stacked top-to-bottom to match
+// the GDU bezel (G1000 NXi Pilot's Guide Figure 1-2 "PFD/MFD Controls"). The
+// right strip carries (top→bottom): the COM VOL/SQ knob + COM transfer key, the
+// COM knob, the CRS/BARO knob, the RANGE joystick, the 2×3 key grid and the FMS
+// knob. The left strip carries the NAV VOL/ID knob + NAV transfer key, the NAV
+// knob and the HDG knob.
 constexpr float kPadXFrac = 0.10f;
-constexpr float kGapFrac = 0.010f;
-constexpr float kKnobAreaFrac = 0.19f;
-constexpr float kKeyGridAreaFrac = 0.27f;
-constexpr float kRangeAreaFrac = 0.16f;
+constexpr float kPadTopFrac = 0.012f;
+constexpr float kSlotGapFrac = 0.012f;
+
+// Right-strip slot heights, as fractions of the strip height (sum < 1).
+constexpr float kVolRowFrac = 0.085f;     // VOL/SQ knob + transfer key row
+constexpr float kRadioKnobFrac = 0.135f;  // COM / NAV tuning knob
+constexpr float kBaroKnobFrac = 0.135f;   // CRS/BARO knob
+constexpr float kRangeAreaFrac = 0.135f;  // RANGE joystick
+constexpr float kKeyGridAreaFrac = 0.235f;
+constexpr float kKnobAreaFrac = 0.155f;   // FMS knob (bottom)
 
 constexpr int kKeyGridCols = 2;
 constexpr int kKeyGridRows = 3;
@@ -46,22 +54,65 @@ struct Cell {
   float x, y, w, h;
 };
 
+// Top/height of each stacked slot in the right bezel strip.
 struct ClusterLayout {
+  float volRowTop, volRowH;
+  float radioTop, radioH;
+  float baroTop, baroH;
   float rangeTop, rangeH;
   float keyTop, keyH;
   float knobTop, knobH;
 };
 
 ClusterLayout layoutCluster(float x, float y, float w, float h) {
-  const float padBottom = h * 0.012f;
-  const float gap = h * kGapFrac;
-  const float knobH = h * kKnobAreaFrac;
-  const float keyH = h * kKeyGridAreaFrac;
-  const float rangeH = h * kRangeAreaFrac;
-  const float knobTop = y + h - padBottom - knobH;
-  const float keyTop = knobTop - gap - keyH;
-  const float rangeTop = keyTop - gap - rangeH;
-  return {rangeTop, rangeH, keyTop, keyH, knobTop, knobH};
+  (void)x;
+  const float gap = h * kSlotGapFrac;
+  float top = y + h * kPadTopFrac;
+  ClusterLayout cl{};
+  cl.volRowTop = top;
+  cl.volRowH = h * kVolRowFrac;
+  top += cl.volRowH + gap;
+  cl.radioTop = top;
+  cl.radioH = h * kRadioKnobFrac;
+  top += cl.radioH + gap;
+  cl.baroTop = top;
+  cl.baroH = h * kBaroKnobFrac;
+  top += cl.baroH + gap;
+  cl.rangeTop = top;
+  cl.rangeH = h * kRangeAreaFrac;
+  top += cl.rangeH + gap;
+  cl.keyTop = top;
+  cl.keyH = h * kKeyGridAreaFrac;
+  top += cl.keyH + gap;
+  cl.knobTop = top;
+  cl.knobH = h * kKnobAreaFrac;
+  return cl;
+}
+
+// Top/height of each stacked slot in the left bezel strip (NAV + HDG). The
+// lower portion of the real left bezel holds the AFCS mode keys, which this
+// suite does not model, so it is left as plain face.
+struct LeftLayout {
+  float volRowTop, volRowH;
+  float navTop, navH;
+  float hdgTop, hdgH;
+};
+
+LeftLayout layoutLeft(float x, float y, float w, float h) {
+  (void)x;
+  (void)w;
+  const float gap = h * kSlotGapFrac;
+  float top = y + h * kPadTopFrac;
+  LeftLayout cl{};
+  cl.volRowTop = top;
+  cl.volRowH = h * kVolRowFrac;
+  top += cl.volRowH + gap;
+  cl.navTop = top;
+  cl.navH = h * kRadioKnobFrac;
+  top += cl.navH + gap;
+  cl.hdgTop = top;
+  cl.hdgH = h * kBaroKnobFrac;
+  return cl;
 }
 
 // BezelKey indices 0..5 map to the real 2×3 grid (left column, then right):
@@ -90,11 +141,17 @@ struct Knob {
   float rCenter;
 };
 
-Knob fmsKnobRect(float x, float w, const ClusterLayout& cl) {
+// A dual-concentric knob centered in a stacked slot [top, top+slotH], leaving
+// room above for a caption.
+Knob knobInSlot(float x, float w, float top, float slotH) {
   const float cx = x + w * 0.5f;
-  const float cy = cl.knobTop + cl.knobH * 0.54f;
-  const float rOuter = std::min(w * 0.44f, cl.knobH * 0.40f);
+  const float cy = top + slotH * 0.56f;
+  const float rOuter = std::min(w * 0.42f, slotH * 0.40f);
   return {cx, cy, rOuter, rOuter * 0.62f, rOuter * 0.28f};
+}
+
+Knob fmsKnobRect(float x, float w, const ClusterLayout& cl) {
+  return knobInSlot(x, w, cl.knobTop, cl.knobH);
 }
 
 Knob rangeJoyRect(float x, float w, const ClusterLayout& cl) {
@@ -102,6 +159,31 @@ Knob rangeJoyRect(float x, float w, const ClusterLayout& cl) {
   const float cy = cl.rangeTop + cl.rangeH * 0.56f;
   const float rOuter = std::min(w * 0.42f, cl.rangeH * 0.40f);
   return {cx, cy, rOuter, rOuter * 0.62f, rOuter * 0.30f};
+}
+
+Knob comKnobRect(float x, float w, const ClusterLayout& cl) {
+  return knobInSlot(x, w, cl.radioTop, cl.radioH);
+}
+
+Knob baroKnobRect(float x, float w, const ClusterLayout& cl) {
+  return knobInSlot(x, w, cl.baroTop, cl.baroH);
+}
+
+// A small single-rotary knob (the VOL/SQ or VOL/ID knob) sitting on one side of
+// the top row, with the transfer key on the other.
+Knob volKnobIn(float x, float w, float top, float slotH, bool leftSide) {
+  const float r = std::min(w * 0.20f, slotH * 0.42f);
+  const float cx = leftSide ? x + w * 0.30f : x + w * 0.70f;
+  const float cy = top + slotH * 0.60f;
+  return {cx, cy, r, r * 0.55f, r * 0.55f};
+}
+
+Cell transferCellIn(float x, float w, float top, float slotH, bool leftSide) {
+  const float cw = w * 0.30f;
+  const float ch = slotH * 0.52f;
+  const float cx = leftSide ? x + w * 0.70f - cw * 0.5f : x + w * 0.30f - cw * 0.5f;
+  const float cy = top + slotH * 0.34f;
+  return {cx, cy, cw, ch};
 }
 
 const char* keyLabel(BezelKey key) {
@@ -337,6 +419,122 @@ void drawRangeJoystick(Renderer& r, const Knob& k, float displayH,
                colors::kLabelText);
 }
 
+// Generic dual-concentric tuning knob (COM, NAV, CRS/BARO). `topCaption` is
+// drawn above the knob and `bottomCaption` below it (e.g. "1/2" or "CRS"); the
+// inner/outer rings glow toward the side that was last clicked.
+void drawTuningKnob(Renderer& r, const Knob& k, float displayH,
+                    const char* topCaption, const char* bottomCaption,
+                    const float* levels, BezelKey outerCcw, BezelKey outerCw,
+                    BezelKey innerCcw, BezelKey innerCw, BezelKey push) {
+  if (topCaption != nullptr) {
+    r.fillText(k.cx, k.cy - k.rOuter - fontPx(kCaptionWt, displayH) * 0.85f,
+               topCaption, fontPx(kCaptionWt, displayH), TextAlign::Center,
+               colors::kLabelText);
+  }
+
+  drawConcentricKnobBody(r, k, pressLevel(levels, push));
+
+  const float ringR = (k.rOuter + k.rInner) * 0.5f;
+  const float glowR = (k.rOuter - k.rInner) * 0.40f;
+  drawRingGlow(r, k, ringR, glowR, -1.0f, pressLevel(levels, outerCcw));
+  drawRingGlow(r, k, ringR, glowR, 1.0f, pressLevel(levels, outerCw));
+  const float innerRingR = (k.rInner + k.rCenter) * 0.5f;
+  const float innerGlowR = (k.rInner - k.rCenter) * 0.40f;
+  drawRingGlow(r, k, innerRingR, innerGlowR, -1.0f, pressLevel(levels, innerCcw));
+  drawRingGlow(r, k, innerRingR, innerGlowR, 1.0f, pressLevel(levels, innerCw));
+
+  if (bottomCaption != nullptr) {
+    r.fillText(k.cx, k.cy + k.rOuter + fontPx(kKnobCaptionWt, displayH) * 0.95f,
+               bottomCaption, fontPx(kKnobCaptionWt, displayH),
+               TextAlign::Center, colors::kLabelText);
+  }
+}
+
+// Single-rotary knob with a push cap (the HDG knob, and the small VOL/SQ and
+// VOL/ID knobs). The body reuses the concentric look but only the outer ring
+// glows on rotation.
+void drawSingleKnob(Renderer& r, const Knob& k, float displayH,
+                    const char* topCaption, const char* bottomCaption,
+                    const float* levels, BezelKey ccw, BezelKey cw,
+                    BezelKey push) {
+  if (topCaption != nullptr) {
+    r.fillText(k.cx, k.cy - k.rOuter - fontPx(kKnobCaptionWt, displayH) * 0.85f,
+               topCaption, fontPx(kKnobCaptionWt, displayH), TextAlign::Center,
+               colors::kLabelText);
+  }
+
+  const float push01 = pressLevel(levels, push);
+  r.fillCircle(k.cx, k.cy, k.rOuter, Color{0.11f, 0.12f, 0.14f, 1.0f});
+  drawKnurledRing(r, k.cx, k.cy, k.rInner + (k.rOuter - k.rInner) * 0.18f,
+                  k.rOuter * 0.98f);
+  drawRingOutline(r, k.cx, k.cy, k.rOuter * 0.98f, 1.0f,
+                  Color{0.04f, 0.04f, 0.05f, 1.0f});
+  r.fillCircle(k.cx, k.cy, k.rInner,
+               Color{0.18f + 0.24f * push01, 0.19f + 0.24f * push01,
+                     0.21f + 0.24f * push01, 1.0f});
+  drawRingOutline(r, k.cx, k.cy, k.rInner, 0.8f,
+                  Color{0.05f, 0.05f, 0.06f, 0.9f});
+
+  const float ringR = (k.rOuter + k.rInner) * 0.5f;
+  const float glowR = (k.rOuter - k.rInner) * 0.40f;
+  drawRingGlow(r, k, ringR, glowR, -1.0f, pressLevel(levels, ccw));
+  drawRingGlow(r, k, ringR, glowR, 1.0f, pressLevel(levels, cw));
+
+  if (bottomCaption != nullptr) {
+    r.fillText(k.cx, k.cy + k.rOuter + fontPx(kKnobCaptionWt, displayH) * 0.95f,
+               bottomCaption, fontPx(kKnobCaptionWt, displayH),
+               TextAlign::Center, colors::kLabelText);
+  }
+}
+
+// Frequency transfer key: a small cap with a double-headed horizontal arrow
+// (the flip-flop symbol next to the COM/NAV knobs).
+void drawTransferKey(Renderer& r, const Cell& c, float press) {
+  bezel::drawKeyFace(r, c.x, c.y, c.w, c.h, press);
+  const float cy = c.y + c.h * 0.5f;
+  const float len = c.w * 0.30f;
+  const float cx = c.x + c.w * 0.5f;
+  const float head = c.h * 0.16f;
+  r.strokeLine(cx - len, cy, cx + len, cy, 1.8f, colors::kWhite);
+  const Point left[3] = {{cx - len - head * 0.55f, cy},
+                         {cx - len + head * 0.45f, cy - head},
+                         {cx - len + head * 0.45f, cy + head}};
+  r.fillPolygon(left, 3, colors::kWhite);
+  const Point right[3] = {{cx + len + head * 0.55f, cy},
+                          {cx + len - head * 0.45f, cy - head},
+                          {cx + len - head * 0.45f, cy + head}};
+  r.fillPolygon(right, 3, colors::kWhite);
+}
+
+// Hit-test a dual-concentric knob: center push, then inner ring (left/right =
+// ccw/cw), then outer ring. Returns BezelKey::Count when outside.
+BezelKey hitConcentric(const Knob& k, float xPx, float yPx, BezelKey outerCcw,
+                       BezelKey outerCw, BezelKey innerCcw, BezelKey innerCw,
+                       BezelKey push) {
+  const float dx = xPx - k.cx;
+  const float dy = yPx - k.cy;
+  const float d = std::sqrt(dx * dx + dy * dy);
+  if (d <= k.rCenter) return push;
+  if (d <= k.rInner) return dx < 0.0f ? innerCcw : innerCw;
+  if (d <= k.rOuter) return dx < 0.0f ? outerCcw : outerCw;
+  return BezelKey::Count;
+}
+
+// Hit-test a single-rotary knob: center push, then the ring (left/right).
+BezelKey hitSingle(const Knob& k, float xPx, float yPx, BezelKey ccw,
+                   BezelKey cw, BezelKey push) {
+  const float dx = xPx - k.cx;
+  const float dy = yPx - k.cy;
+  const float d = std::sqrt(dx * dx + dy * dy);
+  if (d <= k.rInner) return push;
+  if (d <= k.rOuter) return dx < 0.0f ? ccw : cw;
+  return BezelKey::Count;
+}
+
+bool inCell(const Cell& c, float xPx, float yPx) {
+  return xPx >= c.x && xPx <= c.x + c.w && yPx >= c.y && yPx <= c.y + c.h;
+}
+
 }  // namespace
 
 void BezelKeyPanel::render(Renderer& r, float x, float y, float w, float h,
@@ -371,8 +569,51 @@ void BezelKeyPanel::render(Renderer& r, float x, float y, float w, float h,
 
   if (clrCell.w > 0.0f) drawDefaultMapLegend(r, clrCell, displayH);
 
+  // Top row: COM VOL/SQ knob and the COM frequency transfer key.
+  drawSingleKnob(r, volKnobIn(x, w, cluster.volRowTop, cluster.volRowH, false),
+                 displayH, "VOL SQ", nullptr, pressLevels, BezelKey::ComVolCcw,
+                 BezelKey::ComVolCw, BezelKey::ComVolPush);
+  drawTransferKey(r, transferCellIn(x, w, cluster.volRowTop, cluster.volRowH,
+                                    false),
+                  pressLevel(pressLevels, BezelKey::ComTransfer));
+
+  // COM tuning knob (1/2 select on push) and the CRS/BARO knob (large = BARO,
+  // small = CRS, push = standard baro).
+  drawTuningKnob(r, comKnobRect(x, w, cluster), displayH, "COM", "PUSH 1-2",
+                 pressLevels, BezelKey::ComOuterCcw, BezelKey::ComOuterCw,
+                 BezelKey::ComInnerCcw, BezelKey::ComInnerCw, BezelKey::ComPush);
+  drawTuningKnob(r, baroKnobRect(x, w, cluster), displayH, "BARO", "PUSH STD",
+                 pressLevels, BezelKey::BaroCcw, BezelKey::BaroCw,
+                 BezelKey::CrsCcw, BezelKey::CrsCw, BezelKey::CrsPush);
+
   drawRangeJoystick(r, rangeJoyRect(x, w, cluster), displayH, pressLevels);
   drawFmsKnob(r, fmsKnobRect(x, w, cluster), displayH, pressLevels);
+}
+
+void BezelKeyPanel::renderLeft(Renderer& r, float x, float y, float w, float h,
+                               float displayH, const float* pressLevels) {
+  r.fillRectVerticalGradient(x, y, w, h, y, y + h, bezel::kFaceTop,
+                             bezel::kFaceBottom);
+  r.strokeLine(x + w, y, x + w, y + h, 2.0f, colors::kPanelBorder);
+
+  const LeftLayout cluster = layoutLeft(x, y, w, h);
+
+  // Top row: NAV VOL/ID knob and the NAV frequency transfer key.
+  drawSingleKnob(r, volKnobIn(x, w, cluster.volRowTop, cluster.volRowH, true),
+                 displayH, "VOL ID", nullptr, pressLevels, BezelKey::NavVolCcw,
+                 BezelKey::NavVolCw, BezelKey::NavVolPush);
+  drawTransferKey(r, transferCellIn(x, w, cluster.volRowTop, cluster.volRowH,
+                                    true),
+                  pressLevel(pressLevels, BezelKey::NavTransfer));
+
+  // NAV tuning knob (1/2 select on push) and the HDG knob.
+  drawTuningKnob(r, knobInSlot(x, w, cluster.navTop, cluster.navH), displayH,
+                 "NAV", "PUSH 1-2", pressLevels, BezelKey::NavOuterCcw,
+                 BezelKey::NavOuterCw, BezelKey::NavInnerCcw,
+                 BezelKey::NavInnerCw, BezelKey::NavPush);
+  drawSingleKnob(r, knobInSlot(x, w, cluster.hdgTop, cluster.hdgH), displayH,
+                 "HDG", "PUSH HDG SYNC", pressLevels, BezelKey::HdgCcw,
+                 BezelKey::HdgCw, BezelKey::HdgPush);
 }
 
 BezelKey BezelKeyPanel::hitTest(float xPx, float yPx, float x, float y, float w,
@@ -403,17 +644,61 @@ BezelKey BezelKeyPanel::hitTest(float xPx, float yPx, float x, float y, float w,
     }
   }
 
-  const Knob k = fmsKnobRect(x, w, cluster);
-  const float dx = xPx - k.cx;
-  const float dy = yPx - k.cy;
-  const float d = std::sqrt(dx * dx + dy * dy);
-  if (d <= k.rCenter) return BezelKey::FmsPush;
-  if (d <= k.rInner) {
-    return dx < 0.0f ? BezelKey::FmsInnerCcw : BezelKey::FmsInnerCw;
+  const BezelKey fms = hitConcentric(
+      fmsKnobRect(x, w, cluster), xPx, yPx, BezelKey::FmsOuterCcw,
+      BezelKey::FmsOuterCw, BezelKey::FmsInnerCcw, BezelKey::FmsInnerCw,
+      BezelKey::FmsPush);
+  if (fms != BezelKey::Count) return fms;
+
+  const BezelKey com = hitConcentric(
+      comKnobRect(x, w, cluster), xPx, yPx, BezelKey::ComOuterCcw,
+      BezelKey::ComOuterCw, BezelKey::ComInnerCcw, BezelKey::ComInnerCw,
+      BezelKey::ComPush);
+  if (com != BezelKey::Count) return com;
+
+  const BezelKey baro = hitConcentric(
+      baroKnobRect(x, w, cluster), xPx, yPx, BezelKey::BaroCcw, BezelKey::BaroCw,
+      BezelKey::CrsCcw, BezelKey::CrsCw, BezelKey::CrsPush);
+  if (baro != BezelKey::Count) return baro;
+
+  const BezelKey vol =
+      hitSingle(volKnobIn(x, w, cluster.volRowTop, cluster.volRowH, false), xPx,
+                yPx, BezelKey::ComVolCcw, BezelKey::ComVolCw,
+                BezelKey::ComVolPush);
+  if (vol != BezelKey::Count) return vol;
+  if (inCell(transferCellIn(x, w, cluster.volRowTop, cluster.volRowH, false),
+             xPx, yPx)) {
+    return BezelKey::ComTransfer;
   }
-  if (d <= k.rOuter) {
-    return dx < 0.0f ? BezelKey::FmsOuterCcw : BezelKey::FmsOuterCw;
+
+  return BezelKey::Count;
+}
+
+BezelKey BezelKeyPanel::hitTestLeft(float xPx, float yPx, float x, float y,
+                                    float w, float h) {
+  const LeftLayout cluster = layoutLeft(x, y, w, h);
+
+  const BezelKey nav = hitConcentric(
+      knobInSlot(x, w, cluster.navTop, cluster.navH), xPx, yPx,
+      BezelKey::NavOuterCcw, BezelKey::NavOuterCw, BezelKey::NavInnerCcw,
+      BezelKey::NavInnerCw, BezelKey::NavPush);
+  if (nav != BezelKey::Count) return nav;
+
+  const BezelKey hdg =
+      hitSingle(knobInSlot(x, w, cluster.hdgTop, cluster.hdgH), xPx, yPx,
+                BezelKey::HdgCcw, BezelKey::HdgCw, BezelKey::HdgPush);
+  if (hdg != BezelKey::Count) return hdg;
+
+  const BezelKey vol =
+      hitSingle(volKnobIn(x, w, cluster.volRowTop, cluster.volRowH, true), xPx,
+                yPx, BezelKey::NavVolCcw, BezelKey::NavVolCw,
+                BezelKey::NavVolPush);
+  if (vol != BezelKey::Count) return vol;
+  if (inCell(transferCellIn(x, w, cluster.volRowTop, cluster.volRowH, true),
+             xPx, yPx)) {
+    return BezelKey::NavTransfer;
   }
+
   return BezelKey::Count;
 }
 
