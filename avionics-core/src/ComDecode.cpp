@@ -12,8 +12,28 @@ namespace {
 
 struct ComDecodeCandidate {
   float distanceNm = 0.0f;
+  int serviceRank = 99;
   std::string ident;
 };
+
+// Lower rank wins when multiple airports publish the same COM frequency.
+int comDecodeServiceRank(AirportCommService service) {
+  switch (service) {
+    case AirportCommService::Tower:
+      return 0;
+    case AirportCommService::Clearance:
+    case AirportCommService::Ground:
+    case AirportCommService::Departure:
+    case AirportCommService::Approach:
+    case AirportCommService::Atis:
+      return 1;
+    case AirportCommService::Unicom:
+      return 2;
+    case AirportCommService::Other:
+      break;
+  }
+  return 99;
+}
 
 std::string decodeComIdent(float activeMhz, const MapData& map,
                            const NavFeatureSource* navSource) {
@@ -36,6 +56,7 @@ std::string decodeComIdent(float activeMhz, const MapData& map,
       if (service == nullptr) continue;
       ComDecodeCandidate c;
       c.distanceNm = static_cast<float>(distNm);
+      c.serviceRank = comDecodeServiceRank(freq.service);
       c.ident = f.id + " " + service;
       matches.push_back(std::move(c));
     }
@@ -46,6 +67,9 @@ std::string decodeComIdent(float activeMhz, const MapData& map,
   const auto best = std::min_element(
       matches.begin(), matches.end(),
       [](const ComDecodeCandidate& a, const ComDecodeCandidate& b) {
+        if (a.serviceRank != b.serviceRank) {
+          return a.serviceRank < b.serviceRank;
+        }
         return a.distanceNm < b.distanceNm;
       });
   return best->ident;
