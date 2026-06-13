@@ -36,6 +36,42 @@
       "args": ["--no-pfd"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug PFD (demo, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-mfd", "--demo"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug MFD (demo, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-pfd", "--demo"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug PFD (X-Plane, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-mfd"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug MFD (X-Plane, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-pfd"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build standalone"
     }
   ],
   "compounds": [
@@ -48,6 +84,24 @@
     {
       "name": "Debug PFD + MFD (X-Plane)",
       "configurations": ["Debug PFD (X-Plane)", "Debug MFD (X-Plane)"],
+      "preLaunchTask": "Build standalone",
+      "stopAll": true
+    },
+    {
+      "name": "Debug PFD + MFD (demo, Windows)",
+      "configurations": [
+        "Debug PFD (demo, Windows)",
+        "Debug MFD (demo, Windows)"
+      ],
+      "preLaunchTask": "Build standalone",
+      "stopAll": true
+    },
+    {
+      "name": "Debug PFD + MFD (X-Plane, Windows)",
+      "configurations": [
+        "Debug PFD (X-Plane, Windows)",
+        "Debug MFD (X-Plane, Windows)"
+      ],
       "preLaunchTask": "Build standalone",
       "stopAll": true
     }

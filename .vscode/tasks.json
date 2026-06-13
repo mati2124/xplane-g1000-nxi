@@ -13,6 +13,16 @@
           "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
         }
       },
+      "windows": {
+        "detail": "Requires VCPKG_ROOT (bootstrap vcpkg, then: vcpkg install curl:x64-windows). Uses the Visual Studio generator.",
+        "args": [
+          "-S",
+          ".",
+          "-B",
+          "build-standalone",
+          "-DCMAKE_TOOLCHAIN_FILE=${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        ]
+      },
       "problemMatcher": []
     },
     {
@@ -33,6 +43,18 @@
           "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
         }
       },
+      "windows": {
+        "args": [
+          "--build",
+          "build-standalone",
+          "--target",
+          "avionics-standalone",
+          "--config",
+          "Debug",
+          "-j8"
+        ],
+        "problemMatcher": ["$msCompile"]
+      },
       "group": "build",
       "dependsOn": ["Configure standalone"],
       "problemMatcher": ["$gcc"]
@@ -44,6 +66,9 @@
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--demo"],
       "options": { "cwd": "${workspaceFolder}" },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      },
       "dependsOn": ["Build standalone"],
       "isBackground": true,
       "presentation": {
@@ -62,6 +87,9 @@
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--demo"],
       "options": { "cwd": "${workspaceFolder}" },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      },
       "dependsOn": ["Build standalone"],
       "isBackground": true,
       "presentation": {
