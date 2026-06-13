@@ -6,12 +6,50 @@
 namespace avionics::pfd {
 namespace {
 
+// Rounds the corners of a closed polygon: each vertex flagged with radius > 0 is
+// replaced by a short quadratic arc tangent to its two edges (the vertex itself
+// is the Bezier control point). Vertices with radius <= 0 stay sharp. Used to
+// give the IAS pointer box its rounded outer corners (NXi Airspeed Indicator).
+std::vector<Point> roundPolygonCorners(const std::vector<Point>& poly,
+                                       const std::vector<float>& radius,
+                                       int segments = 5) {
+  const int n = static_cast<int>(poly.size());
+  std::vector<Point> out;
+  auto length = [](const Point& a, const Point& b) {
+    return std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+  };
+  for (int i = 0; i < n; ++i) {
+    const Point& prev = poly[(i - 1 + n) % n];
+    const Point& cur = poly[i];
+    const Point& next = poly[(i + 1) % n];
+    float rad = radius[i];
+    const float lenIn = length(prev, cur);
+    const float lenOut = length(cur, next);
+    if (rad <= 0.0f || lenIn < 1e-3f || lenOut < 1e-3f) {
+      out.push_back(cur);
+      continue;
+    }
+    rad = std::min(rad, 0.5f * std::min(lenIn, lenOut));
+    const Point t1{cur.x - (cur.x - prev.x) / lenIn * rad,
+                   cur.y - (cur.y - prev.y) / lenIn * rad};
+    const Point t2{cur.x + (next.x - cur.x) / lenOut * rad,
+                   cur.y + (next.y - cur.y) / lenOut * rad};
+    for (int s = 0; s <= segments; ++s) {
+      const float t = static_cast<float>(s) / static_cast<float>(segments);
+      const float u = 1.0f - t;
+      out.push_back({u * u * t1.x + 2.0f * u * t * cur.x + t * t * t2.x,
+                     u * u * t1.y + 2.0f * u * t * cur.y + t * t * t2.y});
+    }
+  }
+  return out;
+}
+
 void drawAirspeedColorBands(Renderer& r, float tapeX, float tapeW,
                             float stripTop, float stripH, float cy,
                             float value) {
   const float ppu = stripH / kAirspeedViewableKnots;
   const float innerX = tapeX + tapeW;
-  const float bandW = tapeW * 0.12f;
+  const float bandW = tapeW * kAirspeedBandWidthFraction;
   const float bandX = innerX - bandW;
   const float whiteW = tapeW * 0.06f;
   const float whiteX = bandX - whiteW;
@@ -108,41 +146,65 @@ void drawAirspeedReadout(Renderer& r, float x, float y, float w, float h,
   const float leadTop = midY - leadH * 0.5f;
   const float leadBot = midY + leadH * 0.5f;
 
-  const float drumW = w * 0.28f;
+  // Three equal-width digit cells span the box (NXi: hundreds/tens in the snug
+  // leading box, ones on the full-height drum), so the digits fill the box from
+  // the tape's left edge rather than clustering against the drum.
+  const float cellW = w / 3.0f;
+  const float drumW = cellW;
   const float drumRight = rightX;
-  const float drumX = drumRight - drumW;
-  const float drumCx = drumX + drumW * 0.5f;
+  const float drumX = drumRight - drumW;      // x + 2*cellW
+  const float drumCx = drumX + drumW * 0.5f;  // ones-digit cell center
+  const float hundredsCx = x + cellW * 0.5f;
+  const float tensCx = x + cellW * 1.5f;
   const float rowSpacing = h * 0.92f;
 
-  // Black fills: snug leading-digit box, the taller full-height drum, and the
-  // right caret.
-  r.fillRect(x, leadTop, w, leadH, boxColor);
-  r.fillRect(drumX, y, drumW, h, boxColor);
-  const Point caret[3] = {{rightX, midY - notchHalfH},
-                          {rightX + notchDepth, midY},
-                          {rightX, midY + notchHalfH}};
-  r.fillPolygon(caret, 3, boxColor);
+  // Stepped silhouette (clockwise from the leading box's top-left): a snug
+  // leading-digit box on the left and a taller full-height drum on the right
+  // that carries the right-pointing caret. The four outer corners and the drum
+  // corners are rounded; the step junctions and caret stay sharp (NXi).
+  const float cornerR = h * 0.06f;
+  const float drumCornerR = h * 0.04f;
+  const std::vector<Point> silhouette = {
+      {x, leadTop},                    // leading box top-left
+      {drumX, leadTop},                // step
+      {drumX, y},                      // drum top-left
+      {drumRight, y},                  // drum top-right
+      {drumRight, midY - notchHalfH},  // caret top
+      {rightX + notchDepth, midY},     // caret tip
+      {drumRight, midY + notchHalfH},  // caret bottom
+      {drumRight, y + h},              // drum bottom-right
+      {drumX, y + h},                  // drum bottom-left
+      {drumX, leadBot},                // step
+      {x, leadBot},                    // leading box bottom-left
+  };
+  const std::vector<float> radii = {cornerR, 0.0f, drumCornerR, drumCornerR,
+                                    0.0f,    0.0f, 0.0f,        drumCornerR,
+                                    drumCornerR, 0.0f, cornerR};
+  std::vector<Point> shape = roundPolygonCorners(silhouette, radii);
+  r.fillPolygon(shape.data(), static_cast<int>(shape.size()), boxColor);
+  shape.push_back(shape.front());
+  r.strokePolyline(shape.data(), static_cast<int>(shape.size()), 2.0f,
+                   colors::kWhite);
 
-  // White outline of the stepped silhouette: leading box on the left, taller
-  // drum on the right carrying the caret.
-  const Point outline[12] = {{x, leadTop},
-                             {drumX, leadTop},
-                             {drumX, y},
-                             {drumRight, y},
-                             {drumRight, midY - notchHalfH},
-                             {drumRight + notchDepth, midY},
-                             {drumRight, midY + notchHalfH},
-                             {drumRight, y + h},
-                             {drumX, y + h},
-                             {drumX, leadBot},
-                             {x, leadBot},
-                             {x, leadTop}};
-  r.strokePolyline(outline, 12, 2.0f, colors::kWhite);
+  // fillText's NVG_ALIGN_MIDDLE centers on the font's ascender/descender
+  // midpoint; digits have no descender ink, so they ride high (more so at this
+  // size). Center on the actual glyph ink instead so the value lines up with the
+  // caret and sits centered in the window.
+  const TextRect digitInk = r.measureTextRect(0.0f, midY, "0", textSize,
+                                              TextAlign::Center);
+  const float textMidY = 2.0f * midY - (digitInk.top + digitInk.bottom) * 0.5f;
 
-  const long leadVal = snapped / 10;  // everything left of the ones digit
-  if (leadVal > 0) {
-    r.fillText(drumX - w * 0.02f, midY, formatInt(static_cast<float>(leadVal)),
-               textSize, TextAlign::Right, textColor);
+  // Leading digits, one per cell and centered in it, so the number spreads
+  // evenly across the box up to the drum. Leading zeros are suppressed.
+  const long hundreds = (snapped / 100) % 10;
+  const long tens = (snapped / 10) % 10;
+  if (snapped >= 100) {
+    r.fillText(hundredsCx, textMidY, formatInt(static_cast<float>(hundreds)),
+               textSize, TextAlign::Center, textColor);
+  }
+  if (snapped >= 10) {
+    r.fillText(tensCx, textMidY, formatInt(static_cast<float>(tens)), textSize,
+               TextAlign::Center, textColor);
   }
 
   r.save();
@@ -150,7 +212,7 @@ void drawAirspeedReadout(Renderer& r, float x, float y, float w, float h,
   for (int j = -1; j <= 1; ++j) {
     const long disp = (((onesCenter + j) % 10) + 10) % 10;
     const float ty =
-        midY - static_cast<float>(j) * rowSpacing + residual * rowSpacing;
+        textMidY - static_cast<float>(j) * rowSpacing + residual * rowSpacing;
     char buf[2];
     std::snprintf(buf, sizeof(buf), "%ld", disp);
     r.fillText(drumCx, ty, std::string(buf), textSize, TextAlign::Center,
@@ -202,9 +264,18 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
     return;
   }
 
+  // The airspeed instrument (tape numbers, IAS readout, GS/TAS) renders in a
+  // semibold face to match the heavier weight of the real G1000 NXi.
+  const FontScope airspeedFont(r, FontFace::DejaVuSemiBold);
+
+  // The NXi airspeed tape has a 10 px rounded top-left corner (no top reference-
+  // speed box is shown here, so the tape itself carries the round).
+  const float kTapeCornerRadiusWt = 10.0f;
   drawVerticalTape(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
                    d.airspeedKts, kAirspeedViewableKnots, kAirspeedMajorKnots,
-                   kAirspeedMinorKnots, kAirspeedMinKnots, false);
+                   kAirspeedMinorKnots, kAirspeedMinKnots, false,
+                   kTapeCornerRadiusWt * L.s,
+                   L.asiW * kAirspeedBandWidthFraction);
   drawAirspeedColorBands(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy,
                          d.airspeedKts);
   drawVspeedBugs(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
@@ -216,7 +287,13 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
                   L.stripH / kAirspeedViewableKnots, d.airspeedTrendKts);
 
   const float readoutH = kAsiReadoutHeightWt * L.s;
-  const float readoutSize = fontPx(wt::kReadout, h);
+  // Use the same digit size as the altimeter readout so the two windows match.
+  const float readoutSize = fontPx(wt::kReadoutAlt, h);
+  // Size the window to its three digits (snug) and right-align it so the caret
+  // still sits at the tape's right edge -- the window is inset from the tape's
+  // left edge rather than spanning the full tape width (which spread the digits).
+  const float readoutW = r.measureTextWidth("0", readoutSize) * 3.75f;
+  const float readoutX = L.asiX + L.asiW - readoutW;
 
   // The pointer is black until VNE, then red. If the trend vector crosses VNE
   // (but current speed has not), the digits turn amber as an early warning.
@@ -225,7 +302,7 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   const Color boxColor = overVne ? colors::kBandRed : colors::kReadoutBox;
   const Color textColor =
       (!overVne && trendOverVne) ? colors::kBandYellow : colors::kWhite;
-  drawAirspeedReadout(r, L.asiX, L.attCy - readoutH * 0.5f, L.asiW, readoutH,
+  drawAirspeedReadout(r, readoutX, L.attCy - readoutH * 0.5f, readoutW, readoutH,
                       d.airspeedKts, readoutSize, boxColor, textColor);
 
   // Mach readout: shown just below the IAS pointer box when the Mach number
@@ -241,32 +318,80 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
                std::string(mbuf), machSize, TextAlign::Center, colors::kWhite);
   }
 
-  // True airspeed is shown in a single black box at the bottom of the airspeed
-  // instrument (G1000 NXi Pilot's Guide, Fig. 2-1, callout 3). Ground speed is
-  // NOT on the airspeed tape on the real unit -- it lives in the MFD Navigation
-  // Data Bar / inset map -- so only TAS is drawn here.
+  // Ground speed and true airspeed sit in two black boxes flush with the bottom
+  // of the airspeed instrument. The TAS box is exactly the tape width and its
+  // bottom-left corner is rounded to mirror the tape's rounded top-left, giving
+  // the column a continuous rounded-left edge (NXi). The GS box sits to its left
+  // (square, sized to content) and extends left of the tape.
   const float labelSize = fontPx(wt::kInfoLabel, h);
   const float valueSize = fontPx(wt::kInfoValue, h);
   const float boxH = 28.0f * L.s;
-  auto drawSpeedBox = [&](float boxY, const char* label,
-                          const std::string& value) {
-    r.fillRect(L.asiX, boxY, L.asiW, boxH, colors::kReadoutBox);
-    const float boxCy = boxY + boxH * 0.5f;
-    const float gap = labelSize * 0.25f;
-    const float runW = r.measureTextWidth(label, labelSize) + gap +
-                       r.measureTextWidth(value, valueSize) + gap * 0.5f +
-                       r.measureTextWidth("KT", labelSize);
-    float tx = L.asiX + L.asiW * 0.5f - runW * 0.5f;
-    tx = putText(r, tx, boxCy, label, labelSize, colors::kLabelText,
-                 gap / labelSize);
-    tx = putText(r, tx, boxCy, value, valueSize, colors::kWhite,
-                 (gap * 0.5f) / valueSize);
-    putText(r, tx, boxCy, "KT", labelSize, colors::kLabelText);
+  // Top edge of the boxes touches (overlaps a couple px) the bottom of the
+  // tape's scroll strip, rather than floating at the instrument bottom.
+  const float boxY = L.stripTop + L.stripH - 3.0f * L.s;
+  const float gap = labelSize * 0.25f;
+  const float padX = labelSize * 0.5f;
+  const float boxGap = labelSize * 0.45f;
+
+  auto runWidth = [&](const char* label, const std::string& value) {
+    return r.measureTextWidth(label, labelSize) + gap +
+           r.measureTextWidth(value, valueSize) + gap * 0.5f +
+           r.measureTextWidth("KT", labelSize);
   };
-  // Sit the single box in the lower margin of the airspeed instrument, just
-  // below the scroll strip (flush to the instrument bottom).
-  const float tasBoxY = L.asiTop + L.asiH - boxH;
-  drawSpeedBox(tasBoxY, "TAS", formatInt(d.tasKts));
+  // Corner radii order matches the rectangle vertices below: top-left,
+  // top-right, bottom-right, bottom-left.
+  auto drawSpeedBox = [&](float boxX, float boxW,
+                          const std::vector<float>& radii, float scale,
+                          const char* label, const std::string& value) {
+    const std::vector<Point> rect = {{boxX, boxY},
+                                     {boxX + boxW, boxY},
+                                     {boxX + boxW, boxY + boxH},
+                                     {boxX, boxY + boxH}};
+    const std::vector<Point> shape = roundPolygonCorners(rect, radii);
+    r.fillPolygon(shape.data(), static_cast<int>(shape.size()),
+                  colors::kReadoutBox);
+    const float boxCy = boxY + boxH * 0.5f;
+    // Both boxes share one scale (driven by the tape-width TAS box) so GS and
+    // TAS always read at the same font size. The scale applies to both font
+    // sizes and the inter-element gaps.
+    const float lSize = labelSize * scale;
+    const float vSize = valueSize * scale;
+    const float g = gap * scale;
+    float tx = boxX + boxW * 0.5f - runWidth(label, value) * scale * 0.5f;
+    tx = putText(r, tx, boxCy, label, lSize, colors::kLabelText, g / lSize);
+    tx = putText(r, tx, boxCy, value, vSize, colors::kWhite,
+                 (g * 0.5f) / vSize);
+    putText(r, tx, boxCy, "KT", lSize, colors::kLabelText);
+  };
+
+  const std::string tasValue = formatInt(d.tasKts);
+  const std::string gsValue = formatInt(d.groundSpeedKts);
+  const float tasX = L.asiX;
+  const float tasW = L.asiW;  // exactly the tape width
+  // The TAS box is locked to the tape width, so its content may need to shrink
+  // to fit. Size the scale against the widest possible value (three digits)
+  // rather than the live value, so the GS/TAS font size stays constant with
+  // speed. The same scale is used for the GS box so both read at one size.
+  float maxDigitW = 0.0f;
+  for (char c = '0'; c <= '9'; ++c) {
+    maxDigitW = std::max(
+        maxDigitW, r.measureTextWidth(std::string(1, c), valueSize));
+  }
+  const float tasRunMax = r.measureTextWidth("TAS", labelSize) + gap +
+                          maxDigitW * 3.0f + gap * 0.5f +
+                          r.measureTextWidth("KT", labelSize);
+  const float tasAvail = tasW - padX * 2.0f;
+  const float speedScale =
+      (tasRunMax > tasAvail && tasRunMax > 0.0f) ? tasAvail / tasRunMax : 1.0f;
+  const float gsW = runWidth("GS", gsValue) * speedScale + padX * 2.0f;
+  const float gsX = tasX - boxGap - gsW;
+  const float cornerR = kTapeCornerRadiusWt * L.s;
+  // GS is a free-floating box, so round all four corners like the rest of the
+  // readouts; the TAS box only rounds its bottom-left to mirror the tape.
+  drawSpeedBox(gsX, gsW, {cornerR, cornerR, cornerR, cornerR}, speedScale, "GS",
+               gsValue);
+  drawSpeedBox(tasX, tasW, {0.0f, 0.0f, 0.0f, cornerR}, speedScale, "TAS",
+               tasValue);
 }
 
 }  // namespace avionics::pfd

@@ -68,7 +68,7 @@ constexpr float kPitch25HalfWt = 14.0f;
 // box 2.4em ~= 50 px, altitude box 70 px).
 constexpr float kTapeMinorTickFraction = 0.12f;
 constexpr float kTapeMajorTickFraction = 0.24f;
-constexpr float kAsiReadoutHeightWt = 50.0f;
+constexpr float kAsiReadoutHeightWt = 70.0f;
 constexpr float kAltReadoutHeightWt = 70.0f;
 constexpr float kReadoutOverhangFraction = 0.10f;
 
@@ -77,6 +77,10 @@ constexpr float kAirspeedViewableKnots = 60.0f;
 constexpr float kAirspeedMajorKnots = 10.0f;
 constexpr float kAirspeedMinorKnots = 5.0f;
 constexpr float kAirspeedMinKnots = 20.0f;
+// The color-coded speed-range strip occupies this fraction of the tape width at
+// the inner edge; tape ticks are inset by it so they sit just outboard of the
+// strip (white ticks beside the colored band, not under it) per the NXi.
+constexpr float kAirspeedBandWidthFraction = 0.12f;
 
 constexpr float kVsoKt = 33.0f;
 constexpr float kVfeKt = 85.0f;
@@ -130,6 +134,11 @@ constexpr float kHeadingBox = 30.0f;
 // under the rose's numeric labels, matching the G1000 NXi.
 constexpr float kHsiBug = 18.0f;
 constexpr float kHsiSource = 14.0f;
+// PFD wind panel (upper-left of the HSI): Option 1/2 numeric values use the
+// generic size18 face and the "KT" unit on Option 3 uses size10 (WT NXi
+// WindOption*.css); the wind direction/speed text on Option 3 reuses kHsiSource.
+constexpr float kWindValue = 18.0f;
+constexpr float kWindUnit = 10.0f;
 constexpr float kNavComFreq = 19.0f;
 constexpr float kNavComLabel = 16.0f;
 constexpr float kFmaActive = 23.0f;
@@ -157,13 +166,21 @@ void drawReadoutBox(Renderer& r, float x, float y, float w, float h,
                     const Color& boxColor = colors::kReadoutBox,
                     const Color& textColor = colors::kWhite);
 
+// `topOuterCornerRadius` rounds the tape's top corner on the OUTER edge (the
+// edge away from the attitude window: left for the airspeed tape, right for the
+// altimeter), matching the NXi tape's 10 px rounded corner. 0 leaves it square.
 void drawTapeBackground(Renderer& r, float x, float y, float w, float h,
-                        const Color& edge);
+                        const Color& edge, bool tapeOnRight = false,
+                        float topOuterCornerRadius = 0.0f);
 
+// `tickInset` shifts the tick marks and their labels inward from the tape's
+// inner edge, leaving room for the airspeed color-band strip so the ticks are
+// not hidden beneath it. 0 anchors ticks at the inner edge (altimeter).
 void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
                       float stripH, float cy, float displayH, float value,
                       float viewableUnits, float majorInterval,
-                      float minorInterval, float minValue, bool tapeOnRight);
+                      float minorInterval, float minValue, bool tapeOnRight,
+                      float topOuterCornerRadius = 0.0f, float tickInset = 0.0f);
 
 void drawTrendVector(Renderer& r, float edgeX, float stripTop, float stripH,
                      float cy, float displayH, float ppu, float trend);

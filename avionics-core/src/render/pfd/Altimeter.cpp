@@ -244,11 +244,23 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
   const float residual =
       (altitudeFt - static_cast<float>(snapped)) / 20.0f;
 
+  // fillText's NVG_ALIGN_MIDDLE centers on the font's ascender/descender
+  // midpoint; digits have no descender ink, so they ride high. Center on the
+  // actual glyph ink instead (computed per size) so the value sits centered in
+  // the window and lines up with the caret.
+  auto inkMidY = [&](float size) {
+    const TextRect ink = r.measureTextRect(0.0f, midY, "0", size,
+                                           TextAlign::Center);
+    return 2.0f * midY - (ink.top + ink.bottom) * 0.5f;
+  };
+  const float leadMidY = inkMidY(textSize);
+  const float drumMidY = inkMidY(drumSize);
+
   // Build the leading-digits string with an explicit sign so altitudes between
   // -1 and -99 ft (leading == 0) still read negative.
   std::string lead = formatInt(static_cast<float>(leading));
   if (snapped < 0) lead.insert(lead.begin(), '-');
-  r.fillText(drumX - w * 0.02f, midY, lead, textSize, TextAlign::Right,
+  r.fillText(drumX - w * 0.02f, leadMidY, lead, textSize, TextAlign::Right,
              colors::kWhite);
 
   r.save();
@@ -256,7 +268,7 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
   for (int j = -2; j <= 2; ++j) {
     const long m = tensCenter + static_cast<long>(j) * 20L;
     const long disp = ((m % 100) + 100) % 100;
-    const float ty = midY - static_cast<float>(j) * rowSpacing +
+    const float ty = drumMidY - static_cast<float>(j) * rowSpacing +
                      residual * rowSpacing;
     char buf[4];
     std::snprintf(buf, sizeof(buf), "%02ld", disp);

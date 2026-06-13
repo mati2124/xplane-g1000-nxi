@@ -50,13 +50,15 @@ set(STANDALONE_SOURCES
   src/SimBriefClient.cpp
   src/SimBriefStore.cpp
   src/UpdateNotify.cpp
+  src/Sha256.cpp
 )
 
 # The Web API client polls X-Plane on a background thread.
 find_package(Threads REQUIRED)
 
-# HTTPS client for the SimBrief OFP fetch. libcurl ships with macOS and most
-# Linux distributions; on Windows install it via vcpkg or similar.
+# HTTPS client for the SimBrief OFP fetch and the in-app updater's download /
+# version check. libcurl ships with macOS and most Linux distributions; on
+# Windows install it via vcpkg or similar.
 find_package(CURL REQUIRED)
 
 # Native macOS update-available alert (Objective-C++, Cocoa).
@@ -78,6 +80,12 @@ target_link_libraries(avionics-standalone PRIVATE
 target_include_directories(avionics-standalone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(avionics-standalone PRIVATE cxx_std_17)
 
+# Enables the GitHub-release version check and the in-app updater in
+# UpdateNotify.cpp / UpdateChecker. Without it the check compiles to a no-op
+# (the core defines this on its own translation units, but the shell needs it
+# too since UpdateNotify lives here).
+target_compile_definitions(avionics-standalone PRIVATE AVIONICS_HAS_CURL)
+
 # Bundled sample checklist file, used by the MFD Checklist page group when no
 # --checklist is given (so the page is populated during development).
 target_compile_definitions(avionics-standalone PRIVATE
@@ -97,7 +105,8 @@ if(APPLE)
   target_link_libraries(avionics-standalone PRIVATE "-framework OpenGL" "-framework Cocoa")
 endif()
 
-# X-Plane UDP connection needs Winsock on Windows.
+# X-Plane UDP connection needs Winsock on Windows. (The in-app updater hashes
+# downloads with the portable Sha256.cpp, so no platform crypto lib is needed.)
 if(WIN32)
   target_link_libraries(avionics-standalone PRIVATE ws2_32)
   # Build as a GUI app so launching the standalone (or its shortcut) does not

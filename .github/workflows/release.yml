@@ -164,6 +164,16 @@ jobs:
       - name: List artifacts
         run: ls -la artifacts
 
+      # Checksums over every release asset, published as SHA256SUMS so the
+      # standalone's in-app updater can verify a downloaded installer before
+      # running it. Generated outside artifacts/ then moved in, so the file
+      # never tries to hash itself.
+      - name: Generate checksums
+        run: |
+          ( cd artifacts && sha256sum * ) > SHA256SUMS
+          mv SHA256SUMS artifacts/
+          cat artifacts/SHA256SUMS
+
       - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -207,20 +207,52 @@ void drawReadoutBox(Renderer& r, float x, float y, float w, float h,
 }
 
 void drawTapeBackground(Renderer& r, float x, float y, float w, float h,
-                        const Color& edge) {
+                        const Color& edge, bool tapeOnRight,
+                        float topOuterCornerRadius) {
   // Working Title NXi tape background: a vertical gradient that is translucent
   // black at the top and bottom edges and fully clear through the middle, so
   // the scale dims out toward the center where the readout box sits.
   const Color clear{edge.r, edge.g, edge.b, 0.0f};
   const float half = h * 0.5f;
-  r.fillRectVerticalGradient(x, y, w, half, y, y + half, edge, clear);
+  const float rad = std::min(topOuterCornerRadius, std::min(w, half));
+
+  if (rad <= 0.0f) {
+    r.fillRectVerticalGradient(x, y, w, half, y, y + half, edge, clear);
+    r.fillRectVerticalGradient(x, y + half, w, half, y + half, y + h, clear,
+                               edge);
+    return;
+  }
+
+  // Top half, drawn so the OUTER top corner is rounded: the gradient skips the
+  // rad x rad corner square, and a quarter disc fills the rounded part of that
+  // square (leaving the corner outside the arc transparent so the SVT behind it
+  // shows through), mirroring the NXi tape's rounded corner.
+  const float outerX = tapeOnRight ? x + w - rad : x;       // corner column
+  const float innerColX = tapeOnRight ? x : x + rad;        // rest of the row
+  const float discCx = tapeOnRight ? x + w - rad : x + rad;  // arc center
+  // Full-height-half block for the non-corner columns.
+  r.fillRectVerticalGradient(innerColX, y, w - rad, half, y, y + half, edge,
+                             clear);
+  // Corner column, starting below the corner square.
+  r.fillRectVerticalGradient(outerX, y + rad, rad, half - rad, y, y + half, edge,
+                             clear);
+  // Quarter disc rounding the corner (corner band is ~rad px tall, where the
+  // gradient is still essentially the edge color).
+  r.save();
+  r.clip(outerX, y, rad, rad);
+  r.fillCircle(discCx, y + rad, rad, edge);
+  r.restore();
+
+  // Bottom half is left square (the bottom box covers the tape's outer bottom
+  // corner on the real unit, so the box -- not the tape -- carries that round).
   r.fillRectVerticalGradient(x, y + half, w, half, y + half, y + h, clear, edge);
 }
 
 void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
                       float stripH, float cy, float displayH, float value,
                       float viewableUnits, float majorInterval,
-                      float minorInterval, float minValue, bool tapeOnRight) {
+                      float minorInterval, float minValue, bool tapeOnRight,
+                      float topOuterCornerRadius, float tickInset) {
   const float pixelsPerUnit = stripH / viewableUnits;
   const float minorLen = tapeW * kTapeMinorTickFraction;
   const float majorLen = tapeW * kTapeMajorTickFraction;
@@ -230,7 +262,8 @@ void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
 
   r.save();
   r.clip(tapeX, stripTop, tapeW, stripH);
-  drawTapeBackground(r, tapeX, stripTop, tapeW, stripH, colors::kTapeEdge);
+  drawTapeBackground(r, tapeX, stripTop, tapeW, stripH, colors::kTapeEdge,
+                     tapeOnRight, topOuterCornerRadius);
 
   // Inner-edge border: a vertical gradient from #646464 (top) to #2c2c2c
   // (bottom), per the NXi tape window border-image.
@@ -246,7 +279,10 @@ void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
   const long endTick =
       static_cast<long>(std::ceil((value + halfRange) / minorInterval));
 
-  const float innerX = tapeOnRight ? tapeX : tapeX + tapeW;
+  // Anchor ticks at the tape's inner edge, inset by `tickInset` to clear the
+  // color-band strip (airspeed); the altimeter passes 0.
+  const float edge = tapeOnRight ? tapeX : tapeX + tapeW;
+  const float tickEdge = tapeOnRight ? edge + tickInset : edge - tickInset;
 
   for (long i = startTick; i <= endTick; ++i) {
     const float s = static_cast<float>(i) * minorInterval;
@@ -258,15 +294,15 @@ void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
     const float lineWidth = major ? 2.5f : 1.5f;
 
     if (tapeOnRight) {
-      r.strokeLine(innerX, y, innerX + len, y, lineWidth, colors::kWhite);
+      r.strokeLine(tickEdge, y, tickEdge + len, y, lineWidth, colors::kWhite);
       if (major) {
-        r.fillText(innerX + majorLen + labelPad, y, formatInt(s), labelSize,
+        r.fillText(tickEdge + majorLen + labelPad, y, formatInt(s), labelSize,
                    TextAlign::Left, colors::kWhite);
       }
     } else {
-      r.strokeLine(innerX - len, y, innerX, y, lineWidth, colors::kWhite);
+      r.strokeLine(tickEdge - len, y, tickEdge, y, lineWidth, colors::kWhite);
       if (major) {
-        r.fillText(innerX - majorLen - labelPad, y, formatInt(s), labelSize,
+        r.fillText(tickEdge - majorLen - labelPad, y, formatInt(s), labelSize,
                    TextAlign::Right, colors::kWhite);
       }
     }

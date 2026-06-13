@@ -83,6 +83,18 @@ void drawRollScale(Renderer& r, float cx, float cy, float radius, float s,
   r.save();
   r.translate(cx, cy);
   r.rotateDegrees(-rollDeg);  // same transform as the horizon
+
+  // Bank arc: one continuous line through all the bank-angle ticks (-60..+60).
+  // The real NXi roll scale is a single arc with tick stubs hanging off it, not
+  // free-floating ticks.
+  constexpr int kArcSeg = 48;
+  Point arc[kArcSeg + 1];
+  for (int i = 0; i <= kArcSeg; ++i) {
+    const float deg = -60.0f + 120.0f * (static_cast<float>(i) / kArcSeg);
+    polarOffset(deg, radius, arc[i].x, arc[i].y);
+  }
+  r.strokePolyline(arc, kArcSeg + 1, 2.0f, colors::kWhite);
+
   for (const Tick& t : ticks) {
     r.save();
     r.rotateDegrees(t.deg);
@@ -90,10 +102,14 @@ void drawRollScale(Renderer& r, float cx, float cy, float radius, float s,
     r.restore();
   }
 
-  const float tw = s * 0.030f;
-  const float th = s * 0.045f;
+  // Zero-bank reference triangle (WT NXi attitude SVG: 20x20 units, apex on the
+  // bank arc, base 20 units outboard, pointing inward/down). It rotates with the
+  // scale so it meets the fixed roll pointer below to form the hourglass.
+  const float u = radius / 193.0f;  // one WT attitude-SVG unit in display px
+  const float halfW = 10.0f * u;
+  const float triH = 20.0f * u;
   const Point zero[3] = {
-      {-tw, -radius - th}, {tw, -radius - th}, {0.0f, -radius}};
+      {-halfW, -radius - triH}, {halfW, -radius - triH}, {0.0f, -radius}};
   r.fillPolygon(zero, 3, colors::kWhite);
   r.restore();
 }
@@ -107,78 +123,79 @@ void drawRollPointer(Renderer& r, float cx, float cy, float radius, float s,
   r.save();
   r.translate(cx, cy);
 
-  const float tw = s * 0.030f;
-  const float th = s * 0.045f;
-  const float apexY = -radius + s * 0.008f;
-  const Point ptr[3] = {{0.0f, apexY}, {-tw, apexY + th}, {tw, apexY + th}};
+  const float u = radius / 193.0f;  // one WT attitude-SVG unit in display px
+  const float halfW = 10.0f * u;
+  const float triH = 20.0f * u;
+  // Up-pointing roll pointer (WT NXi: 20x20 units, apex 1 unit inside the arc so
+  // it meets the rotating zero-reference triangle, forming the hourglass).
+  const float apexY = -radius + 1.0f * u;
+  const Point ptr[3] = {
+      {0.0f, apexY}, {-halfW, apexY + triH}, {halfW, apexY + triH}};
   r.fillPolygon(ptr, 3, colors::kWhite);
 
-  const float baseY = apexY + th + s * 0.010f;
-  const float trapH = s * 0.024f;
-  const float topHalf = tw * 0.9f;
-  const float botHalf = tw * 1.2f;
-  const float slipShift = slipDeg * (s * 0.018f);
-  const Point trap[4] = {{slipShift - topHalf, baseY},
-                         {slipShift + topHalf, baseY},
-                         {slipShift + botHalf, baseY + trapH},
-                         {slipShift - botHalf, baseY + trapH}};
+  // Slip/skid bar (WT NXi turn-coordinator: a trapezoid 24 units wide at the top
+  // and 30 at the bottom, 6 units tall, sitting 5 units below the pointer base).
+  const float trapTopY = -radius + 26.0f * u;
+  const float trapBotY = -radius + 32.0f * u;
+  const float trapTopHalf = 12.0f * u;
+  const float trapBotHalf = 15.0f * u;
+  // X-Plane's slip_deg is positive when the inclinometer ball is to the left, so
+  // negate to make the G1000 skid/slip bar displace toward the ball (the side
+  // the pilot must "step on" to coordinate).
+  const float slipShift = -slipDeg * (s * 0.018f);
+  const Point trap[4] = {{slipShift - trapTopHalf, trapTopY},
+                         {slipShift + trapTopHalf, trapTopY},
+                         {slipShift + trapBotHalf, trapBotY},
+                         {slipShift - trapBotHalf, trapBotY}};
   r.fillPolygon(trap, 4, colors::kWhite);
   r.restore();
 }
 
 void drawAircraftSymbol(Renderer& r, float cx, float cy, float attVisW,
                         float attRegionH) {
-  // The G1000 NXi aircraft reference symbol (manual Figure 2-1, 7-4) is a
-  // two-tone yellow gull-wing chevron at the pivot plus two detached horizontal
-  // wing-tip tabs out toward the window edges. Geometry is taken from the real
-  // PFD: the chevron spans ~0.39 of the attitude window, the tabs sit at ~0.38
-  // of the window half-width, and the chevron's vertical drop is shallow.
-  const float chevHalf = attVisW * 0.190f;
-  const float apexHalf = attVisW * 0.012f;
-  const float chevDrop = attRegionH * 0.045f;
-  const float wingThick = attRegionH * 0.026f;
-  const float tabOffset = attVisW * 0.380f;
-  const float tabHalf = attVisW * 0.037f;
-  const float pad = attRegionH * 0.004f;
+  // G1000 NXi aircraft reference symbol, reproduced 1:1 from the WT attitude
+  // SVG (414x315 window, geometry referenced to the symbol center (207,204)):
+  // a two-tone yellow center delta -- two wedges meeting at the apex and sloping
+  // down to wingtips at +/-120 px, dropping 30 px -- plus two two-tone
+  // horizontal wing-tip bars near the window edges. The outer portion of every
+  // face is bright yellow, the inner sliver shaded, for a lit-from-above look.
+  const float ux = attVisW / 414.0f;
+  const float uy = attRegionH / 315.0f;
   const float strokeW = std::max(1.0f, attRegionH * 0.004f);
-
-  // Two-tone yellow horizontal tab on a black outline plate: bright top half,
-  // shaded bottom half (the detached wing-tip references).
-  auto twoToneBox = [&](float x, float y, float bw, float bh) {
-    r.fillRect(x - pad, y - pad, bw + 2.0f * pad, bh + 2.0f * pad,
-               colors::kSymbolOutline);
-    r.fillRect(x, y, bw, bh * 0.5f, colors::kSymbolYellow);
-    r.fillRect(x, y + bh * 0.5f, bw, bh * 0.5f, colors::kSymbolYellowDark);
+  auto P = [&](float px, float py) -> Point {
+    return {cx + (px - 207.0f) * ux, cy + (py - 204.0f) * uy};
   };
 
-  // One sloped chevron wing, split along its centerline into a bright upper
-  // face and a shaded lower face, with a black outline around the perimeter.
-  auto chevronWing = [&](float ix, float iy, float ox, float oy) {
-    const float dx = ox - ix, dy = oy - iy;
-    const float len = std::sqrt(dx * dx + dy * dy);
-    float ux = -dy / len * wingThick * 0.5f;
-    float uy = dx / len * wingThick * 0.5f;
-    if (uy > 0.0f) {  // make (ux, uy) the upward-facing normal
-      ux = -ux;
-      uy = -uy;
-    }
-    const Point top[4] = {
-        {ix + ux, iy + uy}, {ox + ux, oy + uy}, {ox, oy}, {ix, iy}};
-    const Point bot[4] = {
-        {ix, iy}, {ox, oy}, {ox - ux, oy - uy}, {ix - ux, iy - uy}};
+  // One center-delta wing: a wedge from the apex (207,204) to a base at y=234,
+  // split into a bright outer triangle and a shaded inner triangle.
+  auto wing = [&](float baseOuter, float baseSplit, float baseInner) {
+    const Point bright[3] = {P(207, 204), P(baseOuter, 234), P(baseSplit, 234)};
+    const Point dark[3] = {P(207, 204), P(baseSplit, 234), P(baseInner, 234)};
+    r.fillPolygon(bright, 3, colors::kSymbolYellow);
+    r.fillPolygon(dark, 3, colors::kSymbolYellowDark);
+    const Point outline[4] = {P(207, 204), P(baseOuter, 234), P(baseInner, 234),
+                              P(207, 204)};
+    r.strokePolyline(outline, 4, strokeW, colors::kSymbolOutline);
+  };
+  wing(87.0f, 122.0f, 141.0f);    // left
+  wing(327.0f, 292.0f, 273.0f);   // right (mirror)
+
+  // One wing-tip bar: a horizontal two-tone bar (bright top half y200-204,
+  // shaded bottom half y204-208) running from the window edge inward to a
+  // pointed inner tip.
+  auto tab = [&](float xOuter, float xInner, float xTip) {
+    const Point top[4] = {P(xTip, 204), P(xInner, 200), P(xOuter, 200),
+                          P(xOuter, 204)};
     r.fillPolygon(top, 4, colors::kSymbolYellow);
+    const Point bot[4] = {P(xTip, 204), P(xInner, 208), P(xOuter, 208),
+                          P(xOuter, 204)};
     r.fillPolygon(bot, 4, colors::kSymbolYellowDark);
-    const Point outline[5] = {top[0], top[1], bot[2], bot[3], top[0]};
-    r.strokePolyline(outline, 5, strokeW, colors::kSymbolOutline);
+    const Point outline[6] = {P(xOuter, 200), P(xInner, 200), P(xTip, 204),
+                              P(xInner, 208), P(xOuter, 208), P(xOuter, 200)};
+    r.strokePolyline(outline, 6, strokeW, colors::kSymbolOutline);
   };
-
-  chevronWing(cx - apexHalf, cy, cx - chevHalf, cy + chevDrop);
-  chevronWing(cx + apexHalf, cy, cx + chevHalf, cy + chevDrop);
-
-  twoToneBox(cx - tabOffset - tabHalf, cy - wingThick * 0.5f, 2.0f * tabHalf,
-             wingThick);
-  twoToneBox(cx + tabOffset - tabHalf, cy - wingThick * 0.5f, 2.0f * tabHalf,
-             wingThick);
+  tab(1.0f, 44.0f, 47.0f);      // left  (edge x=1, body to 44, inner tip at 47)
+  tab(411.0f, 368.0f, 365.0f);  // right (edge x=411, body to 368, inner tip 365)
 }
 
 void drawFlightDirector(Renderer& r, float cx, float cy, float attVisW,
@@ -189,35 +206,36 @@ void drawFlightDirector(Renderer& r, float cx, float cy, float attVisW,
   pitchErr = std::max(-15.0f, std::min(15.0f, pitchErr));
   rollErr = std::max(-30.0f, std::min(30.0f, rollErr));
 
-  // Single-cue magenta command bars form a wide, shallow chevron just outside
-  // the aircraft symbol's chevron (manual Figure 7-4): each wing is a tapered
-  // wedge that comes to a point near the center apex and squares off thick at
-  // the outer tip, so the pilot "flies" the yellow chevron up into the magenta.
-  const float fdHalf = attVisW * 0.245f;
-  const float apexHalf = attVisW * 0.018f;
-  const float fdDrop = attRegionH * 0.045f;
-  const float tipThick = attRegionH * 0.034f;
+  // Single-cue magenta command bars, reproduced 1:1 from the WT FlightDirector
+  // SVG (414x315 window, referenced to (207,204)): each bar is a thin tapered
+  // wedge running from the apex out along the top edge of the aircraft symbol's
+  // wing to a squared-off tip just past the wingtip, so the pilot "flies" the
+  // yellow delta up into the magenta. The whole cue is offset for pitch/roll
+  // command error, so when coordinated it overlays the aircraft symbol exactly.
+  const float ux = attVisW / 414.0f;
+  const float uy = attRegionH / 315.0f;
   const float strokeW = std::max(1.0f, attRegionH * 0.004f);
+  auto P = [&](float px, float py) -> Point {
+    return {(px - 207.0f) * ux, (py - 204.0f) * uy};
+  };
 
   r.save();
   r.translate(cx, cy - pitchErr * travel);
   r.rotateDegrees(rollErr);
 
-  auto wedge = [&](float sgn) {
-    const float ax = sgn * apexHalf, ay = 0.0f;
-    const float tx = sgn * fdHalf, ty = fdDrop;
-    const float dx = tx - ax, dy = ty - ay;
-    const float len = std::sqrt(dx * dx + dy * dy);
-    const float nx = -dy / len * tipThick * 0.5f;
-    const float ny = dx / len * tipThick * 0.5f;
-    const Point tri[3] = {
-        {ax, ay}, {tx + nx, ty + ny}, {tx - nx, ty - ny}};
-    r.fillPolygon(tri, 3, colors::kMagenta);
-    const Point outline[4] = {tri[0], tri[1], tri[2], tri[0]};
-    r.strokePolyline(outline, 4, strokeW, colors::kSymbolOutline);
-  };
-  wedge(-1.0f);
-  wedge(1.0f);
+  // Left bar (main wedge + squared tip merged into one pentagon) and its mirror.
+  const Point left[5] = {P(207, 204), P(87, 234), P(73, 234), P(73, 225),
+                         P(207, 203)};
+  const Point right[5] = {P(207, 204), P(327, 234), P(341, 234), P(341, 225),
+                          P(207, 203)};
+  r.fillPolygon(left, 5, colors::kMagenta);
+  r.fillPolygon(right, 5, colors::kMagenta);
+  const Point leftOutline[6] = {left[0], left[1], left[2],
+                                left[3], left[4], left[0]};
+  const Point rightOutline[6] = {right[0], right[1], right[2],
+                                 right[3], right[4], right[0]};
+  r.strokePolyline(leftOutline, 6, strokeW, colors::kSymbolOutline);
+  r.strokePolyline(rightOutline, 6, strokeW, colors::kSymbolOutline);
   r.restore();
 }
 

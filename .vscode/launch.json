@@ -72,26 +72,104 @@
       "args": ["--no-pfd"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug PFD (demo, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--demo"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug MFD (demo, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--demo"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug PFD (X-Plane, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug MFD (X-Plane, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug PFD (demo, Windows, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-mfd", "--demo"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug MFD (demo, Windows, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-pfd", "--demo"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug PFD (X-Plane, Windows, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-mfd"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "cppvsdbg",
+      "request": "launch",
+      "name": "Debug MFD (X-Plane, Windows, compound)",
+      "presentation": { "hidden": true },
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
+      "args": ["--no-pfd"],
+      "cwd": "${workspaceFolder}"
     }
   ],
   "compounds": [
     {
       "name": "Debug PFD + MFD (demo)",
-      "configurations": ["Debug PFD (demo)", "Debug MFD (demo)"],
+      "configurations": [
+        "Debug PFD (demo, compound)",
+        "Debug MFD (demo, compound)"
+      ],
       "preLaunchTask": "Build standalone",
       "stopAll": true
     },
     {
       "name": "Debug PFD + MFD (X-Plane)",
-      "configurations": ["Debug PFD (X-Plane)", "Debug MFD (X-Plane)"],
+      "configurations": [
+        "Debug PFD (X-Plane, compound)",
+        "Debug MFD (X-Plane, compound)"
+      ],
       "preLaunchTask": "Build standalone",
       "stopAll": true
     },
     {
       "name": "Debug PFD + MFD (demo, Windows)",
       "configurations": [
-        "Debug PFD (demo, Windows)",
-        "Debug MFD (demo, Windows)"
+        "Debug PFD (demo, Windows, compound)",
+        "Debug MFD (demo, Windows, compound)"
       ],
       "preLaunchTask": "Build standalone",
       "stopAll": true
@@ -99,8 +177,8 @@
     {
       "name": "Debug PFD + MFD (X-Plane, Windows)",
       "configurations": [
-        "Debug PFD (X-Plane, Windows)",
-        "Debug MFD (X-Plane, Windows)"
+        "Debug PFD (X-Plane, Windows, compound)",
+        "Debug MFD (X-Plane, Windows, compound)"
       ],
       "preLaunchTask": "Build standalone",
       "stopAll": true

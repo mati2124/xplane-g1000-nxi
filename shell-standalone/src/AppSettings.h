@@ -20,6 +20,11 @@ struct AppSettings {
   // SimBrief account Pilot ID (digits only; empty = not configured). Entered
   // on the MFD AUX - SIMBRIEF page and used to fetch the latest OFP.
   std::string simbriefPilotId;
+  // Directory holding a copied X-Plane nav-data tree (laid out like an install
+  // root), used when no local X-Plane install is present so the moving map
+  // works on a display-only PC. Empty = discover a local install as usual.
+  // The --nav-data-dir command-line flag overrides this when given.
+  std::string navDataDir;
   // Whether the OS window chrome (the title bar with its close / minimize /
   // maximize controls) is drawn on the PFD and MFD windows.
   bool showWindowChrome = true;

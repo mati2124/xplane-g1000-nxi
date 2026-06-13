@@ -12,6 +12,7 @@ constexpr const char* kAppDirName = "XPlaneAvionics";
 constexpr const char* kSettingsFileName = "settings.txt";
 constexpr const char* kKeyShowBezel = "showBezel";
 constexpr const char* kKeySimbriefPilotId = "simbriefPilotId";
+constexpr const char* kKeyNavDataDir = "navDataDir";
 constexpr const char* kKeyShowWindowChrome = "showWindowChrome";
 constexpr const char* kKeyAlwaysOnTop = "alwaysOnTop";
 constexpr const char* kKeyPfdFullscreen = "pfdFullscreen";
@@ -92,6 +93,8 @@ AppSettings LoadAppSettings() {
       settings.showBezel = ParseBool(value, settings.showBezel);
     } else if (key == kKeySimbriefPilotId) {
       settings.simbriefPilotId = value;
+    } else if (key == kKeyNavDataDir) {
+      settings.navDataDir = value;
     } else if (key == kKeyShowWindowChrome) {
       settings.showWindowChrome =
           ParseBool(value, settings.showWindowChrome);
@@ -145,6 +148,7 @@ void SaveAppSettings(const AppSettings& settings) {
   if (!out.is_open()) return;
   out << kKeyShowBezel << '=' << (settings.showBezel ? '1' : '0') << '\n';
   out << kKeySimbriefPilotId << '=' << settings.simbriefPilotId << '\n';
+  out << kKeyNavDataDir << '=' << settings.navDataDir << '\n';
   out << kKeyShowWindowChrome << '='
       << (settings.showWindowChrome ? '1' : '0') << '\n';
   out << kKeyAlwaysOnTop << '=' << (settings.alwaysOnTop ? '1' : '0') << '\n';

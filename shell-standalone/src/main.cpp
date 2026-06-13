@@ -26,6 +26,9 @@
 //   --mfd-monitor N           put the MFD full screen on monitor N
 //   --list-monitors           print the connected monitors and indices, then
 //                             exit
+//   --identify-monitors       flash each monitor's index large on that screen
+//                             for a few seconds (--time SECONDS), then exit;
+//                             the visual companion to --list-monitors
 //   --xplane-host HOST        X-Plane host (default: 127.0.0.1)
 //   --xplane-port PORT        X-Plane UDP port (default: 49000)
 //   --fms-bridge-port PORT    UDP port of the in-sim flight-plan bridge
@@ -53,6 +56,13 @@
 //   --obstacles PATH          FAA Digital Obstacle File in CSV format
 //                             (the "DDOF CSV" download) for the map's
 //                             obstacle overlay; US-only, off when omitted
+//   --nav-data-dir PATH       directory holding a copied X-Plane nav-data tree
+//                             (Custom Data/, Resources/default data/, Global
+//                             Scenery/, Custom Data/CIFP/, Custom Data/
+//                             Airspaces/) used instead of a local X-Plane
+//                             install, so the standalone can run the moving map
+//                             on a PC without X-Plane; live telemetry still
+//                             comes over the network (--xplane-host)
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>  // GL_SILENCE_DEPRECATION is set by the build.
@@ -93,6 +103,7 @@
 #include "SimBriefStore.h"
 #include "UpdateNotify.h"
 #include "XPlaneConnection.h"
+#include "XPlaneInstall.h"
 #include "avionics/AssetPaths.h"
 #include "avionics/CommandBridgeProtocol.h"
 #include "avionics/AvionicsEngine.h"
@@ -1777,6 +1788,189 @@ void ListMonitors() {
   }
 }
 
+// Any key on an identify overlay dismisses the whole flash early.
+void OnIdentifyKey(GLFWwindow* window, int /*key*/, int /*scancode*/,
+                   int action, int /*mods*/) {
+  if (action == GLFW_PRESS) glfwSetWindowShouldClose(window, GLFW_TRUE);
+}
+
+// Exits a short-lived utility mode (--list-monitors / --identify-monitors)
+// immediately after its work is done. We flush output and call _Exit rather
+// than returning, because tearing down GLFW and the process's static/global
+// state from these modes aborts during teardown on some platforms (a harmless
+// but ugly non-zero exit); these modes own no persistent state worth unwinding.
+[[noreturn]] void QuitUtilityMode(int code = 0) {
+  std::fflush(stdout);
+  std::fflush(stderr);
+  std::_Exit(code);
+}
+
+// Draws one seven-segment digit filling the box (x, y, w, h) with bar
+// thickness t. Used by the identify overlay so the big monitor index renders
+// with no font dependency -- the installer launches --identify-monitors from a
+// temporary copy of the (font-less) executable alone.
+void DrawSevenSegDigit(avionics::NanoVgRenderer& r, float x, float y, float w,
+                       float h, float t, int digit, const avionics::Color& c) {
+  static const bool seg[10][7] = {
+      // a, b, c, d, e, f, g
+      {1, 1, 1, 1, 1, 1, 0},  // 0
+      {0, 1, 1, 0, 0, 0, 0},  // 1
+      {1, 1, 0, 1, 1, 0, 1},  // 2
+      {1, 1, 1, 1, 0, 0, 1},  // 3
+      {0, 1, 1, 0, 0, 1, 1},  // 4
+      {1, 0, 1, 1, 0, 1, 1},  // 5
+      {1, 0, 1, 1, 1, 1, 1},  // 6
+      {1, 1, 1, 0, 0, 0, 0},  // 7
+      {1, 1, 1, 1, 1, 1, 1},  // 8
+      {1, 1, 1, 1, 0, 1, 1},  // 9
+  };
+  if (digit < 0 || digit > 9) return;
+  const float rad = t * 0.5f;
+  const float hLen = w - t * 1.4f;      // horizontal bar length
+  const float hx = x + t * 0.7f;        // horizontal bar left
+  const float vLen = (h - t * 3.0f) * 0.5f;  // vertical bar length per half
+  const float midY = y + (h - t) * 0.5f;
+  const auto hbar = [&](float by) {
+    r.fillRoundedRect(hx, by, hLen, t, rad, c);
+  };
+  const auto vbar = [&](float bx, float by) {
+    r.fillRoundedRect(bx, by, t, vLen, rad, c);
+  };
+  if (seg[digit][0]) hbar(y);                            // a (top)
+  if (seg[digit][6]) hbar(midY);                         // g (middle)
+  if (seg[digit][3]) hbar(y + h - t);                    // d (bottom)
+  if (seg[digit][5]) vbar(x, y + t * 0.7f);              // f (top-left)
+  if (seg[digit][1]) vbar(x + w - t, y + t * 0.7f);      // b (top-right)
+  if (seg[digit][4]) vbar(x, midY + t * 0.7f);           // e (bottom-left)
+  if (seg[digit][2]) vbar(x + w - t, midY + t * 0.7f);   // c (bottom-right)
+}
+
+// Draws a non-negative integer centered at (cx, cy) using seven-segment digits
+// of the given height, returning nothing. Multi-digit values are laid out
+// left-to-right and centered as a group.
+void DrawBigNumber(avionics::NanoVgRenderer& r, float cx, float cy, float height,
+                   int value, const avionics::Color& c) {
+  const std::string digits = std::to_string(value < 0 ? 0 : value);
+  const float dw = height * 0.6f;
+  const float t = height * 0.16f;
+  const float gap = height * 0.22f;
+  const float totalW =
+      digits.size() * dw + (digits.size() - 1) * gap;
+  float x = cx - totalW * 0.5f;
+  const float y = cy - height * 0.5f;
+  for (char ch : digits) {
+    DrawSevenSegDigit(r, x, y, dw, height, t, ch - '0', c);
+    x += dw + gap;
+  }
+}
+
+// Flashes each connected monitor's index large on that physical screen for a
+// few seconds, so the user can see which number maps to which monitor before
+// choosing one for --pfd-monitor / --mfd-monitor (or in the installer's Display
+// Setup page, which launches this via its "Identify" button). One borderless
+// window is opened per monitor; the timeout, any key, or a click ends it.
+void IdentifyMonitors(double seconds) {
+  int count = 0;
+  GLFWmonitor** monitors = glfwGetMonitors(&count);
+  if (monitors == nullptr || count == 0) return;
+  if (seconds <= 0.0) seconds = 4.0;
+  GLFWmonitor* primary = glfwGetPrimaryMonitor();
+
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+  glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+  glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
+  glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
+  struct Overlay {
+    GLFWwindow* window = nullptr;
+    avionics::NanoVgRenderer* renderer = nullptr;
+    int index = 0;
+    bool primary = false;
+    int width = 0;
+    int height = 0;
+  };
+  std::vector<Overlay> overlays;
+  for (int i = 0; i < count; ++i) {
+    const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+    if (mode == nullptr) continue;
+    int mx = 0, my = 0;
+    glfwGetMonitorPos(monitors[i], &mx, &my);
+    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height,
+                                          "Identify Monitor", nullptr, nullptr);
+    if (window == nullptr) continue;
+    glfwSetWindowPos(window, mx, my);
+    glfwSetKeyCallback(window, OnIdentifyKey);
+    glfwShowWindow(window);
+    glfwFocusWindow(window);  // raise above other apps so the flash is visible
+    glfwMakeContextCurrent(window);
+    avionics::render::ensureGlLoaded();
+    glfwSwapInterval(0);
+    auto* renderer = new avionics::NanoVgRenderer();
+    if (!renderer->valid()) {
+      delete renderer;
+      glfwDestroyWindow(window);
+      continue;
+    }
+    overlays.push_back(
+        {window, renderer, i, monitors[i] == primary, mode->width, mode->height});
+  }
+  if (overlays.empty()) return;
+
+  const double endTime = glfwGetTime() + seconds;
+  bool done = false;
+  while (!done && glfwGetTime() < endTime) {
+    glfwPollEvents();
+    const int secondsLeft =
+        static_cast<int>(endTime - glfwGetTime()) + 1;
+    for (Overlay& ov : overlays) {
+      if (glfwWindowShouldClose(ov.window) ||
+          glfwGetMouseButton(ov.window, GLFW_MOUSE_BUTTON_LEFT) ==
+              GLFW_PRESS) {
+        done = true;
+        break;
+      }
+      glfwMakeContextCurrent(ov.window);
+      int fbW = 0, fbH = 0;
+      glfwGetFramebufferSize(ov.window, &fbW, &fbH);
+      glViewport(0, 0, fbW, fbH);
+      // Deep avionics blue so the white index reads clearly on any display.
+      glClearColor(0.04f, 0.18f, 0.42f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+      ov.renderer->beginFrame(fbW, fbH, 1.0f);
+      const float cx = fbW * 0.5f;
+      const float cy = fbH * 0.5f;
+      // The big index is drawn with vector segments (no font), so it renders
+      // even when launched from a font-less temporary copy by the installer.
+      DrawBigNumber(*ov.renderer, cx, cy, fbH * 0.5f, ov.index,
+                    avionics::colors::kWhite);
+      // Captions are a font-based nicety; harmlessly skipped when no font is
+      // available (e.g. the installer's temp-copy launch).
+      std::string caption =
+          std::to_string(ov.width) + " x " + std::to_string(ov.height);
+      if (ov.primary) caption += "   (primary)";
+      ov.renderer->fillText(cx, cy + fbH * 0.34f, caption, fbH * 0.05f,
+                            avionics::TextAlign::Center,
+                            avionics::colors::kWhite);
+      ov.renderer->fillText(cx, fbH * 0.92f,
+                            "Monitor index for --pfd-monitor / --mfd-monitor"
+                            "   (" + std::to_string(secondsLeft) + ")",
+                            fbH * 0.035f, avionics::TextAlign::Center,
+                            avionics::colors::kWhite);
+      ov.renderer->endFrame();
+      glfwSwapBuffers(ov.window);
+    }
+  }
+
+  for (Overlay& ov : overlays) {
+    delete ov.renderer;
+    glfwDestroyWindow(ov.window);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1784,7 +1978,22 @@ int main(int argc, char** argv) {
   // loads them (renderer fonts, land data, EIS, checklists), including the
   // offscreen --screenshot path below.
   RegisterAssetSearchDirs();
-  avionics::startUpdateCheckOnLaunch();
+
+  // Restore persisted preferences up front: the nav-data directory in
+  // particular must be applied before any store is constructed (the offscreen
+  // --screenshot path below and the interactive ShellNavMapData both spawn
+  // loader threads in their constructors).
+  const avionics::AppSettings savedSettings = avionics::LoadAppSettings();
+
+  // Point the nav-data loaders at an explicit install-like tree so a display PC
+  // without X-Plane can read a copied nav-data tree. The --nav-data-dir flag
+  // wins; otherwise use the saved setting (written by the installer's Display
+  // Setup page or a prior run).
+  if (const char* navDataDir = FlagValue(argc, argv, "--nav-data-dir")) {
+    avionics::xplane_install::setNavDataRoot(navDataDir);
+  } else if (!savedSettings.navDataDir.empty()) {
+    avionics::xplane_install::setNavDataRoot(savedSettings.navDataDir);
+  }
 
   const bool cliAlwaysOnTop = WantsAlwaysOnTop(argc, argv);
 
@@ -1812,17 +2021,31 @@ int main(int argc, char** argv) {
     const char* fmsPlan = FlagValue(argc, argv, "--fms-plan");
     const bool showBezel = !HasFlag(argc, argv, "--no-bezel");
     const int rc = RunScreenshot(shot, seconds, state, fmsPlan, showBezel);
-    glfwTerminate();
-    return rc;
+    // Skip the global static teardown, which aborts on macOS; the capture is
+    // already flushed to disk. Matches the other short-lived utility modes.
+    QuitUtilityMode(rc);
   }
 
   // Lists the connected monitors and their indices, so the user can choose one
   // for --pfd-monitor / --mfd-monitor, then exits.
   if (HasFlag(argc, argv, "--list-monitors")) {
     ListMonitors();
-    glfwTerminate();
-    return 0;
+    QuitUtilityMode();
   }
+
+  // Flashes each monitor's index on screen (the visual companion to
+  // --list-monitors), then exits. Used by the installer's "Identify" button so
+  // the user can see which number is which monitor. --time overrides how long.
+  if (HasFlag(argc, argv, "--identify-monitors")) {
+    const char* timeStr = FlagValue(argc, argv, "--time");
+    IdentifyMonitors(timeStr ? std::atof(timeStr) : 0.0);
+    QuitUtilityMode();
+  }
+
+  // Check for a newer release in the background (a detached network thread).
+  // Deferred to here so the short-lived utility modes above (--screenshot,
+  // --list-monitors, --identify-monitors) exit immediately without spawning it.
+  avionics::startUpdateCheckOnLaunch();
 
   // --no-mfd / --no-pfd suppress one display so the PFD and MFD can be launched
   // as separate processes. At least one must remain; if both are suppressed the
@@ -1835,8 +2058,8 @@ int main(int argc, char** argv) {
   if (!wantMfd && !wantPfd) wantPfd = true;
   const bool demoStart = HasFlag(argc, argv, "--demo");
 
-  // Restore persisted preferences unless the command line overrides them.
-  const avionics::AppSettings savedSettings = avionics::LoadAppSettings();
+  // Persisted preferences (loaded up front) drive the display unless the
+  // command line overrides them.
   const bool showBezel = savedSettings.showBezel;
   const bool showWindowChrome = savedSettings.showWindowChrome;
   // The --always-on-top flag / env var forces floating on; otherwise honor the

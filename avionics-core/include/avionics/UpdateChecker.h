@@ -10,7 +10,21 @@ struct UpdateInfo {
   bool newerAvailable = false;
   std::string latestVersion;  // no leading "v"
   std::string releasePageUrl; // browser URL for the release notes / downloads
+  // Direct download URL of the installer asset for the running platform (empty
+  // when none matches), used by the shell's in-app updater instead of opening
+  // the browser. Currently populated on Windows (the g1000nxi-setup-*.exe).
+  std::string installerUrl;
+  // Download URL of the release's SHA256SUMS asset (empty when absent), used to
+  // verify the downloaded installer before running it.
+  std::string checksumsUrl;
 };
+
+// Returns the browser_download_url of the first release asset whose file name
+// matches the given prefix and suffix (either may be empty to match any).
+// Exposed for testing; parseLatestReleaseJson fills UpdateInfo with it.
+std::string findReleaseAssetUrl(const std::string& jsonBody,
+                                const std::string& namePrefix,
+                                const std::string& nameSuffix);
 
 // Parse a GitHub Releases API JSON body and compare against kVersion.
 // Returns an empty latestVersion when the response cannot be parsed.

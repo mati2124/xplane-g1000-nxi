@@ -143,13 +143,18 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
                       float h, const FlightData& d) {
   const float legW = centerW * (284.0f / 506.0f);
   const float dataL = centerL + legW;
-  const float cy = rowH * 0.5f;
+  // Center the row on its visual ink: text is nudged below the geometric
+  // half-center to cancel the font's descender span (as the NavCom cells do).
+  const float cy = rowH * 0.60f;
   const float dataSize = fontPx(wt::kFmaArmed, h);
   const float smallSize = fontPx(wt::kFmaSmall, h);
+  // DIS/BRG labels read nearly as tall as their value on the real unit; only
+  // the NM unit suffix is subscript-small.
+  const float labelSize = dataSize * 0.85f;
 
   // Row separator between the navigation and AFCS halves of the center panel.
   r.strokeLine(centerL, rowH, centerL + centerW, rowH, 2.0f,
-               colors::kPanelSeparator);
+               colors::kPanelBorder);
 
   if (!d.dataLinkValid) return;
 
@@ -188,16 +193,29 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
   }
 
   if (!d.fmaToWpt.empty()) {
+    // Vertical divider between the active-leg field and the DIS/BRG readouts
+    // (G1000 NXi Navigation Status Box), meeting the row separator below.
+    r.strokeLine(dataL, rowH * 0.18f, dataL, rowH, 1.5f, colors::kPanelBorder);
+
     char buf[24];
     std::snprintf(buf, sizeof(buf), "%.1f", d.fmaLegDistanceNm);
-    float bx = dataL + centerW * 0.02f;
-    bx = putText(r, bx, cy, "DIS", smallSize, colors::kLabelText, 0.35f);
+    // DIS readout left-aligned almost touching the divider.
+    float bx = dataL + centerW * 0.01f;
+    bx = putText(r, bx, cy, "DIS", labelSize, colors::kLabelText, 0.30f);
     bx = putText(r, bx, cy, std::string(buf), dataSize, colors::kMagenta,
-                 0.20f);
-    bx = putText(r, bx, cy, "NM", smallSize, colors::kMagenta, 0.80f);
-    bx = putText(r, bx, cy, "BRG", smallSize, colors::kLabelText, 0.35f);
-    putText(r, bx, cy, formatHeading(d.fmaLegBearingDeg) + "\u00b0", dataSize,
-            colors::kMagenta);
+                 0.18f);
+    putText(r, bx, cy, "NM", smallSize, colors::kMagenta, 0.0f);
+
+    // BRG readout right-aligned to the panel edge: the real unit spreads DIS
+    // and BRG to opposite ends of the data field, with the bearing value
+    // hugging the right edge and its grey label just to the left.
+    const std::string brg = formatHeading(d.fmaLegBearingDeg) + "\u00b0";
+    const float rightX = centerL + centerW - centerW * 0.025f;
+    r.fillText(rightX, cy, brg, dataSize, TextAlign::Right, colors::kMagenta);
+    const float brgLabelRight =
+        rightX - r.measureTextWidth(brg, dataSize) - labelSize * 0.30f;
+    r.fillText(brgLabelRight, cy, "BRG", labelSize, TextAlign::Right,
+               colors::kLabelText);
   }
 }
 
@@ -209,16 +227,21 @@ void drawAfcsStatusBox(Renderer& r, float centerL, float rowTop, float centerW,
   const float latW = centerW * (124.0f / 506.0f);
   const float apW = centerW * (114.0f / 506.0f);
   const float vertL = centerL + latW + apW;
-  const float cy = rowTop + rowH * 0.5f;
+  // Match the nav-status row: nudge below the geometric half-center so the
+  // text ink sits vertically centered in the bottom half.
+  const float cy = rowTop + rowH * 0.60f;
   const float smallSize = fontPx(wt::kFmaSmall, h);
   const float modeSize = fontPx(wt::kFmaActive, h);
   const float armedSize = fontPx(wt::kFmaArmed, h);
+  // Armed vertical annunciations (ALTS, GS, …) are a touch smaller than the
+  // lateral armed modes on the real unit.
+  const float armedVertSize = armedSize * 0.85f;
   const float y0 = rowTop + rowH * 0.12f;
   const float y1 = rowTop + rowH * 0.88f;
 
   r.strokeLine(centerL + latW, y0, centerL + latW, y1, 1.5f,
-               colors::kPanelSeparator);
-  r.strokeLine(vertL, y0, vertL, y1, 1.5f, colors::kPanelSeparator);
+               colors::kPanelBorder);
+  r.strokeLine(vertL, y0, vertL, y1, 1.5f, colors::kPanelBorder);
 
   if (!d.flightDirectorActive || !d.dataLinkValid) return;
 
@@ -260,15 +283,17 @@ void drawAfcsStatusBox(Renderer& r, float centerL, float rowTop, float centerW,
     putText(r, vx, cy, d.fmaVerticalUnits, smallSize, refColor);
   }
 
-  float rx = centerL + centerW - centerW * 0.01f;
+  // The armed vertical mode is right-aligned within the vertical-modes column,
+  // well inboard of the panel edge (G1000 NXi FMA), not flush to the right.
+  float rx = centerL + centerW * 0.87f;
   if (!d.fmaVerticalApproachArmed.empty()) {
-    r.fillText(rx, cy, d.fmaVerticalApproachArmed, armedSize, TextAlign::Right,
+    r.fillText(rx, cy, d.fmaVerticalApproachArmed, armedVertSize, TextAlign::Right,
                colors::kWhite);
-    rx -= r.measureTextWidth(d.fmaVerticalApproachArmed, armedSize) +
-          armedSize * 0.40f;
+    rx -= r.measureTextWidth(d.fmaVerticalApproachArmed, armedVertSize) +
+          armedVertSize * 0.40f;
   }
   if (!d.fmaVerticalArmed.empty()) {
-    r.fillText(rx, cy, d.fmaVerticalArmed, armedSize, TextAlign::Right,
+    r.fillText(rx, cy, d.fmaVerticalArmed, armedVertSize, TextAlign::Right,
                colors::kWhite);
   }
 }
@@ -295,8 +320,13 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
   // Decoded COM station identifier sits in its own panel below the COM box.
   drawComDecodePanel(r, h, barH, comPanelL, comPanelW, cornerR,
                      navComDecodeIdent(d));
-  drawNavStatusBox(r, centerL, centerW, centerRowH, h, d);
-  drawAfcsStatusBox(r, centerL, centerRowH, centerW, centerRowH, h, d);
+  // The center status panel uses the heavier display face (matching the NavCom
+  // frequency cells) so its text reads as bold as the real unit.
+  {
+    FontScope centerFont(r, FontFace::DejaVuSemiBold);
+    drawNavStatusBox(r, centerL, centerW, centerRowH, h, d);
+    drawAfcsStatusBox(r, centerL, centerRowH, centerW, centerRowH, h, d);
+  }
 }
 
 // Filled box with the NXi bottom-panel gradient (lighter at top, black at the
@@ -1373,11 +1403,10 @@ void drawComDecodePanel(Renderer& r, float h, float barH, float comLeft,
   const float top = barH + gap;
   drawNavComPanelBg(r, comLeft, top, comW, panelH, cornerR);
   FontScope navComFont(r, FontFace::DejaVuSemiBold);
-  // Centered over the frequency columns (the 1/2 COM label column sits to the
-  // right), matching the real unit. The +size*0.10 descender correction
-  // recenters the glyph ink, since the font centers its line box (which includes
-  // an empty descender span) on the draw point.
-  const float identCx = comLeft + comW * 0.465f;
+  // Horizontally centered in the black panel. The +size*0.10 descender
+  // correction recenters the glyph ink, since the font centers its line box
+  // (which includes an empty descender span) on the draw point.
+  const float identCx = comLeft + comW * 0.5f;
   const float size = fontPx(wt::kNavComFreq, h) * 0.86f;
   r.fillText(identCx, top + panelH * 0.5f + size * 0.10f, ident, size,
              TextAlign::Center, colors::kActiveGreen);

@@ -30,6 +30,9 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 WizardStyle=modern
+; Slightly taller wizard so the Display Setup page fits the monitor pickers,
+; the Identify button, and the optional nav-data folder field.
+WizardSizePercent=120
 PrivilegesRequired=lowest
 
 [Languages]
@@ -57,6 +60,13 @@ Source: "{#RepoRoot}\stage\plugin\xplane-avionics\assets\*"; DestDir: "{code:Get
 
 Source: "{#RepoRoot}\stage\standalone\*"; DestDir: "{app}"; Components: standalone; Flags: ignoreversion recursesubdirs createallsubdirs
 
+; A second, non-installed copy of just the standalone executable, used only by
+; the Display Setup page's "Identify" button to flash each monitor's number on
+; screen before the files are installed. The exe is statically linked (no DLLs)
+; and the identify overlay draws its number without a font, so the temporary
+; copy runs on its own. dontcopy keeps it out of the installed {app} folder.
+Source: "{#RepoRoot}\stage\standalone\avionics-standalone.exe"; Flags: dontcopy; Components: standalone
+
 ; App icon used by the desktop / Start Menu shortcuts.
 Source: "{#RepoRoot}\installer\assets\g1000-nxi.ico"; DestDir: "{app}"; Components: standalone; Flags: ignoreversion
 
@@ -66,6 +76,9 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\avionics-standalone.exe"; Working
 
 [Run]
 Filename: "{app}\avionics-standalone.exe"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent unchecked; Components: standalone
+; Relaunch after a silent in-app update (the standalone passes /RUNAPP=1 when it
+; updates itself). Runs even in silent mode, unlike the postinstall entry above.
+Filename: "{app}\avionics-standalone.exe"; Flags: nowait; Check: IsAutoLaunch; Components: standalone
 
 [Code]
 type
@@ -133,12 +146,23 @@ var
   FullscreenCheck: TNewCheckBox;
   PfdCombo, MfdCombo: TNewComboBox;
   PfdLabel, MfdLabel, DisplayHelp: TNewStaticText;
+  IdentifyButton: TNewButton;
+  NavDataLabel, NavDataHelp: TNewStaticText;
+  NavDataEdit: TNewEdit;
+  NavDataBrowse: TNewButton;
   MonLabels: TArrayOfString;
   MonCount: Integer;
 
 function DirLooksLikeXPlane(const Dir: String): Boolean;
 begin
   Result := DirExists(Dir) and DirExists(Dir + '\Resources\plugins');
+end;
+
+// True when launched by the standalone's in-app updater (setup.exe /RUNAPP=1),
+// which drives the relaunch [Run] entry after a silent self-update.
+function IsAutoLaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:RUNAPP|0}') = '1';
 end;
 
 function FindXPlaneInstall(): String;
@@ -179,6 +203,58 @@ end;
 procedure FullscreenCheckClick(Sender: TObject);
 begin
   UpdateDisplayControls();
+end;
+
+// Reads any previously saved navDataDir from the standalone settings file so
+// the Display page can pre-fill the folder field on re-install.
+function ReadSavedNavDataDir(): String;
+var
+  path, line: String;
+  lines: TArrayOfString;
+  i: Integer;
+begin
+  Result := '';
+  path := ExpandConstant('{userappdata}\XPlaneAvionics\settings.txt');
+  if not LoadStringsFromFile(path, lines) then
+    Exit;
+  for i := 0 to GetArrayLength(lines) - 1 do
+  begin
+    line := lines[i];
+    if Pos('navDataDir=', line) = 1 then
+    begin
+      Result := Copy(line, Length('navDataDir=') + 1, Length(line));
+      Exit;
+    end;
+  end;
+end;
+
+// "Identify" button: flashes each monitor's index on that physical screen by
+// running the standalone's --identify-monitors mode from a temporary copy of
+// the (DLL-free, font-independent) executable, before the app is installed.
+procedure IdentifyButtonClick(Sender: TObject);
+var
+  ResultCode: Integer;
+begin
+  try
+    ExtractTemporaryFile('avionics-standalone.exe');
+  except
+    MsgBox('Could not prepare the identify helper.', mbError, MB_OK);
+    Exit;
+  end;
+  if not Exec(ExpandConstant('{tmp}\avionics-standalone.exe'),
+              '--identify-monitors --time 5', '', SW_SHOW, ewNoWait,
+              ResultCode) then
+    MsgBox('Could not launch the monitor identify display.', mbError, MB_OK);
+end;
+
+procedure NavDataBrowseClick(Sender: TObject);
+var
+  dir: String;
+begin
+  dir := NavDataEdit.Text;
+  if BrowseForFolder('Select the folder holding a copied X-Plane nav-data tree',
+                     dir, True) then
+    NavDataEdit.Text := dir;
 end;
 
 // Enumerates the connected monitors with their current resolution and the
@@ -351,18 +427,67 @@ begin
   MfdCombo.Top := MfdLabel.Top - ScaleY(3);
   MfdCombo.Width := DisplayPage.SurfaceWidth - ScaleX(100);
 
+  // Flashes each monitor's number on its screen so the user can match the
+  // physical monitor to the combo entries above. Always enabled.
+  IdentifyButton := TNewButton.Create(DisplayPage);
+  IdentifyButton.Parent := DisplayPage.Surface;
+  IdentifyButton.Left := ScaleX(100);
+  IdentifyButton.Top := MfdCombo.Top + MfdCombo.Height + ScaleY(8);
+  IdentifyButton.Width := ScaleX(150);
+  IdentifyButton.Height := ScaleY(23);
+  IdentifyButton.Caption := 'Identify monitors';
+  IdentifyButton.OnClick := @IdentifyButtonClick;
+
   DisplayHelp := TNewStaticText.Create(DisplayPage);
   DisplayHelp.Parent := DisplayPage.Surface;
   DisplayHelp.Left := 0;
-  DisplayHelp.Top := MfdCombo.Top + MfdCombo.Height + ScaleY(20);
+  DisplayHelp.Top := IdentifyButton.Top + IdentifyButton.Height + ScaleY(10);
   DisplayHelp.Width := DisplayPage.SurfaceWidth;
   DisplayHelp.AutoSize := False;
-  DisplayHelp.Height := ScaleY(48);
+  DisplayHelp.Height := ScaleY(42);
   DisplayHelp.WordWrap := True;
   DisplayHelp.Caption :=
     'Each display fills its monitor; the 4:3 image is letterboxed to keep its '
-    + 'shape.' + #13#10 +
+    + 'shape. "Identify monitors" briefly shows each monitor''s number on '
+    + 'screen.' + #13#10 +
     'You can change this any time in the app (press F to toggle full screen).';
+
+  // Optional nav-data folder: lets the standalone draw its moving map on a PC
+  // without X-Plane installed, by pointing at a copied X-Plane nav-data tree.
+  NavDataLabel := TNewStaticText.Create(DisplayPage);
+  NavDataLabel.Parent := DisplayPage.Surface;
+  NavDataLabel.Left := 0;
+  NavDataLabel.Top := DisplayHelp.Top + DisplayHelp.Height + ScaleY(10);
+  NavDataLabel.Caption := 'Navigation data folder (optional):';
+
+  NavDataEdit := TNewEdit.Create(DisplayPage);
+  NavDataEdit.Parent := DisplayPage.Surface;
+  NavDataEdit.Left := 0;
+  NavDataEdit.Top := NavDataLabel.Top + NavDataLabel.Height + ScaleY(4);
+  NavDataEdit.Width := DisplayPage.SurfaceWidth - ScaleX(90);
+  NavDataEdit.Text := ReadSavedNavDataDir();
+
+  NavDataBrowse := TNewButton.Create(DisplayPage);
+  NavDataBrowse.Parent := DisplayPage.Surface;
+  NavDataBrowse.Left := DisplayPage.SurfaceWidth - ScaleX(80);
+  NavDataBrowse.Top := NavDataEdit.Top - ScaleY(1);
+  NavDataBrowse.Width := ScaleX(80);
+  NavDataBrowse.Height := ScaleY(23);
+  NavDataBrowse.Caption := 'Browse...';
+  NavDataBrowse.OnClick := @NavDataBrowseClick;
+
+  NavDataHelp := TNewStaticText.Create(DisplayPage);
+  NavDataHelp.Parent := DisplayPage.Surface;
+  NavDataHelp.Left := 0;
+  NavDataHelp.Top := NavDataEdit.Top + NavDataEdit.Height + ScaleY(6);
+  NavDataHelp.Width := DisplayPage.SurfaceWidth;
+  NavDataHelp.AutoSize := False;
+  NavDataHelp.Height := ScaleY(42);
+  NavDataHelp.WordWrap := True;
+  NavDataHelp.Caption :=
+    'Leave blank if X-Plane is installed on this PC. Set it only when running '
+    + 'the standalone on a different PC: copy X-Plane''s nav-data tree '
+    + '(Custom Data, Resources\default data, Global Scenery) and point here.';
 
   PopulateMonitors();
   UpdateDisplayControls();
@@ -408,15 +533,21 @@ begin
 end;
 
 // Pre-seeds the standalone app's per-user settings file with the chosen full
-// screen / monitor preferences. The keys mirror AppSettings.cpp; only those
-// four lines are rewritten, so any other saved preferences are preserved.
+// screen / monitor / nav-data preferences. The keys mirror AppSettings.cpp;
+// only those lines are rewritten, so any other saved preferences are preserved.
 procedure WriteDisplaySettings();
 var
-  path, dir, key: String;
+  path, dir, key, navDir: String;
   lines, newLines: TArrayOfString;
   i, n, fs, pfdIdx, mfdIdx: Integer;
 begin
   if not IsComponentSelected('standalone') then
+    Exit;
+
+  // A silent run is an in-app self-update, where the Display Setup page was
+  // never shown; its controls hold defaults, so writing them would clobber the
+  // user's saved monitor / nav-data choices. Leave the settings file untouched.
+  if WizardSilent() then
     Exit;
 
   dir := ExpandConstant('{userappdata}\XPlaneAvionics');
@@ -426,14 +557,15 @@ begin
   n := 0;
   if LoadStringsFromFile(path, lines) then
   begin
-    SetArrayLength(newLines, GetArrayLength(lines) + 4);
+    SetArrayLength(newLines, GetArrayLength(lines) + 5);
     for i := 0 to GetArrayLength(lines) - 1 do
     begin
       key := lines[i];
       if (Pos('pfdFullscreen=', key) <> 1) and
          (Pos('mfdFullscreen=', key) <> 1) and
          (Pos('pfdMonitor=', key) <> 1) and
-         (Pos('mfdMonitor=', key) <> 1) then
+         (Pos('mfdMonitor=', key) <> 1) and
+         (Pos('navDataDir=', key) <> 1) then
       begin
         newLines[n] := lines[i];
         n := n + 1;
@@ -441,7 +573,7 @@ begin
     end;
   end
   else
-    SetArrayLength(newLines, 4);
+    SetArrayLength(newLines, 5);
 
   if FullscreenCheck.Checked then
     fs := 1
@@ -453,12 +585,14 @@ begin
   mfdIdx := MfdCombo.ItemIndex;
   if mfdIdx < 0 then
     mfdIdx := 0;
+  navDir := Trim(NavDataEdit.Text);
 
   newLines[n] := 'pfdFullscreen=' + IntToStr(fs);
   newLines[n + 1] := 'mfdFullscreen=' + IntToStr(fs);
   newLines[n + 2] := 'pfdMonitor=' + IntToStr(pfdIdx);
   newLines[n + 3] := 'mfdMonitor=' + IntToStr(mfdIdx);
-  SetArrayLength(newLines, n + 4);
+  newLines[n + 4] := 'navDataDir=' + navDir;
+  SetArrayLength(newLines, n + 5);
 
   SaveStringsToFile(path, newLines, False);
 end;

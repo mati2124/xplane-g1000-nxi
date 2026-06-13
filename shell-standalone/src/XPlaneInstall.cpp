@@ -44,10 +44,17 @@ std::string installListDir() {
 #endif
 }
 
+std::string g_navDataRoot;
+
 }  // namespace
+
+void setNavDataRoot(const std::string& root) { g_navDataRoot = root; }
 
 std::vector<std::string> readInstallRoots() {
   std::vector<std::string> roots;
+  // An explicit --nav-data-dir wins: it is tried first, then real installs are
+  // appended so a partial copied tree can still fall back to a local install.
+  if (!g_navDataRoot.empty()) roots.push_back(g_navDataRoot);
   const std::string dir = installListDir();
   if (dir.empty()) return roots;
   for (const char* version : {"12", "11"}) {

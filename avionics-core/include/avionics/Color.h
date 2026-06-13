@@ -58,6 +58,11 @@ inline constexpr Color kRollArcBand{0.0f, 0.0f, 0.0f, 0.30f};
 // the Working Title G1000 NXi rose fill (rgba(0,0,0,.3)).
 inline constexpr Color kRoseBackground{0.0f, 0.0f, 0.0f, 0.30f};
 
+// Translucent-black backing for the PFD wind data panel (upper-left of the HSI,
+// below the airspeed tape's GS/TAS boxes). Matches the Working Title G1000 NXi
+// WindOverlay.css panel (rgba(0,0,0,.5), 5 px rounded corners).
+inline constexpr Color kWindBox{0.0f, 0.0f, 0.0f, 0.50f};
+
 // Thin border line on the inner edge of the moving tapes.
 inline constexpr Color kTapeBorder{0.85f, 0.85f, 0.85f, 1.0f};
 

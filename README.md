@@ -78,6 +78,70 @@ PFD. Until X-Plane starts sending data (e.g. it isn't running yet), each
 instrument shows a large red **X** — the same failure annunciation real glass
 cockpits use when a display loses its data source.
 
+#### Running on a separate PC (nav data)
+
+Live instruments need only the network link, so the standalone can run on a
+different PC from X-Plane: point `--xplane-host` at the sim machine (and install
+the plugin there for the [flight-plan](#live-flight-plan-bridge) and
+[command](#command-bridge-cockpit-keys--standalone) bridges).
+
+The **moving map**, however, is drawn from navigation databases read off the
+**local** filesystem — there is no nav-data streaming. By default the shell
+finds them through X-Plane's own install list (`x-plane_install_12.txt`), so a
+PC with no X-Plane install shows a blank map (instruments still work).
+
+To run the full map without X-Plane on that PC, copy the nav-data tree from the
+sim machine and point the shell at it with `--nav-data-dir`:
+
+```bash
+./build/shell-standalone/avionics-standalone \
+  --xplane-host 192.168.1.50 \
+  --nav-data-dir "/data/xplane-navdata"
+```
+
+The directory is treated like an X-Plane install root, so lay the copied files
+out the same way (only the parts you want are needed):
+
+```
+<nav-data-dir>/
+  Custom Data/earth_nav.dat earth_fix.dat earth_awy.dat earth_aptmeta.dat
+  Custom Data/CIFP/<ICAO>.dat          # SID/STAR/approach procedures
+  Custom Data/Airspaces/airspace.txt   # airspace boundaries
+  Global Scenery/Global Airports/Earth nav data/apt.dat   # airport diagrams
+  Global Scenery/.../Earth nav data/<+LAT-LON>.dsf         # terrain (optional)
+```
+
+`Resources/default data/` is accepted in place of `Custom Data/` for the nav,
+fix, CIFP, and airspace files, matching a real install. Anything missing simply
+degrades (e.g. no DSF tiles falls back to procedural terrain). The override is
+tried first and then any real local install, so a partial copy can still fall
+back to an installed X-Plane on the same PC.
+
+The same folder can be set without the command line: the Windows installer's
+**Display Setup** page has a *Navigation data folder (optional)* field, and the
+app also reads a saved `navDataDir=` entry from its settings file (under
+`%APPDATA%\XPlaneAvionics`, `~/Library/Application Support/XPlaneAvionics`, or
+`~/.config/XPlaneAvionics`). The `--nav-data-dir` flag overrides the saved value.
+
+#### Choosing monitors (full screen)
+
+For a two-screen cockpit, run each display full screen on its own monitor with
+`--pfd-monitor N` / `--mfd-monitor N` (0-based indices), or set them on the
+Windows installer's **Display Setup** page. To see which physical screen each
+index is:
+
+```bash
+./build/shell-standalone/avionics-standalone --list-monitors      # prints indices
+./build/shell-standalone/avionics-standalone --identify-monitors   # flashes the
+                                                                   # index on each
+                                                                   # screen
+```
+
+`--identify-monitors` briefly shows each monitor's number large on that screen
+(add `--time SECONDS` to change how long). The installer's Display Setup page
+exposes the same thing as an **Identify monitors** button next to the monitor
+pickers.
+
 #### Standalone keyboard shortcuts
 
 The standalone window has no menu bar; these keys control it (each toggle is
@@ -95,6 +159,32 @@ windows):
 Window positions are always remembered between runs. The installers can also set
 the standalone to start automatically when you sign in (Windows task, macOS
 "Start at Login.command", Linux `--startup`).
+
+#### Updates
+
+On launch the standalone checks the GitHub Releases API in the background and,
+when a newer version exists, prompts to update (skip the check with the
+`AVIONICS_SKIP_UPDATE_CHECK` environment variable). On every platform it then
+downloads that release's installer asset, **verifies it against the release's
+`SHA256SUMS`**, applies it in place, and relaunches — no browser, no URL. If a
+download or checksum check fails it falls back to opening the release page.
+
+- **Windows**: runs `g1000nxi-setup-<ver>.exe` silently (per-user, so no admin
+  prompt), updating only the standalone component and relaunching.
+- **macOS**: mounts the downloaded `.dmg`, replaces the installed
+  `G1000 NXi.app` bundle, clears its quarantine flag (the already-trusted
+  running app authorizes the swap), and reopens it. The prompt is a native
+  dialog.
+- **Linux**: extracts the `.tar.gz` and refreshes the installed files under
+  `~/.local/share/g1000-nxi`, then relaunches. The prompt uses `zenity` or
+  `kdialog` when present; on a headless/minimal desktop it logs the notice
+  instead.
+
+Because these macOS/Linux builds are **unsigned**, macOS self-update relies on
+clearing the quarantine flag rather than Developer ID signing + notarization —
+adding signing later would make it fully Gatekeeper-clean. The in-sim plugin
+only ever shows a notice — it is never updated automatically, since replacing it
+while X-Plane is running is unsafe.
 
 The connection is written against a generic `SimulatorConnection` interface, so
 a future Microsoft Flight Simulator (SimConnect) backend can drop in behind the

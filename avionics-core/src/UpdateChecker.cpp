@@ -33,6 +33,16 @@ std::vector<int> parseVersionParts(const std::string& version) {
   return parts;
 }
 
+bool startsWith(const std::string& s, const std::string& prefix) {
+  return s.size() >= prefix.size() &&
+         s.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool endsWith(const std::string& s, const std::string& suffix) {
+  return s.size() >= suffix.size() &&
+         s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
 // Extract the first JSON string value for `"key":` without pulling in a JSON
 // library (the Releases API response is small and stable).
 std::string jsonStringField(const std::string& json, const char* key) {
@@ -76,6 +86,46 @@ std::string latestReleaseApiUrl() {
          kReleasesRepo + "/releases/latest";
 }
 
+std::string findReleaseAssetUrl(const std::string& jsonBody,
+                                const std::string& namePrefix,
+                                const std::string& nameSuffix) {
+  // Restrict scanning to the "assets" array so the release-level "name" / URL
+  // fields (and the uploader object) are never mistaken for an asset.
+  const std::size_t region = jsonBody.find("\"assets\"");
+  if (region == std::string::npos) return std::string();
+
+  std::size_t pos = region;
+  while (true) {
+    const std::size_t namePos = jsonBody.find("\"name\"", pos);
+    if (namePos == std::string::npos) break;
+    const std::size_t colon = jsonBody.find(':', namePos + 6);
+    if (colon == std::string::npos) break;
+    const std::size_t q1 = jsonBody.find('"', colon + 1);
+    if (q1 == std::string::npos) break;
+    const std::size_t q2 = jsonBody.find('"', q1 + 1);
+    if (q2 == std::string::npos) break;
+    const std::string name = jsonBody.substr(q1 + 1, q2 - q1 - 1);
+    pos = q2 + 1;
+
+    if ((namePrefix.empty() || startsWith(name, namePrefix)) &&
+        (nameSuffix.empty() || endsWith(name, nameSuffix))) {
+      // Within a GitHub asset object "name" precedes "browser_download_url",
+      // so the next occurrence after the name belongs to this asset.
+      const std::size_t urlKey =
+          jsonBody.find("\"browser_download_url\"", q2);
+      if (urlKey == std::string::npos) return std::string();
+      const std::size_t uColon = jsonBody.find(':', urlKey + 22);
+      if (uColon == std::string::npos) return std::string();
+      const std::size_t u1 = jsonBody.find('"', uColon + 1);
+      if (u1 == std::string::npos) return std::string();
+      const std::size_t u2 = jsonBody.find('"', u1 + 1);
+      if (u2 == std::string::npos) return std::string();
+      return jsonBody.substr(u1 + 1, u2 - u1 - 1);
+    }
+  }
+  return std::string();
+}
+
 UpdateInfo parseLatestReleaseJson(const std::string& jsonBody) {
   UpdateInfo info;
   if (jsonBody.empty()) return info;
@@ -87,6 +137,20 @@ UpdateInfo parseLatestReleaseJson(const std::string& jsonBody) {
   info.newerAvailable =
       !info.latestVersion.empty() &&
       isVersionNewer(info.latestVersion, kVersion);
+
+  // Direct-download assets for the in-app updater (the shell falls back to the
+  // release page when these are empty). The installer asset is platform
+  // specific; the checksum file is shared.
+  info.checksumsUrl = findReleaseAssetUrl(jsonBody, "SHA256SUMS", "");
+#if defined(_WIN32)
+  info.installerUrl = findReleaseAssetUrl(jsonBody, "g1000nxi-setup-", ".exe");
+#elif defined(__APPLE__)
+  info.installerUrl =
+      findReleaseAssetUrl(jsonBody, "g1000nxi-installer-macos-", ".dmg");
+#elif defined(__linux__)
+  info.installerUrl =
+      findReleaseAssetUrl(jsonBody, "g1000nxi-installer-linux-", ".tar.gz");
+#endif
   return info;
 }
 
