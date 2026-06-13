@@ -6,9 +6,12 @@
       "type": "shell",
       "command": "cmake",
       "args": ["-S", ".", "-B", "build-standalone"],
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+      "options": { "cwd": "${workspaceFolder}" },
+      "osx": {
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+        }
       },
       "problemMatcher": []
     },
@@ -23,9 +26,12 @@
         "avionics-standalone",
         "-j8"
       ],
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+      "options": { "cwd": "${workspaceFolder}" },
+      "osx": {
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+        }
       },
       "group": "build",
       "dependsOn": ["Configure standalone"],
