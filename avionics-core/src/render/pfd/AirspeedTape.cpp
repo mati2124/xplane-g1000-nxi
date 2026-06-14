@@ -6,44 +6,6 @@
 namespace avionics::pfd {
 namespace {
 
-// Rounds the corners of a closed polygon: each vertex flagged with radius > 0 is
-// replaced by a short quadratic arc tangent to its two edges (the vertex itself
-// is the Bezier control point). Vertices with radius <= 0 stay sharp. Used to
-// give the IAS pointer box its rounded outer corners (NXi Airspeed Indicator).
-std::vector<Point> roundPolygonCorners(const std::vector<Point>& poly,
-                                       const std::vector<float>& radius,
-                                       int segments = 5) {
-  const int n = static_cast<int>(poly.size());
-  std::vector<Point> out;
-  auto length = [](const Point& a, const Point& b) {
-    return std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
-  };
-  for (int i = 0; i < n; ++i) {
-    const Point& prev = poly[(i - 1 + n) % n];
-    const Point& cur = poly[i];
-    const Point& next = poly[(i + 1) % n];
-    float rad = radius[i];
-    const float lenIn = length(prev, cur);
-    const float lenOut = length(cur, next);
-    if (rad <= 0.0f || lenIn < 1e-3f || lenOut < 1e-3f) {
-      out.push_back(cur);
-      continue;
-    }
-    rad = std::min(rad, 0.5f * std::min(lenIn, lenOut));
-    const Point t1{cur.x - (cur.x - prev.x) / lenIn * rad,
-                   cur.y - (cur.y - prev.y) / lenIn * rad};
-    const Point t2{cur.x + (next.x - cur.x) / lenOut * rad,
-                   cur.y + (next.y - cur.y) / lenOut * rad};
-    for (int s = 0; s <= segments; ++s) {
-      const float t = static_cast<float>(s) / static_cast<float>(segments);
-      const float u = 1.0f - t;
-      out.push_back({u * u * t1.x + 2.0f * u * t * cur.x + t * t * t2.x,
-                     u * u * t1.y + 2.0f * u * t * cur.y + t * t * t2.y});
-    }
-  }
-  return out;
-}
-
 void drawAirspeedColorBands(Renderer& r, float tapeX, float tapeW,
                             float stripTop, float stripH, float cy,
                             float value) {
@@ -187,12 +149,10 @@ void drawAirspeedReadout(Renderer& r, float x, float y, float w, float h,
                    colors::kWhite);
 
   // fillText's NVG_ALIGN_MIDDLE centers on the font's ascender/descender
-  // midpoint; digits have no descender ink, so they ride high (more so at this
-  // size). Center on the actual glyph ink instead so the value lines up with the
-  // caret and sits centered in the window.
-  const TextRect digitInk = r.measureTextRect(0.0f, midY, "0", textSize,
-                                              TextAlign::Center);
-  const float textMidY = 2.0f * midY - (digitInk.top + digitInk.bottom) * 0.5f;
+  // midpoint; digits have no descender ink, so they ride high. Nudge the
+  // baseline down so the glyph ink sits centered in the window and lines up
+  // with the caret.
+  const float textMidY = midY + textSize * kCapInkCenterNudge;
 
   // Leading digits, one per cell and centered in it, so the number spreads
   // evenly across the box up to the drum. Leading zeros are suppressed.
@@ -270,7 +230,6 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
 
   // The NXi airspeed tape has a 10 px rounded top-left corner (no top reference-
   // speed box is shown here, so the tape itself carries the round).
-  const float kTapeCornerRadiusWt = 10.0f;
   drawVerticalTape(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
                    d.airspeedKts, kAirspeedViewableKnots, kAirspeedMajorKnots,
                    kAirspeedMinorKnots, kAirspeedMinKnots, false,
@@ -325,10 +284,11 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   // (square, sized to content) and extends left of the tape.
   const float labelSize = fontPx(wt::kInfoLabel, h);
   const float valueSize = fontPx(wt::kInfoValue, h);
-  const float boxH = 28.0f * L.s;
+  const float boxH = kTapeBottomBoxHeightWt * L.s;
   // Top edge of the boxes touches (overlaps a couple px) the bottom of the
   // tape's scroll strip, rather than floating at the instrument bottom.
-  const float boxY = L.stripTop + L.stripH - 3.0f * L.s;
+  const float boxY =
+      L.stripTop + L.stripH - kTapeBottomBoxTapeOverlapWt * L.s;
   const float gap = labelSize * 0.25f;
   const float padX = labelSize * 0.5f;
   const float boxGap = labelSize * 0.45f;

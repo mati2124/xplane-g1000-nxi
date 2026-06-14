@@ -71,12 +71,15 @@ Layout computeLayout(float w, float h) {
   // vertically aligned with the scroll strip (G1000 NXi: Glideslope/Glidepath/
   // VNAV deviation are shown to the left of the Altimeter).
   L.vdiW = X(16.0f);
-  L.vdiX = L.altX - X(10.0f) - L.vdiW;
+  // The deviation column sits flush against the altimeter tape's left edge (real
+  // NXi): its right edge touches the tape with no gap.
+  L.vdiX = L.altX - L.vdiW;
   // Marker-beacon annunciation just above the deviation scale, left of the
-  // altimeter (Pilot's Guide, Marker Beacon Annunciations).
+  // altimeter (Pilot's Guide, Marker Beacon Annunciations). Right edge aligned
+  // to the tape so the whole left column shares one edge.
   L.markerW = X(34.0f);
   L.markerH = Y(34.0f);
-  L.markerX = L.altX - X(6.0f) - L.markerW;
+  L.markerX = L.altX - L.markerW;
   L.markerY = L.stripTop;
 
   // CAS annunciation window. Per the G1000 Pilot's Guide (Fig. A-1) it sits to
@@ -248,11 +251,75 @@ void drawTapeBackground(Renderer& r, float x, float y, float w, float h,
   r.fillRectVerticalGradient(x, y + half, w, half, y + half, y + h, clear, edge);
 }
 
+std::vector<Point> roundPolygonCorners(const std::vector<Point>& poly,
+                                       const std::vector<float>& radius,
+                                       int segments) {
+  const int n = static_cast<int>(poly.size());
+  std::vector<Point> out;
+  auto length = [](const Point& a, const Point& b) {
+    return std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+  };
+  for (int i = 0; i < n; ++i) {
+    const Point& prev = poly[(i - 1 + n) % n];
+    const Point& cur = poly[i];
+    const Point& next = poly[(i + 1) % n];
+    float rad = radius[i];
+    const float lenIn = length(prev, cur);
+    const float lenOut = length(cur, next);
+    if (rad <= 0.0f || lenIn < 1e-3f || lenOut < 1e-3f) {
+      out.push_back(cur);
+      continue;
+    }
+    rad = std::min(rad, 0.5f * std::min(lenIn, lenOut));
+    const Point t1{cur.x - (cur.x - prev.x) / lenIn * rad,
+                   cur.y - (cur.y - prev.y) / lenIn * rad};
+    const Point t2{cur.x + (next.x - cur.x) / lenOut * rad,
+                   cur.y + (next.y - cur.y) / lenOut * rad};
+    for (int s = 0; s <= segments; ++s) {
+      const float t = static_cast<float>(s) / static_cast<float>(segments);
+      const float u = 1.0f - t;
+      out.push_back({u * u * t1.x + 2.0f * u * t * cur.x + t * t * t2.x,
+                     u * u * t1.y + 2.0f * u * t * cur.y + t * t * t2.y});
+    }
+  }
+  return out;
+}
+
+void drawAltitudeNumber(Renderer& r, float anchorX, float midY,
+                        const std::string& text, float size, int smallCount,
+                        float smallScale, TextAlign align, const Color& color) {
+  const int len = static_cast<int>(text.size());
+  if (smallCount <= 0 || len <= smallCount) {
+    r.fillText(anchorX, midY, text, size, align, color);
+    return;
+  }
+  const std::string head = text.substr(0, len - smallCount);
+  const std::string tail = text.substr(len - smallCount);
+  const float smallSize = size * smallScale;
+  // fillText vertically centers on the glyph box, so the smaller tail would
+  // float above the leading digits' baseline. Shift it down by the difference
+  // in ink bottoms (both measured at the same y) to baseline-align the two.
+  const TextRect big = r.measureTextRect(anchorX, midY, head, size, align);
+  const TextRect small = r.measureTextRect(anchorX, midY, tail, smallSize, align);
+  const float tailMidY = midY + (big.bottom - small.bottom);
+  const float headW = r.measureTextWidth(head, size);
+  const float tailW = r.measureTextWidth(tail, smallSize);
+  if (align == TextAlign::Right) {
+    r.fillText(anchorX, tailMidY, tail, smallSize, TextAlign::Right, color);
+    r.fillText(anchorX - tailW, midY, head, size, TextAlign::Right, color);
+  } else {
+    r.fillText(anchorX, midY, head, size, TextAlign::Left, color);
+    r.fillText(anchorX + headW, tailMidY, tail, smallSize, TextAlign::Left,
+               color);
+  }
+}
+
 void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
                       float stripH, float cy, float displayH, float value,
                       float viewableUnits, float majorInterval,
                       float minorInterval, float minValue, bool tapeOnRight,
-                      float topOuterCornerRadius, float tickInset) {
+                      float topOuterCornerRadius, float tickInset,
+                      int labelSmallTrailing) {
   const float pixelsPerUnit = stripH / viewableUnits;
   const float minorLen = tapeW * kTapeMinorTickFraction;
   const float majorLen = tapeW * kTapeMajorTickFraction;
@@ -296,14 +363,16 @@ void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
     if (tapeOnRight) {
       r.strokeLine(tickEdge, y, tickEdge + len, y, lineWidth, colors::kWhite);
       if (major) {
-        r.fillText(tickEdge + majorLen + labelPad, y, formatInt(s), labelSize,
-                   TextAlign::Left, colors::kWhite);
+        drawAltitudeNumber(r, tickEdge + majorLen + labelPad, y, formatInt(s),
+                           labelSize, labelSmallTrailing, kAltTapeTensScale,
+                           TextAlign::Left, colors::kWhite);
       }
     } else {
       r.strokeLine(tickEdge - len, y, tickEdge, y, lineWidth, colors::kWhite);
       if (major) {
-        r.fillText(tickEdge - majorLen - labelPad, y, formatInt(s), labelSize,
-                   TextAlign::Right, colors::kWhite);
+        drawAltitudeNumber(r, tickEdge - majorLen - labelPad, y, formatInt(s),
+                           labelSize, labelSmallTrailing, kAltTapeTensScale,
+                           TextAlign::Right, colors::kWhite);
       }
     }
   }

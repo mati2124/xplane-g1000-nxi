@@ -27,18 +27,55 @@ void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
   Color text = alert.cyanBackground ? colors::kBlack
                : alert.amberText    ? colors::kBandYellow
                                     : colors::kCyan;
-  r.fillRect(boxX, boxY, boxW, boxH, plate);
-  const Point outline[5] = {{boxX, boxY},
-                            {boxX + boxW, boxY},
-                            {boxX + boxW, boxY + boxH},
-                            {boxX, boxY + boxH},
-                            {boxX, boxY}};
-  r.strokePolyline(outline, 5, 2.0f, colors::kCyan);
+  // Only the top-right (outer) corner is rounded, matching the airspeed tape's
+  // rounded outer-top corner and the WT NXi .preselect-box border-top-right-
+  // radius; the inner and bottom corners stay square so the box sits flush
+  // against the attitude window and the tape below it.
+  const float cornerR = fontPx(kTapeCornerRadiusWt, displayH);
+  const std::vector<Point> boxPoly = {{boxX, boxY},
+                                      {boxX + boxW, boxY},
+                                      {boxX + boxW, boxY + boxH},
+                                      {boxX, boxY + boxH}};
+  const std::vector<float> boxRadii = {0.0f, cornerR, 0.0f, 0.0f};
+  std::vector<Point> boxShape = roundPolygonCorners(boxPoly, boxRadii);
+  r.fillPolygon(boxShape.data(), static_cast<int>(boxShape.size()), plate);
+  // The box border is a thin grey (rgb 100,100,100) on the real unit, not cyan
+  // (WT NXi .preselect-box). Only the digits and the bug glyph are cyan.
+  boxShape.push_back(boxShape.front());
+  r.strokePolyline(boxShape.data(), static_cast<int>(boxShape.size()), 1.5f,
+                   colors::kTapeTopBorder);
+
+  // Small altitude-bug glyph at the left of the box (WT NXi .preselect-box
+  // alerter bug), notch facing the readout. It rides on the cyan plate during an
+  // alert, so it flips to black there to stay visible.
+  const Color bugColor = alert.cyanBackground ? colors::kBlack : colors::kCyan;
+  const float bugH = boxH * 0.5f;
+  const float bugW = bugH * 0.5f;
+  const float bugX = boxX + boxW * 0.06f;
+  const float bugTop = boxY + (boxH - bugH) * 0.5f;
+  const auto bp = [&](float nx, float ny) {
+    return Point{bugX + nx * bugW, bugTop + ny * bugH};
+  };
+  const Point boxBug[8] = {bp(0.0f, 0.0f),    bp(1.0f, 0.0f),
+                           bp(1.0f, 0.25f),   bp(0.5f, 0.4375f),
+                           bp(0.5f, 0.5625f), bp(1.0f, 0.75f),
+                           bp(1.0f, 1.0f),    bp(0.0f, 1.0f)};
+  r.fillPolygon(boxBug, 8, bugColor);
+
   if (!alert.hideText) {
-    r.fillText(boxX + boxW * 0.5f, boxY + boxH * 0.5f,
-               selected ? formatInt(selectedFt)
-                        : std::string(kSelectedAltDashes),
-               fontPx(wt::kSelectedAlt, displayH), TextAlign::Center, text);
+    // The value is right-aligned with the last two (tens) digits drawn smaller
+    // than the leading hundreds (WT NXi: 20 px vs 24 px), inset from the right
+    // edge to leave a small margin.
+    const float rightX = boxX + boxW * 0.92f;
+    const float midY = boxY + boxH * 0.5f;
+    if (selected) {
+      drawAltitudeNumber(r, rightX, midY, formatInt(selectedFt),
+                         fontPx(wt::kSelectedAlt, displayH), kAltTrailingDigits,
+                         kAltSelectedTensScale, TextAlign::Right, text);
+    } else {
+      r.fillText(rightX, midY, std::string(kSelectedAltDashes),
+                 fontPx(wt::kSelectedAlt, displayH), TextAlign::Right, text);
+    }
   }
 
   if (!selected) {
@@ -61,16 +98,28 @@ void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
   r.fillPolygon(bug, 5, colors::kCyan);
 }
 
-void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float tapeTop,
-                     float tapeH, float stripBottom, float displayH,
-                     float baroInHg, bool hpa, bool flashOff) {
-  // The BARO box fills the gap between the bottom of the scrolling tape and the
-  // bottom of the altimeter instrument, so it sits flush against the tape (G1000
-  // NXi), mirroring the selected-altitude box at the top. The Baro Transition
-  // Alert flashes the setting (handled by the caller's blink phase via flashOff).
-  const float boxY = stripBottom;
-  const float boxH = (tapeTop + tapeH) - stripBottom;
-  r.fillRect(tapeX, boxY, tapeW, boxH, colors::kReadoutBox);
+void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float stripBottom,
+                     float scale, float displayH, float baroInHg, bool hpa,
+                     bool flashOff) {
+  // The BARO box matches the airspeed column's TAS box: a compact readout whose
+  // top edge slightly overlaps the tape scroll strip, with only the outer bottom
+  // corner rounded. The Baro Transition Alert flashes the setting (handled by
+  // the caller's blink phase via flashOff).
+  const float boxH = kTapeBottomBoxHeightWt * scale;
+  const float boxY = stripBottom - kTapeBottomBoxTapeOverlapWt * scale;
+  // Only the bottom-right (outer) corner is rounded, mirroring the airspeed
+  // column's TAS box (which rounds its bottom-left) so the altimeter column
+  // carries the same smooth outer-bottom edge. The inner and top corners stay
+  // square so the box sits flush against the attitude window and the tape above.
+  const float cornerR = fontPx(kTapeCornerRadiusWt, displayH);
+  const std::vector<Point> boxPoly = {{tapeX, boxY},
+                                      {tapeX + tapeW, boxY},
+                                      {tapeX + tapeW, boxY + boxH},
+                                      {tapeX, boxY + boxH}};
+  const std::vector<float> boxRadii = {0.0f, 0.0f, cornerR, 0.0f};
+  std::vector<Point> boxShape = roundPolygonCorners(boxPoly, boxRadii);
+  r.fillPolygon(boxShape.data(), static_cast<int>(boxShape.size()),
+                colors::kReadoutBox);
   if (flashOff) return;  // blink-off half of the Baro Transition Alert cycle
 
   char buf[16];
@@ -89,7 +138,7 @@ void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float tapeTop,
   const float numW = r.measureTextWidth(buf, numSize);
   const float unitW = r.measureTextWidth(unit, unitSize);
   const float startX = tapeX + tapeW * 0.5f - (numW + gap + unitW) * 0.5f;
-  const float midY = boxY + boxH * 0.5f;
+  const float midY = boxY + boxH * 0.5f + numSize * kCapInkCenterNudge;
   r.fillText(startX, midY, std::string(buf), numSize, TextAlign::Left,
              colors::kCyan);
   r.fillText(startX + numW + gap, midY, unit, unitSize, TextAlign::Left,
@@ -204,7 +253,7 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
   const float leadTop = midY - leadH * 0.5f;
   const float leadBot = midY + leadH * 0.5f;
   const float notchHalfH = leadH * 0.30f;
-  const float notchDepth = h * 0.14f;
+  const float notchDepth = h * kAltReadoutCaretDepthFraction;
 
   const float drumW = w * 0.34f;
   const float drumRight = x + w;
@@ -213,29 +262,35 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
   const float drumSize = textSize * 0.78f;
   const float rowSpacing = h * 0.92f;
 
-  // Black fills: snug leading-digit box, the taller full-height drum, and the
-  // left caret.
-  r.fillRect(x, leadTop, w, leadH, colors::kReadoutBox);
-  r.fillRect(drumX, y, drumW, h, colors::kReadoutBox);
-  const Point caret[3] = {
-      {x, midY - notchHalfH}, {x - notchDepth, midY}, {x, midY + notchHalfH}};
-  r.fillPolygon(caret, 3, colors::kReadoutBox);
-
-  // White outline of the stepped silhouette: caret on the left, taller drum on
-  // the right.
-  const Point outline[12] = {{x, leadTop},
-                             {drumX, leadTop},
-                             {drumX, y},
-                             {drumRight, y},
-                             {drumRight, y + h},
-                             {drumX, y + h},
-                             {drumX, leadBot},
-                             {x, leadBot},
-                             {x, midY + notchHalfH},
-                             {x - notchDepth, midY},
-                             {x, midY - notchHalfH},
-                             {x, leadTop}};
-  r.strokePolyline(outline, 12, 2.0f, colors::kWhite);
+  // Stepped silhouette (clockwise from the leading box's top-left): a snug
+  // leading-digit box on the left carrying the left-pointing caret, and a taller
+  // full-height drum on the right. The four outer corners and the drum corners
+  // are rounded to match the IAS pointer box; the step junctions and caret stay
+  // sharp (NXi rounded window corners).
+  const float cornerR = h * 0.06f;
+  const float drumCornerR = h * 0.04f;
+  const std::vector<Point> silhouette = {
+      {x, leadTop},             // leading box top-left
+      {drumX, leadTop},         // step up to drum top
+      {drumX, y},               // drum top-left
+      {drumRight, y},           // drum top-right
+      {drumRight, y + h},       // drum bottom-right
+      {drumX, y + h},           // drum bottom-left
+      {drumX, leadBot},         // step down from drum
+      {x, leadBot},             // leading box bottom-left
+      {x, midY + notchHalfH},   // caret bottom
+      {x - notchDepth, midY},   // caret tip
+      {x, midY - notchHalfH},   // caret top
+  };
+  const std::vector<float> radii = {cornerR,     0.0f, drumCornerR, drumCornerR,
+                                    drumCornerR, drumCornerR, 0.0f, cornerR,
+                                    0.0f,        0.0f, 0.0f};
+  std::vector<Point> shape = roundPolygonCorners(silhouette, radii);
+  r.fillPolygon(shape.data(), static_cast<int>(shape.size()),
+                colors::kReadoutBox);
+  shape.push_back(shape.front());
+  r.strokePolyline(shape.data(), static_cast<int>(shape.size()), 2.0f,
+                   colors::kWhite);
 
   const long snapped = std::lround(altitudeFt / 20.0f) * 20L;
   const long absSnap = std::labs(snapped);
@@ -245,14 +300,10 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
       (altitudeFt - static_cast<float>(snapped)) / 20.0f;
 
   // fillText's NVG_ALIGN_MIDDLE centers on the font's ascender/descender
-  // midpoint; digits have no descender ink, so they ride high. Center on the
-  // actual glyph ink instead (computed per size) so the value sits centered in
-  // the window and lines up with the caret.
-  auto inkMidY = [&](float size) {
-    const TextRect ink = r.measureTextRect(0.0f, midY, "0", size,
-                                           TextAlign::Center);
-    return 2.0f * midY - (ink.top + ink.bottom) * 0.5f;
-  };
+  // midpoint; digits have no descender ink, so they ride high. Nudge the
+  // baseline down (per size, so the smaller drum digits track too) to center
+  // the glyph ink in the window and line it up with the caret.
+  auto inkMidY = [&](float size) { return midY + size * kCapInkCenterNudge; };
   const float leadMidY = inkMidY(textSize);
   const float drumMidY = inkMidY(drumSize);
 
@@ -289,18 +340,30 @@ void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
     return;
   }
 
+  // The altimeter (tape numbers, readout, selected altitude, baro) renders in
+  // the same semibold face as the airspeed instrument so the two tape columns
+  // share one heavier weight, matching the real G1000 NXi.
+  const FontScope altimeterFont(r, FontFace::DejaVuSemiBold);
+
+  // The selected-altitude box sits flush on top of the tape (covering its top
+  // corner), so unlike the airspeed tape the altimeter keeps a square top.
   drawVerticalTape(r, L.altX, L.altW, L.stripTop, L.stripH, L.attCy, h,
                    d.altitudeFt, kAltitudeViewableFeet, kAltitudeMajorFeet,
-                   kAltitudeMinorFeet, kAltitudeMinFeet, true);
+                   kAltitudeMinorFeet, kAltitudeMinFeet, true,
+                   /*topOuterCornerRadius=*/0.0f, /*tickInset=*/0.0f,
+                   kAltTrailingDigits);
   drawTrendVector(r, L.altX, L.stripTop, L.stripH, L.attCy, h,
                   L.stripH / kAltitudeViewableFeet, d.altitudeTrendFt);
 
   const float readoutH = kAltReadoutHeightWt * L.s;
   const float readoutSize = fontPx(wt::kReadoutAlt, h);
-  const float altOverhang = L.altW * kReadoutOverhangFraction;
+  // Keep the readout inside the tape: shift it right by the caret depth so the
+  // left-pointing caret tip lands exactly on the tape's left edge, with the box
+  // spanning to the tape's right edge.
+  const float caretDepth = readoutH * kAltReadoutCaretDepthFraction;
   drawMinimums(r, L, d, ui, h);
-  drawAltitudeReadout(r, L.altX - altOverhang, L.attCy - readoutH * 0.5f,
-                      L.altW + altOverhang, readoutH, d.altitudeFt, readoutSize);
+  drawAltitudeReadout(r, L.altX + caretDepth, L.attCy - readoutH * 0.5f,
+                      L.altW - caretDepth, readoutH, d.altitudeFt, readoutSize);
   drawSelectedAltitude(r, L.altX, L.altW, L.altTop, L.stripTop, L.stripH,
                        L.attCy, h, d.altitudeFt, d.selectedAltitudeFt,
                        ui.selectedAltStyle());
@@ -313,7 +376,7 @@ void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
 
   const bool hpa = ui.displayToggle(DisplayToggle::BaroHpa);
   const bool flashOff = d.baroTransitionAlert && !ui.blinkOn();
-  drawBaroSetting(r, L.altX, L.altW, L.altTop, L.altH, L.stripTop + L.stripH, h,
+  drawBaroSetting(r, L.altX, L.altW, L.stripTop + L.stripH, L.s, h,
                   d.baroSettingInHg, hpa, flashOff);
 }
 

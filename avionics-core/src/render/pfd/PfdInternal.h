@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "avionics/Color.h"
 #include "avionics/FlightData.h"
@@ -68,9 +69,26 @@ constexpr float kPitch25HalfWt = 14.0f;
 // box 2.4em ~= 50 px, altitude box 70 px).
 constexpr float kTapeMinorTickFraction = 0.12f;
 constexpr float kTapeMajorTickFraction = 0.24f;
+// The NXi moving-tape windows have a 10 px rounded outer corner (WT NXi tape
+// border-radius). The airspeed tape, the altimeter selected-altitude box, and
+// the IAS/altitude readout boxes all derive their rounding from this so the two
+// instrument columns share one corner style.
+constexpr float kTapeCornerRadiusWt = 10.0f;
+// GS/TAS (airspeed) and BARO (altimeter) bottom boxes share one height and sit
+// with their top edge slightly overlapping the tape scroll strip (WT NXi).
+constexpr float kTapeBottomBoxHeightWt = 28.0f;
+constexpr float kTapeBottomBoxTapeOverlapWt = 3.0f;
 constexpr float kAsiReadoutHeightWt = 70.0f;
 constexpr float kAltReadoutHeightWt = 70.0f;
-constexpr float kReadoutOverhangFraction = 0.10f;
+// Depth of the readout box's pointing caret as a fraction of the box height. The
+// altimeter readout is placed so this caret tip lands on the tape's left edge,
+// keeping the whole box inside the tape's confines.
+constexpr float kAltReadoutCaretDepthFraction = 0.14f;
+// fillText's NVG_ALIGN_MIDDLE centers text on the font's ascender/descender
+// midline, which reserves descender space that digits/caps don't use, so a
+// centered all-caps/numeric glyph rides ~0.10 em high. Add this fraction of the
+// font size to a vertically-centered baseline to center the glyph INK in a box.
+constexpr float kCapInkCenterNudge = 0.10f;
 
 // Airspeed tape
 constexpr float kAirspeedViewableKnots = 60.0f;
@@ -104,11 +122,20 @@ extern const int kVSpeedRefCount;
 constexpr float kAltSelectedEpsilonFt = 1.0f;
 constexpr const char* kSelectedAltDashes = "-----";
 
-// Altimeter tape
-constexpr float kAltitudeViewableFeet = 600.0f;
+// Altimeter tape. The viewable window spans +/-400 ft from the centered
+// indicated altitude (800 ft total), matching the WT NXi altitude tape
+// (calculateAbsoluteTapePosition divides the offset by 800).
+constexpr float kAltitudeViewableFeet = 800.0f;
 constexpr float kAltitudeMajorFeet = 100.0f;
 constexpr float kAltitudeMinorFeet = 20.0f;
 constexpr float kAltitudeMinFeet = -2000.0f;
+
+// Garmin altitude readouts render the final two (tens) digits smaller than the
+// leading hundreds digits. The tape labels and the selected-altitude box reuse
+// this for those trailing digits (WT NXi: 38/44 px tape, 20/24 px box).
+constexpr int kAltTrailingDigits = 2;
+constexpr float kAltTapeTensScale = 0.86f;
+constexpr float kAltSelectedTensScale = 0.83f;
 
 // VSI
 constexpr float kVsiMaxFpm = 2000.0f;
@@ -176,14 +203,36 @@ void drawTapeBackground(Renderer& r, float x, float y, float w, float h,
 // `tickInset` shifts the tick marks and their labels inward from the tape's
 // inner edge, leaving room for the airspeed color-band strip so the ticks are
 // not hidden beneath it. 0 anchors ticks at the inner edge (altimeter).
+// `labelSmallTrailing` renders that many trailing digits of each label smaller
+// (G1000 NXi altitude tape: the "00" tens are smaller than the hundreds); 0
+// keeps every digit the same size (airspeed).
 void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
                       float stripH, float cy, float displayH, float value,
                       float viewableUnits, float majorInterval,
                       float minorInterval, float minValue, bool tapeOnRight,
-                      float topOuterCornerRadius = 0.0f, float tickInset = 0.0f);
+                      float topOuterCornerRadius = 0.0f, float tickInset = 0.0f,
+                      int labelSmallTrailing = 0);
+
+// Draws a numeric `text` with its final `smallCount` characters reduced to
+// `smallScale` of `size` and baseline-aligned with the leading characters,
+// matching the G1000 NXi altitude formatting (large hundreds, small tens).
+// `anchorX` is the left edge when `align == Left` and the right edge when
+// `align == Right`. With `smallCount <= 0` it is a plain fillText.
+void drawAltitudeNumber(Renderer& r, float anchorX, float midY,
+                        const std::string& text, float size, int smallCount,
+                        float smallScale, TextAlign align, const Color& color);
 
 void drawTrendVector(Renderer& r, float edgeX, float stripTop, float stripH,
                      float cy, float displayH, float ppu, float trend);
+
+// Rounds the corners of a closed polygon: each vertex flagged with radius > 0 is
+// replaced by a short quadratic arc tangent to its two edges (the vertex is the
+// Bezier control point); radius <= 0 keeps the corner sharp. Shared by the
+// IAS/altitude readout boxes and the selected-altitude box so both instrument
+// columns share one rounded-corner style (NXi).
+std::vector<Point> roundPolygonCorners(const std::vector<Point>& poly,
+                                       const std::vector<float>& radius,
+                                       int segments = 5);
 
 float putText(Renderer& r, float x, float y, const std::string& s, float size,
               const Color& c, float trailingGapFrac = 0.25f);
