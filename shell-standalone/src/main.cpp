@@ -948,10 +948,13 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "hsimap") == 0) {
     // The PFD with the HSI Map layout selected (Map/HSI > Layout > HSI Map):
-    // the moving map fills the compass rose. Matches the real-unit photo.
+    // the moving map fills the compass rose. Topo is turned off first so the
+    // map draws over a black background instead of the topographic shading.
     engine.skipBoot();
     engine.update(seconds);
     engine.pressSoftkey(1);  // "Map/HSI" -> open submenu
+    for (int i = 0; i < 5; ++i) engine.update(1.0 / 60.0);
+    engine.pressSoftkey(4);  // "Topo" -> off (black map background)
     for (int i = 0; i < 5; ++i) engine.update(1.0 / 60.0);
     engine.pressSoftkey(1);  // "Layout" -> open layout radio
     for (int i = 0; i < 5; ++i) engine.update(1.0 / 60.0);

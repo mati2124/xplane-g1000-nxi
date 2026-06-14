@@ -18,11 +18,11 @@ A high-performance glass-cockpit (G1000-style PFD/MFD) for X-Plane, built as
 2. **As a standalone desktop program** — its own window + 60 fps loop, fed by
    X-Plane over the network.
 
-![Primary Flight Display with inset map](docs/screenshots/pfd.png)
+![Primary Flight Display with HSI map](docs/screenshots/pfd.png)
 
 ![Multi-Function Display — Navigation Map page](docs/screenshots/mfd.png)
 
-Screenshots from the standalone shell (PFD with inset map enabled; MFD on the
+Screenshots from the standalone shell (PFD with the HSI map enabled; MFD on the
 Navigation Map page), captured with the offscreen `--screenshot` tool.
 
 ## Why C++ and this structure
