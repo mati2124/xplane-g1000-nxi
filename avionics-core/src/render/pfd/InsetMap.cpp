@@ -38,11 +38,12 @@ void drawHsiMap(Renderer& r, const Layout& L, const MapData& map,
   if (!ui.hsiMapVisible()) return;
 
   // The HSI Map fills a square region centered on the compass rose; the rose is
-  // drawn over it afterward with a translucent backing (G1000 NXi HSI Map).
-  const float half = L.hsiRadius * 1.20f;
+  // drawn over it afterward with a translucent backing (G1000 NXi HSI Map). The
+  // map uses the lower/larger HSI-map rose geometry.
+  const float half = L.hsiMapRadius * 1.20f;
   MapViewConfig config;
-  config.x = L.hsiCx - half;
-  config.y = L.hsiCy - half;
+  config.x = L.hsiMapCx - half;
+  config.y = L.hsiMapCy - half;
   config.w = 2.0f * half;
   config.h = 2.0f * half;
   config.orientation = MapOrientation::TrackUp;
@@ -61,6 +62,18 @@ void drawHsiMap(Renderer& r, const Layout& L, const MapData& map,
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
   MapView::render(r, map, flight, config, displayH);
+  // NanoVG only scissors to rectangles, so the map renders into the square
+  // above. Restore everything outside the compass rose to the background the
+  // map painted over, so the moving map only shows within the circular confines
+  // of the HSI and the synthetic-vision ground shows around it (G1000 NXi). The
+  // whole rose sits below the horizon, where the attitude background is a flat
+  // fill of kGroundHorizon, so masking that color blends seamlessly with the
+  // surrounding ground. The rose backing, ticks, and pointers are drawn over
+  // this afterward in drawHsiSection. outerR reaches past the square's corners
+  // (corner distance = half*sqrt2 ~= 1.70*radius) and the clip keeps the mask
+  // inside the square so it never bleeds onto the attitude window above.
+  drawArcBand(r, L.hsiMapCx, L.hsiMapCy, L.hsiMapRadius, L.hsiMapRadius * 1.8f,
+              0.0f, 360.0f, colors::kGroundHorizon);
   r.restore();
 }
 

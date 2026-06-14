@@ -946,6 +946,18 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(1);  // "Map/HSI" -> open submenu
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "hsimap") == 0) {
+    // The PFD with the HSI Map layout selected (Map/HSI > Layout > HSI Map):
+    // the moving map fills the compass rose. Matches the real-unit photo.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(1);  // "Map/HSI" -> open submenu
+    for (int i = 0; i < 5; ++i) engine.update(1.0 / 60.0);
+    engine.pressSoftkey(1);  // "Layout" -> open layout radio
+    for (int i = 0; i < 5; ++i) engine.update(1.0 / 60.0);
+    engine.pressSoftkey(3);  // "HSI Map"
+    for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "pfdmenu") == 0) {
     // The PFD Setup Menu (MENU bezel key, Pilot's Guide Fig. 1-18): MENU opens
     // the backlighting popout; the cursor opens on 'Auto' next to PFD Display.

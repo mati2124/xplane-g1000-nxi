@@ -314,9 +314,12 @@ void drawWindBox(Renderer& r, const Layout& L, float displayH,
   }
 }
 
-void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
-             const FlightData& d, const SoftkeyController& ui,
-             bool transparentRose) {
+void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
+             float displayH, const FlightData& d, const SoftkeyController& ui,
+             bool hsiMapMode) {
+  const auto X = [&](float px) { return px * L.sx; };
+  const auto Y = [&](float px) { return px * L.sy; };
+
   const float headingDeg = d.headingDeg;
   const float selectedHeadingDeg = d.selectedHeadingDeg;
   const Color navColor =
@@ -324,13 +327,17 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
   const float labelSize = fontPx(wt::kRoseLetter, displayH);
   const float headingBoxW = fontPx(wt::kHeadingBox, displayH) * 2.8f;
   const float headingBoxH = fontPx(wt::kHeadingBox, displayH) * 1.15f;
-  const float headingBoxY = cy - radius - displayH * 0.052f;
+  // HSI Map: heading box sits at container top + 27 px (WT hsi-map-hdg-box).
+  // Rose: just above the compass ring.
+  const float headingBoxY =
+      hsiMapMode ? Y(387.0f + 27.0f)
+                 : cy - radius - displayH * 0.052f;
 
   drawTurnRateIndicator(r, cx, cy, radius, d.turnRateDegPerSec);
 
   // In HSI Map mode the moving map is drawn behind the rose, so the backing is
   // translucent to let the map show through; otherwise it is the solid NXi rose.
-  if (transparentRose) {
+  if (hsiMapMode) {
     Color backing = colors::kRoseBackground;
     backing.a *= 0.45f;
     r.fillCircle(cx, cy, radius, backing);
@@ -360,14 +367,19 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
   }
 
   const float cardLabelR = radius - majorTick - radius * 0.14f;
-  for (int deg = 0; deg < 360; deg += 30) {
-    r.save();
-    r.rotateDegrees(static_cast<float>(deg));
-    const bool cardinal = (deg % 90) == 0;
-    r.fillText(0.0f, -cardLabelR, roseLabel(deg),
-               cardinal ? fontPx(wt::kRoseCardinal, displayH) : labelSize,
-               TextAlign::Center, colors::kWhite);
-    r.restore();
+  {
+    // The compass card direction labels (N/3/6/E ...) are rendered in the
+    // heavier face so they read boldly against the moving map and ticks.
+    const FontScope roseFont(r, FontFace::DejaVuSemiBold);
+    for (int deg = 0; deg < 360; deg += 30) {
+      r.save();
+      r.rotateDegrees(static_cast<float>(deg));
+      const bool cardinal = (deg % 90) == 0;
+      r.fillText(0.0f, -cardLabelR, roseLabel(deg),
+                 cardinal ? fontPx(wt::kRoseCardinal, displayH) : labelSize,
+                 TextAlign::Center, colors::kWhite);
+      r.restore();
+    }
   }
 
   // Bearing pointers are shown only when enabled by the PFD Opt > Bearing 1/2
@@ -428,52 +440,179 @@ void drawHsi(Renderer& r, float cx, float cy, float radius, float displayH,
                  headingBoxH, formatHeading(headingDeg) + "\u00b0",
                  fontPx(wt::kHeadingBox, displayH), NotchSide::None);
 
-  const float annSize = fontPx(wt::kHsiBug, displayH);
-  const float annRowY = headingBoxY + headingBoxH * 0.5f;
-  r.fillText(cx - headingBoxW * 0.62f, annRowY,
-             "HDG " + formatHeading(selectedHeadingDeg) + "\u00b0", annSize,
-             TextAlign::Right, colors::kCyan);
-  // GPS source annunciates Desired Track (DTK); VOR/LOC annunciate Course (CRS).
+  // Selected heading (HDG) and selected course (DTK/CRS) readouts. These are
+  // shared HSI chrome (WT hdgcrs-container, anchored to the #HSI parent): the
+  // same translucent rounded boxes in BOTH the standard rose and HSI Map
+  // layouts, so they never move or restyle when the map is toggled. Each box
+  // pairs a white label with a same-size colored value (cyan for the selected
+  // heading, GPS-magenta / VOR-green for the selected course). The HDG box's
+  // right edge lines up under the GPS source box, and the DTK box's left edge
+  // under the flight-phase box, of the course-deviation band above (the band is
+  // centered on the rose; the same anchors are reused in the rose layout).
   const char* crsLabel = (d.cdiSource == CdiSource::Gps) ? "DTK " : "CRS ";
-  r.fillText(cx + headingBoxW * 0.62f, annRowY,
-             crsLabel + formatHeading(d.courseDeg) + "\u00b0", annSize,
-             TextAlign::Left, navColor);
+  const float refBoxH = Y(30.0f);
+  const float refBoxY = Y(387.0f + 24.0f);
+  const float refBoxR = 5.0f * L.s;
+  const float refBoxMidY = refBoxY + refBoxH * 0.5f;
+  const float refSize = fontPx(wt::kHsiRefValue, displayH);  // label and value
+  const float refPad = X(8.0f);
+
+  const float bandDevW = X(183.0f);
+  const float bandGap = X(2.0f);
+  const float bandDevX = L.hsiMapCx - bandDevW * 0.5f;
+  const float gpsBoxRight = bandDevX - bandGap;
+  const float phaseBoxLeft = bandDevX + bandDevW + bandGap;
+
+  // Draws "<label> <value>" in a content-sized box: white label and colored
+  // value at the same size, anchored either by its right edge (HDG, under the
+  // GPS box) or its left edge (DTK, under the phase box).
+  const auto drawRefBox = [&](float anchorX, bool anchorRight,
+                              const std::string& label, const std::string& value,
+                              const Color& valueColor) {
+    const float labelW = r.measureTextWidth(label, refSize);
+    const float valueW = r.measureTextWidth(value, refSize);
+    const float boxW = labelW + valueW + 2.0f * refPad;
+    const float boxX = anchorRight ? anchorX - boxW : anchorX;
+    r.fillRoundedRect(boxX, refBoxY, boxW, refBoxH, refBoxR, colors::kWindBox);
+    r.fillText(boxX + refPad, refBoxMidY, label, refSize, TextAlign::Left,
+               colors::kWhite);
+    r.fillText(boxX + refPad + labelW, refBoxMidY, value, refSize,
+               TextAlign::Left, valueColor);
+  };
+
+  drawRefBox(gpsBoxRight, true, "HDG ",
+             formatHeading(selectedHeadingDeg) + "\u00b0", colors::kCyan);
+  drawRefBox(phaseBoxLeft, false, crsLabel,
+             formatHeading(d.courseDeg) + "\u00b0", navColor);
 
   // Bearing-pointer source/distance windows are rendered in the bottom info
   // panel (NXi places them there, not inside the rose).
 }
 
-void drawCdiSource(Renderer& r, const Layout& L, const FlightData& d,
-                   const SoftkeyController& ui, float displayH) {
-  // Nav source and (for GPS) the flight phase are annunciated inside the upper
-  // half of the rose, straddling the course pointer (e.g. "GPS   TERM"). When
-  // OBS mode is on, automatic waypoint sequencing is suspended and "OBS" is
-  // annunciated in place of the flight phase (G1000 NXi Pilot's Guide, OBS).
-  const bool obs = ui.displayToggle(DisplayToggle::Obs);
-  const char* text = "GPS";
-  Color c = colors::kMagenta;
-  bool isGps = false;
+// Resolves the active CDI source label and its color (GPS magenta, VOR/LOC
+// green), plus whether it is GPS (which adds a flight-phase annunciation).
+const char* cdiSourceLabel(const FlightData& d, bool obs, Color& color,
+                           bool& isGps) {
+  isGps = false;
   switch (d.cdiSource) {
-    case CdiSource::Gps:  text = obs ? "OBS" : "GPS"; c = colors::kMagenta;     isGps = true; break;
-    case CdiSource::Nav1: text = "VOR1"; c = colors::kActiveGreen; break;
-    case CdiSource::Nav2: text = "VOR2"; c = colors::kActiveGreen; break;
+    case CdiSource::Gps:  color = colors::kMagenta;     isGps = true; return obs ? "OBS" : "GPS";
+    case CdiSource::Nav1: color = colors::kActiveGreen;               return "VOR1";
+    case CdiSource::Nav2: color = colors::kActiveGreen;               return "VOR2";
   }
+  color = colors::kMagenta;
+  return "GPS";
+}
+
+void drawCdiSource(Renderer& r, float cx, float cy, float radius,
+                   const FlightData& d, const SoftkeyController& ui,
+                   float displayH) {
+  // Rose layout: nav source and (for GPS) the flight phase are annunciated
+  // inside the upper half of the rose, straddling the course pointer (e.g.
+  // "GPS   TERM"). When OBS mode is on, automatic waypoint sequencing is
+  // suspended and "OBS"/"SUSP" annunciate (G1000 NXi Pilot's Guide, OBS).
+  const bool obs = ui.displayToggle(DisplayToggle::Obs);
+  Color c;
+  bool isGps;
+  const char* text = cdiSourceLabel(d, obs, c, isGps);
   const float size = fontPx(wt::kHsiSource, displayH);
-  const float y = L.hsiCy - L.hsiRadius * 0.20f;
+  const float y = cy - radius * 0.20f;
   if (isGps) {
-    r.fillText(L.hsiCx - L.hsiRadius * 0.27f, y, text, size, TextAlign::Center,
-               c);
-    // OBS suspends sequencing, so "SUSP" replaces the flight-phase annunciation.
+    r.fillText(cx - radius * 0.27f, y, text, size, TextAlign::Center, c);
     const std::string phase = obs ? "SUSP" : d.gpsFlightPhase;
     if (!phase.empty()) {
       // Per the G1000 Pilot's Guide (Table 2-3), the flight-phase annunciation
       // is normally magenta (amber only under cautionary conditions), matching
       // the GPS source color rather than the cyan used for selected references.
-      r.fillText(L.hsiCx + L.hsiRadius * 0.27f, y, phase, size,
-                 TextAlign::Center, colors::kMagenta);
+      r.fillText(cx + radius * 0.27f, y, phase, size, TextAlign::Center,
+                 colors::kMagenta);
     }
   } else {
-    r.fillText(L.hsiCx, y, text, size, TextAlign::Center, c);
+    r.fillText(cx, y, text, size, TextAlign::Center, c);
+  }
+}
+
+// HSI Map layout: instead of annunciating the source/phase inside the rose, the
+// NXi draws a horizontal course-deviation band straddling the top of the map --
+// a translucent box holding the lateral deviation scale (four dots, a center
+// line, and the TO/FROM deviation triangle), flanked by the GPS/VOR source box
+// on the left and the flight-phase (sensitivity) box on the right. Geometry
+// follows the WT NXi HSIMapCourseDeviation (#HSI origin 277,387; container +7).
+void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
+                          const SoftkeyController& ui, float displayH) {
+  const auto X = [&](float px) { return px * L.sx; };
+  const auto Y = [&](float px) { return px * L.sy; };
+
+  const float bandY = Y(387.0f);
+  const float bandH = Y(23.0f);
+  const float midY = bandY + bandH * 0.5f;
+  const float radius = 5.0f * L.s;
+  const float devW = X(183.0f);
+  const float devX = L.hsiMapCx - devW * 0.5f;  // band centered on the rose
+  const float gap = X(2.0f);
+  const float srcW = X(53.0f);
+  const float phaseW = X(84.0f);
+  const float srcX = devX - gap - srcW;
+  const float phaseX = devX + devW + gap;
+  const float size = fontPx(wt::kHsiBug, displayH);  // 18 px, per WT
+
+  const bool obs = ui.displayToggle(DisplayToggle::Obs);
+  Color srcColor;
+  bool isGps;
+  const char* srcText = cdiSourceLabel(d, obs, srcColor, isGps);
+
+  // Source box (left).
+  r.fillRoundedRect(srcX, bandY, srcW, bandH, radius, colors::kWindBox);
+  r.fillText(srcX + srcW * 0.5f, midY, srcText, size, TextAlign::Center,
+             srcColor);
+
+  // Deviation box (center): translucent fill with a thin gray outline.
+  r.fillRoundedRect(devX, bandY, devW, bandH, radius, colors::kWindBox);
+  r.strokeRoundedRect(devX, bandY, devW, bandH, radius, 1.0f,
+                      colors::kPanelBorder);
+
+  if (d.navSignalValid) {
+    r.save();
+    r.clip(devX, bandY, devW, bandH);
+    // Deviation scale: a center reference line and two dots either side of it.
+    r.strokeLine(devX + X(90.5f), bandY + Y(1.0f), devX + X(90.5f),
+                 bandY + Y(22.0f), 1.0f, colors::kPanelBorder);
+    const float dotR = std::max(1.5f, X(3.0f));
+    const float dotY = bandY + Y(11.0f);
+    const float dotsX[4] = {X(20.0f), X(55.0f), X(126.0f), X(161.0f)};
+    for (float dx : dotsX)
+      r.fillCircle(devX + dx, dotY, dotR, colors::kWhite);
+
+    // TO/FROM deviation triangle (apex up = TO), offset by the cross-track
+    // deviation (full scale = two dots = 90.5 px, per WT setDeviation).
+    const float frac = std::max(-1.0f, std::min(1.0f, d.cdiDeviationDots * 0.5f));
+    const float devCx = devX + X(90.5f) + frac * X(90.5f);
+    const float half = X(9.0f);
+    const float topY = bandY + Y(2.0f);
+    const float botY = bandY + Y(20.0f);
+    const Color devColor = isGps ? colors::kMagenta : colors::kActiveGreen;
+    if (d.cdiToFlag) {
+      const Point to[3] = {
+          {devCx, topY}, {devCx - half, botY}, {devCx + half, botY}};
+      r.fillPolygon(to, 3, devColor);
+    } else {
+      const Point fr[3] = {
+          {devCx, botY}, {devCx - half, topY}, {devCx + half, topY}};
+      r.fillPolygon(fr, 3, devColor);
+    }
+    r.restore();
+  } else {
+    r.fillText(devX + devW * 0.5f, midY, "NO DTK", size, TextAlign::Center,
+               colors::kWhitesmoke);
+  }
+
+  // Flight-phase / sensitivity box (right). For GPS this is the phase (e.g.
+  // TERM/ENR); OBS suspends sequencing, annunciating SUSP. VOR/LOC has none.
+  const std::string phase =
+      isGps ? (obs ? "SUSP" : d.gpsFlightPhase) : std::string();
+  if (!phase.empty()) {
+    r.fillRoundedRect(phaseX, bandY, phaseW, bandH, radius, colors::kWindBox);
+    r.fillText(phaseX + phaseW * 0.5f, midY, phase, size, TextAlign::Center,
+               colors::kMagenta);
   }
 }
 
@@ -481,16 +620,27 @@ void drawCdiSource(Renderer& r, const Layout& L, const FlightData& d,
 
 void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
                     const SoftkeyController& ui, float h, bool hsiMapMode) {
+  // The HSI Map layout uses a larger compass rose set lower on the display (its
+  // bottom runs off behind the info panel); the standard rose layout is fully
+  // visible and centered higher.
+  const float cx = hsiMapMode ? L.hsiMapCx : L.hsiCx;
+  const float cy = hsiMapMode ? L.hsiMapCy : L.hsiCy;
+  const float radius = hsiMapMode ? L.hsiMapRadius : L.hsiRadius;
+
   // AHRS heading failure: the compass rose, CDI, and wind (all referenced to
   // heading) are replaced by a red X with an "HDG" annunciation.
   if (!d.headingValid) {
-    const float rr = L.hsiRadius * 1.12f;
-    drawFailureX(r, L.hsiCx - rr, L.hsiCy - rr, rr * 2.0f, rr * 2.0f, "HDG", h);
+    const float rr = radius * 1.12f;
+    drawFailureX(r, cx - rr, cy - rr, rr * 2.0f, rr * 2.0f, "HDG", h);
     return;
   }
 
-  drawHsi(r, L.hsiCx, L.hsiCy, L.hsiRadius, h, d, ui, hsiMapMode);
-  drawCdiSource(r, L, d, ui, h);
+  drawHsi(r, L, cx, cy, radius, h, d, ui, hsiMapMode);
+  if (hsiMapMode) {
+    drawHsiMapCourseBand(r, L, d, ui, h);
+  } else {
+    drawCdiSource(r, cx, cy, radius, d, ui, h);
+  }
   // Wind panel: upper-left of the HSI, level with the bottom of the airspeed
   // tape (just right of the GS/TAS boxes) and above the inset map, per the real
   // NXi. The format follows the PFD Opt > Wind option.

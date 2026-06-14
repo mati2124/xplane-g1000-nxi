@@ -67,6 +67,14 @@ Layout computeLayout(float w, float h) {
   L.hsiCy = Y(571.0f);
   L.hsiRadius = 153.0f * L.s;
 
+  // HSI Map rose: WT NXi HSIMap places the 350 px compass (tick-ring radius
+  // ~175) with its center at (459, 633) -- lower and larger than the rose-mode
+  // card -- so the bottom third of the ring runs off the display behind the
+  // bottom info panel rather than floating fully visible.
+  L.hsiMapCx = X(459.0f);
+  L.hsiMapCy = Y(633.0f);
+  L.hsiMapRadius = 175.0f * L.s;
+
   // Vertical deviation scale sits in the gap just left of the altimeter tape,
   // vertically aligned with the scroll strip (G1000 NXi: Glideslope/Glidepath/
   // VNAV deviation are shown to the left of the Altimeter).

@@ -41,6 +41,12 @@ struct Layout {
   float casAnnunTop, casAnnunLeft, casAnnunW;
 
   float hsiCx, hsiCy, hsiRadius;
+  // HSI Map layout: the compass rose is larger and sits lower than the standard
+  // rose (WT NXi HSIMap), so its bottom runs off the screen behind the bottom
+  // info panel. The course deviation / source / flight-phase band straddles the
+  // top of this map (WT NXi HSIMapCourseDeviation) instead of the rose-mode
+  // in-rose annunciation.
+  float hsiMapCx, hsiMapCy, hsiMapRadius;
 
   // Vertical deviation indicator (glideslope/glidepath/VNAV) scale just left of
   // the altimeter, and the marker-beacon annunciation box above it.
@@ -161,6 +167,10 @@ constexpr float kHeadingBox = 30.0f;
 // under the rose's numeric labels, matching the G1000 NXi.
 constexpr float kHsiBug = 18.0f;
 constexpr float kHsiSource = 14.0f;
+// The HDG/DTK reference boxes pair a small white label with a larger colored
+// value (WT hdgcrs-container: 14 px "HDG"/"DTK" label, size20 cyan/magenta
+// value).
+constexpr float kHsiRefValue = 20.0f;
 // PFD wind panel (upper-left of the HSI): Option 1/2 numeric values use the
 // generic size18 face and the "KT" unit on Option 3 uses size10 (WT NXi
 // WindOption*.css); the wind direction/speed text on Option 3 reuses kHsiSource.
