@@ -15,6 +15,15 @@ add_library(avionics-core STATIC
   src/ComDecode.cpp
   src/NavDatabase.cpp
   src/SoftkeyController.cpp
+  src/SoftkeyDirectTo.cpp
+  src/SoftkeyNearest.cpp
+  src/SoftkeyAltAlert.cpp
+  src/SoftkeyReferences.cpp
+  src/SoftkeyPfdSetup.cpp
+  src/SoftkeyAlerts.cpp
+  src/SoftkeyTransponder.cpp
+  src/SoftkeyRadio.cpp
+  src/SoftkeyKnobs.cpp
   src/render/BezelKeys.cpp
   src/render/BezelStyle.cpp
   src/render/BootScreen.cpp
@@ -22,6 +31,16 @@ add_library(avionics-core STATIC
   src/render/PrimaryFlightDisplay.cpp
   src/render/mfd/EisStrip.cpp
   src/render/mfd/MfdController.cpp
+  src/render/mfd/MfdControllerChecklist.cpp
+  src/render/mfd/MfdControllerPageMenu.cpp
+  src/render/mfd/MfdControllerMapSettings.cpp
+  src/render/mfd/MfdControllerProcedures.cpp
+  src/render/mfd/MfdControllerFlightPlan.cpp
+  src/render/mfd/MfdControllerDirectTo.cpp
+  src/render/mfd/MfdControllerMapPointer.cpp
+  src/render/mfd/MfdControllerWeatherRadar.cpp
+  src/render/mfd/MfdControllerWpt.cpp
+  src/render/mfd/MfdControllerNrst.cpp
   src/render/mfd/MfdPageSupport.cpp
   src/render/mfd/MfdMapPage.cpp
   src/render/mfd/MfdMapSettingsPage.cpp
@@ -43,6 +62,20 @@ add_library(avionics-core STATIC
   src/render/map/MapProjection.cpp
   src/render/map/MapSymbols.cpp
   src/render/map/MapView.cpp
+  src/render/map/MapPrimitives.cpp
+  src/render/map/MapLandLayer.cpp
+  src/render/map/MapAirwayLayer.cpp
+  src/render/map/MapAirspaceLayer.cpp
+  src/render/map/MapAirportDiagram.cpp
+  src/render/map/MapNavFeatures.cpp
+  src/render/map/MapRoute.cpp
+  src/render/map/MapObstacleLayer.cpp
+  src/render/map/MapTrafficLayer.cpp
+  src/render/map/MapTrackVector.cpp
+  src/render/map/MapFuelRing.cpp
+  src/render/map/MapWindVector.cpp
+  src/render/map/MapOwnship.cpp
+  src/render/map/MapChrome.cpp
   src/render/map/TerrainRaster.cpp
   src/render/map/WeatherRaster.cpp
   src/render/pfd/InsetMap.cpp
@@ -53,7 +86,22 @@ add_library(avionics-core STATIC
   src/render/pfd/VerticalDeviation.cpp
   src/render/pfd/VerticalSpeedIndicator.cpp
   src/render/pfd/Hsi.cpp
+  src/render/pfd/WindIndicator.cpp
+  src/render/pfd/HsiTurnRate.cpp
+  src/render/pfd/HsiCourseNeedle.cpp
+  src/render/pfd/HsiBearingPointer.cpp
+  src/render/pfd/HsiCdiAnnunciation.cpp
   src/render/pfd/Chrome.cpp
+  src/render/pfd/ChromeShared.cpp
+  src/render/pfd/ChromeTopBar.cpp
+  src/render/pfd/ChromeInfoPanel.cpp
+  src/render/pfd/ChromeSoftkeyBar.cpp
+  src/render/pfd/ChromeCasAnnunciations.cpp
+  src/render/pfd/ChromeAlertsWindow.cpp
+  src/render/pfd/ChromeReferencesWindow.cpp
+  src/render/pfd/ChromeNearestWindow.cpp
+  src/render/pfd/ChromePfdSetupWindow.cpp
+  src/render/pfd/ChromeDirectToWindow.cpp
 )
 
 # Generate avionics/Version.h from the release identity cache variables so the

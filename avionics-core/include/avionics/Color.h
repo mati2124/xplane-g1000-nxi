@@ -107,6 +107,9 @@ inline constexpr Color kSoftkeyBackground{0.0f, 0.0f, 0.0f, 1.0f};
 // stays that way until turned off (G1000 Pilot's Guide for the Diamond DA40,
 // "Softkey Function").
 inline constexpr Color kSoftkeySelected{0.62f, 0.62f, 0.62f, 1.0f};
+// The selected/pressed cap is filled with a vertical gradient that is lighter
+// at the top fading to the base gray at the bottom, matching the real GDU.
+inline constexpr Color kSoftkeySelectedTop{0.85f, 0.85f, 0.85f, 1.0f};
 
 // Panel borders (rgb(133,133,133)) and groove separators; muted grey labels.
 inline constexpr Color kPanelBorder{0.522f, 0.522f, 0.522f, 1.0f};  // rgb(133,133,133)

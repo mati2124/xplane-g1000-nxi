@@ -224,6 +224,33 @@ void NanoVgRenderer::strokeRoundedRect(float x, float y, float w, float h,
   nvgStroke(vg_);
 }
 
+void NanoVgRenderer::fillTopRoundedRectVerticalGradient(
+    float x, float y, float w, float h, float radius, const Color& topColor,
+    const Color& bottomColor) {
+  if (!vg_) return;
+  ++stats_.fills;
+  // Only the top corners are rounded (matches the real GDU softkey caps); the
+  // gradient runs top (lighter) to bottom over the box height.
+  NVGpaint paint =
+      nvgLinearGradient(vg_, x, y, x, y + h, toNvg(topColor), toNvg(bottomColor));
+  nvgBeginPath(vg_);
+  nvgRoundedRectVarying(vg_, x, y, w, h, radius, radius, 0.0f, 0.0f);
+  nvgFillPaint(vg_, paint);
+  nvgFill(vg_);
+}
+
+void NanoVgRenderer::strokeTopRoundedRect(float x, float y, float w, float h,
+                                          float radius, float widthPx,
+                                          const Color& c) {
+  if (!vg_) return;
+  ++stats_.strokes;
+  nvgBeginPath(vg_);
+  nvgRoundedRectVarying(vg_, x, y, w, h, radius, radius, 0.0f, 0.0f);
+  nvgStrokeWidth(vg_, widthPx);
+  nvgStrokeColor(vg_, toNvg(c));
+  nvgStroke(vg_);
+}
+
 void NanoVgRenderer::fillPolygon(const Point* points, int count,
                                  const Color& c) {
   if (!vg_ || count < 3) return;

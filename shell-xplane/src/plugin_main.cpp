@@ -716,6 +716,93 @@ struct RadioCommandBinding {
 };
 std::vector<RadioCommandBinding> g_radioBindings;
 
+// ---- GCU 478 control unit (sim/GPS/gcu478/*) --------------------------------
+//
+// The optional Garmin GCU 478 keypad is a separate hardware control unit that
+// drives the same avionics. X-Plane exposes a built-in command set for it,
+// which we intercept just like the GDU keys so a bound GCU (or a hardware
+// replica) works against our glass. The GCU is the FMS / map controller, so
+// its map, pan, cursor and FMS-menu keys are routed to the MFD engine; its
+// COM/NAV tuning and flip-flop go to the PFD engine's radio bar.
+//
+// Not wired (no engine equivalent): the alphanumeric keypad (A-Z/0-9/dot/minus/
+// space/backspace) has no direct character-entry path (FMS entry is by knob
+// scroll); the HDG/CRS/ALT reference knobs; and the XPDR knob (the transponder
+// is entered through softkeys, not a knob).
+
+// GCU keys that map straight onto an existing BezelKey on the MFD engine. These
+// reuse the same CommandBinding / G1000CommandHandler path as the GDU keys
+// (including the CLR press-and-hold "Default Map" behavior).
+const NamedKey kGcuNamedKeys[] = {
+    {"range_up", avionics::BezelKey::RangeUp, "GCU RANGE out (zoom out)"},
+    {"range_down", avionics::BezelKey::RangeDown, "GCU RANGE in (zoom in)"},
+    {"pan_push", avionics::BezelKey::PanPush, "GCU joystick push (pan)"},
+    {"pan_up", avionics::BezelKey::PanUp, "GCU map pan up"},
+    {"pan_down", avionics::BezelKey::PanDown, "GCU map pan down"},
+    {"pan_left", avionics::BezelKey::PanLeft, "GCU map pan left"},
+    {"pan_right", avionics::BezelKey::PanRight, "GCU map pan right"},
+    {"direct", avionics::BezelKey::DirectTo, "GCU Direct-To"},
+    {"menu", avionics::BezelKey::Menu, "GCU MENU"},
+    {"fpl", avionics::BezelKey::Fpl, "GCU FPL"},
+    {"proc", avionics::BezelKey::Proc, "GCU PROC"},
+    {"clr", avionics::BezelKey::Clr, "GCU CLR (hold for Default Map)"},
+    {"ent", avionics::BezelKey::Ent, "GCU ENT"},
+    {"cursor", avionics::BezelKey::FmsPush, "GCU cursor (FMS push)"},
+};
+
+// GCU joystick diagonals (each fires the two cardinal pans it combines).
+const DiagonalKey kGcuDiagonalKeys[] = {
+    {"pan_up_left", avionics::BezelKey::PanUp, avionics::BezelKey::PanLeft,
+     "GCU map pan up-left"},
+    {"pan_up_right", avionics::BezelKey::PanUp, avionics::BezelKey::PanRight,
+     "GCU map pan up-right"},
+    {"pan_down_left", avionics::BezelKey::PanDown, avionics::BezelKey::PanLeft,
+     "GCU map pan down-left"},
+    {"pan_down_right", avionics::BezelKey::PanDown, avionics::BezelKey::PanRight,
+     "GCU map pan down-right"},
+};
+
+// The GCU has a single dual-concentric knob whose target is chosen by the FMS /
+// COM / NAV / XPDR keys (one knob shared across all four functions). We track
+// the selected target and route each inner/outer detent to the matching engine
+// action: FMS turns the MFD's FMS knob; COM/NAV tune the PFD radio bar.
+enum class GcuKnobMode { Fms, Com, Nav, Xpdr };
+GcuKnobMode g_gcuKnobMode = GcuKnobMode::Fms;
+
+enum class GcuKnobAction {
+  OuterUp,
+  OuterDown,
+  InnerUp,
+  InnerDown,
+  ModeFms,
+  ModeCom,
+  ModeNav,
+  ModeXpdr,
+  FlipFlop,
+};
+
+struct GcuKnobCommand {
+  const char* suffix;
+  GcuKnobAction action;
+};
+const GcuKnobCommand kGcuKnobCommands[] = {
+    {"outer_up", GcuKnobAction::OuterUp},
+    {"outer_down", GcuKnobAction::OuterDown},
+    {"inner_up", GcuKnobAction::InnerUp},
+    {"inner_down", GcuKnobAction::InnerDown},
+    {"fms", GcuKnobAction::ModeFms},
+    {"com", GcuKnobAction::ModeCom},
+    {"nav", GcuKnobAction::ModeNav},
+    {"xpdr", GcuKnobAction::ModeXpdr},
+    {"ff", GcuKnobAction::FlipFlop},
+};
+
+struct GcuKnobBinding {
+  GcuKnobAction action;
+  XPLMCommandRef cmd;
+};
+std::vector<GcuKnobBinding> g_gcuKnobBindings;
+
 // One intercepted command: which device engine it targets and what to press.
 struct CommandBinding {
   AvionicsDevice* dev;
@@ -875,9 +962,56 @@ int G1000CommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
   return (forwarded || applied) ? 0 : 1;
 }
 
-// Dispatches a NAV/COM knob command to the PFD engine (which owns the bar) and
-// drains the resulting tune/transfer into the radio datarefs. The COM/NAV
-// outer ring steps whole MHz (coarse); the inner ring steps one channel.
+// Applies one NAV/COM knob action to the PFD engine (which owns the bar) and
+// drains the resulting tune/transfer into the radio datarefs. The COM/NAV outer
+// ring steps whole MHz (coarse); the inner ring steps one channel. No-op when
+// the PFD engine is not up.
+void ApplyRadioAction(RadioAction action) {
+  if (!g_pfd.engine) return;
+  avionics::AvionicsEngine& e = *g_pfd.engine;
+  switch (action) {
+    case RadioAction::ComToggle:
+      e.selectComRadio();
+      break;
+    case RadioAction::ComFlip:
+      e.transferComRadio();
+      break;
+    case RadioAction::ComOuterUp:
+      e.tuneComRadio(+1, /*coarse=*/true);
+      break;
+    case RadioAction::ComOuterDown:
+      e.tuneComRadio(-1, /*coarse=*/true);
+      break;
+    case RadioAction::ComInnerUp:
+      e.tuneComRadio(+1, /*coarse=*/false);
+      break;
+    case RadioAction::ComInnerDown:
+      e.tuneComRadio(-1, /*coarse=*/false);
+      break;
+    case RadioAction::NavToggle:
+      e.selectNavRadio();
+      break;
+    case RadioAction::NavFlip:
+      e.transferNavRadio();
+      break;
+    case RadioAction::NavOuterUp:
+      e.tuneNavRadio(+1, /*coarse=*/true);
+      break;
+    case RadioAction::NavOuterDown:
+      e.tuneNavRadio(-1, /*coarse=*/true);
+      break;
+    case RadioAction::NavInnerUp:
+      e.tuneNavRadio(+1, /*coarse=*/false);
+      break;
+    case RadioAction::NavInnerDown:
+      e.tuneNavRadio(-1, /*coarse=*/false);
+      break;
+  }
+  ApplyQueuedRadioCommands();
+}
+
+// Dispatches a NAV/COM knob command (the GDU's own COM/NAV knobs) to the PFD
+// engine and forwards it to the networked standalone shell.
 int RadioCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
                         void* ref) {
   if (phase != xplm_CommandBegin) return 1;
@@ -887,49 +1021,112 @@ int RadioCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
   const bool forwarded = ForwardRadioEvent(b->action);
   bool applied = false;
   if (g_pfd.engine) {
-    avionics::AvionicsEngine& e = *g_pfd.engine;
-    switch (b->action) {
-      case RadioAction::ComToggle:
-        e.selectComRadio();
-        break;
-      case RadioAction::ComFlip:
-        e.transferComRadio();
-        break;
-      case RadioAction::ComOuterUp:
-        e.tuneComRadio(+1, /*coarse=*/true);
-        break;
-      case RadioAction::ComOuterDown:
-        e.tuneComRadio(-1, /*coarse=*/true);
-        break;
-      case RadioAction::ComInnerUp:
-        e.tuneComRadio(+1, /*coarse=*/false);
-        break;
-      case RadioAction::ComInnerDown:
-        e.tuneComRadio(-1, /*coarse=*/false);
-        break;
-      case RadioAction::NavToggle:
-        e.selectNavRadio();
-        break;
-      case RadioAction::NavFlip:
-        e.transferNavRadio();
-        break;
-      case RadioAction::NavOuterUp:
-        e.tuneNavRadio(+1, /*coarse=*/true);
-        break;
-      case RadioAction::NavOuterDown:
-        e.tuneNavRadio(-1, /*coarse=*/true);
-        break;
-      case RadioAction::NavInnerUp:
-        e.tuneNavRadio(+1, /*coarse=*/false);
-        break;
-      case RadioAction::NavInnerDown:
-        e.tuneNavRadio(-1, /*coarse=*/false);
-        break;
-    }
-    ApplyQueuedRadioCommands();
+    ApplyRadioAction(b->action);
     applied = true;
   }
   return (forwarded || applied) ? 0 : 1;
+}
+
+// Forwards a single bezel-key press for a device to the networked standalone
+// shell (the in-sim engines are driven directly by the caller).
+bool ForwardBezelEvent(AvionicsDevice& dev, avionics::BezelKey key) {
+  if (!g_commandBridge) return false;
+  avionics::cmdbridge::Event ev;
+  ev.device = (&dev == &g_mfd) ? avionics::cmdbridge::Device::Mfd
+                               : avionics::cmdbridge::Device::Pfd;
+  ev.phase = avionics::cmdbridge::Phase::Begin;
+  ev.kind = avionics::cmdbridge::Kind::Bezel;
+  ev.value = static_cast<std::int32_t>(key);
+  return g_commandBridge->sendEvent(ev);
+}
+
+// Routes one GCU dual-knob detent to the engine action chosen by the current
+// knob mode. Returns true if an engine consumed it (so we suppress the stock
+// G1000). The knob is inert in XPDR mode (no transponder tuning knob exists).
+bool ApplyGcuKnobTurn(GcuKnobAction turn) {
+  const bool up =
+      turn == GcuKnobAction::OuterUp || turn == GcuKnobAction::InnerUp;
+  const bool outer =
+      turn == GcuKnobAction::OuterUp || turn == GcuKnobAction::OuterDown;
+  switch (g_gcuKnobMode) {
+    case GcuKnobMode::Fms: {
+      if (!g_mfd.engine) return false;
+      const avionics::BezelKey key =
+          outer ? (up ? avionics::BezelKey::FmsOuterCw
+                      : avionics::BezelKey::FmsOuterCcw)
+                : (up ? avionics::BezelKey::FmsInnerCw
+                      : avionics::BezelKey::FmsInnerCcw);
+      ForwardBezelEvent(g_mfd, key);
+      g_mfd.engine->pressBezelKey(key);
+      PersistStateIfChanged();
+      return true;
+    }
+    case GcuKnobMode::Com:
+    case GcuKnobMode::Nav: {
+      if (!g_pfd.engine) return false;
+      RadioAction action;
+      if (g_gcuKnobMode == GcuKnobMode::Com) {
+        action = outer ? (up ? RadioAction::ComOuterUp : RadioAction::ComOuterDown)
+                       : (up ? RadioAction::ComInnerUp : RadioAction::ComInnerDown);
+      } else {
+        action = outer ? (up ? RadioAction::NavOuterUp : RadioAction::NavOuterDown)
+                       : (up ? RadioAction::NavInnerUp : RadioAction::NavInnerDown);
+      }
+      ForwardRadioEvent(action);
+      ApplyRadioAction(action);
+      return true;
+    }
+    case GcuKnobMode::Xpdr:
+      return false;
+  }
+  return false;
+}
+
+// GCU COM/NAV flip-flop key: flips whichever band the knob is currently
+// assigned to (the key is labeled "COM/NAV flip flop"); defaults to COM when
+// the knob is in FMS or XPDR mode.
+bool ApplyGcuFlip() {
+  if (!g_pfd.engine) return false;
+  const RadioAction action = g_gcuKnobMode == GcuKnobMode::Nav
+                                 ? RadioAction::NavFlip
+                                 : RadioAction::ComFlip;
+  ForwardRadioEvent(action);
+  ApplyRadioAction(action);
+  return true;
+}
+
+// Handles the GCU shared knob, its FMS/COM/NAV/XPDR mode keys, and the
+// flip-flop key. Mode keys only re-target the knob (their effect shows on the
+// next turn), matching the real unit.
+int GcuKnobCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
+                          void* ref) {
+  if (phase != xplm_CommandBegin) return 1;
+  auto* b = static_cast<GcuKnobBinding*>(ref);
+  if (b == nullptr) return 1;
+
+  const bool haveEngines = g_pfd.engine != nullptr || g_mfd.engine != nullptr;
+  switch (b->action) {
+    case GcuKnobAction::ModeFms:
+      g_gcuKnobMode = GcuKnobMode::Fms;
+      return haveEngines ? 0 : 1;
+    case GcuKnobAction::ModeCom:
+      g_gcuKnobMode = GcuKnobMode::Com;
+      return haveEngines ? 0 : 1;
+    case GcuKnobAction::ModeNav:
+      g_gcuKnobMode = GcuKnobMode::Nav;
+      return haveEngines ? 0 : 1;
+    case GcuKnobAction::ModeXpdr:
+      g_gcuKnobMode = GcuKnobMode::Xpdr;
+      return haveEngines ? 0 : 1;
+    case GcuKnobAction::FlipFlop:
+      return ApplyGcuFlip() ? 0 : 1;
+    case GcuKnobAction::OuterUp:
+    case GcuKnobAction::OuterDown:
+    case GcuKnobAction::InnerUp:
+    case GcuKnobAction::InnerDown:
+      return ApplyGcuKnobTurn(b->action) ? 0 : 1;
+  }
+  return 1;
 }
 
 // Stable backing store for the names/descriptions of the commands we create, so
@@ -1041,17 +1238,49 @@ void CreateRadioCommands() {
   }
 }
 
+// Collects the GCU 478 commands. X-Plane already defines the gcu478 command
+// set, so we only intercept (no parallel "created" commands). The map / FMS /
+// cursor keys reuse the CommandBinding path against the MFD engine; the shared
+// knob and its mode keys go to the dedicated GcuKnobCommandHandler. Fills both
+// binding lists; callers must finish collecting before registering handlers so
+// the refcon pointers stay valid.
+void CollectGcuCommands() {
+  char name[96];
+  for (const NamedKey& nk : kGcuNamedKeys) {
+    std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%s", nk.suffix);
+    BindCommand(g_mfd, name, /*isSoftkey=*/false, static_cast<int>(nk.key));
+  }
+  for (const DiagonalKey& dk : kGcuDiagonalKeys) {
+    std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%s", dk.suffix);
+    BindDiagonal(g_mfd, name, dk.a, dk.b);
+  }
+  for (const GcuKnobCommand& kc : kGcuKnobCommands) {
+    std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%s", kc.suffix);
+    XPLMCommandRef cmd = XPLMFindCommand(name);
+    if (cmd == nullptr) continue;
+    g_gcuKnobBindings.push_back({kc.action, cmd});
+  }
+}
+
 void RegisterG1000Commands() {
   g_commandBindings.clear();
+  g_gcuKnobBindings.clear();
   g_customStrings.clear();
-  // 2 devices x (12 softkeys + 18 named + 4 diagonal) stock + the same created.
-  g_commandBindings.reserve(384);
+  // 3 GDU prefixes x (12 softkeys + 18 named + 4 diagonal) stock + the same
+  // created, plus the GCU's intercept-only named/diagonal keys. Over-reserve so
+  // the vector never reallocates while collecting (refcons point into it).
+  g_commandBindings.reserve(448);
   CollectDeviceCommands(g_pfd, "g1000n1", "pfd", "PFD");
   // Copilot-side GDU keys (g1000n2) drive the same pilot PFD engine.
   CollectDeviceCommands(g_pfd, "g1000n2", "pfd_copilot", "PFD (copilot GDU)");
   CollectDeviceCommands(g_mfd, "g1000n3", "mfd", "MFD");
+  // Optional GCU 478 control unit (FMS/map keys to the MFD engine).
+  CollectGcuCommands();
   for (CommandBinding& b : g_commandBindings) {
     XPLMRegisterCommandHandler(b.cmd, &G1000CommandHandler, /*before=*/1, &b);
+  }
+  for (GcuKnobBinding& b : g_gcuKnobBindings) {
+    XPLMRegisterCommandHandler(b.cmd, &GcuKnobCommandHandler, /*before=*/1, &b);
   }
 
   // NAV/COM knobs: intercept both GDUs' stock commands plus our own set, all
@@ -1072,6 +1301,10 @@ void UnregisterG1000Commands() {
     XPLMUnregisterCommandHandler(b.cmd, &G1000CommandHandler, /*before=*/1, &b);
   }
   g_commandBindings.clear();
+  for (GcuKnobBinding& b : g_gcuKnobBindings) {
+    XPLMUnregisterCommandHandler(b.cmd, &GcuKnobCommandHandler, /*before=*/1, &b);
+  }
+  g_gcuKnobBindings.clear();
   for (RadioCommandBinding& b : g_radioBindings) {
     XPLMUnregisterCommandHandler(b.cmd, &RadioCommandHandler, /*before=*/1, &b);
   }

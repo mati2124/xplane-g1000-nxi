@@ -91,6 +91,23 @@ class Renderer {
     strokePolyline(p, 5, widthPx, c);
   }
 
+  // Rect with only the two top corners rounded (bottom corners square). The
+  // real GDU softkey label boxes have this profile, with a vertical gradient
+  // fill that is lighter at the top. The fill variant maps topColor at y to
+  // bottomColor at y + h; backends that don't override these fall back to the
+  // square gradient / square stroke so existing output is unchanged.
+  virtual void fillTopRoundedRectVerticalGradient(float x, float y, float w,
+                                                  float h, float /*radius*/,
+                                                  const Color& topColor,
+                                                  const Color& bottomColor) {
+    fillRectVerticalGradient(x, y, w, h, y, y + h, topColor, bottomColor);
+  }
+  virtual void strokeTopRoundedRect(float x, float y, float w, float h,
+                                    float radius, float widthPx,
+                                    const Color& c) {
+    strokeRoundedRect(x, y, w, h, radius, widthPx, c);
+  }
+
   // Filled, implicitly-closed polygon through `count` points (count >= 3).
   // Used for pointers, chevrons, slip/skid markers, and tape-box notches.
   virtual void fillPolygon(const Point* points, int count, const Color& c) = 0;

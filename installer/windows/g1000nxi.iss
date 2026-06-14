@@ -258,9 +258,12 @@ begin
 end;
 
 // Enumerates the connected monitors with their current resolution and the
-// primary flag, building "Monitor k  -  W x H  (primary)" labels. The list is
-// ordered primary-first so the item index lines up with the app's monitor
-// numbering (the in-app F key / --list-monitors let the user fix a mismatch).
+// primary flag, building "Monitor k  -  W x H  (primary)" labels. Numbering is
+// 0-based and ordered primary-first to match the app's monitor numbering
+// (GLFW indices) -- so the combo's "Monitor N" lines up with the digit the
+// "Identify monitors" overlay (--identify-monitors) flashes and with the value
+// saved to pfdMonitor/mfdMonitor. The in-app F key / --list-monitors let the
+// user fix any residual mismatch.
 procedure EnumerateMonitors();
 var
   dd: TDisplayDeviceW;
@@ -332,9 +335,9 @@ begin
     for j := 0 to MonCount - 1 do
     begin
       if j = 0 then
-        MonLabels[j] := 'Monitor 1  (primary)'
+        MonLabels[j] := 'Monitor 0  (primary)'
       else
-        MonLabels[j] := Format('Monitor %d', [j + 1]);
+        MonLabels[j] := Format('Monitor %d', [j]);
     end;
     Exit;
   end;
@@ -359,7 +362,7 @@ begin
   for j := 0 to n - 1 do
   begin
     src := order[j];
-    item := Format('Monitor %d  -  %s', [j + 1, labels[src]]);
+    item := Format('Monitor %d  -  %s', [j, labels[src]]);
     if prims[src] = 1 then
       item := item + '  (primary)';
     MonLabels[j] := item;

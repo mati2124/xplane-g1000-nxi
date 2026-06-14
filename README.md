@@ -25,33 +25,15 @@ A high-performance glass-cockpit (G1000-style PFD/MFD) for X-Plane, built as
 Screenshots from the standalone shell (PFD with the HSI map enabled; MFD on the
 Navigation Map page), captured with the offscreen `--screenshot` tool.
 
-## Why C++ and this structure
+## Architecture
 
-- Native in-cockpit rendering must run inside X-Plane's graphics context and
-  frame budget, which rules out a JS/TypeScript engine for that target.
-- A 60 fps vector display wants GPU-accelerated drawing (NanoVG over
-  GL/Vulkan/Metal).
-- ~90% of the work (G1000 behavior + gauge drawing) is platform-independent, so
-  it lives once in `avionics-core`; the shells only differ in **where data comes
-  from** and **where pixels go**.
+One C++ engine (`avionics-core`) runs in two shells — an X-Plane plugin and a
+standalone desktop app — wired through `DataSource` (sim data in) and `Renderer`
+(pixels out). Native in-cockpit rendering and a 60 fps vector UI drove the
+choice of C++ with a shared NanoVG backend.
 
-```
-avionics-core/      C++ static lib: logic + rendering, zero platform deps
-  include/avionics/ public headers (DataSource, Renderer, AvionicsEngine, ...)
-  src/              engine + sample PrimaryFlightDisplay + MockDataSource
-render-nanovg/      shared NanoVG Renderer backend used by both shells
-shell-xplane/       XPLM plugin: DatarefDataSource + sim draw callback
-shell-standalone/   GLFW window + 60 fps loop; live X-Plane (UDP RREF)
-```
-
-The two seams that vary per platform are the abstract interfaces
-`avionics::DataSource` (data in) and `avionics::Renderer` (pixels out).
-
-| Concern        | X-Plane shell                          | Standalone shell                                   |
-| -------------- | -------------------------------------- | -------------------------------------------------- |
-| Frame loop     | Sim calls our draw callback            | We own a 60 fps loop                               |
-| Data source    | `XPLMGetDataf` datarefs (in-process)   | X-Plane over UDP (RREF)                            |
-| Renderer       | NanoVG over the sim's GL/Vulkan/Metal  | NanoVG over our GLFW/SDL window                     |
+**Contributors:** module layout, data flow, and "where do I change X?" pointers
+live in **[ARCHITECTURE.md](ARCHITECTURE.md)** (not duplicated here).
 
 ## Build
 
