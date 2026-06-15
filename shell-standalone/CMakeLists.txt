@@ -102,7 +102,7 @@ endif()
 # X-Plane UDP connection needs Winsock on Windows. (The in-app updater hashes
 # downloads with the portable Sha256.cpp, so no platform crypto lib is needed.)
 if(WIN32)
-  target_link_libraries(avionics-standalone PRIVATE ws2_32)
+  target_link_libraries(avionics-standalone PRIVATE ws2_32 shell32)
   # Build as a GUI app so launching the standalone (or its shortcut) does not
   # pop up a console window; it owns its own PFD/MFD windows. Keep the standard
   # main() entry point under the Windows subsystem.

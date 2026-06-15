@@ -80,6 +80,7 @@ if(APPLE)
 elseif(WIN32)
   target_link_libraries(xplane-avionics PRIVATE
     ${XPLANE_SDK_DIR}/Libraries/Win/XPLM_64.lib
+    shell32
   )
 else()
   target_link_libraries(xplane-avionics PRIVATE
