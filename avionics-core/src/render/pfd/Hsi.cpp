@@ -39,7 +39,7 @@ void drawHsiAircraftSymbol(Renderer& r, float cx, float cy, float radius) {
 
 void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
              float displayH, const FlightData& d, const SoftkeyController& ui,
-             bool hsiMapMode) {
+             bool hsiMapMode, bool powerUp) {
   const auto X = [&](float px) { return px * L.sx; };
   const auto Y = [&](float px) { return px * L.sy; };
 
@@ -90,7 +90,9 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
   }
 
   const float cardLabelR = radius - majorTick - radius * 0.14f;
-  {
+  // The compass card direction labels (N/3/6/E ...) are suppressed during PFD
+  // power-up; only the tick ring is shown while the system initializes.
+  if (!powerUp) {
     // The compass card direction labels (N/3/6/E ...) are rendered in the
     // heavier face so they read boldly against the moving map and ticks.
     const FontScope roseFont(r, FontFace::DejaVuSemiBold);
@@ -158,10 +160,17 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
     r.fillPolygon(lubber, 3, colors::kWhite);
   }
 
-  // The heading box shows the degree symbol, e.g. "360°" at north (NXi).
-  drawReadoutBox(r, cx - headingBoxW * 0.5f, headingBoxY, headingBoxW,
-                 headingBoxH, formatHeading(headingDeg) + "\u00b0",
-                 fontPx(wt::kHeadingBox, displayH), NotchSide::None);
+  // The heading box shows the degree symbol, e.g. "360°" at north (NXi). During
+  // PFD power-up the heading source is failed, so the box is drawn as a red-X'd
+  // failure window in its place (NXi Maintenance Manual Fig 9-2).
+  if (powerUp) {
+    drawFailureX(r, cx - headingBoxW * 0.5f, headingBoxY, headingBoxW,
+                 headingBoxH, "", displayH);
+  } else {
+    drawReadoutBox(r, cx - headingBoxW * 0.5f, headingBoxY, headingBoxW,
+                   headingBoxH, formatHeading(headingDeg) + "\u00b0",
+                   fontPx(wt::kHeadingBox, displayH), NotchSide::None);
+  }
 
   // Selected heading (HDG) and selected course (DTK/CRS) readouts. These are
   // shared HSI chrome (WT hdgcrs-container, anchored to the #HSI parent): the
@@ -203,10 +212,12 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
                TextAlign::Left, valueColor);
   };
 
-  drawRefBox(gpsBoxRight, true, "HDG ",
-             formatHeading(selectedHeadingDeg) + "\u00b0", colors::kCyan);
-  drawRefBox(phaseBoxLeft, false, crsLabel,
-             formatHeading(d.courseDeg) + "\u00b0", navColor);
+  if (!powerUp) {
+    drawRefBox(gpsBoxRight, true, "HDG ",
+               formatHeading(selectedHeadingDeg) + "\u00b0", colors::kCyan);
+    drawRefBox(phaseBoxLeft, false, crsLabel,
+               formatHeading(d.courseDeg) + "\u00b0", navColor);
+  }
 
   // Bearing-pointer source/distance windows are rendered in the bottom info
   // panel (NXi places them there, not inside the rose).
@@ -215,7 +226,8 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
 }  // namespace
 
 void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
-                    const SoftkeyController& ui, float h, bool hsiMapMode) {
+                    const SoftkeyController& ui, float h, bool hsiMapMode,
+                    bool powerUp) {
   // The HSI Map layout uses a larger compass rose set lower on the display (its
   // bottom runs off behind the info panel); the standard rose layout is fully
   // visible and centered higher.
@@ -231,7 +243,7 @@ void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
     return;
   }
 
-  drawHsi(r, L, cx, cy, radius, h, d, ui, hsiMapMode);
+  drawHsi(r, L, cx, cy, radius, h, d, ui, hsiMapMode, powerUp);
   if (hsiMapMode) {
     drawHsiMapCourseBand(r, L, d, ui, h);
   } else {
@@ -239,8 +251,10 @@ void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
   }
   // Wind panel: upper-left of the HSI, level with the bottom of the airspeed
   // tape (just right of the GS/TAS boxes) and above the inset map, per the real
-  // NXi. The format follows the PFD Opt > Wind option.
-  drawWindBox(r, L, h, d, ui.windOption());
+  // NXi. The format follows the PFD Opt > Wind option. Hidden during power-up.
+  if (!powerUp) {
+    drawWindBox(r, L, h, d, ui.windOption());
+  }
 }
 
 }  // namespace avionics::pfd

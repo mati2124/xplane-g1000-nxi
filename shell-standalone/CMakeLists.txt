@@ -44,7 +44,6 @@ set(STANDALONE_SOURCES
   src/ProcedureStore.cpp
   src/LandDataStore.cpp
   src/ObstacleStore.cpp
-  src/ChecklistStore.cpp
   src/XPlaneInstall.cpp
   src/DsfTerrainStore.cpp
   src/SimBriefClient.cpp
@@ -86,11 +85,6 @@ target_compile_features(avionics-standalone PRIVATE cxx_std_17)
 # too since UpdateNotify lives here).
 target_compile_definitions(avionics-standalone PRIVATE AVIONICS_HAS_CURL)
 
-# Bundled sample checklist file, used by the MFD Checklist page group when no
-# --checklist is given (so the page is populated during development).
-target_compile_definitions(avionics-standalone PRIVATE
-  AVIONICS_DEFAULT_CHECKLIST="${CMAKE_CURRENT_SOURCE_DIR}/assets/checklists.txt")
-
 target_compile_definitions(avionics-standalone PRIVATE
   AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/../avionics-core/assets/eis/c172s.eis")
 
@@ -128,5 +122,4 @@ install(TARGETS avionics-standalone
   RUNTIME DESTINATION . COMPONENT standalone
   BUNDLE DESTINATION . COMPONENT standalone)
 avionics_install_shared_assets("assets" standalone)
-install(FILES ${AVIONICS_CHECKLIST_FILE} DESTINATION assets COMPONENT standalone)
 install(FILES ${AVIONICS_LAND_FILE} DESTINATION assets COMPONENT standalone OPTIONAL)

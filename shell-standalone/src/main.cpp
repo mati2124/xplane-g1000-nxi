@@ -18,6 +18,12 @@
 //   --demo                    boot straight into the built-in demo feed (the
 //                             same motion-only mock Ctrl+Shift+D toggles), so
 //                             the displays show believable motion with no sim
+//   --debug-menu              install the dev-only macOS "Debug" menu (switch
+//                             the data source between X-Plane and the demo
+//                             ground/flying/turbulence states, and flip the
+//                             demo Master/Avionics power switches). The choices
+//                             are remembered across runs. Passed by the IDE
+//                             launch configs; never by the installer
 //   --fullscreen              run both displays borderless full screen, each
 //                             taking over a monitor (the 4:3 image letterboxed)
 //   --no-fullscreen           force windowed, overriding the saved preference
@@ -91,11 +97,12 @@
 #include <vector>
 
 #include "AppSettings.h"
-#include "ChecklistStore.h"
+#include "avionics/ChecklistStore.h"
 #include "CommandBridgeClient.h"
 #include "avionics/EisStore.h"
 #include "DsfTerrainStore.h"
 #include "FmsPlanStore.h"
+#include "MacMenu.h"
 #include "NavData.h"
 #include "ObstacleStore.h"
 #include "ProcedureStore.h"
@@ -326,6 +333,10 @@ struct AppState {
   avionics::MockDataSource* demoSource = nullptr;
   avionics::DataSource* activeSource = nullptr;
   bool demoMode = false;
+  // Whether the dev-only Debug menu is installed (launched with --debug-menu).
+  // When set, the data-source / demo-state / power selections are restored from
+  // and persisted to the settings file; the installed app leaves this false.
+  bool debugMenuEnabled = false;
   // Whether the hardware bezel strips are drawn (and the windows sized to
   // include them). Mirrors settings.showBezel; toggled with the B key.
   bool showBezel = true;
@@ -465,31 +476,107 @@ bool AwaitingBootAck(const AppState& app) {
          (app.mfdEngine != nullptr && app.mfdEngine->awaitingPowerUpAck());
 }
 
-// Swaps both displays between the live X-Plane feed and the built-in demo
-// (mock) feed. Bound to Ctrl+Shift+D (an awkward chord so it isn't hit by
-// accident). Both engines take the new source and skip the power-up animation
-// so the switch is immediate rather than re-running the boot sequence.
-void ToggleDemoSource(AppState& app) {
+// Drives both displays with the feed (and, for the demo feed, the flight state)
+// named by `sel`, skipping the power-up animation so the switch is immediate.
+// When `persist` is set the choice is written to the settings file so the next
+// launch restores it; the macOS Debug menu checkmarks are kept in sync either
+// way. This is the single entry point for every data-source change (the Debug
+// menu, the Ctrl+Shift+D toggle, and startup restore all route through it).
+void ApplyDebugDataSource(AppState& app, avionics::DebugDataSource sel,
+                          bool persist) {
   if (app.xplane == nullptr || app.demoSource == nullptr) return;
-  app.demoMode = !app.demoMode;
+  const bool demo = sel != avionics::DebugDataSource::XPlane;
+  app.demoMode = demo;
+  if (demo) {
+    app.demoSource->setGroundMode(sel == avionics::DebugDataSource::DemoGround);
+    app.demoSource->setTurbulenceEnabled(
+        sel == avionics::DebugDataSource::DemoTurbulence);
+  }
   avionics::DataSource* next =
-      app.demoMode ? static_cast<avionics::DataSource*>(app.demoSource)
-                   : static_cast<avionics::DataSource*>(app.xplane);
+      demo ? static_cast<avionics::DataSource*>(app.demoSource)
+           : static_cast<avionics::DataSource*>(app.xplane);
   const std::string label =
-      app.demoMode ? kLabelDemo : std::string(app.xplane->simulatorName());
+      demo ? kLabelDemo : std::string(app.xplane->simulatorName());
   app.activeSource = next;
   if (app.pfdEngine != nullptr) {
     app.pfdEngine->setDataSource(*next, label);
     app.pfdEngine->skipBoot();
     // Persistent CAS banner on the PFD while the demo feed drives the displays.
-    app.pfdEngine->softkeyController().setDemoBanner(app.demoMode);
+    app.pfdEngine->softkeyController().setDemoBanner(demo);
   }
   if (app.mfdEngine != nullptr) {
     app.mfdEngine->setDataSource(*next, label);
     app.mfdEngine->skipBoot();
   }
+  app.settings.debugDataSource = sel;
+  if (persist) avionics::SaveAppSettings(app.settings);
+#if defined(__APPLE__)
+  avionics::SyncDebugMenuSource(sel);
+#endif
+}
+
+// Swaps both displays between the live X-Plane feed and the built-in demo
+// (mock) feed. Bound to Ctrl+Shift+D (an awkward chord so it isn't hit by
+// accident). Returns to whichever demo flight state was last selected (calm
+// flying by default), so the chord pairs with the Debug menu's richer states.
+void ToggleDemoSource(AppState& app) {
+  if (app.xplane == nullptr || app.demoSource == nullptr) return;
+  avionics::DebugDataSource sel;
+  if (app.demoMode) {
+    sel = avionics::DebugDataSource::XPlane;
+  } else {
+    sel = app.settings.debugDataSource == avionics::DebugDataSource::XPlane
+              ? avionics::DebugDataSource::DemoFlying
+              : app.settings.debugDataSource;
+  }
+  ApplyDebugDataSource(app, sel, /*persist=*/app.debugMenuEnabled);
   std::fprintf(stderr, "Data source: %s\n",
                app.demoMode ? "DEMO (built-in mock feed)" : "X-PLANE (live)");
+}
+
+// Applies the demo feed's Master / Avionics power switches (master gates the
+// PFD; avionics additionally gates the MFD) and, when `persist` is set, saves
+// the choice. The live X-Plane feed takes its power from the sim datarefs, so
+// these toggles only affect the demo feed.
+void ApplyDebugPower(AppState& app, bool masterOn, bool avionicsOn,
+                     bool persist) {
+  if (app.demoSource != nullptr) {
+    app.demoSource->setMasterPowerOn(masterOn);
+    app.demoSource->setAvionicsPowerOn(avionicsOn);
+  }
+  app.settings.demoMasterPowerOn = masterOn;
+  app.settings.demoAvionicsPowerOn = avionicsOn;
+  if (persist) avionics::SaveAppSettings(app.settings);
+#if defined(__APPLE__)
+  avionics::SyncDebugMenuPower(masterOn, avionicsOn);
+#endif
+}
+
+// Enables or disables the demo feed's cycling CAS annunciations (the periodic
+// OIL PRESSURE / LOW VOLTS / FUEL LOW etc. alerts) and, when `persist` is set,
+// saves the choice. The live X-Plane feed's CAS comes from the sim datarefs, so
+// this only affects the demo feed.
+void ApplyDebugCas(AppState& app, bool enabled, bool persist) {
+  if (app.demoSource != nullptr) {
+    app.demoSource->setCasMessagesEnabled(enabled);
+  }
+  app.settings.demoCasMessagesOn = enabled;
+  if (persist) avionics::SaveAppSettings(app.settings);
+#if defined(__APPLE__)
+  avionics::SyncDebugMenuCas(enabled);
+#endif
+}
+
+// Debug-menu callbacks (the menu fires these on the main thread).
+void OnDebugSelectSource(void* context, avionics::DebugDataSource sel) {
+  ApplyDebugDataSource(*static_cast<AppState*>(context), sel, /*persist=*/true);
+}
+void OnDebugTogglePower(void* context, bool masterOn, bool avionicsOn) {
+  ApplyDebugPower(*static_cast<AppState*>(context), masterOn, avionicsOn,
+                  /*persist=*/true);
+}
+void OnDebugToggleCas(void* context, bool enabled) {
+  ApplyDebugCas(*static_cast<AppState*>(context), enabled, /*persist=*/true);
 }
 
 void ApplyRadioBridgeAction(avionics::AvionicsEngine& engine,
@@ -689,7 +776,8 @@ inline void RenderSuiteSettled(avionics::NanoVgRenderer& renderer,
 // When `fmsPlan` is non-null the mock flies that .fms route (same selector
 // rules as the interactive --fms-plan flag) instead of its built-in demo route.
 int RunScreenshot(const char* path, double seconds, const char* state,
-                  const char* fmsPlan, bool showBezel) {
+                  const char* fmsPlan, bool showBezel,
+                  const char* eisSelector, const char* checklistSelector) {
   glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
@@ -732,8 +820,9 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   avionics::ShellNavMapData navMapData(navData, airspace, airways, aptData,
                                        landData, procedures, &obstacles);
   avionics::DsfTerrainStore terrain;
-  avionics::ChecklistStore checklists;
-  avionics::EisStore eisStore;
+  avionics::ChecklistStore checklists(checklistSelector ? checklistSelector
+                                                        : "");
+  avionics::EisStore eisStore(eisSelector ? eisSelector : "");
   dataSource.setNavFeatureSource(&navMapData);
   dataSource.setTerrainSource(&terrain);
   dataSource.setChecklistSource(&checklists);
@@ -780,7 +869,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   //   failed - the connection-lost display (link down: instruments red-X'd,
   //            chrome readouts dashed)
   if (state != nullptr && std::strcmp(state, "bootlogo") == 0) {
-    // The initial Garmin logo splash (phase 1 of power-up).
+    // The initial Garmin logo splash (phase 1 of power-up), fully faded up.
     renderer.beginFrame(fbWidth, fbHeight, 1.0f);
     avionics::BootScreen::render(
         renderer, avionics::BootScreen::Target::Mfd,
@@ -788,6 +877,16 @@ int RunScreenshot(const char* path, double seconds, const char* state,
         dataSource.mapSnapshot(), engine.softkeyController(),
         engine.mfdController(), dataSource.mapSnapshot().navDatabase, false,
         1.0f, fbWidth, fbHeight);
+    renderer.endFrame();
+  } else if (state != nullptr && std::strcmp(state, "bootlogofade") == 0) {
+    // Mid fade-up: the Garmin logo at ~40% opacity as it rises from black.
+    renderer.beginFrame(fbWidth, fbHeight, 1.0f);
+    avionics::BootScreen::render(
+        renderer, avionics::BootScreen::Target::Mfd,
+        avionics::BootScreen::Phase::Logo, dataSource.snapshot(),
+        dataSource.mapSnapshot(), engine.softkeyController(),
+        engine.mfdController(), dataSource.mapSnapshot().navDatabase, false,
+        0.4f, fbWidth, fbHeight);
     renderer.endFrame();
   } else if (state != nullptr && std::strcmp(state, "bootfade") == 0) {
     // Mid cross-fade: MFD Power-up Page at ~50% opacity (1s into the 2s fade).
@@ -1210,6 +1309,14 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     // The PFD parked on the ground at KFMY runway 31 with the engine idling
     // (mock on-ground mode): stationary, wings level, at field elevation.
     dataSource.setGroundMode(true);
+    engine.skipBoot();
+    engine.update(seconds);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "reversionary") == 0) {
+    // Display-backup (reversionary) mode: the avionics master is off so the MFD
+    // is dark, and the PFD adds the EIS engine strip down its left edge with the
+    // inset map relocated to the bottom-right (Pilot's Guide Fig. 1-5).
+    dataSource.setAvionicsPowerOn(false);
     engine.skipBoot();
     engine.update(seconds);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
@@ -2035,7 +2142,10 @@ int main(int argc, char** argv) {
     const char* state = FlagValue(argc, argv, "--state");
     const char* fmsPlan = FlagValue(argc, argv, "--fms-plan");
     const bool showBezel = !HasFlag(argc, argv, "--no-bezel");
-    const int rc = RunScreenshot(shot, seconds, state, fmsPlan, showBezel);
+    const char* eisSel = FlagValue(argc, argv, "--eis");
+    const char* checklistSel = FlagValue(argc, argv, "--checklist");
+    const int rc = RunScreenshot(shot, seconds, state, fmsPlan, showBezel,
+                                 eisSel, checklistSel);
     // Skip the global static teardown, which aborts on macOS; the capture is
     // already flushed to disk. Matches the other short-lived utility modes.
     QuitUtilityMode(rc);
@@ -2072,6 +2182,10 @@ int main(int argc, char** argv) {
   bool wantPfd = !HasFlag(argc, argv, "--no-pfd");
   if (!wantMfd && !wantPfd) wantPfd = true;
   const bool demoStart = HasFlag(argc, argv, "--demo");
+  // The dev-only Debug menu (data-source / demo-state / power switches) is
+  // installed only with --debug-menu, which the IDE launch configs/tasks pass
+  // but the installer never does -- so it never appears in a shipped build.
+  const bool debugMenu = HasFlag(argc, argv, "--debug-menu");
 
   // Persisted preferences (loaded up front) drive the display unless the
   // command line overrides them.
@@ -2361,6 +2475,7 @@ int main(int argc, char** argv) {
   app.xplane = &xplane;
   app.demoSource = &demoSource;
   app.activeSource = &xplane;
+  app.debugMenuEnabled = debugMenu;
   app.showBezel = showBezel;
   app.settings = savedSettings;
   app.settings.alwaysOnTop = alwaysOnTop;
@@ -2412,9 +2527,36 @@ int main(int argc, char** argv) {
                "Shortcuts: B = bezel, T = title bar, P = always-on-top, "
                "F = full screen, Ctrl+Shift+D = demo feed, Esc = quit.\n");
 
-  // --demo boots straight into the built-in demo feed, reusing the same path as
-  // the Ctrl+Shift+D toggle (which flips demoMode from its false default on).
-  if (demoStart) ToggleDemoSource(app);
+  // Bring up the initial data source. With the Debug menu enabled the last-used
+  // feed, demo flight state, and demo power switches are restored from settings
+  // (--demo still forces the demo feed, defaulting to flying), and the macOS
+  // Debug menu is installed so the choices can be changed live and remembered.
+  // Without the menu (the installer, or a bare dev run), --demo just boots into
+  // the demo feed as before.
+  if (debugMenu) {
+    ApplyDebugPower(app, app.settings.demoMasterPowerOn,
+                    app.settings.demoAvionicsPowerOn, /*persist=*/false);
+    ApplyDebugCas(app, app.settings.demoCasMessagesOn, /*persist=*/false);
+    avionics::DebugDataSource initialSel = app.settings.debugDataSource;
+    if (demoStart && initialSel == avionics::DebugDataSource::XPlane) {
+      initialSel = avionics::DebugDataSource::DemoFlying;
+    }
+    ApplyDebugDataSource(app, initialSel, /*persist=*/false);
+#if defined(__APPLE__)
+    avionics::DebugMenuConfig menuCfg;
+    menuCfg.source = initialSel;
+    menuCfg.masterPowerOn = app.settings.demoMasterPowerOn;
+    menuCfg.avionicsPowerOn = app.settings.demoAvionicsPowerOn;
+    menuCfg.casMessagesOn = app.settings.demoCasMessagesOn;
+    menuCfg.onSource = OnDebugSelectSource;
+    menuCfg.onPower = OnDebugTogglePower;
+    menuCfg.onCas = OnDebugToggleCas;
+    menuCfg.context = &app;
+    avionics::InstallDebugMenu(menuCfg);
+#endif
+  } else if (demoStart) {
+    ToggleDemoSource(app);
+  }
 
   // Optional per-display render profiler (AVIONICS_PROFILE=1): isolates the GPU
   // cost of each window's draw with a glFinish so we can see whether the PFD or

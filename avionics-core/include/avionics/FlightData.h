@@ -60,12 +60,32 @@ struct FlightData {
   bool altitudeValid = true;       // ADC
   bool verticalSpeedValid = true;  // ADC
 
+  // Per-radio and transponder health, each backed by its own X-Plane failure
+  // dataref so an individual box can fail on its own (e.g. COM2 fails while
+  // COM1 keeps working). A failed radio row draws a red X over its frequency
+  // cell; a failed transponder shows "XPDR FAIL" in the bottom info panel.
+  bool nav1Valid = true;
+  bool nav2Valid = true;
+  bool com1Valid = true;
+  bool com2Valid = true;
+  bool transponderValid = true;
+
   // Whole-feed health, distinct from the per-sensor flags above. The engine
   // clears this (alongside every sensor flag) when the data link stops
   // delivering fresh data, so the non-sensor readouts in the top NAV/COM bar
   // and bottom info panel (radios, FMA, transponder, OAT, clock) blank out /
   // show amber dashes instead of stale values, matching the red-X'd gauges.
   bool dataLinkValid = true;
+
+  // GDU electrical power, mirroring the real Cessna Nav III G1000 power-up: the
+  // PFD lives on the battery/master bus and lights up when the master switch is
+  // on; the MFD is downstream on the avionics bus and also needs the avionics
+  // master. With no power the GDU screen is simply black, and switching it on
+  // runs the Garmin power-up self-test. Both default true so synthetic /
+  // network feeds that don't model the switches (mock, standalone) keep the
+  // glass lit.
+  bool masterPowerOn = true;
+  bool avionicsPowerOn = true;
 
   // Crew Alerting System (CAS) conditions, sourced from X-Plane's annunciators.
   // Each is true while its annunciator is lit; SoftkeyController turns the set

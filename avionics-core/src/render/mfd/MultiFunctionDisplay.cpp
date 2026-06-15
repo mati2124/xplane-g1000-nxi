@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "avionics/Color.h"
+#include "avionics/render/SoftkeyLabelBar.h"
 #include "render/mfd/EisStrip.h"
 #include "render/mfd/MfdPages.h"
 #include "render/mfd/MfdStyle.h"
@@ -22,10 +23,6 @@ using mfd::mfdFontPx;
 // fonts on the 768 canvas) -- on the real unit both GDUs share the same bar.
 constexpr float kTopBarHeightPx = 48.0f;
 constexpr float kBottomBarHeightPx = 35.0f;
-
-// EIS engine strip width as a fraction of the screen, matching the dedicated
-// engine column on the left edge of the real MFD.
-constexpr float kEisWidthFrac = 150.0f / 1024.0f;
 
 constexpr float kDataFieldLabelWt = 15.0f;
 constexpr float kDataFieldValueWt = 20.0f;
@@ -326,32 +323,16 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
 void drawSoftkeyBar(Renderer& r, float w, float h, float barH,
                     const MfdController& ui) {
   const float top = h - barH;
-  r.fillRect(0.0f, top, w, barH, colors::kSoftkeyBackground);
+  render::drawSoftkeyBarBackground(r, w, top, barH,
+                                   MfdController::kSoftkeyCount);
 
   const float cellW = w / static_cast<float>(MfdController::kSoftkeyCount);
-  const float cy = top + barH * 0.5f;
   const float size = mfdFontPx(kSoftkeyFontWt, h);
-  const float insetX = cellW * 0.055f;
-  const float insetY = barH * 0.13f;
   for (int i = 0; i < MfdController::kSoftkeyCount; ++i) {
-    const float bx = static_cast<float>(i) * cellW + insetX;
-    const float by = top + insetY;
-    const float bw = cellW - 2.0f * insetX;
-    const float bh = barH - 2.0f * insetY;
-
     const float level =
         std::max(ui.pressLevel(i), ui.keyActive(i) ? 1.0f : 0.0f);
-    if (level > 0.0f) {
-      r.fillRect(bx, by, bw, bh, mfdAlpha(colors::kSoftkeySelected, level));
-    }
-    const Point frame[5] = {
-        {bx, by}, {bx + bw, by}, {bx + bw, by + bh}, {bx, by + bh}, {bx, by}};
-    r.strokePolyline(frame, 5, 1.0f, colors::kPanelSeparator);
-
-    if (!ui.label(i).empty()) {
-      r.fillText(bx + bw * 0.5f, cy, ui.label(i), size, TextAlign::Center,
-                 level > 0.5f ? colors::kBlack : colors::kWhite);
-    }
+    render::drawSoftkeyCell(r, static_cast<float>(i) * cellW, top, cellW, barH,
+                            ui.label(i), level, colors::kWhite, size);
   }
 }
 
@@ -445,7 +426,7 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
 
   // The EIS engine strip owns the left edge on every page, like the real MFD;
   // the page body fills the remaining width.
-  const float eisW = w * kEisWidthFrac;
+  const float eisW = w * mfd::eisStripWidthFrac(eisLayout.style);
   const float bodyX = eisW;
   const float bodyY = topBarH;
   const float bodyW = w - eisW;

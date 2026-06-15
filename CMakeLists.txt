@@ -50,8 +50,17 @@ set(AVIONICS_FONT_FILES
 set(AVIONICS_FONT_FILES_OPTIONAL
   ${CMAKE_SOURCE_DIR}/render-nanovg/assets/fonts/DejaVuSans-SemiBold.ttf
   ${CMAKE_SOURCE_DIR}/render-nanovg/assets/fonts/LICENSE_DejaVu.txt)
-set(AVIONICS_EIS_FILE ${CMAKE_SOURCE_DIR}/avionics-core/assets/eis/c172s.eis)
-set(AVIONICS_CHECKLIST_FILE ${CMAKE_SOURCE_DIR}/shell-standalone/assets/checklists.txt)
+# Per-aircraft engine pages (EIS) and checklists, shared by both shells. The
+# stores auto-select among these by aircraft type (see AircraftProfile); each
+# file installs under the runtime assets/eis and assets/checklists folders.
+# Globbed so dropping a new <aircraft>.eis / <aircraft>.checklist into these
+# folders ships it automatically. CONFIGURE_DEPENDS re-globs on build, so a new
+# file is picked up without a manual re-configure. (Runtime aircraft->asset
+# selection still lives in AircraftProfile.cpp and must be updated separately.)
+file(GLOB AVIONICS_EIS_FILES CONFIGURE_DEPENDS
+  ${CMAKE_SOURCE_DIR}/avionics-core/assets/eis/*.eis)
+file(GLOB AVIONICS_CHECKLIST_FILES CONFIGURE_DEPENDS
+  ${CMAKE_SOURCE_DIR}/avionics-core/assets/checklists/*.checklist)
 # Generated map overlay (large, often gitignored); optional so the build/package
 # never fails when it has not been generated/committed.
 set(AVIONICS_LAND_FILE ${CMAKE_SOURCE_DIR}/shell-standalone/assets/land_data.bin)
@@ -70,7 +79,8 @@ endif()
 function(avionics_install_shared_assets dest component)
   install(FILES ${AVIONICS_FONT_FILES} DESTINATION ${dest}/fonts COMPONENT ${component})
   install(FILES ${AVIONICS_FONT_FILES_OPTIONAL} DESTINATION ${dest}/fonts COMPONENT ${component} OPTIONAL)
-  install(FILES ${AVIONICS_EIS_FILE} DESTINATION ${dest}/eis COMPONENT ${component})
+  install(FILES ${AVIONICS_EIS_FILES} DESTINATION ${dest}/eis COMPONENT ${component})
+  install(FILES ${AVIONICS_CHECKLIST_FILES} DESTINATION ${dest}/checklists COMPONENT ${component})
 endfunction()
 
 add_subdirectory(avionics-core)

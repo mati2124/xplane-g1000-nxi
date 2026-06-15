@@ -1,4 +1,4 @@
-#include "ChecklistStore.h"
+#include "avionics/ChecklistStore.h"
 
 #include <chrono>
 #include <cstdio>
@@ -7,30 +7,17 @@
 #include <sstream>
 #include <system_error>
 
+#include "avionics/AircraftProfile.h"
 #include "avionics/AssetPaths.h"
 
-#ifndef AVIONICS_DEFAULT_CHECKLIST
-#define AVIONICS_DEFAULT_CHECKLIST ""
+#ifndef AVIONICS_CORE_ASSET_DIR
+#define AVIONICS_CORE_ASSET_DIR ""
 #endif
 
 namespace avionics {
 namespace {
 
 namespace fs = std::filesystem;
-
-std::string resolvePath(const std::string& selector) {
-  std::error_code ec;
-  if (!selector.empty()) {
-    if (fs::is_regular_file(selector, ec)) return selector;
-    return std::string();
-  }
-  // No selector: fall back to the bundled sample so the page is populated in
-  // development. (The X-Plane plugin shell resolves a per-aircraft file.)
-  const std::string sample =
-      assets::resolve("checklists.txt", AVIONICS_DEFAULT_CHECKLIST);
-  if (!sample.empty() && fs::is_regular_file(sample, ec)) return sample;
-  return std::string();
-}
 
 std::int64_t fileMtimeNs(const std::string& path) {
   std::error_code ec;
@@ -50,6 +37,12 @@ bool readFile(const std::string& path, std::string& out) {
   return true;
 }
 
+std::string devFallback(const std::string& assetRel) {
+  const std::string base = AVIONICS_CORE_ASSET_DIR;
+  if (base.empty()) return std::string();
+  return base + "/" + assetRel;
+}
+
 }  // namespace
 
 ChecklistStore::ChecklistStore(std::string selector)
@@ -61,8 +54,26 @@ ChecklistStore::~ChecklistStore() {
   if (thread_.joinable()) thread_.join();
 }
 
-void ChecklistStore::loadOnBackgroundThread() {
-  const std::string path = resolvePath(selector_);
+std::string ChecklistStore::resolvePath() const {
+  const AircraftProfile profile =
+      resolveAircraftProfile(aircraftIcao_, aircraftAcfRelativePath_);
+  const std::string bundled =
+      assets::resolve(profile.checklistAsset, devFallback(profile.checklistAsset));
+  // User-droppable, ICAO-keyed override (assets/checklists/<icao>.checklist):
+  // lets a user add support for any aircraft by dropping a file into the
+  // plugin's assets folder, no rebuild. Empty/absent is skipped below.
+  const std::string typeAsset = typeKeyedChecklistAsset(aircraftIcao_);
+  const std::string typeKeyed =
+      typeAsset.empty() ? std::string()
+                        : assets::resolve(typeAsset, devFallback(typeAsset));
+  const std::vector<std::string> candidates = candidateChecklistPaths(
+      selector_, aircraftAcfRelativePath_, typeKeyed, bundled);
+  if (candidates.empty()) return std::string();
+  return candidates.front();
+}
+
+void ChecklistStore::resolveAndLoad() {
+  const std::string path = resolvePath();
   if (path.empty()) {
     if (!selector_.empty()) {
       std::fprintf(stderr, "Checklists: file not found: %s\n",
@@ -84,6 +95,20 @@ void ChecklistStore::loadOnBackgroundThread() {
   }
 
   loaded_.store(true, std::memory_order_release);
+}
+
+void ChecklistStore::loadOnBackgroundThread() { resolveAndLoad(); }
+
+void ChecklistStore::setAircraftIdentity(const std::string& icaoType,
+                                         const std::string& acfRelativePath) {
+  if (icaoType == aircraftIcao_ && acfRelativePath == aircraftAcfRelativePath_) {
+    return;
+  }
+  aircraftIcao_ = icaoType;
+  aircraftAcfRelativePath_ = acfRelativePath;
+  if (thread_.joinable()) thread_.join();
+  loaded_.store(false, std::memory_order_release);
+  thread_ = std::thread([this] { loadOnBackgroundThread(); });
 }
 
 void ChecklistStore::refreshIfChanged() {

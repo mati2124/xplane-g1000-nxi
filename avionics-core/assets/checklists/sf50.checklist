@@ -1,0 +1,129 @@
+# Cirrus Vision SF50 - MFD checklist set (Perspective Touch+ Checklist page).
+#
+# Auto-selected when the loaded aircraft is a Cirrus Vision Jet (acf_ICAO "SF50"
+# or an acf_relative_path matching the Vision Jet). The SF50 is a single-engine
+# (Williams FJ33-5A) FADEC turbofan with a two-tank fuel system and CAPS, so its
+# procedures differ substantially from the piston Cessna set. Values follow the
+# SF50 POH normal and emergency procedures; an aircraft may override these with
+# its own g1000_checklist.txt beside the .acf.
+
+GROUP NORMAL PROCEDURES
+
+  CHECKLIST BEFORE ENGINE START
+    Preflight Inspection : COMPLETE
+    Passenger Briefing : COMPLETE
+    Seats, Seatbelts : ADJUST AND LOCK
+    Parking Brake : SET
+    BAT 1, BAT 2 : ON
+    Voltage (ESS BUS) : 24V MIN
+    Flaps : UP
+    Fuel Quantity : CHECK
+    Lights (BCN) : ON
+
+  CHECKLIST ENGINE START
+    Throttle : IDLE
+    Brakes : HOLD
+    Power Lever : CONFIRM IDLE
+    ENG START Button : PUSH
+    ITT : MONITOR (740 C MAX)
+    N2 / Oil Pressure : RISING
+    Starter (FADEC) : AUTO CUTOUT
+    GEN 1, GEN 2 : ON / CHECK
+    Avionics : CHECK
+
+  CHECKLIST BEFORE TAXI
+    Flight Instruments : CHECK AND SET
+    Altimeter : SET
+    Autopilot : TEST
+    Flight Controls : FREE AND CORRECT
+    Trims (Pitch, Roll) : SET FOR TAKEOFF
+    Anti-Ice : AS REQUIRED
+
+  CHECKLIST BEFORE TAKEOFF
+    Parking Brake : SET
+    Flaps : 50%
+    Trims : SET FOR TAKEOFF
+    Flight Controls : FREE AND CORRECT
+    Throttle Response : CHECK
+    CAS Messages : REVIEW
+    Pitot Heat : ON
+    Transponder : ALT
+    Takeoff Briefing : COMPLETE
+
+  CHECKLIST TAKEOFF
+    Brakes : RELEASE
+    Power : TAKEOFF THRUST
+    Rotate : 90 KIAS
+    Landing Gear : UP (POSITIVE RATE)
+    Flaps : UP (ABOVE 110 KIAS)
+    Climb Power : SET
+
+  CHECKLIST CLIMB
+    Power : CLIMB THRUST
+    Airspeed : 150 KIAS / CLIMB SCHEDULE
+    Pressurization : CHECK
+    Anti-Ice : AS REQUIRED
+
+  CHECKLIST CRUISE
+    Power : CRUISE THRUST
+    Altimeter : SET
+    Fuel Balance : MONITOR
+    Pressurization : CHECK
+
+  CHECKLIST DESCENT
+    Pressurization (Dest Elev) : SET
+    Altimeter : SET
+    Anti-Ice : AS REQUIRED
+    Approach Briefing : COMPLETE
+
+  CHECKLIST BEFORE LANDING
+    Seatbelts : SECURE
+    Landing Gear : DOWN (BELOW 210 KIAS)
+    Flaps : 100% (BELOW 150 KIAS)
+    Autopilot : DISENGAGE
+    Landing Lights : ON
+    Speed : VREF
+
+  CHECKLIST AFTER LANDING
+    Flaps : UP
+    Pitot Heat : OFF
+    Transponder : STBY
+    Landing Lights : AS REQUIRED
+
+  CHECKLIST SHUTDOWN
+    Parking Brake : SET
+    Throttle : IDLE
+    Avionics : OFF
+    Power Lever : SHUTOFF
+    GEN 1, GEN 2 : OFF
+    BAT 1, BAT 2 : OFF
+
+GROUP EMERGENCY PROCEDURES
+
+  CHECKLIST CAPS DEPLOYMENT
+    Airspeed : MINIMUM POSSIBLE (135 KIAS MAX)
+    CAPS Activation Handle : PULL (BOTH HANDS)
+    Mixture / Power Lever : SHUTOFF (AFTER IMPACT)
+    BAT 1, BAT 2 : OFF (AFTER IMPACT)
+    Occupants : BRACE FOR IMPACT
+
+  CHECKLIST ENGINE FAILURE IN FLIGHT
+    Airspeed : 110 KIAS (GLIDE)
+    CAPS : CONSIDER
+    Power Lever : IDLE THEN SHUTOFF
+    ENG START : ATTEMPT RESTART (IF TIME)
+    Landing Site : SELECT
+    Emergency : DECLARE
+
+  CHECKLIST EMERGENCY DESCENT
+    Power Lever : IDLE
+    Speed Brakes : N/A
+    Airspeed : 250 KIAS MAX (GEAR UP)
+    Landing Gear : DOWN (BELOW 210 KIAS)
+    Autopilot : AS REQUIRED
+
+  CHECKLIST CABIN DEPRESSURIZATION
+    Oxygen Masks : DON / 100%
+    Crew Communication : ESTABLISH
+    Emergency Descent : INITIATE
+    Altitude : 13000 FT OR MEA

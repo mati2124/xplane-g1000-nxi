@@ -487,6 +487,9 @@ void startUpdateCheckOnLaunch() {
 #if defined(AVIONICS_HAS_CURL)
   checkForUpdatesAsync([](UpdateInfo info) {
     if (!info.newerAvailable) return;
+    // Surface the notice in the PFD Alerts window (flashing "Messages"
+    // softkey), in addition to the actionable self-update dialog.
+    setUpdateAdvisory(updateAdvisoryText(info.latestVersion));
     showNotice(info);
   });
 #endif

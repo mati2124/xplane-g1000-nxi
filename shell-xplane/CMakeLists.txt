@@ -24,6 +24,9 @@ add_library(xplane-avionics MODULE
   src/CommandBridge.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/DsfTerrainStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/XPlaneInstall.cpp
+  # Shared portable SHA-256 (also used by the standalone updater) verifies the
+  # downloaded plugin archive against the release's SHA256SUMS.
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/Sha256.cpp
 )
 
 target_include_directories(xplane-avionics PRIVATE
@@ -51,11 +54,16 @@ target_compile_definitions(xplane-avionics PRIVATE
 # Airspace parsing runs on a background std::thread.
 find_package(Threads REQUIRED)
 
+# HTTPS for the in-sim update checker / self-updater (GitHub Releases API +
+# plugin archive download). Mirrors the standalone shell's curl usage.
+find_package(CURL REQUIRED)
+target_compile_definitions(xplane-avionics PRIVATE AVIONICS_HAS_CURL)
+
 # render-nanovg brings the shared NanoVG Renderer backend (and, transitively,
 # avionics-core, NanoVG, and the platform OpenGL framework) so the plugin can
 # draw the PFD/MFD into the sim's avionics device screens.
 target_link_libraries(xplane-avionics PRIVATE
-  render-nanovg Threads::Threads)
+  render-nanovg Threads::Threads CURL::libcurl)
 
 # X-Plane loads plugins as <name>/<platform>/<name>.xpl with no lib prefix.
 set_target_properties(xplane-avionics PROPERTIES

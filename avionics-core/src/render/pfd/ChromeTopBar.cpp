@@ -64,6 +64,47 @@ void drawNavComPanelBg(Renderer& r, float x, float y, float pw, float ph,
   r.strokeRoundedRect(x, y, pw, ph, radius, 1.0f, colors::kPanelBorder);
 }
 
+// Failed NAV/COM frequency cells: a maroon fill spanning the two frequency rows
+// with a red X over each row (G1000 NXi Maintenance Manual Fig 9-2, PFD
+// Power-Up System Annunciations). Drawn in place of the frequencies/idents when
+// the GIA datalink is invalid; the band labels remain.
+void drawFailedRadioCells(Renderer& r, float x, float y, float cw, float ch,
+                          float displayH) {
+  r.save();
+  r.clip(x, y, cw, ch);
+  r.fillRect(x, y, cw, ch, colors::kFailedWindow);
+  const float thick = std::max(1.0f, displayH * 0.0028f);
+  const float ymid = y + ch * 0.5f;
+  // One X per frequency row (1/2), each spanning the full cell width.
+  r.strokeLine(x, y, x + cw, ymid, thick, colors::kFailedX);
+  r.strokeLine(x, ymid, x + cw, y, thick, colors::kFailedX);
+  r.strokeLine(x, ymid, x + cw, y + ch, thick, colors::kFailedX);
+  r.strokeLine(x, y + ch, x + cw, ymid, thick, colors::kFailedX);
+  const Point frame[5] = {
+      {x, y}, {x + cw, y}, {x + cw, y + ch}, {x, y + ch}, {x, y}};
+  r.strokePolyline(frame, 5, 1.0f, colors::kPanelBorder);
+  r.restore();
+}
+
+// Single failed frequency row: a maroon cell with one red X, used when an
+// individual NAV/COM receiver has failed (its own X-Plane failure dataref is
+// tripped) while the other radio in the box keeps working. The row spans the
+// full frequency-cell width and is centered on the given row's center.
+void drawFailedRadioRow(Renderer& r, float x, float rowCy, float cw, float rowH,
+                        float displayH) {
+  const float y = rowCy - rowH * 0.5f;
+  r.save();
+  r.clip(x, y, cw, rowH);
+  r.fillRect(x, y, cw, rowH, colors::kFailedWindow);
+  const float thick = std::max(1.0f, displayH * 0.0028f);
+  r.strokeLine(x, y, x + cw, y + rowH, thick, colors::kFailedX);
+  r.strokeLine(x, y + rowH, x + cw, y, thick, colors::kFailedX);
+  const Point frame[5] = {
+      {x, y}, {x + cw, y}, {x + cw, y + rowH}, {x, y + rowH}, {x, y}};
+  r.strokePolyline(frame, 5, 1.0f, colors::kPanelBorder);
+  r.restore();
+}
+
 // Garmin Direct-To icon (a "D" with a horizontal arrow piercing it) drawn to
 // the left of the active waypoint when a GPS Direct-To is active, matching the
 // look of the "D" bezel key. Returns the x just past the glyph.
@@ -137,67 +178,79 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
   r.strokeLine(centerL, rowH, centerL + centerW, rowH, 2.0f,
                colors::kPanelBorder);
 
-  if (!d.dataLinkValid) return;
+  // The active-leg field (FROM -> TO or GPS Direct-To) is shown only with a
+  // valid datalink and an active leg; DIS/BRG below are always shown.
+  const bool hasLeg = d.dataLinkValid && !d.fmaToWpt.empty();
 
-  // No FROM waypoint with an active TO means a GPS Direct-To: show the Direct-To
-  // icon followed by the target identifier instead of a FROM -> TO leg.
-  const bool directTo = d.fmaFromWpt.empty() && !d.fmaToWpt.empty();
+  if (d.dataLinkValid) {
+    // No FROM waypoint with an active TO means a GPS Direct-To: show the
+    // Direct-To icon followed by the target identifier instead of a FROM -> TO
+    // leg.
+    const bool directTo = d.fmaFromWpt.empty() && !d.fmaToWpt.empty();
 
-  float legWidth = 0.0f;
-  if (directTo) {
-    legWidth += dataSize * 0.95f;  // Direct-To icon + gap
-    legWidth += r.measureTextWidth(d.fmaToWpt, dataSize);
-  } else {
-    if (!d.fmaFromWpt.empty()) {
-      legWidth += r.measureTextWidth(d.fmaFromWpt, dataSize) + dataSize * 0.12f;
-    }
-    if (!d.fmaToWpt.empty()) {
-      legWidth += dataSize * 0.52f + dataSize * 0.12f;
+    float legWidth = 0.0f;
+    if (directTo) {
+      legWidth += dataSize * 0.95f;  // Direct-To icon + gap
       legWidth += r.measureTextWidth(d.fmaToWpt, dataSize);
+    } else {
+      if (!d.fmaFromWpt.empty()) {
+        legWidth +=
+            r.measureTextWidth(d.fmaFromWpt, dataSize) + dataSize * 0.12f;
+      }
+      if (!d.fmaToWpt.empty()) {
+        legWidth += dataSize * 0.52f + dataSize * 0.12f;
+        legWidth += r.measureTextWidth(d.fmaToWpt, dataSize);
+      }
     }
-  }
-  float x = centerL + std::max(centerW * 0.01f, (legW - legWidth) * 0.5f);
-  if (directTo) {
-    x = drawDirectToIcon(r, x, cy, dataSize, colors::kMagenta);
-    x += dataSize * 0.18f;
-    putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
-  } else {
-    if (!d.fmaFromWpt.empty()) {
-      x = putText(r, x, cy, d.fmaFromWpt, dataSize, colors::kMagenta, 0.12f);
-    }
-    if (!d.fmaToWpt.empty()) {
-      const float arrowTip = x + dataSize * 0.40f;
-      drawFmaLegArrow(r, arrowTip, cy, dataSize * 0.70f);
-      x = arrowTip + dataSize * 0.12f;
+    float x = centerL + std::max(centerW * 0.01f, (legW - legWidth) * 0.5f);
+    if (directTo) {
+      x = drawDirectToIcon(r, x, cy, dataSize, colors::kMagenta);
+      x += dataSize * 0.18f;
       putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
+    } else {
+      if (!d.fmaFromWpt.empty()) {
+        x = putText(r, x, cy, d.fmaFromWpt, dataSize, colors::kMagenta, 0.12f);
+      }
+      if (!d.fmaToWpt.empty()) {
+        const float arrowTip = x + dataSize * 0.40f;
+        drawFmaLegArrow(r, arrowTip, cy, dataSize * 0.70f);
+        x = arrowTip + dataSize * 0.12f;
+        putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
+      }
     }
   }
 
-  if (!d.fmaToWpt.empty()) {
-    // Vertical divider between the active-leg field and the DIS/BRG readouts
-    // (G1000 NXi Navigation Status Box), meeting the row separator below.
-    r.strokeLine(dataL, rowH * 0.18f, dataL, rowH, 1.5f, colors::kPanelBorder);
+  // Vertical divider between the active-leg field and the DIS/BRG readouts,
+  // always present (G1000 NXi Navigation Status Box, Fig 9-2), meeting the row
+  // separator below.
+  r.strokeLine(dataL, rowH * 0.18f, dataL, rowH, 1.5f, colors::kPanelBorder);
 
+  // DIS readout left-aligned almost touching the divider; magenta dashes when
+  // there is no active leg.
+  std::string disStr = "__._";
+  if (hasLeg) {
     char buf[24];
     std::snprintf(buf, sizeof(buf), "%.1f", d.fmaLegDistanceNm);
-    // DIS readout left-aligned almost touching the divider.
-    float bx = dataL + centerW * 0.01f;
-    bx = putText(r, bx, cy, "DIS", labelSize, colors::kLabelText, 0.30f);
-    bx = putText(r, bx, cy, std::string(buf), dataSize, colors::kMagenta,
-                 0.18f);
-    putText(r, bx, cy, "NM", smallSize, colors::kMagenta, 0.0f);
-
-    // BRG readout right-aligned to the panel edge: the real unit spreads DIS
-    // and BRG to opposite ends of the data field, with the bearing value
-    // hugging the right edge and its grey label just to the left.
-    const std::string brg = formatHeading(d.fmaLegBearingDeg) + "\u00b0";
-    const float rightX = centerL + centerW - centerW * 0.025f;
-    r.fillText(rightX, cy, brg, dataSize, TextAlign::Right, colors::kMagenta);
-    const float brgLabelRight =
-        rightX - r.measureTextWidth(brg, dataSize) - labelSize * 0.30f;
-    r.fillText(brgLabelRight, cy, "BRG", labelSize, TextAlign::Right,
-               colors::kLabelText);
+    disStr = buf;
   }
+  float bx = dataL + centerW * 0.01f;
+  bx = putText(r, bx, cy, "DIS", labelSize, colors::kLabelText, 0.30f);
+  bx = putText(r, bx, cy, disStr, dataSize, colors::kMagenta, 0.18f);
+  putText(r, bx, cy, "NM", smallSize, colors::kMagenta, 0.0f);
+
+  // BRG readout right-aligned to the panel edge: the real unit spreads DIS and
+  // BRG to opposite ends of the data field, with the bearing value hugging the
+  // right edge and its grey label just to the left; magenta dashes when there
+  // is no active leg.
+  const std::string brg =
+      (hasLeg ? formatHeading(d.fmaLegBearingDeg) : std::string("___")) +
+      "\u00b0";
+  const float rightX = centerL + centerW - centerW * 0.025f;
+  r.fillText(rightX, cy, brg, dataSize, TextAlign::Right, colors::kMagenta);
+  const float brgLabelRight =
+      rightX - r.measureTextWidth(brg, dataSize) - labelSize * 0.30f;
+  r.fillText(brgLabelRight, cy, "BRG", labelSize, TextAlign::Right,
+             colors::kLabelText);
 }
 
 // AFCS Status Box: bottom half of the center NavCom panel (WT
@@ -353,6 +406,23 @@ void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
 
   FontScope navComFont(r, FontFace::DejaVuSemiBold);
 
+  // GIA datalink failure (e.g. PFD power-up): the NAV and COM frequency cells
+  // are red-X'd over a maroon fill and no frequencies or station idents are
+  // shown; only the band labels remain (NXi Maintenance Manual Fig 9-2).
+  if (!d.dataLinkValid) {
+    drawBandLabel(r, "NAV", navLeft + navW * 0.035f, navLeft + navW * 0.10f,
+                  barH, row1Cy, row2Cy, labelSize);
+    drawBandLabel(r, "COM", comLeft + comW * 0.95f, comLeft + comW * 0.88f, barH,
+                  row1Cy, row2Cy, labelSize);
+    const float cellTop = barH * 0.12f;
+    const float cellH = barH * 0.76f;
+    drawFailedRadioCells(r, navLeft + navW * 0.155f, cellTop, navW * 0.83f,
+                         cellH, h);
+    drawFailedRadioCells(r, comLeft + comW * 0.04f, cellTop, comW * 0.78f, cellH,
+                         h);
+    return;
+  }
+
   const bool linkValid = d.dataLinkValid;
   const Color standbyColor = linkValid ? colors::kWhite : colors::kBandYellow;
   auto freqText = [&](float mhz, int decimals) {
@@ -458,6 +528,13 @@ void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
   for (int i = 0; i < 2; ++i) {
     const NavRow& n = navs[i];
     const RadioUnit unit = i == 0 ? RadioUnit::Nav1 : RadioUnit::Nav2;
+    // This receiver has failed on its own: red-X just its row, leaving the
+    // other NAV row live (its failure dataref is independent).
+    if (!(i == 0 ? d.nav1Valid : d.nav2Valid)) {
+      drawFailedRadioRow(r, navLeft + navW * 0.155f, n.cy, navW * 0.83f,
+                         barH * 0.38f, h);
+      continue;
+    }
     const bool sel = boxed(unit, ui.navSelected(), RadioBand::Nav);
     const int dec = 2;
     const float anim = ui.radioTransferAnim(unit);
@@ -523,6 +600,12 @@ void drawNavComFreqCells(Renderer& r, float h, float barH, float navLeft,
   for (int i = 0; i < 2; ++i) {
     const RadioRow& c = coms[i];
     const RadioUnit unit = i == 0 ? RadioUnit::Com1 : RadioUnit::Com2;
+    // This transceiver has failed on its own: red-X just its row.
+    if (!(i == 0 ? d.com1Valid : d.com2Valid)) {
+      drawFailedRadioRow(r, comLeft + comW * 0.04f, c.cy, comW * 0.78f,
+                         barH * 0.38f, h);
+      continue;
+    }
     const bool sel = boxed(unit, ui.comSelected(), RadioBand::Com);
     const int dec = 3;
     const float anim = ui.radioTransferAnim(unit);

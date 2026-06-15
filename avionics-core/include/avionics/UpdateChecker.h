@@ -17,6 +17,11 @@ struct UpdateInfo {
   // Download URL of the release's SHA256SUMS asset (empty when absent), used to
   // verify the downloaded installer before running it.
   std::string checksumsUrl;
+  // Direct download URL of the plugin-only archive for the running platform
+  // (g1000nxi-plugin-<platform>-<version>.zip), used by the X-Plane plugin's
+  // in-sim updater to refresh just the .xpl + assets and hot-reload. Empty when
+  // no matching asset is present.
+  std::string pluginArchiveUrl;
 };
 
 // Returns the browser_download_url of the first release asset whose file name
@@ -36,6 +41,19 @@ bool isVersionNewer(const std::string& latest, const std::string& current);
 
 // Build the REST URL for the latest release of this project.
 std::string latestReleaseApiUrl();
+
+// Short advisory line shown in the PFD Alerts window when a newer release is
+// detected (e.g. "UPDATE AVAILABLE v1.2.3"). Kept short so it fits the Alerts
+// window width, and centralized here so both shells word it identically.
+std::string updateAdvisoryText(const std::string& latestVersion);
+
+// Process-global advisory surfaced in the PFD Alerts window. The shell's
+// update-check callback sets it (from a background thread) when a newer release
+// is found; the softkey controller reads it each frame and injects it into the
+// Alerts list (which also flashes the "Messages" softkey). Empty means none.
+// Both accessors are thread-safe.
+void setUpdateAdvisory(std::string text);
+std::string updateAdvisory();
 
 #if defined(AVIONICS_HAS_CURL)
 // Fetch the latest-release JSON over HTTPS (blocks; intended for a worker

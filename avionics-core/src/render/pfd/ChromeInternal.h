@@ -59,7 +59,8 @@ float putField(Renderer& r, float x, float cy, const std::string& text,
 void drawTopBar(Renderer& r, float w, float h, const Layout& L,
                 const FlightData& d, const SoftkeyController& ui);
 void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
-                         const FlightData& d, const SoftkeyController& ui);
+                         const FlightData& d, const SoftkeyController& ui,
+                         bool powerUp = false);
 void drawSoftkeyBar(Renderer& r, float w, float h, const Layout& L,
                     const SoftkeyController& ui);
 void drawCasAnnunciations(Renderer& r, float w, float h, const Layout& L,

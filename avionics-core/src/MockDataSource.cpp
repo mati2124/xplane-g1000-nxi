@@ -354,11 +354,15 @@ void MockDataSource::update(double dtSeconds) {
   // build (driven by the real annunciator datarefs when connected to X-Plane).
   // A mix of cautions (amber) and warnings (red) on different cycles also
   // exercises the severity sorting -- warnings always sort above cautions.
-  data_.casLowVacuum = std::fmod(t, 20.0f) > 6.0f;          // steady caution
-  data_.casFuelLow = std::fmod(t, 30.0f) > 18.0f;           // intermittent
-  data_.casPitotHeatOff = std::fmod(t, 16.0f) > 9.0f;       // caution
-  data_.casLowVoltage = std::fmod(t, 24.0f) > 16.0f;        // warning (red)
-  data_.casOilPressureLow = std::fmod(t, 40.0f) > 33.0f;    // warning (red)
+  // The whole set is gated by casMessagesEnabled_ so the demo can be flown
+  // without the periodic alerts (a Debug menu toggle in the standalone shell).
+  const bool cas = casMessagesEnabled_;
+  data_.casLowVacuum = cas && std::fmod(t, 20.0f) > 6.0f;    // steady caution
+  data_.casFuelLow = cas && std::fmod(t, 30.0f) > 18.0f;     // intermittent
+  data_.casPitotHeatOff = cas && std::fmod(t, 16.0f) > 9.0f; // caution
+  data_.casLowVoltage = cas && std::fmod(t, 24.0f) > 16.0f;  // warning (red)
+  data_.casOilPressureLow =
+      cas && std::fmod(t, 40.0f) > 33.0f;                    // warning (red)
   // EIS engine strip: cruise-power values with gentle drift so the gauges show
   // life. Fuel burns down at the indicated fuel flow; the ammeter shows a
   // small charging load.
@@ -516,6 +520,47 @@ void MockDataSource::publishEisChannels() {
   data_.eisChannels[eis_channels::kBusVoltsEss] = data_.busVoltsEssential;
   data_.eisChannels[eis_channels::kBattAmpsMain] = data_.battAmpsMain;
   data_.eisChannels[eis_channels::kBattAmpsStandby] = data_.battAmpsStandby;
+
+  // When the active aircraft profile is the turbofan (Cirrus Vision SF50), also
+  // publish believable turbine + synoptic channel values so the jet EIS page
+  // shows live gauges in the demo/screenshot feed (the real plugin reads these
+  // from the sim datarefs declared in sf50.eis). Values mirror Fig. 3-2.
+  if (eisSource_ != nullptr && eisSource_->ready() &&
+      eisSource_->layout().style == EisStripStyle::Turbofan) {
+    const float t = static_cast<float>(elapsedSeconds_);
+    const float n1 = groundMode_ ? 30.0f : 85.0f + 1.5f * std::sin(t * 0.2f);
+    data_.eisChannels[eis_channels::kThrustPct] = groundMode_ ? 8.0f : 69.0f;
+    data_.eisChannels[eis_channels::kN1Pct] = n1;
+    data_.eisChannels[eis_channels::kN2Pct] = groundMode_ ? 55.0f : 75.0f;
+    data_.eisChannels[eis_channels::kIttC] = groundMode_ ? 380.0f : 500.0f;
+    data_.eisChannels[eis_channels::kOilTempC] = 41.0f;
+    data_.eisChannels[eis_channels::kFuelTempC] = 20.0f;
+    data_.eisChannels[eis_channels::kFuelQtyLeft] = 150.0f;
+    data_.eisChannels[eis_channels::kFuelQtyRight] = 150.0f;
+    data_.eisChannels[eis_channels::kFuelFlow] = groundMode_ ? 12.0f : 78.0f;
+    data_.eisChannels[eis_channels::kOilPres] = 50.0f;
+    data_.eisChannels[eis_channels::kEmerBusVolts] = 28.1f;
+    data_.eisChannels[eis_channels::kBatt1Amps] = 49.0f;
+    data_.eisChannels[eis_channels::kBatt2Amps] = 10.0f;
+    data_.eisChannels[eis_channels::kGen1Amps] = 200.0f;
+    data_.eisChannels[eis_channels::kGen2Amps] = 49.0f;
+    // Airframe synoptics: gear up in cruise / down on the ground, takeoff trim,
+    // 50% flaps, and a small cabin climb.
+    const float gear = groundMode_ ? 1.0f : 0.0f;
+    data_.eisChannels[eis_channels::kGearNose] = gear;
+    data_.eisChannels[eis_channels::kGearLeft] = gear;
+    data_.eisChannels[eis_channels::kGearRight] = gear;
+    data_.eisChannels[eis_channels::kPitchTrim] = 0.5f;
+    data_.eisChannels[eis_channels::kRollTrim] = 0.0f;
+    data_.eisChannels[eis_channels::kFlapsActual] = groundMode_ ? 0.5f : 0.0f;
+    data_.eisChannels[eis_channels::kFlapsCommanded] =
+        groundMode_ ? 0.5f : 0.0f;
+    data_.eisChannels[eis_channels::kCabinRateFpm] = groundMode_ ? 0.0f : 300.0f;
+    data_.eisChannels[eis_channels::kCabinAltFt] = groundMode_ ? 0.0f : 3000.0f;
+    data_.eisChannels[eis_channels::kCabinDiffPsi] = groundMode_ ? 0.1f : 3.0f;
+    data_.eisChannels[eis_channels::kDestElevFt] = 13000.0f;
+  }
+
   syncEisLegacyFields(data_);
 }
 

@@ -1,0 +1,101 @@
+# Cessna 172S Skyhawk - MFD checklist set (G1000 NXi Checklist page group).
+#
+# Auto-selected when the loaded aircraft is a Cessna 172 (acf_ICAO "C172" or an
+# acf_relative_path matching the Skyhawk). Values follow the 172S POH normal
+# and emergency procedures; an aircraft may still override these by shipping its
+# own g1000_checklist.txt next to the .acf.
+#
+# Format (whitespace/indentation is cosmetic; keywords drive the structure):
+#   GROUP <name>          starts a checklist group (NORMAL / EMERGENCY)
+#   CHECKLIST <name>      starts a checklist within the current group
+#   <text> : <response>   a checklist item; the response is optional
+
+GROUP NORMAL PROCEDURES
+
+  CHECKLIST BEFORE STARTING ENGINE
+    Preflight Inspection : COMPLETE
+    Passenger Briefing : COMPLETE
+    Seats, Belts, Harnesses : ADJUST AND LOCK
+    Brakes : TEST AND SET
+    Circuit Breakers : CHECK IN
+    Avionics Switch (BUS 1, BUS 2) : OFF
+    Fuel Shutoff Valve : ON
+
+  CHECKLIST ENGINE START
+    Mixture : RICH
+    Throttle : OPEN 1/4 INCH
+    Beacon Light : ON
+    Master Switch (ALT and BAT) : ON
+    Fuel Pump : ON THEN OFF
+    Ignition Switch : START (RELEASE)
+    Oil Pressure : CHECK
+    Avionics Switch (BUS 1, BUS 2) : ON
+    Ammeter and Voltmeter : CHECK
+
+  CHECKLIST BEFORE TAKEOFF
+    Parking Brake : SET
+    Flight Controls : FREE AND CORRECT
+    Flight Instruments : CHECK AND SET
+    Fuel Quantity : CHECK
+    Mixture : RICH (BELOW 3000 FT)
+    Throttle : 1800 RPM
+    Magnetos : CHECK (MAX DROP 150 RPM)
+    Engine Instruments : CHECK
+    Annunciator Panel : CHECK
+    Throttle : 1000 RPM
+    Flaps : SET FOR TAKEOFF (0 - 10 DEG)
+    Elevator Trim : SET FOR TAKEOFF
+
+  CHECKLIST CRUISE
+    Power : 2200 - 2700 RPM
+    Elevator Trim : ADJUST
+    Mixture : LEAN
+    Engine Instruments : MONITOR
+
+  CHECKLIST BEFORE LANDING
+    Seats, Belts : SECURE
+    Fuel Shutoff Valve : ON
+    Mixture : RICH
+    Landing Light : ON
+    Autopilot : DISENGAGE
+    Flaps : AS DESIRED (BELOW 110 KIAS)
+
+  CHECKLIST AFTER LANDING
+    Flaps : UP
+    Landing Light : OFF
+    Transponder : STBY
+
+  CHECKLIST SHUTDOWN
+    Parking Brake : SET
+    Throttle : IDLE
+    Avionics Switch (BUS 1, BUS 2) : OFF
+    Mixture : IDLE CUTOFF
+    Ignition Switch : OFF
+    Master Switch (ALT and BAT) : OFF
+    Fuel Shutoff Valve : ON
+
+GROUP EMERGENCY PROCEDURES
+
+  CHECKLIST ENGINE FAILURE DURING TAKEOFF ROLL
+    Throttle : IDLE
+    Brakes : APPLY
+    Wing Flaps : RETRACT
+    Mixture : IDLE CUTOFF
+    Ignition Switch : OFF
+    Master Switch : OFF
+
+  CHECKLIST ENGINE FAILURE IN FLIGHT
+    Airspeed : 68 KIAS
+    Mixture : RICH
+    Fuel Shutoff Valve : ON
+    Fuel Pump : ON
+    Ignition Switch : BOTH (THEN START)
+    Best Glide : ESTABLISH 68 KIAS
+
+  CHECKLIST ENGINE FIRE IN FLIGHT
+    Mixture : IDLE CUTOFF
+    Fuel Shutoff Valve : OFF
+    Master Switch : OFF
+    Cabin Heat/Air : OFF
+    Airspeed : 100 KIAS
+    Forced Landing : EXECUTE

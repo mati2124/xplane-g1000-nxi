@@ -51,8 +51,11 @@ constexpr StaticDatabaseRow kStaticDatabases[] = {
 
 FlightData sensorsFailedBootData(const FlightData& data) {
   FlightData d = data;
+  // During PFD power-up the ADC/AHRS attitude and air-data fields are red-X'd
+  // while the AHRS aligns, but the magnetometer-driven heading and HSI compass
+  // rose remain drawn (NXi Maintenance Manual Fig 9-2).
   d.attitudeValid = false;
-  d.headingValid = false;
+  d.headingValid = true;
   d.airspeedValid = false;
   d.altitudeValid = false;
   d.verticalSpeedValid = false;
@@ -61,6 +64,10 @@ FlightData sensorsFailedBootData(const FlightData& data) {
   d.bearing1Valid = false;
   d.bearing2Valid = false;
   d.dataLinkValid = false;
+  // No marker-beacon annunciation or vertical-deviation (glideslope/glidepath)
+  // guidance during power-up.
+  d.markerBeacon = MarkerBeacon::None;
+  d.vdiKind = VerticalDeviationKind::None;
   return d;
 }
 
@@ -186,17 +193,19 @@ void drawMfdBootSoftkeys(Renderer& r, float w, float h, float barH,
   }
 }
 
-void renderLogo(Renderer& r, int widthPx, int heightPx) {
+void renderLogo(Renderer& r, float alpha, int widthPx, int heightPx) {
   const float w = static_cast<float>(widthPx);
   const float h = static_cast<float>(heightPx);
   const float cx = w * 0.5f;
   const float cy = h * 0.5f;
 
+  // The black background is opaque; only the logo marks fade up from it.
   r.fillRect(0.0f, 0.0f, w, h, colors::kBlack);
 
   const float wordSize = h * kLogoWordmarkSize;
   const float wordWidth = r.measureTextWidth("GARMIN", wordSize);
-  r.fillText(cx, cy, "GARMIN", wordSize, TextAlign::Center, colors::kWhite);
+  r.fillText(cx, cy, "GARMIN", wordSize, TextAlign::Center,
+             withAlpha(colors::kWhite, alpha));
 
   const float triH = h * kLogoTriangleHeight;
   const float triW = triH * 1.1f;
@@ -207,7 +216,7 @@ void renderLogo(Renderer& r, int widthPx, int heightPx) {
       {triRight, triTop + triH},
       {triRight - triW, triTop + triH},
   };
-  r.fillPolygon(tri, 3, colors::kGarminLogoBlue);
+  r.fillPolygon(tri, 3, withAlpha(colors::kGarminLogoBlue, alpha));
 }
 
 void renderPfdPowerUp(Renderer& r, const FlightData& flightData,
@@ -215,34 +224,18 @@ void renderPfdPowerUp(Renderer& r, const FlightData& flightData,
                       float alpha, int widthPx, int heightPx) {
   if (alpha <= 0.0f) return;
 
+  // The power-up init view is never reversionary (no EIS strip on the PFD).
   PrimaryFlightDisplay::render(r, sensorsFailedBootData(flightData), map, ui,
-                               widthPx, heightPx);
+                               EisLayout{}, /*reversionary=*/false, widthPx,
+                               heightPx, /*powerUp=*/true);
 
   const float w = static_cast<float>(widthPx);
   const float h = static_cast<float>(heightPx);
   const pfd::Layout L = pfd::computeLayout(w, h);
 
-  // ADAHRS align message centered on the attitude window (Pilot's Guide
-  // Section 1.3 / Figure 1-7 PFD Initialization).
-  const float boxW = L.attVisW * 0.88f;
-  const float boxH = h * 0.085f;
-  const float boxX = L.attCx - boxW * 0.5f;
-  const float boxY = L.attCy - boxH * 0.5f;
-  r.fillRect(boxX, boxY, boxW, boxH, withAlpha(colors::kBlack, alpha * 0.75f));
-  const Point border[5] = {{boxX, boxY},
-                           {boxX + boxW, boxY},
-                           {boxX + boxW, boxY + boxH},
-                           {boxX, boxY + boxH},
-                           {boxX, boxY}};
-  r.strokePolyline(border, 5, 2.0f, withAlpha(colors::kWhite, alpha));
-
-  const float lineSize = pfd::fontPx(pfd::wt::kHeadingBox, h);
-  const float cx = boxX + boxW * 0.5f;
-  const Color textColor = withAlpha(colors::kWhite, alpha);
-  r.fillText(cx, boxY + boxH * 0.38f, "ADAHRS/DG ALIGN:", lineSize,
-             TextAlign::Center, textColor);
-  r.fillText(cx, boxY + boxH * 0.72f, "Remain Stationary", lineSize,
-             TextAlign::Center, textColor);
+  // The PFD inset map is not shown during power-up (NXi Fig 9-2); the lower-left
+  // stays black background while the HSI compass rose remains drawn.
+  r.fillRect(L.insetMapX, L.insetMapY, L.insetMapW, L.insetMapH, colors::kBlack);
 }
 
 void renderMfdPowerUp(Renderer& r, const MfdController& mfdUi,
@@ -336,19 +329,18 @@ void BootScreen::render(Renderer& r, Target target, Phase phase,
                         const SoftkeyController& pfdUi,
                         const MfdController& mfdUi,
                         const NavDatabaseInfo& navDatabase, bool awaitingAck,
-                        float powerUpAlpha, int widthPx, int heightPx) {
+                        float phaseAlpha, int widthPx, int heightPx) {
   if (phase == Phase::Logo) {
-    renderLogo(r, widthPx, heightPx);
+    renderLogo(r, phaseAlpha, widthPx, heightPx);
     return;
   }
 
   if (target == Target::Pfd) {
-    renderPfdPowerUp(r, flightData, map, pfdUi, powerUpAlpha, widthPx,
-                     heightPx);
+    renderPfdPowerUp(r, flightData, map, pfdUi, phaseAlpha, widthPx, heightPx);
     return;
   }
 
-  renderMfdPowerUp(r, mfdUi, navDatabase, awaitingAck, powerUpAlpha, widthPx,
+  renderMfdPowerUp(r, mfdUi, navDatabase, awaitingAck, phaseAlpha, widthPx,
                    heightPx);
 }
 

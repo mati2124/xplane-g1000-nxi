@@ -34,6 +34,8 @@ class EisStore : public EisSource {
   const std::string& sourcePath() const { return sourcePath_; }
 
   void setAircraftAcfRelativePath(const std::string& acfRelativePath) override;
+  void setAircraftIdentity(const std::string& icaoType,
+                           const std::string& acfRelativePath) override;
 
   void refreshIfChanged() override;
 
@@ -43,6 +45,7 @@ class EisStore : public EisSource {
   std::string resolvePath(const std::string& acfRelativePath) const;
 
   std::string selector_;
+  std::string aircraftIcao_;
   std::string aircraftAcfRelativePath_;
   EisLayout layout_;
   std::string sourcePath_;

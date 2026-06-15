@@ -74,6 +74,18 @@ constexpr double kNmPerDeg = 60.0;
 constexpr float kRadioHzToMhz = 0.01f;
 constexpr float kMhzToRadioHz = 100.0f;
 
+// X-Plane failure_enum: 0 = working, 6 = inoperative (failed now); intermediate
+// values are armed conditions that have not yet tripped. An instrument is shown
+// failed (red X) only once its dataref reads inoperative.
+constexpr int kFailureInop = 6;
+
+// True when a failure_enum dataref reports the system inoperative. A missing
+// dataref (null) reads as healthy so the glass is never stuck red-X'd on
+// airframes that don't expose that failure.
+bool failedInop(XPLMDataRef ref) {
+  return ref != nullptr && XPLMGetDatai(ref) == kFailureInop;
+}
+
 // X-Plane 12 transponder_mode enum (off=0, stdby=1, on=2, alt=3, test=4, with
 // 6/7 the TCAS traffic modes). The G1000 annunciates Mode C as ALT, and the
 // traffic modes still squawk altitude, so they map to ALT / TA / TA-RA rather
@@ -347,7 +359,21 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
 
   transponderCode_ = XPLMFindDataRef(datarefs::kTransponderCode);
   transponderMode_ = XPLMFindDataRef(datarefs::kTransponderMode);
+  batteryMasterOn_ = XPLMFindDataRef(datarefs::kBatteryMasterOn);
+  avionicsPowerOn_ = XPLMFindDataRef(datarefs::kAvionicsPowerOn);
+
+  failAttitude_ = XPLMFindDataRef(datarefs::kFailAttitude);
+  failHeading_ = XPLMFindDataRef(datarefs::kFailHeading);
+  failAirspeed_ = XPLMFindDataRef(datarefs::kFailAirspeed);
+  failAltimeter_ = XPLMFindDataRef(datarefs::kFailAltimeter);
+  failVerticalSpeed_ = XPLMFindDataRef(datarefs::kFailVerticalSpeed);
+  failNav1_ = XPLMFindDataRef(datarefs::kFailNav1);
+  failNav2_ = XPLMFindDataRef(datarefs::kFailNav2);
+  failCom1_ = XPLMFindDataRef(datarefs::kFailCom1);
+  failCom2_ = XPLMFindDataRef(datarefs::kFailCom2);
+  failTransponder_ = XPLMFindDataRef(datarefs::kFailTransponder);
   acfRelativePath_ = XPLMFindDataRef("sim/aircraft/view/acf_relative_path");
+  acfIcao_ = XPLMFindDataRef("sim/aircraft/view/acf_ICAO");
 
   rebuildEisBindings();
 }
@@ -365,22 +391,43 @@ void DatarefDataSource::rebuildEisBindings() {
   }
 }
 
-void DatarefDataSource::updateAircraftEisPath() {
-  if (acfRelativePath_ == nullptr) return;
+void DatarefDataSource::updateAircraftProfile() {
+  std::string acfPath;
+  if (acfRelativePath_ != nullptr) {
+    char buf[1024] = {};
+    const int n =
+        XPLMGetDatab(acfRelativePath_, buf, 0, static_cast<int>(sizeof(buf)) - 1);
+    if (n > 0) {
+      buf[n] = '\0';
+      acfPath = buf;
+    }
+  }
 
-  char buf[1024] = {};
-  const int n = XPLMGetDatab(acfRelativePath_, buf, 0, static_cast<int>(sizeof(buf)) - 1);
-  if (n <= 0) return;
-  buf[n] = '\0';
-  const std::string acfPath(buf);
-  if (acfPath == lastAircraftAcfPath_) return;
+  std::string icao;
+  if (acfIcao_ != nullptr) {
+    // acf_ICAO is a fixed 40-byte string field, NUL-padded.
+    char buf[64] = {};
+    const int n =
+        XPLMGetDatab(acfIcao_, buf, 0, static_cast<int>(sizeof(buf)) - 1);
+    if (n > 0) {
+      buf[n] = '\0';
+      icao = buf;
+    }
+  }
+
+  if (acfPath == lastAircraftAcfPath_ && icao == lastAircraftIcao_) return;
   lastAircraftAcfPath_ = acfPath;
+  lastAircraftIcao_ = icao;
 
   // Re-probe the radar fit for the newly loaded airframe.
   weather_.resetEquipment();
 
+  // Swap the EIS engine page and the checklists to the new aircraft's profile.
   if (eisSource_ != nullptr) {
-    eisSource_->setAircraftAcfRelativePath(acfPath);
+    eisSource_->setAircraftIdentity(icao, acfPath);
+  }
+  if (checklistSource_ != nullptr) {
+    checklistSource_->setAircraftIdentity(icao, acfPath);
   }
 }
 
@@ -475,13 +522,16 @@ void DatarefDataSource::loadAptDatAsync() {
 
 void DatarefDataSource::update(double dtSeconds) {
   ensureInstallDataLoaded();
-  updateAircraftEisPath();
+  updateAircraftProfile();
   if (eisSource_ != nullptr) {
     eisSource_->refreshIfChanged();
     if (eisSource_->ready() &&
         eisBindings_.size() != eisSource_->layout().bindings.size()) {
       rebuildEisBindings();
     }
+  }
+  if (checklistSource_ != nullptr) {
+    checklistSource_->refreshIfChanged();
   }
 
   if (airspeed_) data_.airspeedKts = XPLMGetDataf(airspeed_);
@@ -526,6 +576,29 @@ void DatarefDataSource::update(double dtSeconds) {
   if (transponderCode_) data_.transponderCode = XPLMGetDatai(transponderCode_);
   if (transponderMode_)
     data_.transponderMode = xpdrModeString(XPLMGetDatai(transponderMode_));
+
+  // Per-instrument failures: each gauge/box red-X's when its X-Plane failure
+  // dataref trips (matching the standalone UDP shell). The AHRS feeds attitude
+  // + heading; the ADC feeds the air-data tapes; radios/transponder fail on
+  // their own.
+  data_.attitudeValid = !failedInop(failAttitude_);
+  data_.headingValid = !failedInop(failHeading_);
+  data_.airspeedValid = !failedInop(failAirspeed_);
+  data_.altitudeValid = !failedInop(failAltimeter_);
+  data_.verticalSpeedValid = !failedInop(failVerticalSpeed_);
+  data_.nav1Valid = !failedInop(failNav1_);
+  data_.nav2Valid = !failedInop(failNav2_);
+  data_.com1Valid = !failedInop(failCom1_);
+  data_.com2Valid = !failedInop(failCom2_);
+  data_.transponderValid = !failedInop(failTransponder_);
+
+  // GDU power: the PFD follows the master switch, the MFD the avionics master.
+  // Default to powered when a switch dataref is missing so the glass is never
+  // stuck dark on airframes that don't expose it.
+  data_.masterPowerOn =
+      batteryMasterOn_ == nullptr || XPLMGetDatai(batteryMasterOn_) != 0;
+  data_.avionicsPowerOn =
+      avionicsPowerOn_ == nullptr || XPLMGetDatai(avionicsPowerOn_) != 0;
 
   // EIS engine/fuel/electrical indicators for the MFD engine strip.
   for (const EisBinding& b : eisBindings_) {

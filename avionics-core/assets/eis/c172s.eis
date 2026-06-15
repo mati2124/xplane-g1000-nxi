@@ -2,41 +2,47 @@
 # Pilot's Guide Section 3.1. Ship this file (or g1000_eis.txt) beside your .acf.
 # Format: TITLE / SECTION / GAUGE / BIND — see avionics-core/include/avionics/Eis.h.
 
-TITLE ENGINE
-
+# Tachometer: scale 0-2700 (redline = end of scale). The green normal band and
+# the red caution band are contiguous and configurable here; the renderer draws
+# them wide enough to cover the white track in those zones.
 GAUGE RPM_DIAL
   CHANNEL eng.rpm
-  MIN 0 MAX 3000
+  MIN 0 MAX 2700
   REDLINE 2700
   BAND GREEN 2100 2500
-  BAND RED 2700 3000
+  BAND RED 2500 2700
 
+# FFLOW carries a combed scale with "0"/"20" end numerals on the real unit.
 GAUGE BAR
   LABEL FFLOW GPH
   CHANNEL eng.fuel_flow
-  MIN 0 MAX 15
-  BAND GREEN 0 12
+  MIN 0 MAX 20
+  TICKS 10
+  SCALE
+  BAND GREEN 0 11
 
 GAUGE BAR
-  LABEL OIL PRES
+  LABEL Oil PRES
   CHANNEL eng.oil_pres
   MIN 0 MAX 115
   BAND RED 0 20
-  BAND GREEN 50 90
+  BAND GREEN 50 82
   BAND RED 110 115
 
 GAUGE BAR
-  LABEL OIL TEMP
+  LABEL Oil TEMP
   CHANNEL eng.oil_temp
   MIN 100 MAX 250
   REDLINE 245
-  BAND GREEN 100 245
+  BAND GREEN 110 245
   BAND RED 245 250
 
+# EGT is a combed bar with no band fill or end numerals on the real unit.
 GAUGE BAR
-  LABEL EGT °F
+  LABEL EGT
   CHANNEL eng.egt
   MIN 1250 MAX 1650
+  TICKS 8
 
 GAUGE BAR
   LABEL VAC
@@ -44,20 +50,18 @@ GAUGE BAR
   MIN 3 MAX 7
   BAND GREEN 4.5 5.5
 
-SECTION FUEL QTY GAL
-GAUGE BAR
-  LABEL L
-  CHANNEL fuel.qty_left
-  MIN 0 MAX 24
+# Single shared fuel bar: L pointer above the track, R below (Fig. 3-17). The
+# amber caution boundary is an estimate; the Pilot's Guide does not publish the
+# exact gallon thresholds.
+SECTION
+GAUGE FUEL_QTY
+  LABEL Fuel QTY GAL
+  LEFT L fuel.qty_left
+  RIGHT R fuel.qty_right
+  MIN 0 MAX 28
   BAND RED 0 1.5
-  BAND GREEN 1.5 24
-
-GAUGE BAR
-  LABEL R
-  CHANNEL fuel.qty_right
-  MIN 0 MAX 24
-  BAND RED 0 1.5
-  BAND GREEN 1.5 24
+  BAND YELLOW 1.5 5
+  BAND GREEN 5 28
 
 SECTION
 GAUGE READOUT
@@ -65,15 +69,15 @@ GAUGE READOUT
   CHANNEL eng.hours
   FORMAT %.1f
 
-SECTION ELECTRICAL
+SECTION Electrical
 GAUGE ELECTRICAL
-  LABEL BUS VOLTS
+  LABEL Bus Volts
   LEFT M elec.bus_main
   RIGHT E elec.bus_ess
   FORMAT %.1f
 
 GAUGE ELECTRICAL
-  LABEL BATT AMPS
+  LABEL Battery Amps
   LEFT M elec.batt_main
   RIGHT S elec.batt_standby
   FORMAT %+.0f

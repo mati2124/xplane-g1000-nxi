@@ -61,10 +61,10 @@
     },
     {
       "label": "Run PFD (demo)",
-      "detail": "Build, then launch the PFD window only, booting into the demo feed.",
+      "detail": "Build, then launch the PFD window only, booting into the demo feed (Debug menu enabled).",
       "type": "shell",
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-mfd", "--demo"],
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
       "options": { "cwd": "${workspaceFolder}" },
       "windows": {
         "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
@@ -82,10 +82,10 @@
     },
     {
       "label": "Run MFD (demo)",
-      "detail": "Build, then launch the MFD window only, booting into the demo feed.",
+      "detail": "Build, then launch the MFD window only, booting into the demo feed (Debug menu enabled).",
       "type": "shell",
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-pfd", "--demo"],
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
       "options": { "cwd": "${workspaceFolder}" },
       "windows": {
         "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
@@ -105,6 +105,55 @@
       "label": "Run PFD + MFD (demo)",
       "detail": "Build, then launch both display tasks together in demo mode.",
       "dependsOn": ["Run PFD (demo)", "Run MFD (demo)"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD (X-Plane)",
+      "detail": "Build, then launch the PFD window only against the live X-Plane feed (Debug menu enabled).",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--debug-menu"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run MFD (X-Plane)",
+      "detail": "Build, then launch the MFD window only against the live X-Plane feed (Debug menu enabled).",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--debug-menu"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD + MFD (X-Plane)",
+      "detail": "Build, then launch both display tasks together against the live X-Plane feed.",
+      "dependsOn": ["Run PFD (X-Plane)", "Run MFD (X-Plane)"],
       "dependsOrder": "parallel",
       "problemMatcher": []
     }

@@ -254,12 +254,14 @@ only** for the displays and still drive them from the cockpit.
 ## Per-aircraft checklists & engine display (EIS)
 
 Neither the MFD **Checklist** page group nor the **EIS** engine strip is
-hardcoded: both are plain-text files that an aircraft author ships with the
-airframe, so the displayed checklists and the engine gauges change with the
-aircraft without rebuilding the avionics. Both files are line-oriented, ignore
-blank lines and `#` comments, and **hot-reload** — edit the file while the
-display is running and it re-parses on the next frame (the store watches the
-file's modification time), so you can iterate without a restart.
+hardcoded: both are plain-text files, so the displayed checklists and the engine
+gauges change with the aircraft without rebuilding the avionics. An aircraft
+author can ship them with the airframe, **or any user can add their own for any
+aircraft with no rebuild and no code change** by dropping an ICAO-keyed file into
+the plugin's assets folder (see the load-order lists below). Both files are
+line-oriented, ignore blank lines and `#` comments, and **hot-reload** — edit the
+file while the display is running and it re-parses on the next frame (the store
+watches the file's modification time), so you can iterate without a restart.
 
 The bundled samples double as the format reference:
 
@@ -293,9 +295,18 @@ GROUP NORMAL PROCEDURES
   response are split on the first ` : ` (space-colon-space). A line with no
   ` : ` becomes an item with an empty response (a note).
 
-**Selecting the file (standalone shell):** pass `--checklist PATH`; with no
-flag the bundled sample (`shell-standalone/assets/checklists.txt`) is used so
-the page is populated during development.
+**Where the checklist file is loaded from** (first match wins):
+
+1. An explicit selector — `--checklist PATH` on the standalone shell.
+2. `g1000_checklist.txt` next to the loaded `.acf` (in-sim plugin only).
+3. `<acf_stem>_checklist.txt` next to the loaded `.acf` (in-sim plugin only).
+4. A **user-droppable, ICAO-keyed file** in the plugin's assets folder:
+   `Resources/plugins/xplane-avionics/assets/checklists/<icao>.checklist`, where
+   `<icao>` is the aircraft's `acf_ICAO` type code lowercased (e.g. `tbm9`,
+   `b738`). This adds support for **any** aircraft with no rebuild and no code
+   change, and overrides the bundled default.
+5. The bundled checklist for the detected aircraft profile (defaults to the
+   Cessna piston set).
 
 ```bash
 ./build/shell-standalone/avionics-standalone --checklist /path/to/my_aircraft_checklists.txt
@@ -356,13 +367,20 @@ the gauge's display units with a `scale` and `offset` (e.g. `1.8`/`32` for
 1. An explicit selector — `--eis PATH` on the standalone shell.
 2. `g1000_eis.txt` next to the loaded `.acf` (in-sim plugin only).
 3. `<acf_stem>_eis.txt` next to the loaded `.acf` (in-sim plugin only).
-4. The build-time bundled default (`avionics-core/assets/eis/c172s.eis`).
+4. A **user-droppable, ICAO-keyed file** in the plugin's assets folder:
+   `Resources/plugins/xplane-avionics/assets/eis/<icao>.eis`, where `<icao>` is
+   the aircraft's `acf_ICAO` type code lowercased (e.g. `tbm9`, `b738`). This
+   adds support for **any** aircraft with no rebuild and no code change, and
+   overrides the bundled default.
+5. The build-time bundled default (`avionics-core/assets/eis/c172s.eis`).
 
 The **in-sim X-Plane plugin** resolves the per-aircraft file automatically from
-`sim/aircraft/view/acf_relative_path`, so dropping a `g1000_eis.txt` (or
-`<acfname>_eis.txt`) beside the aircraft's `.acf` is enough — the strip switches
-when you change aircraft. The **standalone shell over UDP** has no aircraft path
-to key off, so point it at the file explicitly:
+`sim/aircraft/view/acf_relative_path` and `acf_ICAO`, so either dropping a
+`g1000_eis.txt` (or `<acfname>_eis.txt`) beside the aircraft's `.acf`, or adding
+an ICAO-keyed `assets/eis/<icao>.eis` in the plugin folder, is enough — the
+strip switches when you change aircraft (and hot-reloads on edit). The
+**standalone shell over UDP** has no aircraft path to key off, so point it at
+the file explicitly:
 
 ```bash
 ./build/shell-standalone/avionics-standalone --eis /path/to/MyAircraft/g1000_eis.txt

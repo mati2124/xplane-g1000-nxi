@@ -56,7 +56,10 @@ alongside the navigation map.
 
 Engine display layouts are parsed in [`EisStore`](../../../include/avionics/EisStore.h)
 / [`EisParser`](../../../src/EisParser.cpp) at the core level; this folder only
-**renders** the strip from `EisLayout` + live `FlightData`.
+**renders** the strip from `EisLayout` + live `FlightData`. The per-aircraft file
+is selected by `EisStore` (explicit selector → beside the `.acf` → user-droppable
+ICAO-keyed `assets/eis/<icao>.eis` → bundled default); see the EIS section of the
+[top-level README](../../../../README.md) for the full load order and format.
 
 ## Adding a page
 

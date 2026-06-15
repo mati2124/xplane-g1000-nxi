@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -734,8 +735,23 @@ class SoftkeyController {
   bool alertSoftkeyActive_ = false;
   AlertLevel alertSoftkeyLevel_ = AlertLevel::Advisory;
 
+  // Acknowledged alerts, keyed by message text and kept across the per-frame
+  // rebuild so the Warning/Caution softkey (annunciation-window CAS messages)
+  // and the Messages softkey (Alerts-window advisories) stop flashing once the
+  // pilot presses them. Entries whose condition has cleared are pruned in
+  // rebuildAlerts so a later re-occurrence flashes again.
+  std::set<std::string> acknowledgedAnnunciations_;
+  std::set<std::string> acknowledgedMessages_;
+
+  // Handles a press of the dynamic Alerts/Warning/Caution/Messages softkey:
+  // while it is flashing, the press acknowledges the displayed alert level
+  // (and, for Messages, opens the Alerts window); otherwise it toggles the
+  // Alerts window (Pilot's Guide, Appendix A).
+  void pressAlertsSoftkey();
+
   // Recomputes the dynamic Alerts-softkey label and flash state from the
-  // current alert lists; called each frame after the alert lists are rebuilt.
+  // current (unacknowledged) alert lists; called each frame after the alert
+  // lists are rebuilt.
   void updateAlertSoftkey();
 };
 

@@ -6,7 +6,7 @@
       "request": "launch",
       "name": "Debug PFD (demo)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-mfd", "--demo"],
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -15,7 +15,7 @@
       "request": "launch",
       "name": "Debug MFD (demo)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-pfd", "--demo"],
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -24,7 +24,7 @@
       "request": "launch",
       "name": "Debug PFD (X-Plane)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-mfd"],
+      "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -33,7 +33,7 @@
       "request": "launch",
       "name": "Debug MFD (X-Plane)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-pfd"],
+      "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -42,7 +42,7 @@
       "request": "launch",
       "name": "Debug PFD (demo, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-mfd", "--demo"],
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -51,7 +51,7 @@
       "request": "launch",
       "name": "Debug MFD (demo, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-pfd", "--demo"],
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -60,7 +60,7 @@
       "request": "launch",
       "name": "Debug PFD (X-Plane, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-mfd"],
+      "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -69,7 +69,7 @@
       "request": "launch",
       "name": "Debug MFD (X-Plane, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-pfd"],
+      "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build standalone"
     },
@@ -79,7 +79,7 @@
       "name": "Debug PFD (demo, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-mfd", "--demo"],
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -88,7 +88,7 @@
       "name": "Debug MFD (demo, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-pfd", "--demo"],
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -97,7 +97,7 @@
       "name": "Debug PFD (X-Plane, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-mfd"],
+      "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -106,7 +106,7 @@
       "name": "Debug MFD (X-Plane, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
-      "args": ["--no-pfd"],
+      "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -115,7 +115,7 @@
       "name": "Debug PFD (demo, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-mfd", "--demo"],
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -124,7 +124,7 @@
       "name": "Debug MFD (demo, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-pfd", "--demo"],
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -133,7 +133,7 @@
       "name": "Debug PFD (X-Plane, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-mfd"],
+      "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     },
     {
@@ -142,7 +142,7 @@
       "name": "Debug MFD (X-Plane, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
-      "args": ["--no-pfd"],
+      "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}"
     }
   ],

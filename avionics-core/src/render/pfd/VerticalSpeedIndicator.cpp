@@ -1,46 +1,124 @@
 #include "render/pfd/PfdInternal.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 namespace avionics::pfd {
 namespace {
 
-// VSI pointer: navy tag on the VSI tape with a small left caret (mirroring the
-// airspeed/altitude readout carets). The tip sits on the altimeter boundary so
-// the body and digits never cover the altitude black pointer (G1000 NXi).
+// VSI pointer: a black readout box on the VSI tape with a full-height left
+// caret whose tip sits on the altimeter boundary, and rounded outer (right)
+// corners matching the IAS/altitude readout boxes. The body carries the
+// vertical-speed value, right-aligned (G1000 NXi VS pointer).
 void drawVsiPointer(Renderer& r, float x, float vw, float pointerY,
                     float displayH, const std::string& text) {
   const float fontSize = fontPx(wt::kVsi, displayH);
   const float h = fontSize * 1.5f;
-  const float w = vw * 1.5f;
   const float top = pointerY - h * 0.5f;
   const float bottom = pointerY + h * 0.5f;
-  const float caretDepth = h * 0.14f;
-  const float caretHalfH = h * 0.20f;
+  const float caretDepth = h * 0.42f;
+  const float cornerR = h * 0.18f;
   const float tipX = x;
   const float bodyLeft = x + caretDepth;
+  // The VS window is a fixed-size readout box: its width does not change with
+  // the value and does not shrink at 0 fpm (G1000 NXi / WT constant-width
+  // vsi-pointer). The value, when shown, is centered inside it.
+  const float w = vw * kVsiWindowWidthFraction - caretDepth;
   const float right = bodyLeft + w;
 
-  const Point body[5] = {{bodyLeft, top},
-                         {right, top},
-                         {right, bottom},
-                         {bodyLeft, bottom},
-                         {tipX, pointerY}};
-  r.fillPolygon(body, 5, colors::kVsiBox);
-  const Point outline[8] = {{bodyLeft, top},
-                            {right, top},
-                            {right, bottom},
-                            {bodyLeft, bottom},
-                            {bodyLeft, pointerY + caretHalfH},
-                            {tipX, pointerY},
-                            {bodyLeft, pointerY - caretHalfH},
-                            {bodyLeft, top}};
-  r.strokePolyline(outline, 8, 2.0f, colors::kWhite);
+  // Arrow silhouette (caret tip on the inner edge, body extending right), with
+  // only the two outer corners rounded so the pointer shares the readout-box
+  // corner style; the caret arms and tip stay sharp.
+  const std::vector<Point> poly = {{tipX, pointerY},
+                                   {bodyLeft, top},
+                                   {right, top},
+                                   {right, bottom},
+                                   {bodyLeft, bottom}};
+  const std::vector<float> radii = {0.0f, 0.0f, cornerR, cornerR, 0.0f};
+  std::vector<Point> shape = roundPolygonCorners(poly, radii);
+  r.fillPolygon(shape.data(), static_cast<int>(shape.size()),
+                colors::kReadoutBox);
+  shape.push_back(shape.front());
+  r.strokePolyline(shape.data(), static_cast<int>(shape.size()), 2.0f,
+                   colors::kWhite);
 
   if (!text.empty()) {
     r.fillText(bodyLeft + w * 0.5f, pointerY, text, fontSize, TextAlign::Center,
                colors::kWhite);
+  }
+}
+
+// Translucent backing for the VSI tape: a roughly uniform semi-transparent dark
+// overlay (a touch darker at the top/bottom edges) with BOTH outer (right)
+// corners rounded -- the VSI's bottom is exposed, unlike the airspeed/altimeter
+// tapes whose bottom readout box covers their outer-bottom corner. A notch is
+// cut out of the overlay at the 0-fpm line so the SVT reads through it: a
+// left-pointing caret (tip on the inner edge under the zero chevron) opening
+// into a body that runs all the way out to the outer edge. The compact pointer
+// drops into the inner part of this notch at 0 fpm, with the SVT showing through
+// to the right of the pointer; off the 0-line the empty zero window shows the
+// SVT through it (G1000 NXi VSI).
+void drawVsiTapeBackground(Renderer& r, float x, float top, float w, float h,
+                           float cy, float winHalf, float caretDepth,
+                           float bodyRight, float cornerR) {
+  const Color edge = colors::kTapeEdge;
+  // Keep the middle translucent (not clear) so the cutout reads against the
+  // backing; the opaque pointer covers it at 0 fpm.
+  const Color mid{edge.r, edge.g, edge.b, edge.a * 0.72f};
+  const float bottom = top + h;
+  const float cornerX = x + w - cornerR;  // outer (right) edge corner column
+  const float winTop = cy - winHalf;
+  const float winBot = cy + winHalf;
+
+  // Above the window: full-width gradient edge@top -> mid@cy, rounded top-right
+  // corner (skip the rad x rad corner square, then fill it with a quarter disc).
+  r.fillRectVerticalGradient(x, top, w - cornerR, winTop - top, top, cy, edge,
+                             mid);
+  r.fillRectVerticalGradient(cornerX, top + cornerR, cornerR,
+                             winTop - (top + cornerR), top, cy, edge, mid);
+  r.save();
+  r.clip(cornerX, top, cornerR, cornerR);
+  r.fillCircle(cornerX, top + cornerR, cornerR, edge);
+  r.restore();
+
+  // Below the window: full-width gradient mid@cy -> edge@bottom, rounded BR.
+  r.fillRectVerticalGradient(x, winBot, w - cornerR, bottom - winBot, cy, bottom,
+                             mid, edge);
+  r.fillRectVerticalGradient(cornerX, winBot, cornerR,
+                             (bottom - cornerR) - winBot, cy, bottom, mid, edge);
+  r.save();
+  r.clip(cornerX, bottom - cornerR, cornerR, cornerR);
+  r.fillCircle(cornerX, bottom - cornerR, cornerR, edge);
+  r.restore();
+
+  // Window band: leave the pointer-shaped region clear. Each row keeps the dark
+  // backing only on the left caret sliver [x, caretBoundary] and to the right of
+  // the pointer body [x+bodyRight, outer edge]; the middle is the cutout. The
+  // caret boundary runs from the inner edge at the 0-line out to caretDepth at
+  // the band edges, tracing the pointer's caret.
+  const int strips = std::max(8, std::min(48, static_cast<int>(winHalf)));
+  const float dy = winHalf / static_cast<float>(strips);
+  const float rightW = (x + w) - (x + bodyRight);  // backing right of the body
+  for (int half = 0; half < 2; ++half) {
+    const Color a = (half == 0) ? edge : mid;
+    const Color b = (half == 0) ? mid : edge;
+    const float gradTop = (half == 0) ? top : cy;
+    const float gradBot = (half == 0) ? cy : bottom;
+    for (int i = 0; i < strips; ++i) {
+      const float sy =
+          (half == 0) ? (winTop + static_cast<float>(i) * dy)
+                      : (cy + static_cast<float>(i) * dy);
+      const float u = std::min(1.0f, std::fabs((sy + dy * 0.5f) - cy) / winHalf);
+      const float sliver = caretDepth * u;  // left caret sliver width
+      if (sliver > 0.3f) {
+        r.fillRectVerticalGradient(x, sy, sliver, dy, gradTop, gradBot, a, b);
+      }
+      if (rightW > 0.3f) {
+        r.fillRectVerticalGradient(x + bodyRight, sy, rightW, dy, gradTop,
+                                   gradBot, a, b);
+      }
+    }
   }
 }
 
@@ -88,10 +166,22 @@ void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
 
   r.save();
   r.clip(x, stripTop, vw, stripH);
-  // Same translucent backing as the airspeed/altitude tapes: dark at the top and
-  // bottom edges and clear through the middle, so the attitude sky/ground shows
-  // through the VSI exactly as it does behind the altitude tape (G1000 NXi).
-  drawTapeBackground(r, x, stripTop, vw, stripH, colors::kTapeEdge);
+  // Translucent backing with both outer (right) corners rounded and a
+  // pointer-window-shaped cutout at the 0-fpm line. The cutout mirrors the VS
+  // pointer's geometry (height = vsiFontSize * 1.5, caret depth, body width)
+  // inset by a hair so the opaque pointer drops into the notch and covers it at
+  // 0 fpm with no SVT leaking around it (G1000 NXi).
+  const float cornerR = fontPx(kTapeCornerRadiusWt, displayH);
+  const float vsiFontSize = fontPx(wt::kVsi, displayH);
+  const float caretDepth = vsiFontSize * 1.5f * 0.42f;  // == pointer caretDepth
+  const float inset = vsiFontSize * 0.1f;
+  const float winHalf = vsiFontSize * 0.75f - inset;  // == pointer half-height
+  // The cutout runs the full width out to the outer edge of the tape; the
+  // fixed-size pointer drops into it at 0 fpm and the SVT shows through the
+  // notch once the pointer climbs/descends away, as on the real unit.
+  const float bodyRight = vw;
+  drawVsiTapeBackground(r, x, stripTop, vw, stripH, cy, winHalf, caretDepth,
+                        bodyRight, cornerR);
   const float midBorderY = stripTop + stripH * 0.5f;
   r.strokeLine(x, stripTop, x, midBorderY, 1.5f, colors::kTapeTopBorder);
   r.strokeLine(x, midBorderY, x, stripTop + stripH, 1.5f,
@@ -100,10 +190,10 @@ void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
   const float minorLen = vw * 0.30f;
   const float majorLen = vw * 0.55f;
   const float labelSize = fontPx(wt::kVsi, displayH);
-  const int ticks[] = {-2000, -1500, -1000, -500, 500, 1000, 1500, 2000};
+  const int ticks[] = {-4000, -3000, -2000, -1000, 1000, 2000, 3000, 4000};
   for (int f : ticks) {
     const float y = cy - static_cast<float>(f) * pixelsPerFpm;
-    const bool major = (f % 1000) == 0;
+    const bool major = (f % static_cast<int>(kVsiMajorFpm)) == 0;
     const float len = major ? majorLen : minorLen;
     r.strokeLine(x, y, x + len, y, major ? 2.0f : 1.0f, colors::kWhite);
     if (major) {
@@ -113,7 +203,13 @@ void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
     }
   }
 
-  r.strokeLine(x, cy, x + vw, cy, 1.5f, colors::kWhite);
+  // Zero reference: a small white chevron at the inner edge pointing toward the
+  // altimeter (G1000 NXi VSI zero notch), in place of a full-width center line.
+  const float zReach = vw * 0.30f;
+  const float zHalf = vw * 0.22f;
+  const Point zeroMark[3] = {
+      {x + zReach, cy - zHalf}, {x, cy}, {x + zReach, cy + zHalf}};
+  r.strokePolyline(zeroMark, 3, 2.0f, colors::kWhite);
   if (reqVsValid) {
     drawRequiredVsChevron(r, x, vw, stripTop, stripH, cy, pixelsPerFpm,
                           reqVsFpm);
@@ -141,7 +237,9 @@ void drawVsi(Renderer& r, float x, float vw, float stripTop, float stripH,
 void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
                                 const FlightData& d, float h) {
   if (!d.verticalSpeedValid) {
-    drawFailureX(r, L.vsiX, L.vsiTop, L.vsiW, L.vsiH, "", h);
+    // VSI sits right of the altimeter; its scale ticks line the inner (left)
+    // edge and are retained under the failure X (NXi Fig 9-2).
+    drawFailureX(r, L.vsiX, L.vsiTop, L.vsiW, L.vsiH, "", h, FailTicks::LeftEdge);
     return;
   }
   drawVsi(r, L.vsiX, L.vsiW, L.vsiTop, L.vsiH, L.attCy, h, d.verticalSpeedFpm,

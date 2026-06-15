@@ -186,6 +186,11 @@ enum DiscreteRef {
   kDiscFailAirspeed,
   kDiscFailAltitude,
   kDiscFailVerticalSpeed,
+  kDiscFailNav1,
+  kDiscFailNav2,
+  kDiscFailCom1,
+  kDiscFailCom2,
+  kDiscFailTransponder,
   kDiscCasLowVacuum,
   kDiscCasLowVoltage,
   kDiscCasFuelLow,
@@ -207,7 +212,10 @@ const char* const kDiscretePaths[kDiscreteCount] = {
     datarefs::kYawDamperOn,          datarefs::kHsiFromTo,
     datarefs::kFailAttitude,         datarefs::kFailHeading,
     datarefs::kFailAirspeed,         datarefs::kFailAltimeter,
-    datarefs::kFailVerticalSpeed,    datarefs::kAnnunLowVacuum,
+    datarefs::kFailVerticalSpeed,    datarefs::kFailNav1,
+    datarefs::kFailNav2,             datarefs::kFailCom1,
+    datarefs::kFailCom2,             datarefs::kFailTransponder,
+    datarefs::kAnnunLowVacuum,
     datarefs::kAnnunLowVoltage,      datarefs::kAnnunFuelLow,
     datarefs::kAnnunOilPressureLow,  datarefs::kAnnunOilTempHigh,
     datarefs::kAnnunFuelPressureLow, datarefs::kAnnunPitotHeat,
@@ -425,6 +433,21 @@ void applyDiscrete(FlightData& d, int discrete, float value) {
     case kDiscFailVerticalSpeed:
       d.verticalSpeedValid = v != kFailureInop;
       break;
+    case kDiscFailNav1:
+      d.nav1Valid = v != kFailureInop;
+      break;
+    case kDiscFailNav2:
+      d.nav2Valid = v != kFailureInop;
+      break;
+    case kDiscFailCom1:
+      d.com1Valid = v != kFailureInop;
+      break;
+    case kDiscFailCom2:
+      d.com2Valid = v != kFailureInop;
+      break;
+    case kDiscFailTransponder:
+      d.transponderValid = v != kFailureInop;
+      break;
     case kDiscCasLowVacuum:
       d.casLowVacuum = v != 0;
       break;
@@ -480,6 +503,11 @@ void copyDiscreteFields(FlightData& dst, const FlightData& src) {
   dst.airspeedValid = src.airspeedValid;
   dst.altitudeValid = src.altitudeValid;
   dst.verticalSpeedValid = src.verticalSpeedValid;
+  dst.nav1Valid = src.nav1Valid;
+  dst.nav2Valid = src.nav2Valid;
+  dst.com1Valid = src.com1Valid;
+  dst.com2Valid = src.com2Valid;
+  dst.transponderValid = src.transponderValid;
   dst.casLowVacuum = src.casLowVacuum;
   dst.casLowVoltage = src.casLowVoltage;
   dst.casFuelLow = src.casFuelLow;

@@ -23,6 +23,39 @@ constexpr const char* kKeyPfdWindowX = "pfdWindowX";
 constexpr const char* kKeyPfdWindowY = "pfdWindowY";
 constexpr const char* kKeyMfdWindowX = "mfdWindowX";
 constexpr const char* kKeyMfdWindowY = "mfdWindowY";
+constexpr const char* kKeyDebugDataSource = "debugDataSource";
+constexpr const char* kKeyDemoMasterPower = "demoMasterPower";
+constexpr const char* kKeyDemoAvionicsPower = "demoAvionicsPower";
+constexpr const char* kKeyDemoCasMessages = "demoCasMessages";
+
+// Stable text tokens for the persisted DebugDataSource selection.
+constexpr const char* kSourceXPlane = "xplane";
+constexpr const char* kSourceDemoGround = "demoGround";
+constexpr const char* kSourceDemoFlying = "demoFlying";
+constexpr const char* kSourceDemoTurbulence = "demoTurbulence";
+
+const char* DebugDataSourceToken(DebugDataSource source) {
+  switch (source) {
+    case DebugDataSource::XPlane:
+      return kSourceXPlane;
+    case DebugDataSource::DemoGround:
+      return kSourceDemoGround;
+    case DebugDataSource::DemoFlying:
+      return kSourceDemoFlying;
+    case DebugDataSource::DemoTurbulence:
+      return kSourceDemoTurbulence;
+  }
+  return kSourceXPlane;
+}
+
+DebugDataSource ParseDebugDataSource(const std::string& value,
+                                     DebugDataSource fallback) {
+  if (value == kSourceXPlane) return DebugDataSource::XPlane;
+  if (value == kSourceDemoGround) return DebugDataSource::DemoGround;
+  if (value == kSourceDemoFlying) return DebugDataSource::DemoFlying;
+  if (value == kSourceDemoTurbulence) return DebugDataSource::DemoTurbulence;
+  return fallback;
+}
 
 // Per-user config directory, following each platform's convention. Empty when
 // the environment does not point anywhere sensible (settings then no-op).
@@ -126,6 +159,18 @@ AppSettings LoadAppSettings() {
     } else if (key == kKeyMfdWindowY) {
       ParseWindowCoord(value, settings.mfdWindowY, coordsValid);
       ++windowCoords;
+    } else if (key == kKeyDebugDataSource) {
+      settings.debugDataSource =
+          ParseDebugDataSource(value, settings.debugDataSource);
+    } else if (key == kKeyDemoMasterPower) {
+      settings.demoMasterPowerOn =
+          ParseBool(value, settings.demoMasterPowerOn);
+    } else if (key == kKeyDemoAvionicsPower) {
+      settings.demoAvionicsPowerOn =
+          ParseBool(value, settings.demoAvionicsPowerOn);
+    } else if (key == kKeyDemoCasMessages) {
+      settings.demoCasMessagesOn =
+          ParseBool(value, settings.demoCasMessagesOn);
     } else {
       // Durable avionics display preferences are owned by the shared core, so
       // it parses its own keys; anything else is silently ignored.
@@ -158,6 +203,14 @@ void SaveAppSettings(const AppSettings& settings) {
       << '\n';
   out << kKeyPfdMonitor << '=' << settings.pfdMonitor << '\n';
   out << kKeyMfdMonitor << '=' << settings.mfdMonitor << '\n';
+  out << kKeyDebugDataSource << '='
+      << DebugDataSourceToken(settings.debugDataSource) << '\n';
+  out << kKeyDemoMasterPower << '='
+      << (settings.demoMasterPowerOn ? '1' : '0') << '\n';
+  out << kKeyDemoAvionicsPower << '='
+      << (settings.demoAvionicsPowerOn ? '1' : '0') << '\n';
+  out << kKeyDemoCasMessages << '='
+      << (settings.demoCasMessagesOn ? '1' : '0') << '\n';
   // Window coordinates are only written once a position has been captured, so
   // a fresh install never restores a bogus (0, 0) placement.
   if (settings.hasWindowPos) {

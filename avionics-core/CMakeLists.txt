@@ -3,9 +3,11 @@
 # without the X-Plane SDK or a windowing/GPU stack present.
 add_library(avionics-core STATIC
   src/AssetPaths.cpp
+  src/AircraftProfile.cpp
   src/UpdateChecker.cpp
   src/AvionicsEngine.cpp
   src/ChecklistParser.cpp
+  src/ChecklistStore.cpp
   src/EisParser.cpp
   src/EisLegacy.cpp
   src/EisStore.cpp
@@ -30,6 +32,7 @@ add_library(avionics-core STATIC
   src/render/SoftkeyBezel.cpp
   src/render/PrimaryFlightDisplay.cpp
   src/render/mfd/EisStrip.cpp
+  src/render/mfd/EisStripTurbofan.cpp
   src/render/mfd/MfdController.cpp
   src/render/mfd/MfdControllerChecklist.cpp
   src/render/mfd/MfdControllerPageMenu.cpp
@@ -117,4 +120,5 @@ target_include_directories(avionics-core PUBLIC
 target_include_directories(avionics-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(avionics-core PUBLIC cxx_std_17)
 target_compile_definitions(avionics-core PRIVATE
-  AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/assets/eis/c172s.eis")
+  AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/assets/eis/c172s.eis"
+  AVIONICS_CORE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")

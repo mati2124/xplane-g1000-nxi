@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <mutex>
 #include <sstream>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(AVIONICS_HAS_CURL)
@@ -144,12 +146,18 @@ UpdateInfo parseLatestReleaseJson(const std::string& jsonBody) {
   info.checksumsUrl = findReleaseAssetUrl(jsonBody, "SHA256SUMS", "");
 #if defined(_WIN32)
   info.installerUrl = findReleaseAssetUrl(jsonBody, "g1000nxi-setup-", ".exe");
+  info.pluginArchiveUrl =
+      findReleaseAssetUrl(jsonBody, "g1000nxi-plugin-windows-", ".zip");
 #elif defined(__APPLE__)
   info.installerUrl =
       findReleaseAssetUrl(jsonBody, "g1000nxi-installer-macos-", ".dmg");
+  info.pluginArchiveUrl =
+      findReleaseAssetUrl(jsonBody, "g1000nxi-plugin-macos-", ".zip");
 #elif defined(__linux__)
   info.installerUrl =
       findReleaseAssetUrl(jsonBody, "g1000nxi-installer-linux-", ".tar.gz");
+  info.pluginArchiveUrl =
+      findReleaseAssetUrl(jsonBody, "g1000nxi-plugin-linux-", ".zip");
 #endif
   return info;
 }
@@ -188,5 +196,32 @@ void checkForUpdatesAsync(std::function<void(UpdateInfo)> callback) {
   }).detach();
 }
 #endif
+
+namespace {
+// Guards the process-global advisory string, which the update-check worker
+// thread writes and the render thread reads each frame.
+std::mutex& updateAdvisoryMutex() {
+  static std::mutex m;
+  return m;
+}
+std::string& updateAdvisoryStorage() {
+  static std::string text;
+  return text;
+}
+}  // namespace
+
+std::string updateAdvisoryText(const std::string& latestVersion) {
+  return "UPDATE AVAILABLE v" + latestVersion;
+}
+
+void setUpdateAdvisory(std::string text) {
+  const std::lock_guard<std::mutex> lock(updateAdvisoryMutex());
+  updateAdvisoryStorage() = std::move(text);
+}
+
+std::string updateAdvisory() {
+  const std::lock_guard<std::mutex> lock(updateAdvisoryMutex());
+  return updateAdvisoryStorage();
+}
 
 }  // namespace avionics

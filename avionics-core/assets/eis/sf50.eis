@@ -1,0 +1,127 @@
+# G1000-family Engine Display - Cirrus Vision SF50 (Williams FJ33-5A turbofan)
+# Modeled on the Cirrus Perspective Touch+ by Garmin Pilot's Guide for the
+# Vision SF50 (190-02470-02 Rev. A), Section 3 / Figure 3-2 "EIS Display".
+# STYLE TURBOFAN selects the jet grid renderer (EisStripTurbofan.cpp); the
+# gauges below supply the per-parameter limits/bands/bugs and the BIND lines map
+# each channel to an X-Plane dataref. Ship this file (or g1000_eis.txt) beside
+# the .acf to override it per airframe.
+
+TITLE ENGINE
+STYLE TURBOFAN
+
+# Gauges marked PFD are the primary engine indications retained on the PFD's
+# reversionary (display-backup) strip when the MFD is dark: % thrust, N1, ITT,
+# oil pressure, and per-tank fuel. N2 and oil temperature stay on the full MFD
+# strip only (add PFD to their gauge to surface them in reversionary too).
+
+# % Thrust arc. Green band runs to Max Continuous Thrust (MCT); above MCT is an
+# open channel up to the small red over-limit tip, with the cyan takeoff-thrust
+# bug sitting in that channel (takeoff thrust exceeds MCT).
+GAUGE BAR
+  LABEL % Thrust
+  CHANNEL eng.thrust_pct
+  MIN 0 MAX 100
+  BUG 92
+  BAND GREEN 0 85
+  PFD
+
+# Turbine bars (left to right): N1, N2, ITT, Oil temp, Oil pressure.
+GAUGE BAR
+  LABEL N1%
+  CHANNEL eng.n1
+  MIN 0 MAX 110
+  REDLINE 102
+  BUG 95
+  BAND GREEN 20 100
+  BAND RED 102 110
+  FORMAT %.1f
+  PFD
+
+GAUGE BAR
+  LABEL N2%
+  CHANNEL eng.n2
+  MIN 0 MAX 110
+  REDLINE 102
+  BAND GREEN 50 100
+  BAND RED 102 110
+  FORMAT %.0f
+
+GAUGE BAR
+  LABEL ITT
+  CHANNEL eng.itt_c
+  MIN 0 MAX 1000
+  REDLINE 740
+  BAND GREEN 100 740
+  BAND RED 740 1000
+  FORMAT %.0f
+  PFD
+
+GAUGE BAR
+  LABEL Oil C
+  CHANNEL eng.oil_temp_c
+  MIN 0 MAX 150
+  REDLINE 121
+  BAND GREEN 20 121
+  BAND RED 121 150
+  FORMAT %.0f
+
+GAUGE BAR
+  LABEL Oil PSI
+  CHANNEL eng.oil_pres
+  MIN 0 MAX 150
+  BAND RED 0 40
+  BAND GREEN 40 115
+  BAND RED 115 150
+  FORMAT %.0f
+  PFD
+
+# Per-tank fuel quantity (gallons). Red low band near empty.
+GAUGE BAR
+  LABEL L
+  CHANNEL fuel.qty_left
+  MIN 0 MAX 150
+  BAND RED 0 5
+  BAND GREEN 5 150
+  FORMAT %.0f
+  PFD
+
+GAUGE BAR
+  LABEL R
+  CHANNEL fuel.qty_right
+  MIN 0 MAX 150
+  BAND RED 0 5
+  BAND GREEN 5 150
+  FORMAT %.0f
+  PFD
+
+# --- X-Plane dataref bindings (value = dataref * scale + offset). -----------
+# Turbine engine.
+BIND eng.thrust_pct sim/cockpit2/engine/actuators/throttle_ratio[0] 100 0
+BIND eng.n1 sim/cockpit2/engine/indicators/N1_percent[0] 1 0
+BIND eng.n2 sim/cockpit2/engine/indicators/N2_percent[0] 1 0
+BIND eng.itt_c sim/cockpit2/engine/indicators/ITT_deg_C[0] 1 0
+BIND eng.oil_temp_c sim/cockpit2/engine/indicators/oil_temperature_deg_C[0] 1 0
+BIND eng.oil_pres sim/cockpit2/engine/indicators/oil_pressure_psi[0] 1 0
+# Fuel: kg/sec -> GPH and kg -> US gal for Jet-A (~0.804 kg/L).
+BIND eng.fuel_flow sim/cockpit2/engine/indicators/fuel_flow_kg_sec[0] 1182.9 0
+BIND fuel.qty_left sim/cockpit2/fuel/fuel_quantity[0] 0.3286 0
+BIND fuel.qty_right sim/cockpit2/fuel/fuel_quantity[1] 0.3286 0
+BIND fuel.temp_c sim/cockpit2/temperature/outside_air_temp_degc 1 0
+# Electrical (emergency bus volts, battery 1/2 and generator 1/2 amps).
+BIND elec.emer_bus sim/cockpit2/electrical/bus_volts[1] 1 0
+BIND elec.batt1_amps sim/cockpit2/electrical/battery_amps[0] 1 0
+BIND elec.batt2_amps sim/cockpit2/electrical/battery_amps[1] 1 0
+BIND elec.gen1_amps sim/cockpit2/electrical/generator_amps[0] 1 0
+BIND elec.gen2_amps sim/cockpit2/electrical/generator_amps[1] 1 0
+# Airframe synoptics.
+BIND gear.nose sim/flightmodel2/gear/deploy_ratio[0] 1 0
+BIND gear.left sim/flightmodel2/gear/deploy_ratio[1] 1 0
+BIND gear.right sim/flightmodel2/gear/deploy_ratio[2] 1 0
+BIND trim.pitch sim/cockpit2/controls/elevator_trim 1 0
+BIND trim.roll sim/cockpit2/controls/aileron_trim 1 0
+BIND flaps.actual sim/cockpit2/controls/flap_ratio 1 0
+BIND flaps.commanded sim/cockpit2/controls/flap_handle_deploy_ratio 1 0
+BIND cabin.rate_fpm sim/cockpit2/pressurization/indicators/cabin_vvi_fpm 1 0
+BIND cabin.alt_ft sim/cockpit2/pressurization/indicators/cabin_altitude_ft 1 0
+BIND cabin.diff_psi sim/cockpit2/pressurization/indicators/pressure_differential_psi 1 0
+BIND cabin.dest_elev_ft sim/cockpit2/pressurization/actuators/cabin_altitude_ft 1 0

@@ -242,12 +242,17 @@ void drawFlightDirector(Renderer& r, float cx, float cy, float attVisW,
 }  // namespace
 
 void drawAttitude(Renderer& r, const Layout& L, const FlightData& d, float w,
-                  float h) {
-  // AHRS failure: no sky/ground/ladder. The attitude window goes black with a
-  // red X and an "AHRS" annunciation; the fixed aircraft symbol stays.
+                  float h, bool powerUp) {
+  // AHRS failure: no sky/ground/ladder. The attitude window fills maroon with a
+  // red X, but the white roll scale and the fixed yellow aircraft symbol stay
+  // drawn, matching the NXi (Maintenance Manual Fig 9-2, PFD Power-Up System
+  // Annunciations). The "AHRS" annunciation is shown for an in-flight failure
+  // but suppressed during power-up.
   if (!d.attitudeValid) {
     drawFailureX(r, L.attCx - L.attVisW * 0.5f, L.attTop, L.attVisW,
-                 L.attRegionH, "AHRS", h);
+                 L.attRegionH, powerUp ? "" : "AHRS", h);
+    drawRollScale(r, L.attCx, L.attCy, L.rollRadius, L.attRegionH, 0.0f);
+    drawRollPointer(r, L.attCx, L.attCy, L.rollRadius, L.attRegionH, 0.0f);
     drawAircraftSymbol(r, L.attCx, L.attCy, L.attVisW, L.attRegionH);
     return;
   }

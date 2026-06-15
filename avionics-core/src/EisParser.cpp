@@ -43,6 +43,10 @@ bool parseGaugeType(const std::string& token, EisGaugeType& out) {
     out = EisGaugeType::Bar;
     return true;
   }
+  if (token == "FUEL_QTY") {
+    out = EisGaugeType::FuelQty;
+    return true;
+  }
   if (token == "READOUT") {
     out = EisGaugeType::Readout;
     return true;
@@ -110,6 +114,16 @@ EisLayout parseEisText(const std::string& text) {
       inGauge = false;
       continue;
     }
+    if (matchKeyword(line, "STYLE", rest)) {
+      if (rest == "TURBOFAN") {
+        layout.style = EisStripStyle::Turbofan;
+      } else {
+        layout.style = EisStripStyle::Piston;
+      }
+      currentGauge = nullptr;
+      inGauge = false;
+      continue;
+    }
     if (matchKeyword(line, "SECTION", rest)) {
       layout.sections.push_back(EisSection{rest, {}});
       currentSection = &layout.sections.back();
@@ -172,6 +186,15 @@ EisLayout parseEisText(const std::string& text) {
     } else if (matchKeyword(line, "REDLINE", rest)) {
       currentGauge->redline = std::strtof(rest.c_str(), nullptr);
       currentGauge->hasRedline = true;
+    } else if (matchKeyword(line, "TICKS", rest)) {
+      currentGauge->ticks = std::atoi(rest.c_str());
+    } else if (matchKeyword(line, "SCALE", rest)) {
+      currentGauge->scale = true;
+    } else if (matchKeyword(line, "PFD", rest)) {
+      currentGauge->pfd = true;
+    } else if (matchKeyword(line, "BUG", rest)) {
+      currentGauge->bug = std::strtof(rest.c_str(), nullptr);
+      currentGauge->hasBug = true;
     } else if (matchKeyword(line, "BAND", rest)) {
       std::istringstream band(rest);
       std::string colorToken;
@@ -191,6 +214,7 @@ EisLayout parseEisText(const std::string& text) {
 std::vector<std::string> candidateEisPaths(
     const std::string& explicitSelector,
     const std::string& aircraftAcfRelativePath,
+    const std::string& typeKeyedPath,
     const std::string& defaultBundledPath) {
   std::vector<std::string> paths;
   namespace fs = std::filesystem;
@@ -212,6 +236,7 @@ std::vector<std::string> candidateEisPaths(
     }
   }
 
+  pushIfFile(typeKeyedPath);
   pushIfFile(defaultBundledPath);
   return paths;
 }

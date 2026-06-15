@@ -235,6 +235,14 @@ inline constexpr const char* kFailAltimeter =
     "sim/operation/failures/rel_ss_alt";
 inline constexpr const char* kFailVerticalSpeed =
     "sim/operation/failures/rel_ss_vvi";
+// Radio and transponder failures (failure_enum, 6 = inoperative). Each NAV/COM
+// box and the transponder can fail independently of the others.
+inline constexpr const char* kFailNav1 = "sim/operation/failures/rel_nav1";
+inline constexpr const char* kFailNav2 = "sim/operation/failures/rel_nav2";
+inline constexpr const char* kFailCom1 = "sim/operation/failures/rel_com1";
+inline constexpr const char* kFailCom2 = "sim/operation/failures/rel_com2";
+inline constexpr const char* kFailTransponder =
+    "sim/operation/failures/rel_xpndr";
 
 // Engine Indication System (EIS) sources for the MFD engine strip. The
 // per-engine indicators are float[8] arrays; we read element [0] (engine 1),
@@ -266,6 +274,14 @@ inline constexpr const char* kBatteryAmpsMain =
     "sim/cockpit2/electrical/battery_amps[0]";
 inline constexpr const char* kBatteryAmpsStandby =
     "sim/cockpit2/electrical/battery_amps[1]";
+
+// GDU power switches, used to gate the PFD/MFD power-up (real-world G1000
+// behavior: master lights the PFD, avionics master lights the MFD). Both are
+// scalar int switch states (0 = off, 1 = on).
+inline constexpr const char* kBatteryMasterOn =
+    "sim/cockpit/electrical/battery_on";
+inline constexpr const char* kAvionicsPowerOn =
+    "sim/cockpit2/switches/avionics_power_on";
 
 // Crew Alerting System (CAS) sources. X-Plane lights its annunciators under
 // sim/cockpit2/annunciators/ as boolean ints (0 = off, 1 = lit). The per-engine

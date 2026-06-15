@@ -46,7 +46,11 @@ void drawWindBox(Renderer& r, const Layout& L, float displayH,
   // WindOverlay.css; the panel left (245) sits just outboard of the tape.
   if (option == WindOption::Off) return;
 
-  const float panelX = 245.0f * L.sx;
+  // Anchored just outboard of the airspeed tape (WT canvas: tape right edge at
+  // 241 px, panel left at 245 -> a 4 px gap) rather than at an absolute canvas
+  // x, so the panel tracks the tape in reversionary (display-backup) mode where
+  // the whole PFD is shifted right of the EIS strip.
+  const float panelX = L.asiX + L.asiW + 4.0f * L.sx;
   // Align with the GS/TAS box top (AirspeedTape.cpp boxY) = bottom of the tape.
   const float panelY = L.stripTop + L.stripH - 3.0f * L.s;
   const float panelW = 83.0f * L.sx;

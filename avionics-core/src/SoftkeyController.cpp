@@ -566,7 +566,7 @@ bool SoftkeyController::pressKey(int key) {
       openMenu(SoftkeyMenu::XpdrCode);
       break;
     case SoftkeyAction::ToggleAlerts:
-      toggleWindow(PfdWindow::Alerts);
+      pressAlertsSoftkey();
       break;
     case SoftkeyAction::ToggleTmrRef:
       toggleWindow(PfdWindow::References);

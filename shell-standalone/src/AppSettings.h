@@ -13,6 +13,17 @@
 
 namespace avionics {
 
+// Which feed the dev-only Debug menu drives the displays with, and -- for the
+// built-in demo feed -- which flight state it simulates. Selected from the
+// macOS Debug menu (installed with --debug-menu; never shipped in the
+// installer) and persisted so the last choice is restored on the next launch.
+enum class DebugDataSource {
+  XPlane,          // live X-Plane connection
+  DemoGround,      // demo parked on KFMY runway 31, engine idling
+  DemoFlying,      // demo flying the demo route in calm air
+  DemoTurbulence,  // demo flying with simulated turbulence
+};
+
 struct AppSettings {
   // Whether the hardware bezel strips (right-hand key column + bottom softkey
   // row) are drawn around the avionics screen.
@@ -49,6 +60,15 @@ struct AppSettings {
   // survive between flights, e.g. the PFD inset map on/off). Captured from the
   // engines and restored on the next launch.
   AvionicsPersistentState avionics;
+  // Dev-only Debug menu state (only meaningful when launched with --debug-menu,
+  // i.e. from the IDE; the installed app never shows the menu). Persisted so the
+  // last-used feed, demo flight state, and demo power switches survive restarts.
+  DebugDataSource debugDataSource = DebugDataSource::XPlane;
+  bool demoMasterPowerOn = true;
+  bool demoAvionicsPowerOn = true;
+  // Whether the demo feed raises the cycling CAS annunciations (the periodic
+  // OIL PRESSURE / LOW VOLTS / FUEL LOW etc. alerts). On by default.
+  bool demoCasMessagesOn = true;
   // True once a settings file has been read back, i.e. the user has made (and
   // we have persisted) an explicit choice before. Lets callers tell a real
   // saved preference apart from the defaults above.

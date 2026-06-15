@@ -220,7 +220,9 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   // Air data computer failure: the airspeed tape and TAS (both ADC-sourced)
   // are replaced by a red X.
   if (!d.airspeedValid) {
-    drawFailureX(r, L.asiX, L.asiTop, L.asiW, L.asiH, "", h);
+    // Airspeed tape sits left of the attitude; its ticks line the inner (right)
+    // edge and are retained under the failure X (NXi Fig 9-2).
+    drawFailureX(r, L.asiX, L.asiTop, L.asiW, L.asiH, "", h, FailTicks::RightEdge);
     return;
   }
 

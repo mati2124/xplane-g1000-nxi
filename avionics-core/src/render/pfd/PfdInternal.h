@@ -143,9 +143,20 @@ constexpr int kAltTrailingDigits = 2;
 constexpr float kAltTapeTensScale = 0.86f;
 constexpr float kAltSelectedTensScale = 0.83f;
 
-// VSI
-constexpr float kVsiMaxFpm = 2000.0f;
+// VSI. The real G1000 NXi vertical-speed tape spans +/-4000 fpm, with labeled
+// major ticks at 2000 and 4000 (the "2" and "4" on the scale) and unlabeled
+// minor ticks at 1000 and 3000 (verified against the real-unit reference
+// photos, which win over the Working Title source's +/-2000 scale per the
+// model-g1000-nxi skill). kVsiScaleHalfFraction places the +/-4000 ends at 45%
+// of the strip height from the center, leaving a small margin at the tape ends.
+constexpr float kVsiMaxFpm = 4000.0f;
+constexpr float kVsiMajorFpm = 2000.0f;
+constexpr float kVsiMinorFpm = 1000.0f;
 constexpr float kVsiScaleHalfFraction = 0.45f;
+// The VS pointer is a fixed-size readout window (WT vsi-pointer is a constant
+// 66px wide over a 48px tape); it does NOT resize with the value or shrink at
+// 0 fpm. This is its total width (caret + body) as a fraction of the tape width.
+constexpr float kVsiWindowWidthFraction = 66.0f / 48.0f;
 
 inline float fontPx(float wtPx, float displayH) {
   return wtPx * (displayH / kWtCanvasHeightPx);
@@ -250,15 +261,22 @@ float putText(Renderer& r, float x, float y, const std::string& s, float size,
 void drawArcBand(Renderer& r, float cx, float cy, float innerR, float outerR,
                  float startDeg, float endDeg, const Color& c);
 
-// Reversionary failure annunciation: blacks out the given instrument region and
-// draws a large red X across it, with an optional amber system label (e.g.
-// "AHRS", "HDG"). Used when a sensor feeding that instrument has failed.
+// Static scale ticks drawn inside a failed moving-tape window, anchored to the
+// tape's inner edge (NXi Fig 9-2: airspeed/altitude/VSI keep their ticks under
+// the red X). None for non-tape failures (attitude, HSI).
+enum class FailTicks { None, LeftEdge, RightEdge };
+
+// Reversionary failure annunciation: fills the given instrument region maroon
+// and draws a large red X across it, with an optional amber system label (e.g.
+// "AHRS", "HDG") and optional retained tape ticks. Used when a sensor feeding
+// that instrument has failed.
 void drawFailureX(Renderer& r, float x, float y, float w, float h,
-                  const std::string& label, float displayH);
+                  const std::string& label, float displayH,
+                  FailTicks ticks = FailTicks::None);
 
 // Per-instrument entry points (called from PrimaryFlightDisplay::render).
 void drawAttitude(Renderer& r, const Layout& L, const FlightData& d, float w,
-                  float h);
+                  float h, bool powerUp = false);
 void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
                       const SoftkeyController& ui, float h);
 void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
@@ -267,17 +285,22 @@ void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
                                 const FlightData& d, float h);
 void drawVerticalDeviation(Renderer& r, const Layout& L, const FlightData& d,
                            float h);
+// `forceVisible` draws the inset regardless of the Map/HSI softkey toggle, used
+// by reversionary (display-backup) mode where the inset is always shown in the
+// bottom-right (the caller relocates L.insetMap* accordingly).
 void drawInsetMap(Renderer& r, const Layout& L, const MapData& map,
-                  const FlightData& d, const SoftkeyController& ui, float h);
+                  const FlightData& d, const SoftkeyController& ui, float h,
+                  bool forceVisible = false);
 // HSI Map layout: the moving map drawn in a square region centered on the HSI
 // rose (the rose is then drawn over it with a translucent backing).
 void drawHsiMap(Renderer& r, const Layout& L, const MapData& map,
                 const FlightData& d, const SoftkeyController& ui, float h);
 void drawHsiSection(Renderer& r, const Layout& L, const FlightData& d,
                     const SoftkeyController& ui, float h,
-                    bool hsiMapMode = false);
+                    bool hsiMapMode = false, bool powerUp = false);
 void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
-                const SoftkeyController& ui, float w, float h);
+                const SoftkeyController& ui, float w, float h,
+                bool powerUp = false);
 
 // Draws the NAV (left) and COM (right) frequency cells of the top bar: vertical
 // band labels with 1/2, the boxed standby frequency, the transfer carets, the

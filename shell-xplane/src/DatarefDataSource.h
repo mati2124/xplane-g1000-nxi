@@ -14,6 +14,7 @@
 #include "DatarefWeatherRadar.h"
 #include "XPLMDataAccess.h"
 #include "avionics/AptDatParser.h"
+#include "avionics/Checklist.h"
 #include "avionics/DataSource.h"
 #include "avionics/Eis.h"
 #include "avionics/EisLegacy.h"
@@ -41,8 +42,16 @@ class DatarefDataSource : public DataSource {
     return (eisSource_ != nullptr && eisSource_->ready()) ? eisSource_->layout()
                                                           : emptyEis_;
   }
+  const ChecklistData& checklistSnapshot() const override {
+    return (checklistSource_ != nullptr && checklistSource_->ready())
+               ? checklistSource_->checklists()
+               : emptyChecklists_;
+  }
 
   void setEisSource(EisSource* source) { eisSource_ = source; }
+  void setChecklistSource(ChecklistSource* source) {
+    checklistSource_ = source;
+  }
 
   // Called from the plugin draw path after the MFD engine state is known. Pushes
   // the EFIS weather mode, antenna tilt, and sector width to the sim based on
@@ -104,7 +113,9 @@ class DatarefDataSource : public DataSource {
   void loadAptDatAsync();
 
   void rebuildEisBindings();
-  void updateAircraftEisPath();
+  // Detects an aircraft change (acf_ICAO + acf_relative_path) and points the
+  // EIS and checklist stores at the matching per-aircraft profile.
+  void updateAircraftProfile();
 
   FlightData data_;
   MapData map_;
@@ -205,6 +216,26 @@ class DatarefDataSource : public DataSource {
   XPLMDataRef transponderCode_ = nullptr;
   XPLMDataRef transponderMode_ = nullptr;
 
+  // Master (battery) and avionics master switch states, gating the PFD/MFD
+  // power-up to mirror the real-world G1000 (master -> PFD, avionics -> MFD).
+  XPLMDataRef batteryMasterOn_ = nullptr;
+  XPLMDataRef avionicsPowerOn_ = nullptr;
+
+  // Per-instrument X-Plane failure datarefs (failure_enum, 6 = inoperative).
+  // Each drives one FlightData validity flag so the affected gauge/box draws
+  // its red-X annunciation (AHRS feeds attitude+heading; the ADC feeds the
+  // air-data tapes; the radios and transponder fail independently).
+  XPLMDataRef failAttitude_ = nullptr;
+  XPLMDataRef failHeading_ = nullptr;
+  XPLMDataRef failAirspeed_ = nullptr;
+  XPLMDataRef failAltimeter_ = nullptr;
+  XPLMDataRef failVerticalSpeed_ = nullptr;
+  XPLMDataRef failNav1_ = nullptr;
+  XPLMDataRef failNav2_ = nullptr;
+  XPLMDataRef failCom1_ = nullptr;
+  XPLMDataRef failCom2_ = nullptr;
+  XPLMDataRef failTransponder_ = nullptr;
+
   // Engine Indication System (EIS) strip: tachometer, fuel flow, oil
   // pressure/temperature, EGT, vacuum, fuel quantity, engine hours and the
   // volt/ammeter rows. Resolved once into a data-driven table (mirroring the
@@ -222,9 +253,13 @@ class DatarefDataSource : public DataSource {
   std::vector<EisBinding> eisBindings_;
 
   EisSource* eisSource_ = nullptr;
+  ChecklistSource* checklistSource_ = nullptr;
   static inline const EisLayout emptyEis_{};
+  static inline const ChecklistData emptyChecklists_{};
   std::string lastAircraftAcfPath_;
+  std::string lastAircraftIcao_;
   XPLMDataRef acfRelativePath_ = nullptr;
+  XPLMDataRef acfIcao_ = nullptr;
 };
 
 }  // namespace avionics

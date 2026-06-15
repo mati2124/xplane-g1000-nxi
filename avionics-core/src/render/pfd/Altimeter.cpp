@@ -336,7 +336,9 @@ void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
   // Air data computer failure: the altitude tape, readout, baro, and selected-
   // altitude column are replaced by a red X.
   if (!d.altitudeValid) {
-    drawFailureX(r, L.altX, L.altTop, L.altW, L.altH, "", h);
+    // Altimeter tape sits right of the attitude; its ticks line the inner
+    // (left) edge and are retained under the failure X (NXi Fig 9-2).
+    drawFailureX(r, L.altX, L.altTop, L.altW, L.altH, "", h, FailTicks::LeftEdge);
     return;
   }
 

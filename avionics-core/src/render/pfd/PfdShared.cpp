@@ -166,8 +166,9 @@ std::string formatTimer(int totalSeconds) {
 }
 
 std::string formatOat(float celsius) {
+  // The G1000 NXi OAT readout shows whole degrees C (no decimal), e.g. "-8°C".
   char buf[16];
-  std::snprintf(buf, sizeof(buf), "%.1f", celsius);
+  std::snprintf(buf, sizeof(buf), "%ld", std::lround(celsius));
   return std::string(buf);
 }
 
@@ -413,15 +414,46 @@ float putText(Renderer& r, float x, float y, const std::string& s, float size,
 }
 
 void drawFailureX(Renderer& r, float x, float y, float w, float h,
-                  const std::string& label, float displayH) {
+                  const std::string& label, float displayH, FailTicks ticks) {
   r.save();
   r.clip(x, y, w, h);
-  // Failed instruments go black with a red X, matching real EFIS reversionary
-  // behavior (better to show no data than misleading data).
-  r.fillRect(x, y, w, h, colors::kBlack);
-  const float thick = std::max(3.0f, displayH * 0.012f);
-  r.strokeLine(x, y, x + w, y + h, thick, colors::kBandRed);
-  r.strokeLine(x, y + h, x + w, y, thick, colors::kBandRed);
+  // Failed instruments fill with dark maroon behind a red X and keep their
+  // window frame, matching the G1000 NXi red-X annunciation (Supplemental
+  // Maintenance Manual Fig 9-2) -- better to show no data than misleading data.
+  r.fillRect(x, y, w, h, colors::kFailedWindow);
+
+  // Retained moving-tape ticks (airspeed/altitude/VSI), drawn under the X so
+  // the window still reads as a graduated tape (NXi Fig 9-2).
+  if (ticks != FailTicks::None) {
+    const float minorLen = w * kTapeMinorTickFraction;
+    const float majorLen = w * kTapeMajorTickFraction;
+    const bool leftEdge = ticks == FailTicks::LeftEdge;
+    const float edge = leftEdge ? x : x + w;
+    constexpr int kTickCount = 16;
+    for (int i = 0; i <= kTickCount; ++i) {
+      const float ty = y + h * (static_cast<float>(i) / kTickCount);
+      const bool major = (i % 2) == 0;
+      const float len = major ? majorLen : minorLen;
+      const float lw = major ? 2.5f : 1.5f;
+      if (leftEdge) {
+        r.strokeLine(edge, ty, edge + len, ty, lw, colors::kWhite);
+      } else {
+        r.strokeLine(edge - len, ty, edge, ty, lw, colors::kWhite);
+      }
+    }
+  }
+
+  const float thick = std::max(1.5f, displayH * 0.0038f);
+  r.strokeLine(x, y, x + w, y + h, thick, colors::kFailedX);
+  r.strokeLine(x, y + h, x + w, y, thick, colors::kFailedX);
+  // Retained window frame (inset by half its width so the clip keeps it whole).
+  const float fi = 1.0f;
+  const Point frame[5] = {{x + fi, y + fi},
+                          {x + w - fi, y + fi},
+                          {x + w - fi, y + h - fi},
+                          {x + fi, y + h - fi},
+                          {x + fi, y + fi}};
+  r.strokePolyline(frame, 5, 1.5f, colors::kTapeBorder);
 
   if (!label.empty()) {
     const float size = fontPx(wt::kHeadingBox, displayH);

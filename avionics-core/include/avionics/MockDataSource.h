@@ -104,6 +104,15 @@ class MockDataSource : public DataSource {
   void setGroundMode(bool onGround) { groundMode_ = onGround; }
   bool groundMode() const { return groundMode_; }
 
+  // Whether the demo feed raises the cycling CAS annunciations (the amber/red
+  // OIL PRESSURE, LOW VOLTS, FUEL LOW, etc. messages that toggle on a timer to
+  // exercise the alerting window). On by default; the standalone shell exposes
+  // this as a Debug menu toggle so the demo can be flown without the periodic
+  // alerts. Only affects the flying demo -- a healthy idling aircraft on the
+  // ground raises no CAS messages regardless.
+  void setCasMessagesEnabled(bool enabled) { casMessagesEnabled_ = enabled; }
+  bool casMessagesEnabled() const { return casMessagesEnabled_; }
+
   // Local stand-in for sim commands while the mock feed is active.
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
   void transferRadio(RadioUnit unit);
@@ -117,6 +126,12 @@ class MockDataSource : public DataSource {
   void setHeadingBug(float deg);
   void setSelectedCourse(float deg);
   void setBaroInHg(float inHg);
+
+  // GDU power switches (the demo has no electrical model, so these just hold the
+  // state). Used to exercise the power-up / reversionary (display-backup)
+  // behavior: master gates the PFD, avionics gates the MFD.
+  void setMasterPowerOn(bool on) { data_.masterPowerOn = on; }
+  void setAvionicsPowerOn(bool on) { data_.avionicsPowerOn = on; }
 
  private:
   void ensureRoute();              // lazily seed route + initial position
@@ -139,6 +154,7 @@ class MockDataSource : public DataSource {
   bool routeInitialized_ = false;
   bool turbulenceEnabled_ = false;  // chaotic bumps on top of the base motion
   bool groundMode_ = false;         // parked at KFMY rwy 31 instead of flying
+  bool casMessagesEnabled_ = true;  // demo CAS annunciations cycle on a timer
 
   // Active Direct-To: when set, navigateRoute flies straight to directToTarget_
   // instead of sequencing the route.

@@ -42,10 +42,11 @@ inline constexpr Color kTapeBottomBorder{0.173f, 0.173f, 0.173f, 1.0f};  // #2c2
 inline constexpr Color kMagenta{1.0f, 0.0f, 1.0f, 1.0f};
 inline constexpr Color kGreen{0.0f, 1.0f, 0.0f, 1.0f};
 
-// Aircraft reference symbol: two-tone yellow (bright top #ffff00, shaded bottom
-// rgb(152,140,0)) with a black outline, per the Working Title G1000 NXi.
+// Aircraft reference symbol: two-tone yellow (bright top #ffff00, shaded bottom)
+// with a black outline, per the Working Title G1000 NXi. The shaded tone is kept
+// fairly light so the whole symbol reads as a bright yellow rather than olive.
 inline constexpr Color kSymbolYellow{1.0f, 1.0f, 0.0f, 1.0f};
-inline constexpr Color kSymbolYellowDark{0.596f, 0.549f, 0.0f, 1.0f};
+inline constexpr Color kSymbolYellowDark{0.835f, 0.769f, 0.0f, 1.0f};  // #d5c400
 
 // Outline drawn behind yellow/white symbology for contrast over sky/ground.
 inline constexpr Color kSymbolOutline{0.0f, 0.0f, 0.0f, 0.9f};
@@ -103,6 +104,15 @@ inline constexpr Color kPanelBackground{0.016f, 0.016f, 0.047f, 1.0f};   // rgb(
 inline constexpr Color kPanelBackgroundBottom{0.094f, 0.110f, 0.169f, 1.0f};  // rgb(24,28,43)
 inline constexpr Color kInfoBoxTop{0.094f, 0.094f, 0.094f, 1.0f};  // rgb(24,24,24)
 inline constexpr Color kSoftkeyBackground{0.0f, 0.0f, 0.0f, 1.0f};
+// On-screen softkey label bar (G1000 NXi Pilot's Guide Fig. 1-9): every cell
+// is a top-rounded cap filled with a dark, slightly blue-grey vertical
+// gradient and edged along its top by a bright horizontal highlight; the caps
+// sit on a near-black bar and are separated by thin dark grooves. Values
+// sampled from the figure at high resolution.
+inline constexpr Color kSoftkeyBarBase{0.063f, 0.071f, 0.082f, 1.0f}; // near-black bar
+inline constexpr Color kSoftkeyCapTop{0.298f, 0.314f, 0.325f};       // rgb(76,80,83)
+inline constexpr Color kSoftkeyCapBottom{0.145f, 0.161f, 0.173f};    // rgb(37,41,44)
+inline constexpr Color kSoftkeyCapHighlight{0.475f, 0.490f, 0.502f}; // rgb(121,125,128)
 // A selected softkey label changes to black text on a gray background and
 // stays that way until turned off (G1000 Pilot's Guide for the Diamond DA40,
 // "Softkey Function").
@@ -141,6 +151,15 @@ inline constexpr Color kGroupBoxSheenEnd{0.0f, 0.0f, 0.0f, 0.0f};
 inline constexpr Color kBandGreen{0.0f, 0.502f, 0.0f, 1.0f};  // #008000
 inline constexpr Color kBandYellow{1.0f, 1.0f, 0.0f, 1.0f};
 inline constexpr Color kBandRed{1.0f, 0.0f, 0.0f, 1.0f};
+
+// Failed/invalid instrument window: the G1000 NXi fills a red-X'd window with a
+// dark maroon (#400000) behind the retained frame rather than pure black
+// (sampled from the NXi Supplemental Maintenance Manual Fig 9-2, PFD Power-Up
+// System Annunciations).
+inline constexpr Color kFailedWindow{0.251f, 0.0f, 0.0f, 1.0f};  // #400000
+// The failure red X is a slightly deepened red rather than neon #FF0000, which
+// matches the NXi annunciation X over the maroon fill (Fig 9-2).
+inline constexpr Color kFailedX{0.820f, 0.0f, 0.0f, 1.0f};  // #d10000
 }  // namespace colors
 
 }  // namespace avionics

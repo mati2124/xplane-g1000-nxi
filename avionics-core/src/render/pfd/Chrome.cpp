@@ -3,9 +3,9 @@
 namespace avionics::pfd {
 
 void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
-                const SoftkeyController& ui, float w, float h) {
+                const SoftkeyController& ui, float w, float h, bool powerUp) {
   drawTopBar(r, w, h, L, d, ui);
-  drawBottomInfoPanel(r, w, h, L, d, ui);
+  drawBottomInfoPanel(r, w, h, L, d, ui, powerUp);
   // CAS annunciation window is always visible (when active) on the main PFD.
   drawCasAnnunciations(r, w, h, L, ui);
   // The pop-up windows (Alerts / References / Nearest Airports) share the

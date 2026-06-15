@@ -1,7 +1,9 @@
 #include "avionics/Checklist.h"
 
 #include <cctype>
+#include <filesystem>
 #include <sstream>
+#include <system_error>
 
 namespace avionics {
 namespace {
@@ -77,6 +79,36 @@ ChecklistData parseChecklistText(const std::string& text) {
   }
 
   return data;
+}
+
+std::vector<std::string> candidateChecklistPaths(
+    const std::string& explicitSelector,
+    const std::string& aircraftAcfRelativePath,
+    const std::string& typeKeyedPath,
+    const std::string& defaultBundledPath) {
+  std::vector<std::string> paths;
+  namespace fs = std::filesystem;
+
+  auto pushIfFile = [&](const std::string& path) {
+    if (path.empty()) return;
+    std::error_code ec;
+    if (fs::is_regular_file(path, ec)) paths.push_back(path);
+  };
+
+  pushIfFile(explicitSelector);
+
+  if (!aircraftAcfRelativePath.empty()) {
+    const fs::path acf = fs::path(aircraftAcfRelativePath);
+    const fs::path dir = acf.parent_path();
+    pushIfFile((dir / "g1000_checklist.txt").string());
+    if (acf.has_stem()) {
+      pushIfFile((dir / (acf.stem().string() + "_checklist.txt")).string());
+    }
+  }
+
+  pushIfFile(typeKeyedPath);
+  pushIfFile(defaultBundledPath);
+  return paths;
 }
 
 }  // namespace avionics

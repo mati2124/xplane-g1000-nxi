@@ -79,7 +79,35 @@ class ChecklistSource {
   // The parsed checklists. Returns an empty set until ready(), or when no file
   // was found.
   virtual const ChecklistData& checklists() const = 0;
+
+  // The loaded aircraft's ICAO type code (acf_ICAO) plus its .acf relative
+  // path, so the store can swap to the per-aircraft checklist profile. No-op by
+  // default for sources that load a fixed file.
+  virtual void setAircraftIdentity(const std::string& icaoType,
+                                   const std::string& acfRelativePath) {
+    (void)icaoType;
+    (void)acfRelativePath;
+  }
+
+  // Cheap mtime re-check so authors can edit checklist files without a restart.
+  virtual void refreshIfChanged() {}
 };
+
+// Candidate paths for a per-aircraft checklist file, in search order:
+//   1. `explicitSelector` (a CLI/path override) when it points at a regular
+//      file.
+//   2. Beside the .acf when `aircraftAcfRelativePath` is non-empty:
+//      g1000_checklist.txt and <acf_stem>_checklist.txt.
+//   3. `typeKeyedPath` — a user-droppable, ICAO-keyed asset
+//      (assets/checklists/<icao>.checklist) resolved by the store; lets users
+//      add any aircraft without a rebuild.
+//   4. `defaultBundledPath` — the profile's bundled checklist.
+// Empty arguments are skipped, as are paths that are not regular files.
+std::vector<std::string> candidateChecklistPaths(
+    const std::string& explicitSelector,
+    const std::string& aircraftAcfRelativePath,
+    const std::string& typeKeyedPath,
+    const std::string& defaultBundledPath);
 
 // Parses the indented-text checklist format into a ChecklistData. The format is
 // line-oriented and forgiving of leading/trailing whitespace:

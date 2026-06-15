@@ -6,10 +6,15 @@
 #include <fstream>
 #include <sstream>
 
+#include "avionics/AircraftProfile.h"
 #include "avionics/AssetPaths.h"
 
 #ifndef AVIONICS_DEFAULT_EIS
 #define AVIONICS_DEFAULT_EIS ""
+#endif
+
+#ifndef AVIONICS_CORE_ASSET_DIR
+#define AVIONICS_CORE_ASSET_DIR ""
 #endif
 
 namespace avionics {
@@ -35,6 +40,12 @@ bool readFile(const std::string& path, std::string& out) {
   return true;
 }
 
+std::string devFallback(const std::string& assetRel) {
+  const std::string base = AVIONICS_CORE_ASSET_DIR;
+  if (base.empty()) return std::string();
+  return base + "/" + assetRel;
+}
+
 }  // namespace
 
 EisStore::EisStore(std::string selector) : selector_(std::move(selector)) {
@@ -46,9 +57,22 @@ EisStore::~EisStore() {
 }
 
 std::string EisStore::resolvePath(const std::string& acfRelativePath) const {
-  const std::vector<std::string> candidates = candidateEisPaths(
-      selector_, acfRelativePath,
-      assets::resolve("eis/c172s.eis", AVIONICS_DEFAULT_EIS));
+  // The bundled fallback follows the detected aircraft profile (keyed off
+  // acf_ICAO / path) so the engine page swaps with the airframe even when the
+  // aircraft does not ship its own EIS file beside the .acf.
+  const AircraftProfile profile =
+      resolveAircraftProfile(aircraftIcao_, acfRelativePath);
+  const std::string bundled =
+      assets::resolve(profile.eisAsset, devFallback(profile.eisAsset));
+  // User-droppable, ICAO-keyed override (assets/eis/<icao>.eis): lets a user add
+  // support for any aircraft by dropping a file into the plugin's assets folder,
+  // no rebuild. Empty/absent resolves to nothing and is skipped below.
+  const std::string typeAsset = typeKeyedEisAsset(aircraftIcao_);
+  const std::string typeKeyed =
+      typeAsset.empty() ? std::string()
+                        : assets::resolve(typeAsset, devFallback(typeAsset));
+  const std::vector<std::string> candidates =
+      candidateEisPaths(selector_, acfRelativePath, typeKeyed, bundled);
   if (candidates.empty()) return std::string();
   return candidates.front();
 }
@@ -82,7 +106,15 @@ void EisStore::loadOnBackgroundThread() {
 }
 
 void EisStore::setAircraftAcfRelativePath(const std::string& acfRelativePath) {
-  if (acfRelativePath == aircraftAcfRelativePath_) return;
+  setAircraftIdentity(aircraftIcao_, acfRelativePath);
+}
+
+void EisStore::setAircraftIdentity(const std::string& icaoType,
+                                   const std::string& acfRelativePath) {
+  if (icaoType == aircraftIcao_ && acfRelativePath == aircraftAcfRelativePath_) {
+    return;
+  }
+  aircraftIcao_ = icaoType;
   aircraftAcfRelativePath_ = acfRelativePath;
   if (thread_.joinable()) thread_.join();
   loaded_.store(false, std::memory_order_release);

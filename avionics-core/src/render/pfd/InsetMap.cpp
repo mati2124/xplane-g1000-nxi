@@ -6,8 +6,8 @@ namespace avionics::pfd {
 
 void drawInsetMap(Renderer& r, const Layout& L, const MapData& map,
                   const FlightData& flight, const SoftkeyController& ui,
-                  float displayH) {
-  if (!ui.insetMapVisible()) return;
+                  float displayH, bool forceVisible) {
+  if (!forceVisible && !ui.insetMapVisible()) return;
 
   MapViewConfig config;
   config.x = L.insetMapX;
@@ -61,6 +61,12 @@ void drawHsiMap(Renderer& r, const Layout& L, const MapData& map,
 
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
+  // The HSI Map paints its own opaque black backdrop (like the WPT/NRST page
+  // maps in drawPageMap) so that with terrain off the map reads on black rather
+  // than letting the synthetic-vision ground show through -- on the real G1000
+  // NXi the HSI Map area is black when TOPO/Rel Ter are off, even with SVT
+  // terrain drawn around the rose. When terrain is on, the raster overlays this.
+  r.fillRect(config.x, config.y, config.w, config.h, colors::kBlack);
   MapView::render(r, map, flight, config, displayH);
   // NanoVG only scissors to rectangles, so the map renders into the square
   // above. Restore everything outside the compass rose to the background the

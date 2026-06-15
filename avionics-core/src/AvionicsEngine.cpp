@@ -4,6 +4,7 @@
 #include <cmath>
 #include <utility>
 
+#include "avionics/Color.h"
 #include "avionics/ComDecode.h"
 #include "avionics/MapData.h"
 #include "avionics/NavMath.h"
@@ -142,6 +143,13 @@ FlightData withAllSensorsFailed(FlightData data) {
   data.airspeedValid = false;
   data.altitudeValid = false;
   data.verticalSpeedValid = false;
+  // The radios and transponder are also unreachable with the link down, so
+  // their boxes red-X / annunciate FAIL alongside the sensor gauges.
+  data.nav1Valid = false;
+  data.nav2Valid = false;
+  data.com1Valid = false;
+  data.com2Valid = false;
+  data.transponderValid = false;
   data.navSignalValid = false;
   data.windValid = false;
   data.bearing1Valid = false;
@@ -172,10 +180,27 @@ void AvionicsEngine::setDataSource(DataSource& dataSource,
 }
 
 void AvionicsEngine::update(double dtSeconds) {
-  bootElapsedSeconds_ += dtSeconds;
   // A secondary engine sharing the source (the MFD window) must not pump it a
-  // second time; it still advances its own boot timer and UI animations.
+  // second time. The pump runs regardless of this GDU's power so the switch
+  // datarefs are still read while the screen is dark (and so the other GDU
+  // sharing the source keeps getting fresh data when only one is powered).
   if (drivesDataSource_) dataSource_->update(dtSeconds);
+
+  const bool powered = displayPowered();
+  if (!powerInitialized_) {
+    powerInitialized_ = true;
+  } else if (powered && !wasPowered_) {
+    // The GDU bus just came alive: replay the Garmin power-up self-test so the
+    // screen visibly boots, like a real unit does when its display is switched
+    // on. The power-up page is auto-acknowledged (no in-sim ENT prompt): once
+    // the timed animation finishes the live page comes up on its own.
+    bootElapsedSeconds_ = 0.0;
+    powerUpAcknowledged_ = true;
+  }
+  wasPowered_ = powered;
+  if (!powered) return;  // dark screen: no boot timer or UI animation
+
+  bootElapsedSeconds_ += dtSeconds;
   softkeys_.update(dtSeconds, dataSource_->snapshot(),
                    dataSource_->mapSnapshot());
   mfd_.update(dtSeconds, dataSource_->snapshot());
@@ -205,8 +230,26 @@ void AvionicsEngine::acknowledgePowerUp() {
   if (awaitingPowerUpAck()) powerUpAcknowledged_ = true;
 }
 
+bool AvionicsEngine::displayPowered() const {
+  const FlightData& d = dataSource_->snapshot();
+  switch (page_) {
+    case DisplayPage::PrimaryFlightDisplay:
+      return d.masterPowerOn;
+    case DisplayPage::MultiFunctionDisplay:
+      // The avionics bus is downstream of the battery, so the MFD needs both.
+      return d.masterPowerOn && d.avionicsPowerOn;
+  }
+  return true;
+}
+
+bool AvionicsEngine::pfdReversionary() const {
+  const FlightData& d = dataSource_->snapshot();
+  return page_ == DisplayPage::PrimaryFlightDisplay && d.masterPowerOn &&
+         !d.avionicsPowerOn;
+}
+
 bool AvionicsEngine::isLivePageUp() const {
-  return bootComplete() &&
+  return displayPowered() && bootComplete() &&
          dataSource_->connectionState() == ConnectionState::Connected;
 }
 
@@ -391,24 +434,38 @@ const float* AvionicsEngine::bezelPressLevels() const {
 void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
   renderer_.beginFrame(widthPx, heightPx, pixelRatio);
 
+  // No bus power: the GDU screen is simply black, as on the real unit. Fill
+  // black explicitly (matching BootScreen) rather than relying on the shell's
+  // framebuffer clear.
+  if (!displayPowered()) {
+    renderer_.fillRect(0.0f, 0.0f, static_cast<float>(widthPx),
+                       static_cast<float>(heightPx), colors::kBlack);
+    renderer_.endFrame();
+    return;
+  }
+
   if (!bootComplete()) {
-    // Phase 1: logo at full opacity (no fade, per StartupLogo.css). Phase 2:
-    // the MFD Power-up Page or PFD initialization view fades in over
-    // kBootPowerUpFadeSeconds; once the timer elapses, live sources show the ENT
-    // acknowledgement prompt on the MFD.
+    // Phase 1: the Garmin logo fades up from black over kBootLogoFadeSeconds,
+    // then holds. Phase 2: the MFD Power-up Page or PFD initialization view
+    // fades in over kBootPowerUpFadeSeconds; once the timer elapses, live
+    // sources show the ENT acknowledgement prompt on the MFD.
     const BootScreen::Phase phase = bootElapsedSeconds_ < kBootLogoSeconds
                                         ? BootScreen::Phase::Logo
                                         : BootScreen::Phase::PowerUp;
-    float powerUpAlpha = 0.0f;
-    if (phase == BootScreen::Phase::PowerUp) {
+    float phaseAlpha = 0.0f;
+    if (phase == BootScreen::Phase::Logo) {
+      const float t = static_cast<float>(bootElapsedSeconds_ /
+                                          kBootLogoFadeSeconds);
+      phaseAlpha = bootEaseInOut(t);
+    } else {
       const double fadeStart = kBootLogoSeconds;
       const double fadeEnd = kBootLogoSeconds + kBootPowerUpFadeSeconds;
       if (bootElapsedSeconds_ < fadeEnd) {
         const float t = static_cast<float>(
             (bootElapsedSeconds_ - fadeStart) / kBootPowerUpFadeSeconds);
-        powerUpAlpha = bootEaseInOut(t);
+        phaseAlpha = bootEaseInOut(t);
       } else {
-        powerUpAlpha = 1.0f;
+        phaseAlpha = 1.0f;
       }
     }
     const BootScreen::Target target =
@@ -417,7 +474,7 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
     BootScreen::render(renderer_, target, phase, dataSource_->snapshot(),
                        dataSource_->mapSnapshot(), softkeys_, mfd_,
                        dataSource_->mapSnapshot().navDatabase,
-                       awaitingPowerUpAck(), powerUpAlpha, widthPx, heightPx);
+                       awaitingPowerUpAck(), phaseAlpha, widthPx, heightPx);
     renderer_.endFrame();
     return;
   }
@@ -441,7 +498,8 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:
       PrimaryFlightDisplay::render(renderer_, data, dataSource_->mapSnapshot(),
-                                   softkeys_, widthPx, heightPx);
+                                   softkeys_, dataSource_->eisLayoutSnapshot(),
+                                   pfdReversionary(), widthPx, heightPx);
       break;
     case DisplayPage::MultiFunctionDisplay:
       MultiFunctionDisplay::render(renderer_, data, dataSource_->mapSnapshot(),

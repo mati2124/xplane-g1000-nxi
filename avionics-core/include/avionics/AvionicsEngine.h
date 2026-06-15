@@ -16,11 +16,14 @@ enum class DisplayPage {
 };
 
 // Power-on initialization timing, mirroring the real G1000 NXi power-up.
-// Working Title StartupLogo.css: the centered Garmin logo appears at full
-// opacity (no fade), then the next screen fades in over 2s ease-in-out when
-// ScreenState leaves INIT. The logo is held while LRUs boot; 3s is a
-// representative minimum before the Power-up Page cross-fade begins.
+// On the real unit the centered Garmin logo gradually fades up from black as
+// the GDU backlight comes on, holds while the LRUs boot, then the next screen
+// fades in over 2s ease-in-out when ScreenState leaves INIT. The logo is held
+// while LRUs boot; 3s is a representative minimum before the Power-up Page
+// cross-fade begins.
 inline constexpr double kBootLogoSeconds = 3.0;
+// Garmin logo fade-up at the very start of the Logo phase (ease-in-out).
+inline constexpr double kBootLogoFadeSeconds = 1.8;
 // MFD Power-up Page / PFD init opacity ramp (StartupLogo.css: transition opacity
 // 2s ease-in-out on .startup-confirm-screen).
 inline constexpr double kBootPowerUpFadeSeconds = 2.0;
@@ -121,6 +124,16 @@ class AvionicsEngine {
   // controls and was handled.
   bool handleBezelKnob(BezelKey key);
 
+  // Whether this GDU's bus is powered, per the real-world power tree: the PFD
+  // needs the battery/master bus; the MFD additionally needs the avionics
+  // master. When false the screen is black (no boot, no live page).
+  bool displayPowered() const;
+
+  // True when this is the PFD and the MFD is dark (master on, avionics off):
+  // the PFD enters display-backup (reversionary) mode and adds the EIS strip,
+  // mirroring the real G1000 (Pilot's Guide Fig. 1-5).
+  bool pfdReversionary() const;
+
   // True once the animated power-up has run and (for sources that require it)
   // the power-up page has been acknowledged with ENT, independent of link
   // health.
@@ -139,6 +152,13 @@ class AvionicsEngine {
   // for feeds that don't require it / when boot is skipped).
   bool powerUpAcknowledged_ = false;
   bool drivesDataSource_ = true;
+  // GDU power tracking. wasPowered_ remembers the previous frame's bus state so
+  // an off->on transition can re-run the power-up self-test; powerInitialized_
+  // suppresses that on the very first frame so a GDU that is already powered
+  // when the engine is created (sim already running, skipBoot) comes up live
+  // instead of replaying the boot animation.
+  bool wasPowered_ = false;
+  bool powerInitialized_ = false;
   SoftkeyController softkeys_;
   MfdController mfd_;
 };

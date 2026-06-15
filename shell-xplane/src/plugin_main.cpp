@@ -49,6 +49,7 @@
 #include "FlightPlanBridge.h"
 #include "UpdateNotify.h"
 #include "avionics/AssetPaths.h"
+#include "avionics/ChecklistStore.h"
 #include "avionics/EisStore.h"
 #include "XPLMDisplay.h"
 #include "XPLMGraphics.h"
@@ -83,6 +84,7 @@ constexpr int kFallbackScreenH = 768;
 std::unique_ptr<avionics::DatarefDataSource> g_dataSource;
 std::unique_ptr<avionics::PluginNavMapData> g_navMapData;
 std::unique_ptr<avionics::EisStore> g_eisStore;
+std::unique_ptr<avionics::ChecklistStore> g_checklistStore;
 std::uint32_t g_mapGeometryEpoch = 0;
 
 // Serves the live FMS flight plan to the networked standalone shell over UDP
@@ -208,6 +210,13 @@ AvionicsDevice g_mfd{
 RatePreset g_preset = kDefaultPreset;
 XPLMMenuID g_rateMenu = nullptr;
 int g_rateMenuParentItem = -1;
+
+// "Install Update" item in the G1000 NXi submenu plus its bindable command. The
+// item stays disabled until the launch-time check finds a newer release, at
+// which point the update pump enables it and labels it with the version.
+XPLMCommandRef g_installUpdateCmd = nullptr;
+int g_installUpdateMenuIndex = -1;
+bool g_installUpdateMenuShown = false;
 
 // When false the stock G1000 renders untouched and only the FMS bridge runs for
 // the networked standalone shell.
@@ -1351,6 +1360,31 @@ void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
   RefreshRateMenuChecks();
 }
 
+// Bindable command (and the "Install Update" menu item) that kicks off the
+// in-sim self-update. Inert until the launch-time check finds a newer release.
+int OnInstallUpdateCommand(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
+                           void* /*ref*/) {
+  if (phase == xplm_CommandBegin) avionics::beginPluginSelfUpdate();
+  return 0;
+}
+
+// Main-thread pump for the self-updater (the XPLM API and plugin reload are
+// main-thread only). Applies a verified download and, the first time a newer
+// release is found, reveals the "Install Update" menu item with its version.
+float UpdatePumpFlightLoop(float /*sinceLast*/, float /*sinceLoop*/,
+                           int /*counter*/, void* /*ref*/) {
+  avionics::pumpPluginSelfUpdate();
+  if (!g_installUpdateMenuShown && avionics::updateAvailable() &&
+      g_rateMenu != nullptr && g_installUpdateMenuIndex >= 0) {
+    const std::string label =
+        "Install Update (v" + avionics::availableUpdateVersion() + ")";
+    XPLMSetMenuItemName(g_rateMenu, g_installUpdateMenuIndex, label.c_str(), 0);
+    XPLMEnableMenuItem(g_rateMenu, g_installUpdateMenuIndex, 1);
+    g_installUpdateMenuShown = true;
+  }
+  return 1.0f;
+}
+
 // Builds the Plugins -> G1000 NXi submenu with one radio-style item per preset.
 void BuildRateMenu() {
   g_rateMenuParentItem =
@@ -1365,6 +1399,13 @@ void BuildRateMenu() {
   XPLMAppendMenuItem(
       g_rateMenu, "Replace in-sim G1000 displays",
       reinterpret_cast<void*>(static_cast<intptr_t>(kReplaceDisplaysMenuRef)), 1);
+  // "Install Update" is bound to its command so it is both clickable and
+  // key-bindable. Disabled until the update pump finds a newer release.
+  XPLMAppendMenuSeparator(g_rateMenu);
+  g_installUpdateMenuIndex = XPLMAppendMenuItemWithCommand(
+      g_rateMenu, "Install Update", g_installUpdateCmd);
+  XPLMEnableMenuItem(g_rateMenu, g_installUpdateMenuIndex, 0);
+  g_installUpdateMenuShown = false;
   RefreshRateMenuChecks();
 }
 
@@ -1377,6 +1418,8 @@ void DestroyRateMenu() {
     XPLMRemoveMenuItem(XPLMFindPluginsMenu(), g_rateMenuParentItem);
     g_rateMenuParentItem = -1;
   }
+  g_installUpdateMenuIndex = -1;
+  g_installUpdateMenuShown = false;
 }
 
 // Releases an engine and intentionally leaks its NanoVG / FBO GL resources:
@@ -1450,7 +1493,9 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   }
 
   g_eisStore = std::make_unique<avionics::EisStore>();
+  g_checklistStore = std::make_unique<avionics::ChecklistStore>();
   g_dataSource = std::make_unique<avionics::DatarefDataSource>(g_eisStore.get());
+  g_dataSource->setChecklistSource(g_checklistStore.get());
   g_navMapData = std::make_unique<avionics::PluginNavMapData>(g_dataSource.get());
 
   g_flightPlanBridge = std::make_unique<avionics::FlightPlanBridge>(
@@ -1465,11 +1510,22 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   g_commandBridge->start();
   RegisterG1000Commands();
 
+  // The "Install Update" command must exist before BuildRateMenu binds the
+  // menu item to it.
+  g_installUpdateCmd = XPLMCreateCommand(
+      "xplaneavionics/install_update", "G1000 NXi: Install available update");
+  XPLMRegisterCommandHandler(g_installUpdateCmd, &OnInstallUpdateCommand,
+                             /*before=*/1, nullptr);
+
   // Restore the saved config (refresh-rate preset + durable display
   // preferences) before building the menu, so the right item starts checked
   // and the engines pick up the saved options when first created.
   LoadConfig();
   BuildRateMenu();
+
+  // Periodic main-thread pump that drives the self-updater and reveals the
+  // "Install Update" menu item once the background check finds a newer release.
+  XPLMRegisterFlightLoopCallback(&UpdatePumpFlightLoop, 1.0f, nullptr);
 
   if (g_replaceDisplays) {
     RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
@@ -1481,6 +1537,12 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
 }
 
 PLUGIN_API void XPluginStop(void) {
+  XPLMUnregisterFlightLoopCallback(&UpdatePumpFlightLoop, nullptr);
+  if (g_installUpdateCmd != nullptr) {
+    XPLMUnregisterCommandHandler(g_installUpdateCmd, &OnInstallUpdateCommand,
+                                 /*before=*/1, nullptr);
+    g_installUpdateCmd = nullptr;
+  }
   UnregisterG1000Commands();
   if (g_commandBridge) g_commandBridge->stop();
   if (g_flightPlanBridge) g_flightPlanBridge->stop();
@@ -1492,6 +1554,7 @@ PLUGIN_API void XPluginStop(void) {
   g_dataSource.reset();
   g_navMapData.reset();
   g_eisStore.reset();
+  g_checklistStore.reset();
 }
 
 // The flight-plan bridge owns a flight-loop callback and a network thread, so
