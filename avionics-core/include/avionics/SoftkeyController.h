@@ -77,9 +77,31 @@ enum class XpdrMode { Standby, On, Alt, Ground };
 
 // Pop-up windows in the lower-right of the PFD. The real unit shows one at a
 // time in that region (Alerts, Timer/References, Nearest Airports, PFD Setup
-// Menu); opening one replaces any other.
-enum class PfdWindow { None, Alerts, References, Nearest, Setup };
-inline constexpr int kPfdWindowCount = 5;  // including None
+// Menu, Active Flight Plan); opening one replaces any other.
+enum class PfdWindow {
+  None,
+  Alerts,
+  References,
+  Nearest,
+  Setup,
+  FlightPlan,
+  Procedures
+};
+inline constexpr int kPfdWindowCount = 7;  // including None
+
+// PFD Procedures window (PROC bezel key, Pilot's Guide 5.8 "Procedures"): the
+// menu options, verbatim and in order, from the real unit (Working Title
+// PFDProc). The three "Activate ..." items require a loaded/activatable
+// approach, which this suite does not model, so they are shown disabled; the
+// three "Select ..." items open the procedure-selection sub-window.
+enum class ProcMenuAction {
+  ActivateVtf,
+  ActivateApproach,
+  ActivateMissed,
+  SelectApproach,
+  SelectArrival,
+  SelectDeparture,
+};
 
 // PFD Setup Menu (PFD MENU key, Pilot's Guide Fig. 1-18). Adjusts the PFD and
 // MFD display/key backlighting. The two rows the menu shows -- indexed by this
@@ -304,6 +326,77 @@ class SoftkeyController {
   // Index of the FMS-cursor-selected entry in nearestAirports().
   int nearestCursor() const { return nearestCursor_; }
 
+  // ---- Active Flight Plan window (FPL bezel key) ----
+  // The PFD Active Flight Plan window (Pilot's Guide Fig. 5-48, "Active Flight
+  // Plan Window on PFD"): the FPL key opens the active flight-plan legs as the
+  // same lower-right popout the other PFD windows use. With the FMS-knob cursor
+  // off the knob scrolls the list; pushing the knob turns the cursor on so the
+  // pilot can insert/remove waypoints (and therefore change the origin and
+  // destination, which are the first and last rows). Edits are kept in a local
+  // working copy until the shell applies them to the FMS.
+  // The displayed/edited legs (working copy, mirroring the map feed plus any
+  // pending pilot edits).
+  const std::vector<MapLeg>& flightPlanLegs() const { return fplLegs_; }
+  const std::string& activeWaypointId() const { return activeWaypoint_; }
+  // FMS cursor row (also the scroll anchor). Equals flightPlanLegs().size() when
+  // it sits on the blank append slot below the last waypoint.
+  int flightPlanCursor() const { return fplCursorRow_; }
+  // True while the FMS selection cursor is on (knob pushed), so a row highlights
+  // and the knob/ENT/CLR edit instead of scroll.
+  bool flightPlanCursorOn() const { return fplCursorOn_; }
+
+  // Waypoint-ident entry overlay (the insert "Waypoint Information" entry):
+  // active while spelling an identifier to insert before the cursor row.
+  bool flightPlanEntryActive() const { return fplEntry_.active; }
+  std::string flightPlanEntryIdent() const { return fplEntry_.ident(); }
+  int flightPlanEntryCursor() const { return fplEntry_.pos; }
+  int flightPlanEntryTypedCount() const { return fplEntry_.typedCount(); }
+  bool flightPlanEntryNotFound() const { return fplEntry_.notFound; }
+  bool flightPlanEntryHasMatch() const { return fplEntry_.hasMatch; }
+  const MapFeature& flightPlanEntryMatch() const { return fplEntry_.match; }
+
+  // Modal confirmation prompt shown over the window (CLR removes a waypoint,
+  // MENU deletes the whole plan).
+  enum class FplConfirm { None, RemoveWaypoint, DeleteFlightPlan };
+  FplConfirm flightPlanConfirm() const { return fplConfirm_; }
+  bool flightPlanConfirmOk() const { return fplConfirmOk_; }
+  const std::string& flightPlanRemoveIdent() const { return fplRemoveIdent_; }
+
+  // Latch for the shell: true once after an edit, copying out the edited legs so
+  // the shell programs them into the FMS (mirrors consumeDirectToRequest).
+  bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
+
+  // ---- Procedures window (PROC bezel key) ----
+  // The Procedures window first shows the top-level menu; selecting a "Select
+  // ..." item switches to the procedure-selection sub-window (a procedure list,
+  // then a transition list) which loads the chosen procedure into the active
+  // flight plan.
+  enum class ProcStep { ProcedureList, TransitionList };
+  enum class ProcMode { Menu, Select };
+  // True while the selection sub-window is shown rather than the top-level menu.
+  bool procSelectMode() const { return procMode_ == ProcMode::Select; }
+  // Window title: "Procedures" for the menu, "Select Approach/Arrival/Departure"
+  // for the selection sub-window.
+  const char* procWindowTitle() const;
+  // Top-level menu rows.
+  int procMenuItemCount() const {
+    return static_cast<int>(procMenuItems_.size());
+  }
+  const std::string& procMenuItemText(int i) const;
+  bool procMenuItemEnabled(int i) const;
+  int procMenuSelected() const { return procMenuSel_; }
+  // Selection sub-window: the flight-plan airport, the visible list (procedure
+  // names on the ProcedureList step, transitions on the TransitionList step),
+  // the highlighted row, the step, and the procedure picked before transitions.
+  std::string procAirportIcao() const;
+  ProcStep procStep() const { return procStep_; }
+  const std::string& procSelectedName() const { return procSelectedName_; }
+  std::vector<std::string> procListItems() const;
+  int procListSelected() const { return procSelected_; }
+  // NAV1-tune latch for the shell: true once after a procedure load, copying out
+  // the loaded procedure (ILS approaches carry a frequency).
+  bool consumeProcLoadRequest(MapProcedure& out);
+
   // ---- Direct-To window (Direct-To bezel key) ----
   // The GPS Direct-To window (Pilot's Guide Fig. 5-45, "Direct-to Window -
   // PFD"): the Direct-To key opens it over the PFD, pre-filled with the active
@@ -333,6 +426,20 @@ class SoftkeyController {
   // Activation latch for the shell: true once after ENT on Activate?, copying
   // out the target waypoint so the shell engages the direct course.
   bool consumeDirectToRequest(MapLeg& out);
+
+  // ---- Page Menu (MENU key on an open PFD popout, Pilot's Guide Fig. 1-10) ----
+  // Context-sensitive options for the active popout window. With no popout
+  // open, MENU opens the PFD Setup Menu instead. The Page Menu shares the
+  // 310x220 lower-right popout shell (WT popout-dialog on the 1024x768 GDU).
+  bool pageMenuOpen() const { return pageMenuOpen_; }
+  float pageMenuAnim() const { return pageMenuAnim_; }
+  int pageMenuItemCount() const {
+    return static_cast<int>(pageMenuItems_.size());
+  }
+  const std::string& pageMenuItemText(int i) const;
+  bool pageMenuItemEnabled(int i) const;
+  int pageMenuSelected() const { return pageMenuSel_; }
+  int pageMenuScrollOffset() const { return pageMenuScroll_; }
 
   // ---- PFD Setup Menu state ----
   // FMS-cursor field currently highlighted in the PFD Setup Menu.
@@ -435,7 +542,7 @@ class SoftkeyController {
   // True when no pop-up window or the Direct-To window is using the FMS knob on
   // the PFD.
   bool canUseRadioBezel() const {
-    return window_ == PfdWindow::None && !dtoOpen_;
+    return window_ == PfdWindow::None && !dtoOpen_ && !pageMenuOpen_;
   }
   RadioUnit radioSelected() const { return radioSelected_; }
 
@@ -542,6 +649,39 @@ class SoftkeyController {
   // Returns true when the key was consumed by the Direct-To window.
   bool directToBezelKey(BezelKey key);
   void directToOpen();
+  // Active Flight Plan window (FPL bezel key): route the FMS knob / ENT / CLR /
+  // MENU while the window is open. Returns true when the key was consumed so it
+  // does not also scroll/close. Adopts external plan changes each frame and
+  // publishes pilot edits to the shell.
+  bool flightPlanBezelKey(BezelKey key);
+  void flightPlanCommitEntry();
+  void flightPlanPublishEdit();
+  void syncFlightPlanLegs(const MapData& map);
+  // Procedures window (PROC bezel key): build the top-level menu on open, route
+  // the FMS knob / ENT / CLR while it is open, move the menu cursor (skipping
+  // disabled rows), and load the selected procedure's legs into the plan.
+  void buildProcMenu();
+  bool procBezelKey(BezelKey key);
+  void procMoveMenu(int dir);
+  void procLoadSelected(const std::string& name, const std::string& transition);
+  std::vector<std::string> procProcedureNames(ProcedureType type) const;
+  std::vector<std::string> procTransitions(ProcedureType type,
+                                           const std::string& name) const;
+  enum class PfdPageMenuAction {
+    Disabled,
+    RefAllOn,
+    RefAllOff,
+    RefRestoreDefaults,
+  };
+  struct PfdPageMenuItem {
+    std::string text;
+    PfdPageMenuAction action = PfdPageMenuAction::Disabled;
+  };
+  std::vector<PfdPageMenuItem> buildPfdPageMenu() const;
+  void openPfdPageMenu();
+  bool pageMenuBezelKey(BezelKey key);
+  void pageMenuStep(int direction);
+  void pageMenuActivate();
   // Advance the Selected Altitude alerting state machine (Pilot's Guide,
   // Altitude Alerting).
   void updateAltAlert(double dtSeconds, const FlightData& data);
@@ -634,6 +774,39 @@ class SoftkeyController {
   std::vector<NearestAirport> nearest_;
   int nearestCursor_ = 0;
 
+  // Active Flight Plan window editing state (mirrors the MFD FPL page, minus the
+  // VNAV ALT column the PFD window does not show). fplLegs_ is the working copy;
+  // fplLastMapPlan_ detects external plan changes and fplLastPublished_ keeps
+  // the data source's echo of our own edit from being re-adopted.
+  std::vector<MapLeg> fplLegs_;
+  std::vector<MapLeg> fplLastMapPlan_;
+  std::vector<MapLeg> fplLastPublished_;
+  bool fplEditPending_ = false;
+  bool fplCursorOn_ = false;
+  int fplCursorRow_ = 0;
+  FmsWaypointEntry fplEntry_;
+  FplConfirm fplConfirm_ = FplConfirm::None;
+  bool fplConfirmOk_ = true;
+  std::string fplRemoveIdent_;
+
+  // Procedures window (PROC key) state: the top-level menu rows, the menu
+  // cursor, and the procedure-selection sub-window (category / step / list
+  // cursor / picked procedure), plus the NAV1-tune load latch.
+  struct ProcMenuItem {
+    std::string text;
+    ProcMenuAction action = ProcMenuAction::SelectApproach;
+    bool enabled = true;
+  };
+  std::vector<ProcMenuItem> procMenuItems_;
+  int procMenuSel_ = 0;
+  ProcMode procMode_ = ProcMode::Menu;
+  ProcedureType procCategory_ = ProcedureType::Approach;
+  ProcStep procStep_ = ProcStep::ProcedureList;
+  int procSelected_ = 0;
+  std::string procSelectedName_;
+  bool procLoadPending_ = false;
+  MapProcedure procLoadTarget_{};
+
   // Direct-To window state. Latest map snapshot (for ident lookups / geographic
   // readouts) and the active flight-plan waypoint (the default destination) are
   // cached each update().
@@ -645,6 +818,13 @@ class SoftkeyController {
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;
   MapLeg dtoRequestTarget_;
+
+  // Page Menu (MENU on an open popout): option list for the active window.
+  std::vector<PfdPageMenuItem> pageMenuItems_;
+  int pageMenuSel_ = 0;
+  int pageMenuScroll_ = 0;
+  bool pageMenuOpen_ = false;
+  float pageMenuAnim_ = 0.0f;
 
   // PFD Setup Menu state: the highlighted field plus each row's backlight
   // target, mode, and intensity. Backlighting has no visible effect in this

@@ -17,10 +17,12 @@ namespace avionics::pfd {
 void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
                        const SoftkeyController& ui) {
   const FontScope fs(r, FontFace::DejaVuSemiBold);
-  // WT popout: 310x220 px on the 1024x768 canvas; each entry is 58 px tall
-  // with two 29 px rows.
-  const float panelW = w * (310.0f / kWtCanvasWidth);
-  const float panelH = h * (220.0f / kWtCanvasHeightPx);
+  // Same taller popout as Direct-To / Page Menu / Alerts (Pilot's Guide Fig. 4-4
+  // shows the Nearest Airports window as the same lower-right box). Each entry is
+  // 58 px tall with two 29 px rows.
+  float panelW = 0.0f;
+  float panelH = 0.0f;
+  tallPopoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::Nearest),
                       "Nearest Airports", panelW, panelH);
@@ -28,7 +30,12 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
   const float a = f.a;
 
   const auto& list = ui.nearestAirports();
-  const float size = fontPx(wt::kInfoLabel, h);
+  // The Nearest window packs the most data of any popup: five columns in row 1
+  // (ident, symbol, bearing, distance, approach) plus a service label, tunable
+  // frequency, and runway length in row 2. At the 20 px standard body a towered
+  // field with a five-digit runway (e.g. KRSW's 12000FT) can't fit on one line,
+  // so this window uses a slightly smaller body that still reads clearly.
+  const float size = fontPx(18.0f, h);
   const float smallSize = size * 0.875f;
   if (list.empty()) {
     const char* msg = "None within 200";
@@ -45,7 +52,6 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
 
   constexpr int kVisibleEntries = 3;
   const int cursor = ui.nearestCursor();
-  const bool blinkOn = ui.blinkOn();
   const int first = std::max(0, cursor - kVisibleEntries + 1);
   const float entryH = fontPx(58.0f, h);
   const float rowH = entryH * 0.5f;
@@ -66,10 +72,11 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
   const float distanceCx = listLeft + colW + iconW + colW * 1.5f;
   const float approachCx = listLeft + colW + iconW + colW * 2.5f;
 
-  // Row 2 (WT flex): freqtype (30%, left) | frequency (30%, right) | RWY left.
+  // Row 2 (WT flex): service label (left) | frequency (cyan) | longest runway.
+  // The runway block is right-aligned to the list edge and the frequency is
+  // right-aligned just to its left, so both adapt to the runway's digit count
+  // and never collide with each other or overflow the popup.
   const float freqTypeX = listLeft;
-  const float freqRight = listLeft + listW * 0.60f;
-  const float rwyX = listLeft + listW * 0.62f;
 
   char buf[32];
   for (int row = 0; row < kVisibleEntries; ++row) {
@@ -87,7 +94,7 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
 
     // Row 1: ident (FMS cursor highlight), symbol, bearing, distance, approach.
     putField(r, identX, row1Cy, apt.id, size, colors::kCyan, i == cursor, a,
-             blinkOn, 0.15f);
+             0.15f);
     MapFeature sym;
     sym.type = MapFeatureType::Airport;
     sym.airportTowered = apt.airportTowered;
@@ -99,31 +106,56 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
                   formatHeading(apt.bearingDeg).c_str());
     r.fillText(bearingCx, row1Cy, buf, size, TextAlign::Center,
                withAlpha(colors::kWhite, a));
-    std::snprintf(buf, sizeof(buf), "%.1fNM", apt.distanceNm);
-    r.fillText(distanceCx, row1Cy, buf, size, TextAlign::Center,
+    // Distance: whole nautical miles with a smaller "NM" suffix, centered in
+    // the column (Pilot's Guide Fig. 4-4 shows whole-number distances).
+    std::snprintf(buf, sizeof(buf), "%.0f", apt.distanceNm);
+    const float distNumW = r.measureTextWidth(buf, size);
+    const float unitGap = size * 0.06f;
+    const float distNmW = r.measureTextWidth("NM", smallSize);
+    const float distX = distanceCx - (distNumW + unitGap + distNmW) * 0.5f;
+    r.fillText(distX, row1Cy, buf, size, TextAlign::Left,
                withAlpha(colors::kWhite, a));
+    r.fillText(distX + distNumW + unitGap, row1Cy, "NM", smallSize,
+               TextAlign::Left, withAlpha(colors::kWhite, a));
     const std::string& approach =
         apt.approachType.empty() ? std::string("VFR") : apt.approachType;
     r.fillText(approachCx, row1Cy, approach, size, TextAlign::Center,
                withAlpha(colors::kWhite, a));
 
-    // Row 2: comm-service label, tunable frequency (cyan), longest runway.
+    // Row 2: comm-service label (left), longest runway (right-aligned to the
+    // list edge), and the tunable frequency right-aligned just left of it. The
+    // runway keeps the body size with smaller "RWY"/"FT" affixes (Fig. 4-4).
     if (!apt.comLabel.empty()) {
       r.fillText(freqTypeX, row2Cy, apt.comLabel, smallSize, TextAlign::Left,
                  withAlpha(colors::kWhite, a));
     }
-    if (apt.frequencyMhz > 0.0f) {
-      r.fillText(freqRight, row2Cy, formatFreq(apt.frequencyMhz, 3), size,
-                 TextAlign::Right, withAlpha(colors::kCyan, a));
-    }
-    const std::string rwy =
-        apt.longestRunwayFt > 0
-            ? formatInt(static_cast<float>(apt.longestRunwayFt)) + "FT"
-            : "_____";
+    const bool hasRwy = apt.longestRunwayFt > 0;
+    const std::string rwyNum =
+        hasRwy ? formatInt(static_cast<float>(apt.longestRunwayFt))
+               : std::string("_____");
+    const float rwyLabelW = r.measureTextWidth("RWY ", smallSize);
+    const float rwyNumW = r.measureTextWidth(rwyNum, size);
+    const float ftGap = hasRwy ? size * 0.06f : 0.0f;
+    const float ftW = hasRwy ? r.measureTextWidth("FT", smallSize) : 0.0f;
+    const float rwyX = listRight - rwyLabelW - rwyNumW - ftGap - ftW;
     r.fillText(rwyX, row2Cy, "RWY", smallSize, TextAlign::Left,
                withAlpha(colors::kWhite, a));
-    r.fillText(rwyX + r.measureTextWidth("RWY ", smallSize), row2Cy, rwy, size,
-               TextAlign::Left, withAlpha(colors::kWhite, a));
+    r.fillText(rwyX + rwyLabelW, row2Cy, rwyNum, size, TextAlign::Left,
+               withAlpha(colors::kWhite, a));
+    if (hasRwy) {
+      r.fillText(rwyX + rwyLabelW + rwyNumW + ftGap, row2Cy, "FT", smallSize,
+                 TextAlign::Left, withAlpha(colors::kWhite, a));
+    }
+    // Frequency left-aligned just after the COM service label (Fig. 4-4 places
+    // the tunable frequency immediately to the right of the service label).
+    if (apt.frequencyMhz > 0.0f) {
+      const float serviceW =
+          apt.comLabel.empty() ? 0.0f
+                               : r.measureTextWidth(apt.comLabel, smallSize);
+      r.fillText(freqTypeX + serviceW + fontPx(9.0f, h), row2Cy,
+                 formatFreq(apt.frequencyMhz, 3), size, TextAlign::Left,
+                 withAlpha(colors::kCyan, a));
+    }
   }
 
   // Scroll thumb (WT ScrollBar): only when more airports exist than fit.

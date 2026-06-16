@@ -22,14 +22,14 @@ void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
   const float rawAnim = ui.windowAnim(PfdWindow::Setup);
   if (rawAnim <= 0.0f) return;
   const float a = smoothstep(rawAnim);
-  const bool blinkOn = ui.blinkOn();
   const PfdSetupField cursor = ui.pfdSetupCursor();
 
-  // Lower-right anchor with the shared slide-up + fade. The real menu's box is
-  // ~1.43:1 (w:h) per Fig. 1-18 and fairly compact; keep the aspect but make it
-  // small so the two rows sit tightly under the title.
-  const float panelW = w * 0.28f;
-  const float panelH = h * 0.26f;
+  // Lower-right anchor with the shared slide-up + fade. Sized to match the
+  // Direct-To / Page Menu popout (Fig. 1-18 shows the two rows packed under the
+  // title over an otherwise empty panel, so the extra height is just empty).
+  float panelW = 0.0f;
+  float panelH = 0.0f;
+  tallPopoutPanelSize(w, h, panelW, panelH);
   const float margin = w * 0.012f;
   const float panelX = w - panelW - margin;
   const float panelBottom = (h - L.bottomBarH) - h * 0.012f;
@@ -63,11 +63,16 @@ void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
 
   // Rows packed directly under the separator with single-line spacing (the
   // empty lower panel below matches the figure). Spacing keys off the font size
-  // so the two rows never drift apart as the panel scales.
-  const float size = fontPx(wt::kInfoLabel, h);
+  // so the two rows never drift apart as the panel scales. Uses the standard
+  // popout body size so it matches the other PFD popups.
+  const float size = fontPx(wt::kInfoValue, h);
+  // Column anchors tuned for the standard 20 px body: the mode column sits far
+  // enough right that the green target carrot after the (wider) label clears the
+  // mode field's highlight plate, and the percentage is pushed to the edge so it
+  // clears the longer "Manual" mode text.
   const float labelX = panelX + panelW * 0.06f;
-  const float modeX = panelX + panelW * 0.50f;
-  const float valueRight = panelX + panelW * 0.96f;
+  const float modeX = panelX + panelW * 0.55f;
+  const float valueRight = panelX + panelW * 0.975f;
   const float row0Cy = sepY + size * 1.35f;
   const float rowGap = size * 1.6f;
   const float rowCy[kPfdSetupRowCount] = {row0Cy, row0Cy + rowGap};
@@ -125,7 +130,7 @@ void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
     arrow(labelX - size * 0.55f, cy, /*pointRight=*/false,
           isKey ? colors::kActiveGreen : colors::kLabelText);
     putField(r, labelX, cy, targetText, size, colors::kCyan,
-             cursor == row.target, a, blinkOn, 0.0f, kMenuFace);
+             cursor == row.target, a, 0.0f, kMenuFace);
     arrow(rightArrowX, cy, /*pointRight=*/true,
           isKey ? colors::kLabelText : colors::kActiveGreen);
 
@@ -133,7 +138,7 @@ void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
     const std::string modeText =
         ui.pfdSetupMode(row.row) == BacklightMode::Manual ? "Manual" : "Auto";
     putField(r, modeX, cy, modeText, size, colors::kCyan, cursor == row.mode, a,
-             blinkOn, 0.0f, kMenuFace);
+             0.0f, kMenuFace);
 
     // Intensity percentage, right-aligned.
     char buf[16];
@@ -141,7 +146,7 @@ void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
     const std::string valueText(buf);
     const float vx = valueRight - r.measureTextWidth(valueText, size, kMenuFace);
     putField(r, vx, cy, valueText, size, colors::kWhite, cursor == row.value, a,
-             blinkOn, 0.0f, kMenuFace);
+             0.0f, kMenuFace);
   }
 }
 

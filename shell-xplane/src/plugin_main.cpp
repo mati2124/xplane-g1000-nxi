@@ -61,6 +61,7 @@
 #include "avionics/CommandBridgeProtocol.h"
 #include "avionics/FlightPlanBridgeProtocol.h"
 #include "avionics/PersistentState.h"
+#include "avionics/Terrain.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/GlLoader.h"
 #include "avionics/render/NanoVgRenderer.h"
@@ -1527,6 +1528,14 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   // "Install Update" menu item once the background check finds a newer release.
   XPLMRegisterFlightLoopCallback(&UpdatePumpFlightLoop, 1.0f, nullptr);
 
+  // Move the MFD terrain raster's DEM sampling + hillshade colorize (~100 ms for
+  // a full 512x512 rebuild) off the sim thread onto a worker; only the finished
+  // RGBA buffer's GPU upload stays on the sim thread (inside the MFD draw). The
+  // worker dereferences the DataSource's TerrainSource, so it must be shut down
+  // before g_dataSource is destroyed (see XPluginStop). The worker never touches
+  // GL, so it is safe to run alongside X-Plane's render loop.
+  avionics::map::setAsyncTerrainBuilds(true);
+
   if (g_replaceDisplays) {
     RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
     RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
@@ -1549,6 +1558,10 @@ PLUGIN_API void XPluginStop(void) {
   DestroyRateMenu();
   ShutdownDevice(g_pfd);
   ShutdownDevice(g_mfd);
+  // Join the terrain worker before the DataSource (which owns the TerrainSource
+  // the worker samples) is destroyed, so the worker can't dereference freed
+  // terrain data mid-build.
+  avionics::map::setAsyncTerrainBuilds(false);
   g_commandBridge.reset();
   g_flightPlanBridge.reset();
   g_dataSource.reset();

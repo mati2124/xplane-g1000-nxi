@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -70,7 +72,19 @@ class NexradWeatherRadar : public WeatherRadarSource {
   };
 
   void maybeStartFetch();
-  void resample();
+
+  // Resample the ownship-centered intensity grid from a decoded mosaic. This is
+  // the expensive step (kGrid*kGrid pixels, each a nearest-palette dBZ lookup),
+  // so it runs on resampleThread_ off the caller's thread; advance() only swaps
+  // the finished buffer into strength_ (keeping every strength_ write on the
+  // consumer thread, so returnStrength()/revision() readers stay race-free).
+  static void resampleInto(const Mosaic& mosaic, double centerLat,
+                           double centerLon, std::vector<unsigned char>& out);
+  void startResampleWorker();
+  void stopResampleWorker();
+  void resampleWorkerMain();
+  void submitResample();
+
   // Worker: download + decode the tiles for (lat,lon); fills `out`. Aborts
   // promptly (mid-transfer) once `*abort` becomes true so teardown never blocks
   // on a slow network request.
@@ -98,9 +112,26 @@ class NexradWeatherRadar : public WeatherRadarSource {
   std::atomic<bool> abortFetch_{false};  // set in the destructor to cancel
   std::mutex mutex_;
   Mosaic pending_;  // guarded by mutex_, published by the worker
-  Mosaic active_mosaic_;
+  // The decoded mosaic the grid resamples from. shared_ptr so the resample
+  // worker can keep its input alive while the sim thread swaps in a newer fetch.
+  std::shared_ptr<const Mosaic> activeMosaic_;
   double fetchCenterLat_ = 0.0;  // center the in-flight / active fetch used
   double fetchCenterLon_ = 0.0;
+
+  // Resample worker handoff. The worker fills resampleScratch_ off-thread; the
+  // sim thread (advance) swaps it into strength_ and bumps revision_.
+  enum class ResamplePhase { Idle, Running, Done };
+  std::thread resampleThread_;
+  std::mutex resampleMu_;
+  std::condition_variable resampleCv_;
+  ResamplePhase resamplePhase_ = ResamplePhase::Idle;
+  bool resampleStop_ = false;
+  std::shared_ptr<const Mosaic> resampleMosaic_;  // input for the running job
+  double resampleReqLat_ = 0.0;
+  double resampleReqLon_ = 0.0;
+  std::vector<unsigned char> resampleScratch_;  // worker output (kGrid*kGrid)
+  double resampleDoneLat_ = 0.0;
+  double resampleDoneLon_ = 0.0;
 };
 
 }  // namespace avionics

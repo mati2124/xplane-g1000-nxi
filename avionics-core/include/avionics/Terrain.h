@@ -45,8 +45,9 @@ namespace map {
 
 // When enabled, DEM sampling and hillshade colorize for the map terrain
 // background run on a background thread; only the GPU texture upload happens
-// on the render thread. The standalone shell enables this; the X-Plane plugin
-// leaves it off.
+// on the render thread. Both shells enable this: the standalone (its own render
+// thread) and the X-Plane plugin (to keep the heavy rebuild off the sim thread,
+// joined before its TerrainSource is destroyed).
 void setAsyncTerrainBuilds(bool enabled);
 
 }  // namespace map

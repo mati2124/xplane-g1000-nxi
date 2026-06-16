@@ -49,17 +49,18 @@ WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
 
 float putField(Renderer& r, float x, float cy, const std::string& text,
                float size, const Color& color, bool highlighted, float alpha,
-               bool blinkOn, float trailingGapFrac, FontFace face) {
+               float trailingGapFrac, FontFace face) {
   const float tw = r.measureTextWidth(text, size, face);
-  if (highlighted && blinkOn) {
+  // The FMS-cursor selection is a steady cyan inverse plate on the real unit
+  // (Fig. 4-4 / Fig. 1-18) -- it does not blink, so the plate is always drawn
+  // for the highlighted field.
+  if (highlighted) {
     const float padX = size * 0.25f;
     const float padY = size * 0.18f;
     r.fillRect(x - padX, cy - size * 0.5f - padY, tw + 2.0f * padX,
                size + 2.0f * padY, withAlpha(colors::kCyan, alpha));
   }
-  const Color textColor = highlighted
-                              ? (blinkOn ? colors::kBlack : colors::kCyan)
-                              : color;
+  const Color textColor = highlighted ? colors::kBlack : color;
   r.fillText(x, cy, text, size, TextAlign::Left, withAlpha(textColor, alpha),
              face);
   return x + tw + size * trailingGapFrac;

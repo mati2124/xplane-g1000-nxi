@@ -942,13 +942,13 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "tmrref") == 0) {
-    // Timer/References window: open it, start the timer, run it for a bit,
-    // then set BARO minimums so the BARO MIN box and tape bug are captured.
+    // Timer/References window: open it with the timer stopped (00:00:00 /
+    // "Start?", as in Pilot's Guide Fig. 2-6), then set BARO minimums so the
+    // BARO MIN box and tape bug are captured.
     engine.skipBoot();
     engine.update(seconds);
     engine.pressSoftkey(9);  // "Tmr/Ref" -> open the References window
-    engine.pressBezelKey(avionics::BezelKey::Ent);  // Start? -> timer runs
-    for (int i = 0; i < 90; ++i) engine.update(1.0 / 60.0);  // 1.5 s elapses
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     // Cursor down to MINS (over the four V-speed rows) with the large FMS
     // knob, select BARO, then step the altitude up with the small knob
     // (100 ft per click).
@@ -1084,6 +1084,64 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::DirectTo);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     engine.pressBezelKey(avionics::BezelKey::Ent);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdpagemenu") == 0) {
+    // PFD Page Menu on Nearest (Pilot's Guide Fig. 1-10): NRST shows "No Options".
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(10);  // Nearest
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Menu);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdpagemenuref") == 0) {
+    // PFD Page Menu on Tmr/Ref: references bulk On/Off/Restore options.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(9);  // Tmr/Ref
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Menu);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfpl") == 0) {
+    // The PFD Active Flight Plan window (FPL bezel key, Pilot's Guide Fig. 5-48):
+    // opens the active flight-plan legs as the lower-right popout.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfpledit") == 0) {
+    // The PFD Active Flight Plan window mid-edit: turn the FMS cursor on, step
+    // to a leg row, and open the waypoint-ident entry so the insert/change flow
+    // (how the origin and destination are edited) is captured.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);     // cursor on
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // step to second row
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // open ident entry
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // spell a character
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdproc") == 0) {
+    // The PFD Procedures window (PROC bezel key, Pilot's Guide 5.8): the
+    // top-level Procedures menu.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Proc);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdprocsel") == 0) {
+    // The PFD Procedures window selection sub-window: open PROC, then ENT on
+    // "Select Approach" to show the approach list for the plan's airport.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Proc);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Ent);  // "Select Approach"
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
@@ -2124,11 +2182,10 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // DEM terrain rebuilds sample ~260k elevation points per raster. On the
-  // standalone that work must not run on the render thread (it pinned the MFD
-  // at ~100 ms/frame and the whole suite at ~8 fps). The plugin leaves async
-  // builds off and spreads synchronous sampling across its cached full-render
-  // frames instead.
+  // DEM terrain rebuilds sample ~260k elevation points per raster. That work
+  // must not run on the render thread (it pinned the MFD at ~100 ms/frame and
+  // the whole suite at ~8 fps), so both shells offload it to a worker; only the
+  // finished RGBA buffer's GPU upload happens on the render thread.
   avionics::map::setAsyncTerrainBuilds(true);
 
   // Offscreen single-frame capture mode for development/iteration:
@@ -2671,6 +2728,22 @@ int main(int argc, char** argv) {
       avionics::MapLeg pfdDto;
       if (pfdEngine->softkeyController().consumeDirectToRequest(pfdDto)) {
         xplane.setDirectTo(pfdDto);
+      }
+
+      // PFD Active Flight Plan window edits (insert / remove / delete), and PROC
+      // window procedure loads, override the displayed plan and program the FMS,
+      // the same as the MFD FPL page.
+      std::vector<avionics::MapLeg> pfdEditedPlan;
+      if (pfdEngine->softkeyController().consumeFlightPlanEdit(pfdEditedPlan)) {
+        xplane.setRouteOverride(pfdEditedPlan);
+      }
+
+      // A loaded PROC approach with an ILS frequency tunes NAV1 standby (same as
+      // the MFD's procedure load).
+      avionics::MapProcedure pfdProc;
+      if (pfdEngine->softkeyController().consumeProcLoadRequest(pfdProc) &&
+          pfdProc.frequencyMhz > 0.0f) {
+        xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, pfdProc.frequencyMhz);
       }
     }
 

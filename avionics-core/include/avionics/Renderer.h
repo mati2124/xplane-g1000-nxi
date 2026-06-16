@@ -21,8 +21,10 @@ struct TextRect {
 // Selectable text face. Default is the primary UI font (Roboto, matching the
 // Working Title G1000 NXi). DejaVuSemiBold is the bundled secondary face used
 // where a closer match to the real unit's display typeface is wanted (e.g. the
-// PFD Setup Menu); backends without that face loaded fall back to the default.
-enum class FontFace { Default, DejaVuSemiBold };
+// PFD Setup Menu). RobotoBold is the bundled bold weight, used where the real
+// unit renders heavier text (e.g. the softkey label bar). Backends without a
+// face loaded fall back to the default.
+enum class FontFace { Default, DejaVuSemiBold, RobotoBold };
 
 // A 2D point in renderer (display-pixel) coordinates, origin top-left, +y down.
 struct Point {

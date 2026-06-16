@@ -12,6 +12,7 @@ namespace avionics {
 void SoftkeyController::directToOpen() {
   dtoOpen_ = true;
   dtoArmed_ = false;
+  pageMenuOpen_ = false;
   // Close any open softkey pop-up so the Direct-To window does not overlap it.
   window_ = PfdWindow::None;
   // The destination defaults to the active flight-plan waypoint (Pilot's Guide:

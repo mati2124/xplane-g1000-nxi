@@ -73,11 +73,14 @@ float drawDtoButton(Renderer& r, float leftX, float cy, const char* label,
 void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
                         const SoftkeyController& ui) {
   const FontScope fs(r, FontFace::DejaVuSemiBold);
-  // Pilot's Guide Fig. 5-45: the PFD Direct-To window is wider than it is tall
-  // (~1.35 aspect on the 4:3 glass), sized like the other lower-right popouts.
+  // Taller 310-wide popout: reaches up near the altimeter BARO box so the five
+  // stacked sections plus the command buttons fit (Pilot's Guide Fig. 5-45).
+  float panelW = 0.0f;
+  float panelH = 0.0f;
+  tallPopoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.directToWindowAnim(), "Direct To",
-                      w * 0.36f, h * 0.36f);
+                      panelW, panelH);
   if (f.a <= 0.0f) return;
   const float a = f.a;
 
@@ -99,7 +102,9 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
   const float left = f.x + pad;
   const float right = f.x + f.w - pad;
   const float innerW = right - left;
-  const float gap = fontPx(8.0f, h);
+  // Tight inter-section spacing so all five sections plus the command buttons
+  // clear each other within the popout body.
+  const float gap = fontPx(6.0f, h);
 
   // Buttons anchored to the bottom of the body.
   const float buttonH = valueSize * 1.7f;
@@ -108,7 +113,7 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
   float y = f.contentTop + fontPx(4.0f, h);
 
   // ---- Ident / Facility / City box ----
-  const float identBoxH = identSize + faceSize * 1.3f + fontPx(18.0f, h);
+  const float identBoxH = identSize + faceSize * 1.3f + fontPx(14.0f, h);
   drawDtoBox(r, left, y, innerW, identBoxH);
   {
     const float ix = left + pad * 0.5f;
@@ -170,7 +175,7 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
     const float cy = y + boxH * 0.5f;
     float x = left + pad * 0.5f;
     x = putText(r, x, cy, "ALT", labelSize, colors::kTitleGray, 0.4f);
-    x = putText(r, x, cy, "_ _ _ _ _", valueSize, colors::kCyan, 0.1f);
+    x = putText(r, x, cy, "_____", valueSize, colors::kCyan, 0.1f);
     putText(r, x, cy, "FT", smallSize, colors::kCyan, 0.0f);
     float ox = left + innerW * 0.52f;
     ox = putText(r, ox, cy, "Offset", labelSize, colors::kTitleGray, 0.4f);

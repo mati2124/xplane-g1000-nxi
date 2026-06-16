@@ -293,6 +293,9 @@ SoftkeyController::SoftkeyController() : menuStack_{SoftkeyMenu::Root} {
   // The inset map ships with the topographic background on, matching the MFD
   // navigation map default.
   toggles_[static_cast<int>(DisplayToggle::MapTopo)] = true;
+  // The Active Flight Plan insert entry may resolve airway names (Pilot's Guide
+  // 5.6), like the MFD's FPL insert window.
+  fplEntry_.allowAirways = true;
   rebuildLabels();
 }
 
@@ -333,7 +336,10 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
   // its default destination.
   mapData_ = &map;
   activeWaypoint_ = data.fmaToWpt;
+  syncFlightPlanLegs(map);
   dtoAnim_ = approach(dtoAnim_, dtoOpen_ ? 1.0f : 0.0f, dt / kWindowAnimSeconds);
+  pageMenuAnim_ =
+      approach(pageMenuAnim_, pageMenuOpen_ ? 1.0f : 0.0f, dt / kWindowAnimSeconds);
 
   // ~1 Hz blink phase for flashing annunciations (Alerts softkey, Baro
   // Transition Alert): on for the first half of each second.
@@ -383,10 +389,19 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
 }
 
 void SoftkeyController::toggleWindow(PfdWindow w) {
+  pageMenuOpen_ = false;
   window_ = (window_ == w) ? PfdWindow::None : w;
   // Opening a window puts the FMS cursor at its first field/entry.
   if (window_ == PfdWindow::References) refCursor_ = RefField::TimerCmd;
   if (window_ == PfdWindow::Nearest) nearestCursor_ = 0;
+  if (window_ == PfdWindow::FlightPlan) {
+    fplCursorRow_ = 0;
+    fplCursorOn_ = false;
+    fplEntry_.reset();
+    fplConfirm_ = FplConfirm::None;
+  }
+  // The Procedures window opens on its top-level menu (PROC key, 5.8).
+  if (window_ == PfdWindow::Procedures) buildProcMenu();
   // The PFD Setup Menu opens with 'Auto' highlighted next to 'PFD Display'.
   if (window_ == PfdWindow::Setup) setupCursor_ = PfdSetupField::PfdMode;
 }
@@ -450,6 +465,16 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
   // key, it owns the knob / ENT / CLR until it is closed or activated.
   if (directToBezelKey(key)) return;
 
+  // The Active Flight Plan window owns the FMS knob / ENT / CLR / MENU while it
+  // is open (cursor on = edit, cursor off = scroll). Keys it does not use (the
+  // range rocker, the FPL toggle) fall through.
+  if (window_ == PfdWindow::FlightPlan && flightPlanBezelKey(key)) return;
+
+  // The Procedures window owns the FMS knob / ENT / CLR while it is open.
+  if (window_ == PfdWindow::Procedures && procBezelKey(key)) return;
+
+  if (pageMenuOpen_ && pageMenuBezelKey(key)) return;
+
   if (key == BezelKey::RangeUp) {
     insetRangeIndex_ = std::min(kMapRangeLadderCount - 1, insetRangeIndex_ + 1);
     return;
@@ -459,19 +484,47 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
     return;
   }
 
-  // MENU opens the PFD Setup Menu (Pilot's Guide Fig. 1-18); pressing it again
-  // (or CLR) removes it.
-  if (key == BezelKey::Menu) {
-    toggleWindow(PfdWindow::Setup);
+  // FPL opens / closes the Active Flight Plan window (Pilot's Guide Fig. 5-48,
+  // "Active Flight Plan Window on PFD").
+  if (key == BezelKey::Fpl) {
+    toggleWindow(PfdWindow::FlightPlan);
     return;
   }
 
-  // CLR removes the open pop-up window (Pilot's Guide: "To remove the window,
-  // press the CLR Key or the Tmr/Ref Softkey").
-  if (key == BezelKey::Clr && window_ != PfdWindow::None) {
-    window_ = PfdWindow::None;
+  // PROC opens / closes the Procedures window (Pilot's Guide 5.8).
+  if (key == BezelKey::Proc) {
+    toggleWindow(PfdWindow::Procedures);
     return;
   }
+
+  // MENU opens the PFD Setup Menu when no popout is active (Pilot's Guide
+  // Fig. 1-18). On an open popout it opens that window's Page Menu (Fig. 1-10).
+  if (key == BezelKey::Menu) {
+    if (window_ == PfdWindow::None) {
+      toggleWindow(PfdWindow::Setup);
+    } else if (window_ == PfdWindow::Setup) {
+      window_ = PfdWindow::None;
+    } else if (pageMenuOpen_) {
+      pageMenuOpen_ = false;
+    } else {
+      openPfdPageMenu();
+    }
+    return;
+  }
+
+  // CLR removes the page menu first, then any open pop-up window.
+  if (key == BezelKey::Clr) {
+    if (pageMenuOpen_) {
+      pageMenuOpen_ = false;
+      return;
+    }
+    if (window_ != PfdWindow::None) {
+      window_ = PfdWindow::None;
+      return;
+    }
+  }
+
+  if (pageMenuOpen_) return;
 
   // Inside the References window the FMS knob works as on the real unit: the
   // large knob moves the field cursor, the small knob changes the highlighted
@@ -512,6 +565,7 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
     }
     return;
   }
+
 }
 
 bool SoftkeyController::pressKey(int key) {

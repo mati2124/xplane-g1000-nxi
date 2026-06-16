@@ -60,8 +60,17 @@ void drawWindBox(Renderer& r, const Layout& L, float displayH,
 
   const float dirSize = fontPx(wt::kHsiSource, displayH);  // size14
   if (!d.windValid || d.windSpeedKts < 1.0f) {
-    r.fillText(panelX + panelW * 0.5f, panelY + panelH * 0.5f, "NO WIND DATA",
-               dirSize, TextAlign::Center, colors::kLabelText);
+    // "NO WIND DATA" is a centered block in the 83px-wide panel at the panel's
+    // inherited size18 face, so it wraps to two lines ("NO WIND" / "DATA") on
+    // the real NXi rather than overflowing as one line.
+    const float noDataSize = fontPx(wt::kWindValue, displayH);  // size18
+    const float lineH = noDataSize * 1.2f;
+    const float midX = panelX + panelW * 0.5f;
+    const float midY = panelY + panelH * 0.5f;
+    r.fillText(midX, midY - lineH * 0.5f, "NO WIND", noDataSize,
+               TextAlign::Center, colors::kLabelText);
+    r.fillText(midX, midY + lineH * 0.5f, "DATA", noDataSize, TextAlign::Center,
+               colors::kLabelText);
     return;
   }
 

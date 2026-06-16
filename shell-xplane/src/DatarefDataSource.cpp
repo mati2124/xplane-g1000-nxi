@@ -484,6 +484,9 @@ void DatarefDataSource::ensureInstallDataLoaded() {
 }
 
 DatarefDataSource::~DatarefDataSource() {
+  // Stop the map-query worker first: it reads navCache_/runwayCells_/
+  // airspaceCache_, so it must be joined before those members are destroyed.
+  stopMapQueryWorker();
   if (airspaceThread_.joinable()) airspaceThread_.join();
   if (aptDatThread_.joinable()) aptDatThread_.join();
 }
@@ -786,8 +789,12 @@ void DatarefDataSource::updateMap(double dtSeconds) {
 
   // Nearby navaids/airports: built once from the nav database, then range-
   // filtered around ownship on a throttled timer (the cache is static, only the
-  // filtering follows the aircraft).
+  // filtering follows the aircraft). The filtering and the apt-geometry /
+  // airspace scans run on a background worker (see submitMapQuery); here we only
+  // adopt finished results and decide when to kick off the next scan.
   if (!navCacheBuilt_) buildNavCache();
+  adoptMapQueryResult();
+
   sinceMapRebuildSeconds_ += dtSeconds;
   if (aptMapDirty_.load(std::memory_order_acquire)) {
     sinceMapRebuildSeconds_ = kMapRebuildIntervalSeconds;
@@ -799,49 +806,137 @@ void DatarefDataSource::updateMap(double dtSeconds) {
   if (map_.positionValid &&
       (map_.features.empty() || mapPanDirty_ ||
        sinceMapRebuildSeconds_ >= kMapRebuildIntervalSeconds)) {
-    map_.features = filterNearby(navCache_, queryLat, queryLon,
-                                 kMapQueryRangeNm, kMaxMapFeatures);
-    if (aptDatLoaded_.load(std::memory_order_acquire)) {
-      for (MapFeature& f : map_.features) {
+    if (submitMapQuery(queryLat, queryLon)) {
+      // A scan is now in flight; don't re-submit every frame while we wait.
+      mapPanDirty_ = false;
+      sinceMapRebuildSeconds_ = 0.0;
+    }
+  }
+}
+
+void DatarefDataSource::startMapQueryWorker() {
+  if (!mapQueryThread_.joinable()) {
+    mapQueryThread_ = std::thread([this] { mapQueryWorkerMain(); });
+  }
+}
+
+void DatarefDataSource::stopMapQueryWorker() {
+  {
+    std::lock_guard<std::mutex> lock(mapQueryMu_);
+    mapQueryStop_ = true;
+  }
+  mapQueryCv_.notify_all();
+  if (mapQueryThread_.joinable()) mapQueryThread_.join();
+}
+
+bool DatarefDataSource::submitMapQuery(double lat, double lon) {
+  startMapQueryWorker();
+  std::lock_guard<std::mutex> lock(mapQueryMu_);
+  // Only one scan at a time; a still-moving ownship simply triggers a fresh
+  // scan once the in-flight one is adopted.
+  if (mapQueryPhase_ != MapQueryPhase::Idle) return false;
+  mapQueryReqLat_ = lat;
+  mapQueryReqLon_ = lon;
+  mapQueryReqApt_ = aptDatLoaded_.load(std::memory_order_acquire);
+  mapQueryReqAirspace_ = airspaceLoaded_.load(std::memory_order_acquire);
+  mapQueryPhase_ = MapQueryPhase::Running;
+  mapQueryCv_.notify_one();
+  return true;
+}
+
+bool DatarefDataSource::adoptMapQueryResult() {
+  MapQueryResult result;
+  {
+    std::lock_guard<std::mutex> lock(mapQueryMu_);
+    if (mapQueryPhase_ != MapQueryPhase::Done) return false;
+    result = std::move(mapQueryResult_);
+    mapQueryResult_ = MapQueryResult{};
+    mapQueryPhase_ = MapQueryPhase::Idle;
+  }
+
+  map_.features = std::move(result.features);
+
+  if (result.aptGeometryIncluded) {
+    const std::size_t prevRunways = map_.runways.size();
+    const std::size_t prevTaxiways = map_.taxiways.size();
+    const std::size_t prevTaxiwayLabels = map_.taxiwayLabels.size();
+    map_.runways = std::move(result.runways);
+    map_.taxiways = std::move(result.taxiways);
+    map_.taxiwayLabels = std::move(result.taxiwayLabels);
+    if (aptMapDirty_.exchange(false, std::memory_order_acq_rel) ||
+        map_.runways.size() != prevRunways ||
+        map_.taxiways.size() != prevTaxiways ||
+        map_.taxiwayLabels.size() != prevTaxiwayLabels) {
+      ++map_.geometryEpoch;
+      char msg[160];
+      std::snprintf(
+          msg, sizeof(msg),
+          "G1000 NXi: airport diagram ready (%zu runways, %zu taxiway polys "
+          "near aircraft)\n",
+          map_.runways.size(), map_.taxiways.size());
+      XPLMDebugString(msg);
+    }
+  }
+
+  if (result.airspaceIncluded) {
+    const std::size_t prevAirspaces = map_.airspaces.size();
+    map_.airspaces = std::move(result.airspaces);
+    if (map_.airspaces.size() != prevAirspaces) {
+      ++map_.geometryEpoch;
+    }
+  }
+  return true;
+}
+
+// Background worker: pure reads of the immutable-after-load nav / apt.dat /
+// airspace caches plus the query center handed in by submitMapQuery. Never
+// touches map_ or the sim/XPLM API.
+void DatarefDataSource::mapQueryWorkerMain() {
+  for (;;) {
+    double lat = 0.0;
+    double lon = 0.0;
+    bool wantApt = false;
+    bool wantAirspace = false;
+    {
+      std::unique_lock<std::mutex> lock(mapQueryMu_);
+      mapQueryCv_.wait(lock, [this] {
+        return mapQueryStop_ || mapQueryPhase_ == MapQueryPhase::Running;
+      });
+      if (mapQueryStop_) return;
+      lat = mapQueryReqLat_;
+      lon = mapQueryReqLon_;
+      wantApt = mapQueryReqApt_;
+      wantAirspace = mapQueryReqAirspace_;
+    }
+
+    MapQueryResult res;
+    res.features =
+        filterNearby(navCache_, lat, lon, kMapQueryRangeNm, kMaxMapFeatures);
+    if (wantApt) {
+      for (MapFeature& f : res.features) {
         enrichAirportFromMeta(f, aptMetaByIcao_);
       }
-      const std::size_t prevRunways = map_.runways.size();
-      const std::size_t prevTaxiways = map_.taxiways.size();
-      const std::size_t prevTaxiwayLabels = map_.taxiwayLabels.size();
-      map_.runways = nearbyRunwaysFromCells(runwayCells_, queryLat, queryLon,
-                                            kRunwayQueryRangeNm, kMaxMapRunways);
-      map_.taxiways = nearbyPavementFromCells(
-          pavementCells_, queryLat, queryLon, kTaxiwayQueryRangeNm,
-          kMaxMapTaxiways);
-      map_.taxiwayLabels = nearbyTaxiwayLabelsFromCells(
-          taxiwayLabelCells_, queryLat, queryLon, kTaxiwayLabelQueryRangeNm,
+      res.runways = nearbyRunwaysFromCells(runwayCells_, lat, lon,
+                                           kRunwayQueryRangeNm, kMaxMapRunways);
+      res.taxiways = nearbyPavementFromCells(
+          pavementCells_, lat, lon, kTaxiwayQueryRangeNm, kMaxMapTaxiways);
+      res.taxiwayLabels = nearbyTaxiwayLabelsFromCells(
+          taxiwayLabelCells_, lat, lon, kTaxiwayLabelQueryRangeNm,
           kMaxMapTaxiwayLabels);
-      if (aptMapDirty_.exchange(false, std::memory_order_acq_rel) ||
-          map_.runways.size() != prevRunways ||
-          map_.taxiways.size() != prevTaxiways ||
-          map_.taxiwayLabels.size() != prevTaxiwayLabels) {
-        ++map_.geometryEpoch;
-        char msg[160];
-        std::snprintf(
-            msg, sizeof(msg),
-            "G1000 NXi: airport diagram ready (%zu runways, %zu taxiway polys "
-            "near aircraft)\n",
-            map_.runways.size(), map_.taxiways.size());
-        XPLMDebugString(msg);
-      }
+      res.aptGeometryIncluded = true;
     }
-    // Airspace boundaries from the (background-parsed) OpenAir file, filtered to
-    // the same neighborhood as the features.
-    if (airspaceLoaded_.load(std::memory_order_acquire)) {
-      const std::size_t prevAirspaces = map_.airspaces.size();
-      map_.airspaces = airspacesNear(airspaceCache_, queryLat, queryLon,
-                                     kMapQueryRangeNm, kMaxMapAirspaces);
-      if (map_.airspaces.size() != prevAirspaces) {
-        ++map_.geometryEpoch;
-      }
+    if (wantAirspace) {
+      res.airspaces = airspacesNear(airspaceCache_, lat, lon, kMapQueryRangeNm,
+                                    kMaxMapAirspaces);
+      res.airspaceIncluded = true;
     }
-    mapPanDirty_ = false;
-    sinceMapRebuildSeconds_ = 0.0;
+
+    {
+      std::lock_guard<std::mutex> lock(mapQueryMu_);
+      if (mapQueryStop_) return;
+      mapQueryResult_ = std::move(res);
+      mapQueryPhase_ = MapQueryPhase::Done;
+    }
   }
 }
 

@@ -47,11 +47,11 @@ WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
                             float panelH);
 
 // One field of a pop-up window: text with an optional highlight-select cursor
-// (pulses cyan plate / black text vs plain cyan text). Returns the x just past
-// the field. Shared by the References and PFD Setup windows.
+// (steady cyan plate / black text vs plain cyan text). Returns the x just past
+// the field. Shared by the Nearest and PFD Setup windows.
 float putField(Renderer& r, float x, float cy, const std::string& text,
                float size, const Color& color, bool highlighted, float alpha,
-               bool blinkOn, float trailingGapFrac = 0.6f,
+               float trailingGapFrac = 0.6f,
                FontFace face = FontFace::Default);
 
 // --- Per-component entry points (called from drawChrome). ---
@@ -71,9 +71,15 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
                           const SoftkeyController& ui);
 void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
                        const SoftkeyController& ui);
+void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
+                          const SoftkeyController& ui);
+void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
+                    const SoftkeyController& ui);
 void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
                         const SoftkeyController& ui);
 void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
+                        const SoftkeyController& ui);
+void drawPageMenuWindow(Renderer& r, float w, float h, const Layout& L,
                         const SoftkeyController& ui);
 
 }  // namespace avionics::pfd

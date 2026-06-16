@@ -14,7 +14,7 @@ namespace {
 std::string join(const std::string& dir, const std::string& leaf) {
   if (dir.empty()) return leaf;
   if (dir.back() == '/' || dir.back() == '\\') return dir + leaf;
-  return dir + '/';
+  return dir + '/' + leaf;
 }
 
 std::string cifpDirForRoot(const std::string& root) {

@@ -12,15 +12,21 @@ namespace avionics::pfd {
 void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
                           const SoftkeyController& ui) {
   const FontScope fs(r, FontFace::DejaVuSemiBold);
+  // Same standard taller popout as Direct-To / Page Menu / PFD Setup / Alerts /
+  // Nearest so every PFD popout shares one footprint (Pilot's Guide Fig. 2-6).
+  float panelW = 0.0f;
+  float panelH = 0.0f;
+  tallPopoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::References),
-                      "References", w * 0.34f, h * 0.46f);
+                      "References", panelW, panelH);
   if (f.a <= 0.0f) return;
   const float a = f.a;
   const RefField cursor = ui.referencesCursor();
   const bool blinkOn = ui.blinkOn();
 
-  const float size = fontPx(wt::kInfoLabel, h);
+  // Standard popout body size, shared with the other PFD popups.
+  const float size = fontPx(wt::kInfoValue, h);
   // Unit suffixes (KT/FT) are rendered smaller than the value, like the unit.
   const float unitSize = size * 0.72f;
   // Up to seven rows (TIMER, four V-speeds, MINS, and the TEMP-COMP row).
@@ -127,12 +133,15 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
     r.fillText(cmdCx, cy, cmd, size, TextAlign::Center,
                withAlpha(hl ? colors::kBlack : colors::kWhite, a));
   }
-  cy += lineH;
+  // Extra breathing room below the (taller) timer command button before the
+  // separator rule / V-speed list, so the rounded button doesn't crowd the line.
+  cy += lineH * 1.25f;
 
   // Separator rule below the Timer section (the real window groups the timer
-  // above the V-speed/MINS list).
+  // above the V-speed/MINS list), centered in the gap between the button and
+  // the first V-speed row.
   const float sepInset = f.w * 0.04f;
-  const float sepY = cy - lineH * 0.45f;
+  const float sepY = cy - lineH * 0.6f;
   r.strokeLine(f.x + sepInset, sepY, f.x + f.w - sepInset, sepY, 1.5f,
                withAlpha(colors::kWhitesmoke, a));
 

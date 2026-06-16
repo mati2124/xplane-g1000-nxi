@@ -94,32 +94,6 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
                Color{0.0f, 0.0f, 0.0f, 0.82f});
   }
 
-  // Map precipitation overlay: prefer the datalink NEXRAD source (real ground
-  // radar) when available, falling back to the onboard radar source.
-  const WeatherRadarSource* overlayWx =
-      map.nexrad != nullptr ? map.nexrad : map.weather;
-  if (config.style.showWeather && overlayWx != nullptr &&
-      overlayWx->active() && map.positionValid) {
-    // The overlay is anchored to the aircraft: datalink NEXRAD is geo-referenced
-    // and centered on ownship, and the onboard radar sweep emanates from it.
-    // Draw it at ownship's *screen* location (not the view center) so it stays
-    // fixed to the ground/aircraft when the map is panned away from ownship.
-    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-    const double rot = static_cast<double>(rotation) * kDegToRad;
-    const double cosR = std::cos(rot);
-    const double sinR = std::sin(rot);
-    const double northNm = (map.ownshipLat - viewCenterLat) * map::kNmPerDegLat;
-    const double eastNm =
-        (map.ownshipLon - viewCenterLon) * map::nmPerDegLon(viewCenterLat);
-    const double mapEast = eastNm * cosR - northNm * sinR;
-    const double mapNorth = eastNm * sinR + northNm * cosR;
-    const float wx =
-        cx + static_cast<float>(mapEast * static_cast<double>(pixelsPerNm));
-    const float wy =
-        cy - static_cast<float>(mapNorth * static_cast<double>(pixelsPerNm));
-    map::drawWeatherRaster(r, *overlayWx, wx, wy, pixelsPerNm, rotation);
-  }
-
   if (config.style.showChrome) {
     r.strokeLine(config.x, config.y, config.x + config.w, config.y, 2.0f,
                  colors::kTapeTopBorder);
@@ -166,6 +140,34 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     if (config.style.showLabels) {
       mapview::drawCities(r, map, proj, rangeNm, symSize, labelSize);
     }
+  }
+
+  // Map precipitation overlay: prefer the datalink NEXRAD source (real ground
+  // radar) when available, falling back to the onboard radar source. Drawn
+  // here -- after the topo/land base (including lake/water fills) but before
+  // the nav symbology -- so the returns sit on top of bodies of water like the
+  // real G1000 NXi, rather than being painted over by them.
+  const WeatherRadarSource* overlayWx =
+      map.nexrad != nullptr ? map.nexrad : map.weather;
+  if (config.style.showWeather && overlayWx != nullptr && overlayWx->active()) {
+    // The overlay is anchored to the aircraft: datalink NEXRAD is geo-referenced
+    // and centered on ownship, and the onboard radar sweep emanates from it.
+    // Draw it at ownship's *screen* location (not the view center) so it stays
+    // fixed to the ground/aircraft when the map is panned away from ownship.
+    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+    const double rot = static_cast<double>(rotation) * kDegToRad;
+    const double cosR = std::cos(rot);
+    const double sinR = std::sin(rot);
+    const double northNm = (map.ownshipLat - viewCenterLat) * map::kNmPerDegLat;
+    const double eastNm =
+        (map.ownshipLon - viewCenterLon) * map::nmPerDegLon(viewCenterLat);
+    const double mapEast = eastNm * cosR - northNm * sinR;
+    const double mapNorth = eastNm * sinR + northNm * cosR;
+    const float wx =
+        cx + static_cast<float>(mapEast * static_cast<double>(pixelsPerNm));
+    const float wy =
+        cy - static_cast<float>(mapNorth * static_cast<double>(pixelsPerNm));
+    map::drawWeatherRaster(r, *overlayWx, wx, wy, pixelsPerNm, rotation);
   }
 
   if (config.style.showRangeRings) {

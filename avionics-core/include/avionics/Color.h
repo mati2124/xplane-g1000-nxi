@@ -108,11 +108,13 @@ inline constexpr Color kSoftkeyBackground{0.0f, 0.0f, 0.0f, 1.0f};
 // is a top-rounded cap filled with a dark, slightly blue-grey vertical
 // gradient and edged along its top by a bright horizontal highlight; the caps
 // sit on a near-black bar and are separated by thin dark grooves. Values
-// sampled from the figure at high resolution.
-inline constexpr Color kSoftkeyBarBase{0.063f, 0.071f, 0.082f, 1.0f}; // near-black bar
-inline constexpr Color kSoftkeyCapTop{0.298f, 0.314f, 0.325f};       // rgb(76,80,83)
-inline constexpr Color kSoftkeyCapBottom{0.145f, 0.161f, 0.173f};    // rgb(37,41,44)
-inline constexpr Color kSoftkeyCapHighlight{0.475f, 0.490f, 0.502f}; // rgb(121,125,128)
+// sampled from the real-unit photo (references/real-nxi-pfd-svt-approach.png):
+// the caps read near-black with a faint blue tint, not the grey buttons a
+// lighter fill would imply, with a soft light-grey top edge.
+inline constexpr Color kSoftkeyBarBase{0.051f, 0.055f, 0.078f, 1.0f}; // near-black bar
+inline constexpr Color kSoftkeyCapTop{0.141f, 0.149f, 0.192f};       // rgb(36,38,49)
+inline constexpr Color kSoftkeyCapBottom{0.071f, 0.075f, 0.114f};    // rgb(18,19,29)
+inline constexpr Color kSoftkeyCapHighlight{0.706f, 0.725f, 0.761f}; // rgb(180,185,194)
 // A selected softkey label changes to black text on a gray background and
 // stays that way until turned off (G1000 Pilot's Guide for the Diamond DA40,
 // "Softkey Function").

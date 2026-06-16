@@ -59,8 +59,9 @@ inline void drawSoftkeyCell(Renderer& r, float x, float top, float cellW,
 
   if (!label.empty()) {
     const Color c = level > 0.5f ? colors::kBlack : labelColor;
+    // The real GDU renders softkey labels in a bold weight.
     r.fillText(x + cellW * 0.5f, top + barH * 0.5f, label, fontPx,
-               TextAlign::Center, c);
+               TextAlign::Center, c, FontFace::RobotoBold);
   }
 }
 

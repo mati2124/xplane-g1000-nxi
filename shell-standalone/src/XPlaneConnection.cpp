@@ -203,6 +203,8 @@ enum DiscreteRef {
   kDiscCasStallWarning,
   kDiscNav1IdentAudio,
   kDiscNav2IdentAudio,
+  kDiscMasterPower,
+  kDiscAvionicsPower,
   kDiscreteCount,
 };
 
@@ -221,7 +223,8 @@ const char* const kDiscretePaths[kDiscreteCount] = {
     datarefs::kAnnunFuelPressureLow, datarefs::kAnnunPitotHeat,
     datarefs::kAnnunIce,             datarefs::kAnnunGearUnsafe,
     datarefs::kAnnunStallWarning,    datarefs::kNav1IdentAudio,
-    datarefs::kNav2IdentAudio,
+    datarefs::kNav2IdentAudio,       datarefs::kBatteryMasterOn,
+    datarefs::kAvionicsPowerOn,
 };
 
 // The continuous zulu-time subscription rides one index past the float and
@@ -484,6 +487,14 @@ void applyDiscrete(FlightData& d, int discrete, float value) {
     case kDiscNav2IdentAudio:
       d.nav2IdentAudio = v != 0;
       break;
+    case kDiscMasterPower:
+      // GDU power: master gates the PFD, avionics master gates the MFD. Mirrors
+      // the in-sim DatarefDataSource so the standalone honors the same switches.
+      d.masterPowerOn = v != 0;
+      break;
+    case kDiscAvionicsPower:
+      d.avionicsPowerOn = v != 0;
+      break;
     default:
       break;
   }
@@ -520,6 +531,8 @@ void copyDiscreteFields(FlightData& dst, const FlightData& src) {
   dst.casStallWarning = src.casStallWarning;
   dst.nav1IdentAudio = src.nav1IdentAudio;
   dst.nav2IdentAudio = src.nav2IdentAudio;
+  dst.masterPowerOn = src.masterPowerOn;
+  dst.avionicsPowerOn = src.avionicsPowerOn;
 }
 
 float wrap360(float deg) {

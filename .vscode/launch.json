@@ -8,6 +8,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
     },
     {
@@ -17,6 +18,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
     },
     {
@@ -26,6 +28,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
     },
     {
@@ -35,6 +38,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
     },
     {
@@ -44,6 +48,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
       "preLaunchTask": "Build standalone"
     },
     {
@@ -53,6 +58,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
       "preLaunchTask": "Build standalone"
     },
     {
@@ -62,6 +68,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
       "preLaunchTask": "Build standalone"
     },
     {
@@ -71,6 +78,7 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
       "preLaunchTask": "Build standalone"
     },
     {
@@ -80,7 +88,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     },
     {
       "type": "lldb",
@@ -89,7 +98,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     },
     {
       "type": "lldb",
@@ -98,7 +108,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     },
     {
       "type": "lldb",
@@ -107,7 +118,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     },
     {
       "type": "cppvsdbg",
@@ -116,7 +128,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
     },
     {
       "type": "cppvsdbg",
@@ -125,7 +138,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
     },
     {
       "type": "cppvsdbg",
@@ -134,7 +148,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
     },
     {
       "type": "cppvsdbg",
@@ -143,7 +158,8 @@
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--debug-menu"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
     }
   ],
   "compounds": [

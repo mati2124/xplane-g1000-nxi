@@ -105,6 +105,7 @@ class NanoVgRenderer : public Renderer {
   NVGcontext* vg_ = nullptr;
   int fontId_ = -1;         // primary UI font (Roboto)
   int dejavuFontId_ = -1;   // secondary display face (DejaVu Sans SemiBold)
+  int boldFontId_ = -1;     // bold weight (Roboto Bold), e.g. softkey labels
   std::vector<FontFace> defaultFaceStack_;  // active Default-face overrides
   DrawStats stats_;
 };

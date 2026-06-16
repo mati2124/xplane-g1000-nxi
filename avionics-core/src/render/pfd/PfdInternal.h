@@ -21,6 +21,30 @@ namespace avionics::pfd {
 constexpr float kWtCanvasWidth = 1024.0f;
 constexpr float kWtCanvasHeightPx = 768.0f;
 
+// Lower-right PFD popout shell (WT .popout-dialog: Direct-To, Page Menu,
+// Nearest, Alerts, etc. on the 1024x768 GDU canvas).
+constexpr float kWtPopoutWidthPx = 310.0f;
+constexpr float kWtPopoutHeightPx = 220.0f;
+// PFD Page Menu list viewport inside the shell (WT .pfd-pagemenu-listcontainer).
+constexpr float kWtPageMenuListHeightPx = 72.0f;
+constexpr float kWtPageMenuRowHeightPx = 24.0f;
+
+inline void popoutPanelSize(float w, float h, float& outW, float& outH) {
+  outW = w * (kWtPopoutWidthPx / kWtCanvasWidth);
+  outH = h * (kWtPopoutHeightPx / kWtCanvasHeightPx);
+}
+
+// Direct-To and Page Menu use a taller popout (same width) so the Direct-To's
+// stacked readouts and command buttons fit without overlapping, with the top
+// edge reaching up near the altimeter BARO setting box (its bottom is ~468 px
+// on the 1024x768 canvas; this leaves a small gap below it).
+constexpr float kWtTallPopoutHeightPx = 252.0f;
+
+inline void tallPopoutPanelSize(float w, float h, float& outW, float& outH) {
+  outW = w * (kWtPopoutWidthPx / kWtCanvasWidth);
+  outH = h * (kWtTallPopoutHeightPx / kWtCanvasHeightPx);
+}
+
 struct Layout {
   float sx, sy, s;
 

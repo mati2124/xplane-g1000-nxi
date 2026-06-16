@@ -6,17 +6,21 @@ namespace avionics::pfd {
 void drawAlertsWindow(Renderer& r, float w, float h, const Layout& L,
                       const SoftkeyController& ui) {
   const FontScope fs(r, FontFace::DejaVuSemiBold);
-  // WT popout-dialog: 310x220 px on the 1024x768 canvas (same as Nearest, etc.).
-  const float panelW = w * (310.0f / kWtCanvasWidth);
-  const float panelH = h * (220.0f / kWtCanvasHeightPx);
+  // Same taller popout as Direct-To / Page Menu / PFD Setup (Pilot's Guide Fig.
+  // 1-17 shows the Alerts window as the same lower-right box, with messages
+  // listed from the top over an otherwise empty panel).
+  float panelW = 0.0f;
+  float panelH = 0.0f;
+  tallPopoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
-      drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::Alerts), "ALERTS",
+      drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::Alerts), "Alerts",
                       panelW, panelH);
   if (f.a <= 0.0f) return;
   const float a = f.a;
 
-  // Message list (or an empty-state line). Matches the PFD Setup Menu text size.
-  const float msgSize = fontPx(wt::kInfoLabel, h);
+  // Message list (or an empty-state line). Standard popout body size, shared
+  // with the other PFD popups.
+  const float msgSize = fontPx(wt::kInfoValue, h);
   const float lineH = msgSize * 1.6f;
   const float textX = f.x + f.w * 0.04f;
   float y = f.contentTop + lineH * 0.75f;

@@ -305,6 +305,7 @@ NexradWeatherRadar::NexradWeatherRadar() = default;
 NexradWeatherRadar::~NexradWeatherRadar() {
   abortFetch_.store(true, std::memory_order_release);
   if (worker_.joinable()) worker_.join();
+  stopResampleWorker();
 }
 
 void NexradWeatherRadar::setCenter(double lat, double lon) {
@@ -322,7 +323,8 @@ void NexradWeatherRadar::maybeStartFetch() {
   const bool moved =
       approxDistanceNm(centerLat_, centerLon_, fetchCenterLat_, fetchCenterLon_) >
       kRefetchDistanceNm;
-  const bool first = !active_mosaic_.valid && !resultReady_.load();
+  const bool haveMosaic = activeMosaic_ && activeMosaic_->valid;
+  const bool first = !haveMosaic && !resultReady_.load();
   if (!stale && !moved && !first) return;
 
   if (worker_.joinable()) worker_.join();  // reap the previous fetch
@@ -361,7 +363,7 @@ void NexradWeatherRadar::advance(double dtSeconds) {
     if (pending_.valid) {
       std::fprintf(stderr, "NEXRAD: fetched %zu radar tiles\n",
                    pending_.tiles.size());
-      active_mosaic_ = std::move(pending_);
+      activeMosaic_ = std::make_shared<const Mosaic>(std::move(pending_));
       newData = true;
     } else {
       std::fprintf(stderr, "NEXRAD: fetch failed (no network / no data)\n");
@@ -369,33 +371,112 @@ void NexradWeatherRadar::advance(double dtSeconds) {
     pending_ = Mosaic{};
   }
 
-  if (!active_mosaic_.valid || !haveCenter_) return;
+  // Publish a finished off-thread resample. strength_ is only ever written here
+  // (on the consumer thread), so returnStrength()/revision() readers never race
+  // the worker.
+  {
+    std::lock_guard<std::mutex> lock(resampleMu_);
+    if (resamplePhase_ == ResamplePhase::Done) {
+      strength_.swap(resampleScratch_);
+      resampledLat_ = resampleDoneLat_;
+      resampledLon_ = resampleDoneLon_;
+      resamplePhase_ = ResamplePhase::Idle;
+      active_ = true;
+      ++revision_;
+    }
+  }
+
+  if (!activeMosaic_ || !activeMosaic_->valid || !haveCenter_) return;
 
   const bool moved =
       approxDistanceNm(centerLat_, centerLon_, resampledLat_, resampledLon_) >
       kResampleDistanceNm;
-  if (newData || moved || strength_.empty()) resample();
+  if (newData || moved || strength_.empty()) submitResample();
 }
 
-void NexradWeatherRadar::resample() {
-  strength_.assign(static_cast<std::size_t>(kGrid) * kGrid, 0);
+void NexradWeatherRadar::startResampleWorker() {
+  if (!resampleThread_.joinable()) {
+    resampleThread_ = std::thread([this] { resampleWorkerMain(); });
+  }
+}
 
-  const int zoom = active_mosaic_.zoom;
+void NexradWeatherRadar::stopResampleWorker() {
+  {
+    std::lock_guard<std::mutex> lock(resampleMu_);
+    resampleStop_ = true;
+  }
+  resampleCv_.notify_all();
+  if (resampleThread_.joinable()) resampleThread_.join();
+}
+
+// Hand the latest mosaic + center to the worker, unless one is already running
+// (a still-moving ownship simply triggers a fresh job once that one is adopted).
+void NexradWeatherRadar::submitResample() {
+  startResampleWorker();
+  std::lock_guard<std::mutex> lock(resampleMu_);
+  if (resamplePhase_ != ResamplePhase::Idle) return;
+  resampleMosaic_ = activeMosaic_;  // shared_ptr keeps the tiles alive for the worker
+  resampleReqLat_ = centerLat_;
+  resampleReqLon_ = centerLon_;
+  resamplePhase_ = ResamplePhase::Running;
+  resampleCv_.notify_one();
+}
+
+void NexradWeatherRadar::resampleWorkerMain() {
+  for (;;) {
+    std::shared_ptr<const Mosaic> mosaic;
+    double lat = 0.0;
+    double lon = 0.0;
+    {
+      std::unique_lock<std::mutex> lock(resampleMu_);
+      resampleCv_.wait(lock, [this] {
+        return resampleStop_ || resamplePhase_ == ResamplePhase::Running;
+      });
+      if (resampleStop_) return;
+      mosaic = resampleMosaic_;
+      lat = resampleReqLat_;
+      lon = resampleReqLon_;
+    }
+
+    std::vector<unsigned char> out;
+    if (mosaic && mosaic->valid) {
+      resampleInto(*mosaic, lat, lon, out);
+    } else {
+      out.assign(static_cast<std::size_t>(kGrid) * kGrid, 0);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(resampleMu_);
+      if (resampleStop_) return;
+      resampleScratch_.swap(out);
+      resampleDoneLat_ = lat;
+      resampleDoneLon_ = lon;
+      resamplePhase_ = ResamplePhase::Done;
+    }
+  }
+}
+
+void NexradWeatherRadar::resampleInto(const Mosaic& mosaic, double centerLat,
+                                      double centerLon,
+                                      std::vector<unsigned char>& out) {
+  out.assign(static_cast<std::size_t>(kGrid) * kGrid, 0);
+
+  const int zoom = mosaic.zoom;
   const int worldTiles = 1 << zoom;
-  const double cosLat = cosLatClamped(centerLat_);
+  const double cosLat = cosLatClamped(centerLat);
 
   for (int row = 0; row < kGrid; ++row) {
     // row 0 is north (top of the texture); +north NM at the top edge.
     const double northNm =
         (0.5 - (row + 0.5) / static_cast<double>(kGrid)) * 2.0 * kRadiusNm;
-    const double cellLat = centerLat_ + northNm / kNmPerDegLat;
+    const double cellLat = centerLat + northNm / kNmPerDegLat;
     unsigned char* strRow =
-        strength_.data() + static_cast<std::size_t>(row) * kGrid;
+        out.data() + static_cast<std::size_t>(row) * kGrid;
     for (int col = 0; col < kGrid; ++col) {
       const double eastNm =
           ((col + 0.5) / static_cast<double>(kGrid) * 2.0 - 1.0) * kRadiusNm;
       const double cellLon =
-          centerLon_ + eastNm / kNmPerDegLat / cosLat;
+          centerLon + eastNm / kNmPerDegLat / cosLat;
 
       const double gx = mercatorGlobalX(cellLon, zoom);
       const double gy = mercatorGlobalY(cellLat, zoom);
@@ -407,8 +488,8 @@ void NexradWeatherRadar::resample() {
       const std::uint64_t key =
           (static_cast<std::uint64_t>(tileX) << 32) |
           static_cast<std::uint32_t>(tileY);
-      const auto it = active_mosaic_.tiles.find(key);
-      if (it == active_mosaic_.tiles.end()) continue;
+      const auto it = mosaic.tiles.find(key);
+      if (it == mosaic.tiles.end()) continue;
 
       int px = static_cast<int>(gx) - tileX * 256;
       int py = static_cast<int>(gy) - tileY * 256;
@@ -427,11 +508,6 @@ void NexradWeatherRadar::resample() {
       strRow[col] = static_cast<unsigned char>(std::lround(frac * 255.0f));
     }
   }
-
-  resampledLat_ = centerLat_;
-  resampledLon_ = centerLon_;
-  active_ = true;
-  ++revision_;
 }
 
 }  // namespace avionics

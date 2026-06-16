@@ -16,9 +16,13 @@ void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
   drawAlertsWindow(r, w, h, L, ui);
   drawReferencesWindow(r, w, h, L, ui);
   drawNearestWindow(r, w, h, L, ui);
+  drawFlightPlanWindow(r, w, h, L, ui);
+  drawProcWindow(r, w, h, L, ui);
   drawPfdSetupWindow(r, w, h, L, ui);
   // The Direct-To window (Direct-To bezel key) shares the lower-right region.
   drawDirectToWindow(r, w, h, L, ui);
+  // The Page Menu (MENU on an open popout) overlays the active window.
+  drawPageMenuWindow(r, w, h, L, ui);
   drawSoftkeyBar(r, w, h, L, ui);
 }
 

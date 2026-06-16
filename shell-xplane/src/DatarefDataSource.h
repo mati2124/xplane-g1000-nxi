@@ -1,8 +1,10 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -112,6 +114,31 @@ class DatarefDataSource : public DataSource {
   // taxiway pavement geometry for the close-range airport diagram.
   void loadAptDatAsync();
 
+  // Background moving-map query worker. filterNearby + the apt-geometry /
+  // airspace scans are pure reads of the nav / apt.dat / airspace caches (each
+  // immutable once its loader thread publishes it) plus a query center, so they
+  // run off the sim thread. updateMap() submits a job when a rebuild is due and,
+  // when the worker finishes, swaps the result into map_ and bumps the geometry
+  // epoch -- so every map_ write stays on the sim thread.
+  struct MapQueryResult {
+    std::vector<MapFeature> features;
+    std::vector<MapRunway> runways;
+    std::vector<MapPavement> taxiways;
+    std::vector<MapTaxiwayLabel> taxiwayLabels;
+    std::vector<MapAirspace> airspaces;
+    bool aptGeometryIncluded = false;  // runways/taxiways/labels were scanned
+    bool airspaceIncluded = false;
+  };
+  void startMapQueryWorker();
+  void stopMapQueryWorker();
+  void mapQueryWorkerMain();
+  // Hand the current query center + which caches are ready to the worker, unless
+  // a job is already running. Returns true if a job was submitted.
+  bool submitMapQuery(double lat, double lon);
+  // If the worker finished, move its result into map_ (sim thread). Returns true
+  // when a result was adopted.
+  bool adoptMapQueryResult();
+
   void rebuildEisBindings();
   // Detects an aircraft change (acf_ICAO + acf_relative_path) and points the
   // EIS and checklist stores at the matching per-aircraft profile.
@@ -160,6 +187,19 @@ class DatarefDataSource : public DataSource {
   std::thread aptDatThread_;
   std::string aptDatPath_;
   std::string aptGeometryCachePath_;
+
+  // Map-query worker handoff (see MapQueryResult above).
+  enum class MapQueryPhase { Idle, Running, Done };
+  std::thread mapQueryThread_;
+  std::mutex mapQueryMu_;
+  std::condition_variable mapQueryCv_;
+  MapQueryPhase mapQueryPhase_ = MapQueryPhase::Idle;
+  bool mapQueryStop_ = false;
+  double mapQueryReqLat_ = 0.0;
+  double mapQueryReqLon_ = 0.0;
+  bool mapQueryReqApt_ = false;
+  bool mapQueryReqAirspace_ = false;
+  MapQueryResult mapQueryResult_;  // worker output, guarded by mapQueryMu_
 
   XPLMDataRef airspeed_ = nullptr;
   XPLMDataRef altitude_ = nullptr;

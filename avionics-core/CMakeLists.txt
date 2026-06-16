@@ -18,6 +18,9 @@ add_library(avionics-core STATIC
   src/NavDatabase.cpp
   src/SoftkeyController.cpp
   src/SoftkeyDirectTo.cpp
+  src/SoftkeyFlightPlan.cpp
+  src/SoftkeyProcedures.cpp
+  src/SoftkeyPfdPageMenu.cpp
   src/SoftkeyNearest.cpp
   src/SoftkeyAltAlert.cpp
   src/SoftkeyReferences.cpp
@@ -103,8 +106,11 @@ add_library(avionics-core STATIC
   src/render/pfd/ChromeAlertsWindow.cpp
   src/render/pfd/ChromeReferencesWindow.cpp
   src/render/pfd/ChromeNearestWindow.cpp
+  src/render/pfd/ChromeFlightPlanWindow.cpp
+  src/render/pfd/ChromeProcWindow.cpp
   src/render/pfd/ChromePfdSetupWindow.cpp
   src/render/pfd/ChromeDirectToWindow.cpp
+  src/render/pfd/ChromePageMenuWindow.cpp
 )
 
 # Generate avionics/Version.h from the release identity cache variables so the

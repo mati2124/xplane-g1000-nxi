@@ -59,6 +59,15 @@ std::string dejavuFontPath() {
                          AVIONICS_FONT_DIR "/DejaVuSans-SemiBold.ttf");
 }
 
+// Bold weight of the primary face (Roboto Bold). Used where the real unit
+// renders heavier text, such as the softkey label bar; optional, so a missing
+// file just falls back to the primary font.
+constexpr const char* kBoldFontName = "sans-bold";
+std::string boldFontPath() {
+  return assets::resolve("fonts/Roboto-Bold.ttf",
+                         AVIONICS_FONT_DIR "/Roboto-Bold.ttf");
+}
+
 NVGcolor toNvg(const Color& c) { return nvgRGBAf(c.r, c.g, c.b, c.a); }
 
 }  // namespace
@@ -86,6 +95,11 @@ NanoVgRenderer::NanoVgRenderer(Backend backend) : backend_(backend) {
   if (!dejavu.empty()) {
     dejavuFontId_ = nvgCreateFont(vg_, kDejavuFontName, dejavu.c_str());
   }
+
+  const std::string bold = boldFontPath();
+  if (!bold.empty()) {
+    boldFontId_ = nvgCreateFont(vg_, kBoldFontName, bold.c_str());
+  }
 }
 
 int NanoVgRenderer::fontIdFor(FontFace face) const {
@@ -96,6 +110,9 @@ int NanoVgRenderer::fontIdFor(FontFace face) const {
   }
   if (face == FontFace::DejaVuSemiBold && dejavuFontId_ >= 0) {
     return dejavuFontId_;
+  }
+  if (face == FontFace::RobotoBold && boldFontId_ >= 0) {
+    return boldFontId_;
   }
   return fontId_;
 }
