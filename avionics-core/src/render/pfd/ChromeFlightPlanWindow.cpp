@@ -26,11 +26,11 @@ float drawFplIdentCells(Renderer& r, float startX, float cy,
     const float chW = r.measureTextWidth(text, size);
     if (cursorOn) {
       r.fillRect(cx - tracking * 0.5f, cy - size * 0.62f, chW + tracking,
-                 size * 1.24f, withAlpha(colors::kCyan, a));
+                 size * 1.24f, withAlpha(colors::kPopoutCyan, a));
     }
     const Color color = cursorOn          ? colors::kBlack
-                        : isCursor        ? colors::kCyan
-                        : i >= typedCount ? colors::kCyan
+                        : isCursor        ? colors::kPopoutCyan
+                        : i >= typedCount ? colors::kPopoutCyan
                                           : colors::kWhite;
     r.fillText(cx, cy, text, size, TextAlign::Left, withAlpha(color, a));
     cx += chW + tracking;
@@ -73,7 +73,7 @@ void drawFplConfirm(Renderer& r, const WindowFrame& f, float size,
                           bool selected) {
     if (selected) {
       r.fillRoundedRect(left, btnCy - btnH * 0.5f, width, btnH, btnH * 0.32f,
-                        withAlpha(colors::kCyan, a));
+                        withAlpha(colors::kPopoutCyan, a));
     }
     r.strokeRoundedRect(left, btnCy - btnH * 0.5f, width, btnH, btnH * 0.32f,
                         1.2f, withAlpha(colors::kGroupBoxBorder, a));
@@ -97,10 +97,9 @@ void drawFplConfirm(Renderer& r, const WindowFrame& f, float size,
 // waypoints, which is how the origin and destination are changed.
 void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                           const SoftkeyController& ui) {
-  const FontScope fs(r, FontFace::DejaVuSemiBold);
   float panelW = 0.0f;
   float panelH = 0.0f;
-  tallPopoutPanelSize(w, h, panelW, panelH);
+  popoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::FlightPlan),
                       "Flight Plan", panelW, panelH);
@@ -130,7 +129,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const std::string dest = legs.size() < 2 ? "_____" : legs.back().id;
   float cy = f.contentTop + size * 0.6f;
   r.fillText(identX, cy, orig + " / " + dest, size, TextAlign::Left,
-             withAlpha(colors::kCyan, a));
+             withAlpha(colors::kPopoutCyan, a));
   cy += size * 1.35f;
 
   // Column header row (DTK / DIS), right-aligned over their value columns, with
@@ -214,7 +213,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
         const MapFeature& wpt = ui.flightPlanEntryMatch();
         if (!wpt.name.empty()) {
           r.fillText(identEnd + size * 0.6f, rowCy, wpt.name, smallSize,
-                     TextAlign::Left, withAlpha(colors::kCyan, a));
+                     TextAlign::Left, withAlpha(colors::kPopoutCyan, a));
         }
       }
       continue;
@@ -230,12 +229,12 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
       const float tracking = size * 0.06f;
       const float tw = r.measureTextWidth(ident.c_str(), size);
       r.fillRect(identX - tracking * 0.5f, rowCy - size * 0.62f, tw + tracking,
-                 size * 1.24f, withAlpha(colors::kCyan, a));
+                 size * 1.24f, withAlpha(colors::kPopoutCyan, a));
       r.fillText(identX, rowCy, ident, size, TextAlign::Left,
                  withAlpha(colors::kBlack, a));
     } else {
       r.fillText(identX, rowCy, ident, size, TextAlign::Left,
-                 withAlpha(active ? colors::kMagenta : colors::kCyan, a));
+                 withAlpha(active ? colors::kMagenta : colors::kPopoutCyan, a));
     }
 
     // DTK / DIS are leg-to-leg values, so the origin row and append slot none.

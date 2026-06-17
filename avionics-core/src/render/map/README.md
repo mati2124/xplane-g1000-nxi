@@ -47,7 +47,7 @@ live in their own translation units.
 | [`MapRoute.cpp`](MapRoute.cpp) | Active flight plan legs |
 | [`MapTrafficLayer.cpp`](MapTrafficLayer.cpp) | TIS-B / sim traffic symbols |
 | [`WeatherRaster.cpp`](WeatherRaster.cpp) | NEXRAD precipitation overlay |
-| [`MapObstacleLayer.cpp`](MapObstacleLayer.cpp) | Obstacle symbols |
+| [`MapObstacleLayer.cpp`](MapObstacleLayer.cpp) | FAA DDOF obstacle symbols (bundled `assets/obstacles.csv`) |
 
 ## Ownship & vectors
 
@@ -64,8 +64,9 @@ This folder only **draws** [`MapData`](../../../include/avionics/MapData.h).
 Parsing and spatial queries live in:
 
 - [`avionics-core/src/nav/`](../../nav/) — file format parsers
-- Shell stores (`NavData`, `AptDatStore`, `AirspaceStore`, …) — populate
-  `MapData` each frame
+- Shell stores (`NavData`, `AptDatStore`, `AirspaceStore`, `ObstacleStore`, …)
+  — populate `MapData` each frame. Obstacles come from the FAA DDOF CSV fetched
+  by [`tools/fetch_obstacles.py`](../../../../tools/fetch_obstacles.py).
 
 The map can pan off ownship when the MFD map pointer is active; shells push
 pointer position into `DataSource` so feature queries stay centered on the

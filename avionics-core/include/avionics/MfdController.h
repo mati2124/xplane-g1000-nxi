@@ -293,6 +293,8 @@ class MfdController {
   // information box with its ident, like the real unit selecting a waypoint as
   // the pointer passes over it.
   const MapFeature* mapPointerFeature() const;
+  // Obstacle under the pan pointer (same snap envelope as mapPointerFeature).
+  const MapObstacle* mapPointerObstacle() const;
 
   // WPT facility ident entry (Pilot's Guide, Waypoint Pages). ENT on a
   // resolved ident selects that waypoint for the page.

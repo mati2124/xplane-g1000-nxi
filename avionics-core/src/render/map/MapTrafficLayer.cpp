@@ -12,7 +12,7 @@ constexpr float kTrafficTrendFpm = 500.0f;
 }  // namespace
 
 void drawTraffic(Renderer& r, const MapData& map, const Proj& proj,
-                 float symSize, float labelSize) {
+                 float symSize, float labelSize, bool showLabels) {
   char tag[8];
   for (const MapTraffic& t : map.traffic) {
     float x = 0.0f, y = 0.0f;
@@ -28,6 +28,8 @@ void drawTraffic(Renderer& r, const MapData& map, const Proj& proj,
           {x, y - s}, {x + s, y}, {x, y + s}, {x - s, y}, {x, y - s}};
       r.strokePolyline(diamond, 5, 1.8f, c);
     }
+
+    if (!showLabels) continue;
 
     // Relative altitude tag in hundreds of feet, above the symbol when the
     // target is above ownship, below when below (TIS display convention).

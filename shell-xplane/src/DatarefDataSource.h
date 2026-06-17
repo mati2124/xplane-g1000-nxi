@@ -14,6 +14,7 @@
 
 #include "DsfTerrainStore.h"
 #include "DatarefWeatherRadar.h"
+#include "ObstacleStore.h"
 #include "XPLMDataAccess.h"
 #include "avionics/AptDatParser.h"
 #include "avionics/Checklist.h"
@@ -54,6 +55,7 @@ class DatarefDataSource : public DataSource {
   void setChecklistSource(ChecklistSource* source) {
     checklistSource_ = source;
   }
+  void setObstacleStore(const ObstacleStore* store) { obstacles_ = store; }
 
   // Called from the plugin draw path after the MFD engine state is known. Pushes
   // the EFIS weather mode, antenna tilt, and sector width to the sim based on
@@ -115,19 +117,21 @@ class DatarefDataSource : public DataSource {
   void loadAptDatAsync();
 
   // Background moving-map query worker. filterNearby + the apt-geometry /
-  // airspace scans are pure reads of the nav / apt.dat / airspace caches (each
-  // immutable once its loader thread publishes it) plus a query center, so they
-  // run off the sim thread. updateMap() submits a job when a rebuild is due and,
-  // when the worker finishes, swaps the result into map_ and bumps the geometry
-  // epoch -- so every map_ write stays on the sim thread.
+  // airspace / obstacle scans are pure reads of the nav / apt.dat / airspace /
+  // obstacle caches (each immutable once its loader thread publishes it) plus a
+  // query center, so they run off the sim thread. updateMap() submits a job when
+  // a rebuild is due and, when the worker finishes, swaps the result into map_
+  // and bumps the geometry epoch -- so every map_ write stays on the sim thread.
   struct MapQueryResult {
     std::vector<MapFeature> features;
     std::vector<MapRunway> runways;
     std::vector<MapPavement> taxiways;
     std::vector<MapTaxiwayLabel> taxiwayLabels;
     std::vector<MapAirspace> airspaces;
+    std::vector<MapObstacle> obstacles;
     bool aptGeometryIncluded = false;  // runways/taxiways/labels were scanned
     bool airspaceIncluded = false;
+    bool obstaclesIncluded = false;
   };
   void startMapQueryWorker();
   void stopMapQueryWorker();
@@ -199,6 +203,7 @@ class DatarefDataSource : public DataSource {
   double mapQueryReqLon_ = 0.0;
   bool mapQueryReqApt_ = false;
   bool mapQueryReqAirspace_ = false;
+  bool mapQueryReqObstacles_ = false;
   MapQueryResult mapQueryResult_;  // worker output, guarded by mapQueryMu_
 
   XPLMDataRef airspeed_ = nullptr;
@@ -294,6 +299,7 @@ class DatarefDataSource : public DataSource {
 
   EisSource* eisSource_ = nullptr;
   ChecklistSource* checklistSource_ = nullptr;
+  const ObstacleStore* obstacles_ = nullptr;  // optional bundled FAA DDOF (US)
   static inline const EisLayout emptyEis_{};
   static inline const ChecklistData emptyChecklists_{};
   std::string lastAircraftAcfPath_;

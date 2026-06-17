@@ -47,3 +47,7 @@ compile_commands.json
 
 # Generated land-data asset (built by the Natural Earth converter tool)
 /shell-standalone/assets/land_data.bin
+/shell-standalone/assets/obstacles.csv
+
+# FAA DDOF download cache for tools/fetch_obstacles.py
+/tools/.dof_cache/

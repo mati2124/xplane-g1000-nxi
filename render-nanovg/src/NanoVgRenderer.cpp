@@ -229,6 +229,19 @@ void NanoVgRenderer::fillRoundedRect(float x, float y, float w, float h,
   nvgFill(vg_);
 }
 
+void NanoVgRenderer::fillRoundedRectVerticalGradient(
+    float x, float y, float w, float h, float radius, float gradientTopY,
+    float gradientBottomY, const Color& topColor, const Color& bottomColor) {
+  if (!vg_) return;
+  ++stats_.fills;
+  NVGpaint paint = nvgLinearGradient(vg_, x, gradientTopY, x, gradientBottomY,
+                                     toNvg(topColor), toNvg(bottomColor));
+  nvgBeginPath(vg_);
+  nvgRoundedRect(vg_, x, y, w, h, radius);
+  nvgFillPaint(vg_, paint);
+  nvgFill(vg_);
+}
+
 void NanoVgRenderer::strokeRoundedRect(float x, float y, float w, float h,
                                        float radius, float widthPx,
                                        const Color& c) {
@@ -263,6 +276,32 @@ void NanoVgRenderer::strokeTopRoundedRect(float x, float y, float w, float h,
   ++stats_.strokes;
   nvgBeginPath(vg_);
   nvgRoundedRectVarying(vg_, x, y, w, h, radius, radius, 0.0f, 0.0f);
+  nvgStrokeWidth(vg_, widthPx);
+  nvgStrokeColor(vg_, toNvg(c));
+  nvgStroke(vg_);
+}
+
+void NanoVgRenderer::fillRoundedRectVaryingVerticalGradient(
+    float x, float y, float w, float h, float radTL, float radTR, float radBR,
+    float radBL, const Color& topColor, const Color& bottomColor) {
+  if (!vg_) return;
+  ++stats_.fills;
+  NVGpaint paint =
+      nvgLinearGradient(vg_, x, y, x, y + h, toNvg(topColor), toNvg(bottomColor));
+  nvgBeginPath(vg_);
+  nvgRoundedRectVarying(vg_, x, y, w, h, radTL, radTR, radBR, radBL);
+  nvgFillPaint(vg_, paint);
+  nvgFill(vg_);
+}
+
+void NanoVgRenderer::strokeRoundedRectVarying(float x, float y, float w, float h,
+                                              float radTL, float radTR, float radBR,
+                                              float radBL, float widthPx,
+                                              const Color& c) {
+  if (!vg_) return;
+  ++stats_.strokes;
+  nvgBeginPath(vg_);
+  nvgRoundedRectVarying(vg_, x, y, w, h, radTL, radTR, radBR, radBL);
   nvgStrokeWidth(vg_, widthPx);
   nvgStrokeColor(vg_, toNvg(c));
   nvgStroke(vg_);

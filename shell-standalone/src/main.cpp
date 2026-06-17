@@ -59,9 +59,9 @@
 //   --simbrief-id ID          SimBrief Pilot ID for the AUX - SIMBRIEF page's
 //                             OFP fetch (default: the persisted setting,
 //                             entered on the page itself)
-//   --obstacles PATH          FAA Digital Obstacle File in CSV format
-//                             (the "DDOF CSV" download) for the map's
-//                             obstacle overlay; US-only, off when omitted
+//   --obstacles PATH          override the bundled FAA DDOF CSV for the map's
+//                             obstacle overlay (default: assets/obstacles.csv
+//                             next to the app / plugin when present)
 //   --nav-data-dir PATH       directory holding a copied X-Plane nav-data tree
 //                             (Custom Data/, Resources/default data/, Global
 //                             Scenery/, Custom Data/CIFP/, Custom Data/
@@ -83,6 +83,10 @@
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#if defined(_WIN32)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -117,6 +121,7 @@
 #include "avionics/ConnectionState.h"
 #include "avionics/ComDecode.h"
 #include "avionics/MockDataSource.h"
+#include "avionics/UpdateChecker.h"
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/BootScreen.h"
@@ -290,6 +295,18 @@ constexpr std::uint16_t kDefaultXPlanePort = 49000;
 #define AVIONICS_LAND_DATA ""
 #endif
 constexpr const char* kLandDataAssetPath = AVIONICS_LAND_DATA;
+
+#ifndef AVIONICS_OBSTACLES
+#define AVIONICS_OBSTACLES ""
+#endif
+constexpr const char* kObstaclesAssetPath = AVIONICS_OBSTACLES;
+
+std::string resolveObstacleDatabasePath(const char* cliOverride) {
+  if (cliOverride != nullptr && cliOverride[0] != '\0') {
+    return cliOverride;
+  }
+  return avionics::assets::resolve("obstacles.csv", kObstaclesAssetPath);
+}
 
 const char* FlagValue(int argc, char** argv, const char* flag) {
   for (int i = 1; i < argc - 1; ++i) {
@@ -815,7 +832,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   avionics::AptDatStore aptData;
   avionics::LandDataStore landData(
       avionics::assets::resolve("land_data.bin", kLandDataAssetPath));
-  avionics::ObstacleStore obstacles("");
+  avionics::ObstacleStore obstacles(resolveObstacleDatabasePath(nullptr));
   avionics::ProcedureStore procedures(navData);
   avionics::ShellNavMapData navMapData(navData, airspace, airways, aptData,
                                        landData, procedures, &obstacles);
@@ -831,7 +848,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   // (the airspace file in particular is large and parses on its own thread).
   for (int i = 0; i < 2000 && !(navData.ready() && airspace.loaded() &&
                                 airways.loaded() && landData.loaded() &&
-                                aptData.loaded());
+                                aptData.loaded() && obstacles.loaded());
        ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
@@ -925,6 +942,17 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   } else if (state != nullptr && std::strcmp(state, "alerts") == 0) {
     // Drive the real interaction path: bring up the live page, press the
     // Alerts softkey, then run the open animation to completion before capture.
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressSoftkey(11);  // Alerts key
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "alertsfilled") == 0) {
+    // Alerts window with multiple wrapped entries (reversionary failures + an
+    // advisory message), matching the trainer's filled PFD Alerts screenshot.
+    dataSource.setReversionaryAlertsDemo(true);
+    avionics::setUpdateAdvisory(
+        "DATABASE UPDATE - A new navigation database is available");
     engine.skipBoot();
     engine.update(seconds);
     engine.pressSoftkey(11);  // Alerts key
@@ -1069,19 +1097,25 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "pfddto") == 0) {
-    // The PFD Direct-To window (Direct-To bezel key, Pilot's Guide Fig. 5-45):
-    // opens pre-filled with the active waypoint (resolved from the nav data),
-    // ready to ACTIVATE.
+    // PFD Direct-To empty window (trainer PFD Direct To.bmp): opens blank for
+    // ident entry.
     engine.skipBoot();
     engine.update(seconds);
     engine.pressBezelKey(avionics::BezelKey::DirectTo);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfddtofilled") == 0) {
+    // PFD Direct-To with KRSW matched (trainer PFD Direct To Filled Out.bmp).
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.softkeyController().openDirectToWindow("KRSW");
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "pfddtoarmed") == 0) {
     // PFD Direct-To with the waypoint confirmed and Activate? armed (first ENT).
     engine.skipBoot();
     engine.update(seconds);
-    engine.pressBezelKey(avionics::BezelKey::DirectTo);
+    engine.softkeyController().openDirectToWindow("KRSW");
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     engine.pressBezelKey(avionics::BezelKey::Ent);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
@@ -1310,6 +1344,32 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::Ent);  // open Map Settings
     for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr &&
+             (std::strncmp(state, "mfdmap1000pann", 14) == 0 ||
+              std::strncmp(state, "mfdmap1000pans", 14) == 0)) {
+    // MFD MAP at 1000 NM with the map pointer panned north or south (range
+    // locked). Optional trailing digits set pan steps (default 8); e.g.
+    // mfdmap1000pann18 pans ~1800 NM north toward Hudson Bay.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int p = 0; p < 10; ++p) {
+      engine.pressBezelKey(avionics::BezelKey::RangeUp);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
+    engine.pressBezelKey(avionics::BezelKey::PanPush);
+    const bool panNorth = std::strncmp(state, "mfdmap1000pann", 14) == 0;
+    const avionics::BezelKey panKey =
+        panNorth ? avionics::BezelKey::PanUp : avionics::BezelKey::PanDown;
+    const char* panDigits = state + 14;
+    const int panSteps =
+        *panDigits != '\0' ? std::max(1, std::atoi(panDigits)) : 8;
+    for (int p = 0; p < panSteps; ++p) {
+      engine.pressBezelKey(panKey);
+      for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
+    }
+    for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strncmp(state, "mfd", 3) == 0) {
     // MFD page screenshots. The state encodes a page-group softkey plus an
     // optional repeat count (pressing the active group's key again steps to
@@ -1327,7 +1387,14 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     if (std::strncmp(suffix, "nrst", 4) == 0) cell = 3;
     if (std::strncmp(suffix, "trk", 3) == 0) cell = 4;
     if (std::strncmp(suffix, "chklist", 7) == 0) cell = 7;
-    if (std::strncmp(suffix, "rng", 3) == 0) {
+    if (std::strncmp(suffix, "rngdn", 5) == 0) {
+      const char* digits = suffix + 5;
+      const int presses = *digits != '\0' ? std::atoi(digits) : 1;
+      for (int p = 0; p < presses; ++p) {
+        engine.pressBezelKey(avionics::BezelKey::RangeDown);
+        for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+      }
+    } else if (std::strncmp(suffix, "rng", 3) == 0) {
       const char* digits = suffix + 3;
       const int presses = *digits != '\0' ? std::atoi(digits) : 1;
       for (int p = 0; p < presses; ++p) {
@@ -2227,7 +2294,6 @@ int main(int argc, char** argv) {
   // Check for a newer release in the background (a detached network thread).
   // Deferred to here so the short-lived utility modes above (--screenshot,
   // --list-monitors, --identify-monitors) exit immediately without spawning it.
-  avionics::startUpdateCheckOnLaunch();
 
   // --no-mfd / --no-pfd suppress one display so the PFD and MFD can be launched
   // as separate processes. At least one must remain; if both are suppressed the
@@ -2391,6 +2457,15 @@ int main(int argc, char** argv) {
   if (mfdWindow != nullptr) glfwFocusWindow(mfdWindow);
   if (pfdWindow != nullptr) glfwFocusWindow(pfdWindow);
 
+#if defined(_WIN32)
+  avionics::setUpdateDialogOwnerWindows(
+      pfdWindow != nullptr ? glfwGetWin32Window(pfdWindow) : nullptr,
+      mfdWindow != nullptr ? glfwGetWin32Window(mfdWindow) : nullptr);
+#endif
+  // Deferred until the display HWNDs exist so the update dialog can parent above
+  // borderless full-screen windows (WS_EX_TOPMOST).
+  avionics::startUpdateCheckOnLaunch();
+
   // Both feeds exist for the whole session; the engines are pointed at one at a
   // time and M swaps between them. Opening the X-Plane UDP socket up front is
   // cheap and lets the connection start acquiring data immediately.
@@ -2443,10 +2518,10 @@ int main(int argc, char** argv) {
   const char* eisArg = FlagValue(argc, argv, "--eis");
   avionics::EisStore eisStore(eisArg ? eisArg : "");
 
-  // Optional FAA DOF obstacle database (CSV). Loads nothing when no file is
-  // given, leaving the map's obstacle layer empty.
+  // FAA DDOF obstacle database (CSV). Loads from assets/obstacles.csv when
+  // present; --obstacles overrides the path.
   const char* obstaclesArg = FlagValue(argc, argv, "--obstacles");
-  avionics::ObstacleStore obstacles(obstaclesArg ? obstaclesArg : "");
+  avionics::ObstacleStore obstacles(resolveObstacleDatabasePath(obstaclesArg));
   avionics::ProcedureStore procedures(navData);
 
   // Real X-Plane navigation data behind the core's NavFeatureSource interface,
@@ -2780,6 +2855,7 @@ int main(int argc, char** argv) {
               : static_cast<avionics::DataSource*>(&xplane);
       mapSource->setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
                                  mapUi.mapPointerLon());
+      mapSource->setChartRangeNm(mapUi.rangeNm());
     }
 
     // Cockpit bezel / softkey / radio events forwarded from the in-sim plugin.

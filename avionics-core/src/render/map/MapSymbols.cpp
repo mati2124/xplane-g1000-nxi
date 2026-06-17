@@ -45,6 +45,56 @@ void drawFuelTabs(Renderer& r, float x, float y, float rad, const Color& fill) {
   }
 }
 
+// UI popup airport icon (icons-map/airport_*.png): a filled diamond with a
+// white center dot and optional cardinal fuel tabs when serviced.
+void drawUiAirportSymbol(Renderer& r, float x, float y, float s, const Color& c,
+                         AirportFacilityKind kind, bool serviced) {
+  if (kind == AirportFacilityKind::Heliport ||
+      kind == AirportFacilityKind::Private) {
+    const float h = s * 0.95f;
+    const Point diamond[4] = {{x, y - h}, {x + h, y}, {x, y + h}, {x - h, y}};
+    r.fillPolygon(diamond, 4, c);
+    const Point outline[5] = {diamond[0], diamond[1], diamond[2], diamond[3],
+                              diamond[0]};
+    r.strokePolyline(outline, 5, 1.2f, colors::kMapSymbolOutline);
+    const char* glyph = kind == AirportFacilityKind::Heliport ? "H" : "R";
+    r.fillText(x, y, glyph, s * 1.1f, TextAlign::Center, colors::kWhite);
+    return;
+  }
+
+  const float h = s * 0.95f;
+  const Point diamond[4] = {{x, y - h}, {x + h, y}, {x, y + h}, {x - h, y}};
+  r.fillPolygon(diamond, 4, c);
+  const Point outline[5] = {diamond[0], diamond[1], diamond[2], diamond[3],
+                            diamond[0]};
+  r.strokePolyline(outline, 5, 1.2f, colors::kMapSymbolOutline);
+  r.fillCircle(x, y, s * 0.20f, colors::kWhite);
+
+  if (serviced) {
+    const float tabLen = s * 0.34f;
+    const float tabHalf = s * 0.20f;
+    const struct {
+      float x0, y0, w, h;
+    } tabs[4] = {
+        {x - tabHalf, y - h - tabLen, 2.0f * tabHalf, tabLen},  // north
+        {x - tabHalf, y + h, 2.0f * tabHalf, tabLen},           // south
+        {x - h - tabLen, y - tabHalf, tabLen, 2.0f * tabHalf},  // west
+        {x + h, y - tabHalf, tabLen, 2.0f * tabHalf},           // east
+    };
+    for (const auto& t : tabs) {
+      r.fillRect(t.x0, t.y0, t.w, t.h, c);
+      r.strokeLine(t.x0, t.y0, t.x0 + t.w, t.y0, 1.0f,
+                   colors::kMapSymbolOutline);
+      r.strokeLine(t.x0, t.y0 + t.h, t.x0 + t.w, t.y0 + t.h, 1.0f,
+                   colors::kMapSymbolOutline);
+      r.strokeLine(t.x0, t.y0, t.x0, t.y0 + t.h, 1.0f,
+                   colors::kMapSymbolOutline);
+      r.strokeLine(t.x0 + t.w, t.y0, t.x0 + t.w, t.y0 + t.h, 1.0f,
+                   colors::kMapSymbolOutline);
+    }
+  }
+}
+
 // Garmin NXi airport symbol: a filled disc (paved) or hollow ring (soft surface
 // / seaplane) for the field, four cardinal fuel tabs when serviced, and the "H"
 // / "R" glyph variants for heliports and private fields.
@@ -154,6 +204,34 @@ void drawMapFeatureSymbol(Renderer& r, MapFeatureType type, float x, float y,
   switch (type) {
     case MapFeatureType::Airport:
       drawAirportSymbol(r, x, y, size, c, airportKind, airportServiced);
+      break;
+    case MapFeatureType::Vor:
+      drawVorSymbol(r, x, y, size, c);
+      break;
+    case MapFeatureType::Ndb:
+      drawNdbSymbol(r, x, y, size, c);
+      break;
+    case MapFeatureType::Fix:
+    case MapFeatureType::Waypoint:
+      drawIntersectionSymbol(r, x, y, size, c);
+      break;
+  }
+}
+
+void drawUiWaypointIcon(Renderer& r, const MapFeature& feature, float x,
+                        float y, float size) {
+  drawUiWaypointIcon(r, feature.type, x, y, size, mapFeatureColor(feature),
+                     feature.airportKind, feature.airportTowered,
+                     feature.airportServiced);
+}
+
+void drawUiWaypointIcon(Renderer& r, MapFeatureType type, float x, float y,
+                        float size, const Color& c,
+                        AirportFacilityKind airportKind,
+                        bool /*airportTowered*/, bool airportServiced) {
+  switch (type) {
+    case MapFeatureType::Airport:
+      drawUiAirportSymbol(r, x, y, size, c, airportKind, airportServiced);
       break;
     case MapFeatureType::Vor:
       drawVorSymbol(r, x, y, size, c);

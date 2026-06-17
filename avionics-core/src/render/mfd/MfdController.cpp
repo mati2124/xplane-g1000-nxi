@@ -128,11 +128,11 @@ MfdController::MfdController() {
   setRange(MapSetting::TerrainRange, 1000.0f);
   setRange(MapSetting::ObstacleRange, 10.0f);
   // Weather group.
-  setRange(MapSetting::NexradRange, 1000.0f);
+  setRange(MapSetting::NexradRange, kNexradMapRangeDefaultNm);
   // Traffic group.
   setToggle(MapSetting::TrafficLabelsOn, true);
-  setRange(MapSetting::TrafficSymbolsRange, 15.0f);
-  setRange(MapSetting::TrafficLabelsRange, 15.0f);
+  setRange(MapSetting::TrafficSymbolsRange, kTrafficMapRangeDefaultNm);
+  setRange(MapSetting::TrafficLabelsRange, kTrafficMapRangeDefaultNm);
   // Aviation group.
   setToggle(MapSetting::LargeAirportOn, true);
   setToggle(MapSetting::MediumAirportOn, true);

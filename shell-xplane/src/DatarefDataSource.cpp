@@ -40,6 +40,9 @@ constexpr float kTaxiwayQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxMapTaxiways = 600;
 constexpr float kTaxiwayLabelQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxMapTaxiwayLabels = 400;
+// Obstacles only draw at low ranges (and the DOF is dense).
+constexpr float kObstacleQueryRangeNm = 30.0f;
+constexpr std::size_t kMaxMapObstacles = 300;
 
 // X-Plane's bundled OpenAir airspace file, relative to the system path
 // (XPLMGetSystemPath). User-updated data under Custom Data wins when present.
@@ -839,6 +842,8 @@ bool DatarefDataSource::submitMapQuery(double lat, double lon) {
   mapQueryReqLon_ = lon;
   mapQueryReqApt_ = aptDatLoaded_.load(std::memory_order_acquire);
   mapQueryReqAirspace_ = airspaceLoaded_.load(std::memory_order_acquire);
+  mapQueryReqObstacles_ =
+      obstacles_ != nullptr && obstacles_->loaded();
   mapQueryPhase_ = MapQueryPhase::Running;
   mapQueryCv_.notify_one();
   return true;
@@ -885,18 +890,24 @@ bool DatarefDataSource::adoptMapQueryResult() {
       ++map_.geometryEpoch;
     }
   }
+
+  if (result.obstaclesIncluded) {
+    map_.obstacles = std::move(result.obstacles);
+  }
   return true;
 }
 
 // Background worker: pure reads of the immutable-after-load nav / apt.dat /
-// airspace caches plus the query center handed in by submitMapQuery. Never
-// touches map_ or the sim/XPLM API.
+// airspace / obstacle caches plus the query center handed in by submitMapQuery.
+// Never touches map_ or the sim/XPLM API.
 void DatarefDataSource::mapQueryWorkerMain() {
   for (;;) {
     double lat = 0.0;
     double lon = 0.0;
     bool wantApt = false;
     bool wantAirspace = false;
+    bool wantObstacles = false;
+    const ObstacleStore* obstacles = nullptr;
     {
       std::unique_lock<std::mutex> lock(mapQueryMu_);
       mapQueryCv_.wait(lock, [this] {
@@ -907,6 +918,8 @@ void DatarefDataSource::mapQueryWorkerMain() {
       lon = mapQueryReqLon_;
       wantApt = mapQueryReqApt_;
       wantAirspace = mapQueryReqAirspace_;
+      wantObstacles = mapQueryReqObstacles_;
+      obstacles = obstacles_;
     }
 
     MapQueryResult res;
@@ -929,6 +942,11 @@ void DatarefDataSource::mapQueryWorkerMain() {
       res.airspaces = airspacesNear(airspaceCache_, lat, lon, kMapQueryRangeNm,
                                     kMaxMapAirspaces);
       res.airspaceIncluded = true;
+    }
+    if (wantObstacles && obstacles != nullptr) {
+      res.obstacles = obstacles->nearby(lat, lon, kObstacleQueryRangeNm,
+                                        kMaxMapObstacles);
+      res.obstaclesIncluded = true;
     }
 
     {

@@ -132,6 +132,9 @@ void seedDemoFeatures(MapData& map) {
   krsw.lat = 26.5362;
   krsw.lon = -81.7552;
   krsw.id = "KRSW";
+  krsw.name = "Southwest Florida Intl";
+  krsw.city = "Ft Myers";
+  krsw.region = "FL";
   krsw.airportTowered = true;
   krsw.airportServiced = true;
 
@@ -198,8 +201,11 @@ void seedDemoOverlays(MapData& map, double lat, double lon) {
   };
 
   map.obstacles = {
-      {lat - 0.04, lon + 0.06, 1549.0f, 1520.0f},
-      {lat + 0.09, lon - 0.04, 360.0f, 340.0f},
+      {lat - 0.04, lon + 0.06, 1549.0f, 520.0f, true, false, false, 1},
+      {lat + 0.09, lon - 0.04, 360.0f, 340.0f, false, false, false, 1},
+      {lat + 0.05, lon + 0.02, 120.0f, 60.0f, true, false, false, 1},
+      {lat + 0.07, lon - 0.01, 280.0f, 250.0f, true, false, false, 2},
+      {lat + 0.03, lon - 0.05, 80.0f, 75.0f, false, false, true, 1},
   };
 }
 
@@ -218,16 +224,26 @@ constexpr float kRunwayQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxRunways = 120;
 constexpr float kTaxiwayQueryRangeNm = 10.0f;
 constexpr std::size_t kMaxTaxiways = 600;
-constexpr std::size_t kMaxLandLines = 2500;
-constexpr std::size_t kMaxCities = 200;
+constexpr std::size_t kMaxLandLines = 8000;
+constexpr std::size_t kMaxCities = 600;
 constexpr float kObstacleQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxObstacles = 300;
+
+void applyReversionaryAlertsDemo(FlightData& data) {
+  data.attitudeValid = false;
+  data.headingValid = false;
+  data.airspeedValid = false;
+  data.altitudeValid = false;
+  data.verticalSpeedValid = false;
+  data.navSignalValid = false;
+}
 
 }  // namespace
 
 void MockDataSource::update(double dtSeconds) {
   if (groundMode_) {
     updateOnGround(dtSeconds);
+    if (reversionaryAlertsDemo_) applyReversionaryAlertsDemo(data_);
     return;
   }
 
@@ -410,6 +426,7 @@ void MockDataSource::update(double dtSeconds) {
   }
 
   publishMapBackground(dtSeconds);
+  if (reversionaryAlertsDemo_) applyReversionaryAlertsDemo(data_);
 }
 
 void MockDataSource::updateOnGround(double dtSeconds) {
@@ -806,6 +823,13 @@ void MockDataSource::setMapPanCenter(bool active, double lat, double lon) {
   mapPanLon_ = lon;
 }
 
+void MockDataSource::setChartRangeNm(float rangeNm) {
+  if (map_.rangeNm != rangeNm) {
+    map_.rangeNm = rangeNm;
+    mapPanDirty_ = true;
+  }
+}
+
 void MockDataSource::refreshFeatures(double dt) {
   if (navFeatures_ == nullptr) return;  // demo nav data already seeded
 
@@ -841,9 +865,9 @@ void MockDataSource::refreshFeatures(double dt) {
   map_.taxiways =
       navFeatures_->nearbyTaxiways(lat, lon, kTaxiwayQueryRangeNm, kMaxTaxiways);
   map_.landLines =
-      navFeatures_->nearbyLandLines(lat, lon, kLandQueryRangeNm, kMaxLandLines);
+      navFeatures_->nearbyLandLines(lat, lon, map_.rangeNm, kMaxLandLines);
   map_.cities =
-      navFeatures_->nearbyCities(lat, lon, kLandQueryRangeNm, kMaxCities);
+      navFeatures_->nearbyCities(lat, lon, map_.rangeNm, kMaxCities);
   map_.obstacles = navFeatures_->nearbyObstacles(lat, lon, kObstacleQueryRangeNm,
                                                  kMaxObstacles);
 }

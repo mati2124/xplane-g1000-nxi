@@ -13,15 +13,17 @@ namespace colors {
 inline constexpr Color kBlack{0.0f, 0.0f, 0.0f, 1.0f};
 inline constexpr Color kWhite{1.0f, 1.0f, 1.0f, 1.0f};
 
-// Attitude indicator sky/ground. These are the exact values from the Working
-// Title G1000 NXi ArtificialHorizon.css: the sky is a deep saturated blue
-// (#0033e6) blending to a slightly lighter blue (#284be4) only in the last few
-// percent above the horizon, the ground is a flat dark earth brown (#3a2400),
-// and the horizon line is white.
-inline constexpr Color kSkyTop{0.0f, 0.2f, 0.902f, 1.0f};          // #0033e6
-inline constexpr Color kSkyHorizon{0.157f, 0.294f, 0.894f, 1.0f};  // #284be4
-inline constexpr Color kGroundHorizon{0.227f, 0.141f, 0.0f, 1.0f};  // #3a2400
-inline constexpr Color kGroundBottom{0.227f, 0.141f, 0.0f, 1.0f};   // #3a2400
+// Attitude indicator sky/ground. Sampled from the Cessna NAVIII Trainer v20.05
+// (PFD Main.bmp on the GARMIN flash drive): the sky is a vertical gradient from
+// saturated blue (#004cff) at the top to a lighter blue (#4a65e6) at the
+// horizon (~55% of the visible sky band), the ground is a flat earth brown
+// (#54350a), and the horizon line is white. (Working Title ArtificialHorizon.css
+// uses darker #0033e6 / #3a2400 and a 5% sky blend — the trainer screenshots
+// win when they disagree.)
+inline constexpr Color kSkyTop{0.0f, 0.298f, 1.0f, 1.0f};           // #004cff
+inline constexpr Color kSkyHorizon{0.290f, 0.396f, 0.902f, 1.0f};  // #4a65e6
+inline constexpr Color kGroundHorizon{0.329f, 0.208f, 0.039f, 1.0f};  // #54350a
+inline constexpr Color kGroundBottom{0.329f, 0.208f, 0.039f, 1.0f};   // #54350a
 inline constexpr Color kHorizon{1.0f, 1.0f, 1.0f, 1.0f};           // #ffffff
 
 // Moving-tape background: the Working Title NXi tape uses a vertical gradient
@@ -70,6 +72,14 @@ inline constexpr Color kTapeBorder{0.85f, 0.85f, 0.85f, 1.0f};
 // Cyan: selected/reference values (selected altitude, baro, heading bug).
 inline constexpr Color kCyan{0.0f, 0.85f, 1.0f, 1.0f};
 
+// PFD pop-out windows (WT .popout-dialog): CSS cyan text, rgb(150,150,150)
+// border/separator, and a vertical black gradient body (75% alpha at the top
+// fading to opaque at the bottom). Sampled from the NXi trainer screenshots.
+inline constexpr Color kPopoutCyan{0.0f, 1.0f, 1.0f, 1.0f};              // #00ffff
+inline constexpr Color kPopoutBorder{0.588f, 0.588f, 0.588f, 1.0f};        // rgb(150,150,150)
+inline constexpr Color kPopoutBodyTop{0.0f, 0.0f, 0.0f, 0.75f};
+inline constexpr Color kPopoutBodyBottom{0.0f, 0.0f, 0.0f, 1.0f};
+
 // Garmin corporate-logo blue, used for the triangle trademark on the power-up
 // logo splash. The real wordmark's triangle is a gradient (#09bcef -> #00467f);
 // this is the brighter end (#09bcef), which reads as the recognizable Garmin
@@ -98,10 +108,13 @@ inline constexpr Color kNdbMagenta{0.627f, 0.188f, 0.502f, 1.0f};         // #a0
 inline constexpr Color kMapSymbolOutline{0.251f, 0.251f, 0.251f, 1.0f};   // #404040
 
 // Top NAV/COM bar and bottom info-panel boxes use a dark blue-grey vertical
-// gradient (rgb(4,4,12) -> rgb(24,28,43)), per the NXi NavComBox. The softkey
-// bar is near-black.
-inline constexpr Color kPanelBackground{0.016f, 0.016f, 0.047f, 1.0f};   // rgb(4,4,12)
-inline constexpr Color kPanelBackgroundBottom{0.094f, 0.110f, 0.169f, 1.0f};  // rgb(24,28,43)
+// gradient, per the NXi NavComBox. Sampled from the Cessna NAVIII Trainer
+// v20.05 (PFD Default.bmp / MFD Default.bmp): top ~(14,14,22), bottom
+// ~(28,33,48). (WT CSS lists rgb(4,4,12)->rgb(24,28,43); trainer wins.)
+inline constexpr Color kPanelBackground{14.0f / 255.0f, 14.0f / 255.0f,
+                                          22.0f / 255.0f, 1.0f};
+inline constexpr Color kPanelBackgroundBottom{28.0f / 255.0f, 33.0f / 255.0f,
+                                              48.0f / 255.0f, 1.0f};
 inline constexpr Color kInfoBoxTop{0.094f, 0.094f, 0.094f, 1.0f};  // rgb(24,24,24)
 inline constexpr Color kSoftkeyBackground{0.0f, 0.0f, 0.0f, 1.0f};
 // On-screen softkey label bar (G1000 NXi Pilot's Guide Fig. 1-9): every cell

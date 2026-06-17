@@ -55,15 +55,6 @@ void drawBandLabel(Renderer& r, const char* letters, float letterX,
              colors::kLabelText);
 }
 
-// One NavCom box: a near-black rounded rectangle that floats over the attitude
-// (the area outside the boxes is left transparent so the sky shows through),
-// with a thin grey border (G1000 NXi NavCom/AFCS boxes).
-void drawNavComPanelBg(Renderer& r, float x, float y, float pw, float ph,
-                       float radius) {
-  r.fillRoundedRect(x, y, pw, ph, radius, colors::kPanelBackground);
-  r.strokeRoundedRect(x, y, pw, ph, radius, 1.0f, colors::kPanelBorder);
-}
-
 // Failed NAV/COM frequency cells: a maroon fill spanning the two frequency rows
 // with a red X over each row (G1000 NXi Maintenance Manual Fig 9-2, PFD
 // Power-Up System Annunciations). Drawn in place of the frequencies/idents when
@@ -334,6 +325,38 @@ void drawAfcsStatusBox(Renderer& r, float centerL, float rowTop, float centerW,
 
 }  // namespace
 
+void drawNavComPanelBg(Renderer& r, float x, float y, float pw, float ph,
+                       float radius, NavComPanelShape shape) {
+  float radTL = 0.0f;
+  float radTR = 0.0f;
+  float radBR = 0.0f;
+  float radBL = 0.0f;
+  switch (shape) {
+    case NavComPanelShape::Floating:
+      radTL = radTR = radBR = radBL = radius;
+      break;
+    case NavComPanelShape::MfdLeft:
+      radBR = radius;
+      break;
+    case NavComPanelShape::MfdCenter:
+      radBR = radBL = radius;
+      break;
+    case NavComPanelShape::MfdRight:
+      radBL = radius;
+      break;
+  }
+  // Vertical gradient (trainer-sampled NavCom panel fill).
+  r.fillRoundedRectVaryingVerticalGradient(
+      x, y, pw, ph, radTL, radTR, radBR, radBL, colors::kPanelBackground,
+      colors::kPanelBackgroundBottom);
+  // PFD boxes float with a visible outline; the MFD panels are flush/touching
+  // and the trainer shows no vertical divider lines between them.
+  if (shape == NavComPanelShape::Floating) {
+    r.strokeRoundedRectVarying(x, y, pw, ph, radTL, radTR, radBR, radBL, 1.0f,
+                               colors::kPanelBorder);
+  }
+}
+
 void drawTopBar(Renderer& r, float w, float h, const Layout& L,
                 const FlightData& d, const SoftkeyController& ui) {
   const float barH = L.topBarH;
@@ -379,7 +402,7 @@ void drawComDecodePanel(Renderer& r, float h, float barH, float comLeft,
   // sky shows through between the two -- it is not an extension of the COM box.
   const float gap = barH * 0.06f;
   const float panelH = barH * 0.40f;
-  const float top = barH + gap;
+  const float top = barH + gap - fontPx(kComDecodePanelUpPx, h);
   drawNavComPanelBg(r, comLeft, top, comW, panelH, cornerR);
   FontScope navComFont(r, FontFace::DejaVuSemiBold);
   // Horizontally centered in the black panel. The +size*0.10 descender

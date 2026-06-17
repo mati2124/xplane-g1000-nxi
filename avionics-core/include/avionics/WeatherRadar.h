@@ -11,6 +11,10 @@ namespace avionics {
 // a generic 0-1 intensity (the onboard radar) effectively span 0..full-scale.
 inline constexpr float kNexradFullScaleDbz = 70.0f;
 
+// Default max map range (NM) for the NEXRAD overlay (Map Setup "NEXRAD Data"
+// range). Beyond this the overlay declutters even when NEXRAD is toggled on.
+inline constexpr float kNexradMapRangeDefaultNm = 250.0f;
+
 // How the return-strength grid is laid out relative to the aircraft, so the map
 // overlay and the radar page can place/sample it correctly.
 enum class WeatherRadarLayout {

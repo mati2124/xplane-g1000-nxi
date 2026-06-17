@@ -37,6 +37,13 @@
 #endif
 #endif  // AVIONICS_HAS_CURL
 
+#if defined(_WIN32)
+static HWND g_updateOwnerPrimary = nullptr;
+static HWND g_updateOwnerSecondary = nullptr;
+static bool g_primaryWasTopmost = false;
+static bool g_secondaryWasTopmost = false;
+#endif
+
 namespace avionics {
 namespace {
 
@@ -264,6 +271,57 @@ std::wstring currentAppDir() {
   return slash == std::wstring::npos ? std::wstring() : buf.substr(0, slash);
 }
 
+static HWND updateDialogParent() {
+  if (g_updateOwnerPrimary != nullptr) return g_updateOwnerPrimary;
+  return g_updateOwnerSecondary;
+}
+
+static bool windowIsTopmost(HWND hwnd) {
+  return (GetWindowLongPtr(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+}
+
+// Borderless full-screen GLFW windows use WS_EX_TOPMOST; a MessageBox with no
+// owner HWND sits behind them. Parent to a display window and briefly drop
+// topmost on both displays while the dialog is open.
+static void dropTopmostForDialog() {
+  const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+  if (g_updateOwnerPrimary != nullptr) {
+    g_primaryWasTopmost = windowIsTopmost(g_updateOwnerPrimary);
+    if (g_primaryWasTopmost) {
+      SetWindowPos(g_updateOwnerPrimary, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+    }
+  }
+  if (g_updateOwnerSecondary != nullptr) {
+    g_secondaryWasTopmost = windowIsTopmost(g_updateOwnerSecondary);
+    if (g_secondaryWasTopmost) {
+      SetWindowPos(g_updateOwnerSecondary, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+    }
+  }
+}
+
+static void restoreTopmostAfterDialog() {
+  const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+  if (g_updateOwnerPrimary != nullptr && g_primaryWasTopmost) {
+    SetWindowPos(g_updateOwnerPrimary, HWND_TOPMOST, 0, 0, 0, 0, flags);
+  }
+  if (g_updateOwnerSecondary != nullptr && g_secondaryWasTopmost) {
+    SetWindowPos(g_updateOwnerSecondary, HWND_TOPMOST, 0, 0, 0, 0, flags);
+  }
+}
+
+static int showUpdateMessageBox(const wchar_t* text, const wchar_t* title,
+                                UINT type) {
+  HWND parent = updateDialogParent();
+  if (parent != nullptr) {
+    SetForegroundWindow(parent);
+    BringWindowToTop(parent);
+  }
+  dropTopmostForDialog();
+  const int result = MessageBoxW(parent, text, title, type);
+  restoreTopmostAfterDialog();
+  return result;
+}
+
 // Downloads + verifies the installer, then launches it silently to update only
 // the standalone in place and relaunch it. Terminates the process on success
 // (so the running .exe unlocks for the installer); returns false on failure.
@@ -423,23 +481,22 @@ void showNotice(const UpdateInfo& info) {
       L"A newer G1000 NXi release is available.\n\nInstalled: " +
       widen(kVersion) + L"\nLatest: " + widen(info.latestVersion) + L"\n\n";
   if (canSelfUpdate) {
-    const int choice = MessageBoxW(
-        nullptr,
+    const int choice = showUpdateMessageBox(
         (header + L"Download and install it now? The app will update itself "
                   L"and restart.")
             .c_str(),
         L"G1000 NXi \u2014 Update Available", MB_YESNO | MB_ICONINFORMATION);
     if (choice != IDYES) return;
     if (performWindowsUpdate(info)) return;  // never returns on success
-    MessageBoxW(nullptr,
-                L"The update could not be downloaded or verified.\nOpening the "
-                L"download page instead.",
-                L"G1000 NXi \u2014 Update", MB_OK | MB_ICONWARNING);
+    showUpdateMessageBox(
+        L"The update could not be downloaded or verified.\nOpening the "
+        L"download page instead.",
+        L"G1000 NXi \u2014 Update", MB_OK | MB_ICONWARNING);
     openUrl(info.releasePageUrl);
     return;
   }
-  const int choice = MessageBoxW(
-      nullptr, (header + L"Open the download page in your browser?").c_str(),
+  const int choice = showUpdateMessageBox(
+      (header + L"Open the download page in your browser?").c_str(),
       L"G1000 NXi \u2014 Update Available", MB_YESNO | MB_ICONINFORMATION);
   if (choice == IDYES) openUrl(info.releasePageUrl);
 
@@ -481,6 +538,16 @@ void showNotice(const UpdateInfo& info) {
 #endif  // AVIONICS_HAS_CURL
 
 }  // namespace
+
+void setUpdateDialogOwnerWindows(void* primaryHwnd, void* secondaryHwnd) {
+#if defined(_WIN32)
+  g_updateOwnerPrimary = static_cast<HWND>(primaryHwnd);
+  g_updateOwnerSecondary = static_cast<HWND>(secondaryHwnd);
+#else
+  (void)primaryHwnd;
+  (void)secondaryHwnd;
+#endif
+}
 
 void startUpdateCheckOnLaunch() {
   if (std::getenv("AVIONICS_SKIP_UPDATE_CHECK") != nullptr) return;

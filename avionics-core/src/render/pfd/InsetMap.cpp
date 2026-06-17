@@ -50,6 +50,7 @@ void drawHsiMap(Renderer& r, const Layout& L, const MapData& map,
   config.rangeNm = ui.insetRangeNm();
   config.displayRangeNm = ui.insetDisplayRangeNm();  // smooth zoom animation
   config.style.showChrome = false;  // the rose supplies the heading reference
+  config.style.showRangeRings = false;  // the rose replaces the range compass
   config.style.labelFontWt = wt::kHsiSource;
 
   config.style.terrain =

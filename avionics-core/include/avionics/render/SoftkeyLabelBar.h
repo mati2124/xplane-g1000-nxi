@@ -17,9 +17,11 @@ namespace avionics::render {
 // Function" gradient and the label flips to black. Used by both the PFD and
 // MFD so the footer looks identical on each display.
 
-// Cap geometry shared by the cells. The real caps have only a slight top
-// rounding (~12% of bar height), not a pill-shaped top.
-inline float softkeyCapRadius(float barH) { return barH * 0.12f; }
+// Cap geometry shared by the cells. WT SoftKey.css uses 5px top radii on a
+// 34px bar (~15%); the caps are nearly full-height with a thin top margin.
+inline float softkeyCapRadius(float barH) {
+  return std::min(barH * 0.147f, 5.0f);
+}
 
 // Draws the bar base (near-black) across [0, w] at `top` with height `barH`.
 // The dark base shows through the thin grooves between the per-cell caps.
@@ -34,13 +36,14 @@ inline void drawSoftkeyBarBackground(Renderer& r, float w, float top,
 inline void drawSoftkeyCell(Renderer& r, float x, float top, float cellW,
                             float barH, const std::string& label, float level,
                             const Color& labelColor, float fontPx) {
-  const float gap = cellW * 0.012f;          // thin dark groove between caps
-  const float topMargin = barH * 0.04f;
+  const float gap = std::max(1.0f, cellW * 0.012f);  // ~1px groove between caps
+  const float topMargin = std::max(1.0f, barH * 0.03f);
   const float bx = x + gap;
   const float by = top + topMargin;
   const float bw = cellW - 2.0f * gap;
-  const float bh = barH - topMargin;         // square bottom flush with bar
+  const float bh = barH - topMargin;  // square bottom flush with the bar base
   const float radius = softkeyCapRadius(barH);
+  const float labelCy = by + bh * 0.52f;  // WT softkey-tab padding-top ~6px
 
   // Dark cap (always present on the real unit).
   r.fillTopRoundedRectVerticalGradient(bx, by, bw, bh, radius,
@@ -60,8 +63,8 @@ inline void drawSoftkeyCell(Renderer& r, float x, float top, float cellW,
   if (!label.empty()) {
     const Color c = level > 0.5f ? colors::kBlack : labelColor;
     // The real GDU renders softkey labels in a bold weight.
-    r.fillText(x + cellW * 0.5f, top + barH * 0.5f, label, fontPx,
-               TextAlign::Center, c, FontFace::RobotoBold);
+    r.fillText(x + cellW * 0.5f, labelCy, label, fontPx, TextAlign::Center, c,
+               FontFace::RobotoBold);
   }
 }
 

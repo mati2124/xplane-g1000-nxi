@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <string>
 
 #include "avionics/MapRange.h"
@@ -105,6 +106,109 @@ void drawRangeRing(Renderer& r, float cx, float cy, float radiusPx,
     ring[i] = {cx + radiusPx * std::cos(a), cy + radiusPx * std::sin(a)};
   }
   r.strokePolyline(ring, kSeg + 1, 1.5f, c);
+}
+
+namespace {
+
+constexpr float kPi = 3.14159265358979323846f;
+
+// Range-compass geometry, matching WT MapRangeCompassLayer.
+constexpr float kArcHalfWidthDeg = 60.0f;
+constexpr float kTickMajorIntervalDeg = 30.0f;
+constexpr float kTickMinorIntervalDeg = 10.0f;
+
+float diffAngleDeg(float a, float b) {
+  float d = a - b;
+  while (d > 180.0f) d -= 360.0f;
+  while (d < -180.0f) d += 360.0f;
+  return d;
+}
+
+Point polarFromUp(float cx, float cy, float radius, float degFromUp) {
+  const float rad = degFromUp * kPi / 180.0f;
+  return {cx + radius * std::sin(rad), cy - radius * std::cos(rad)};
+}
+
+void strokeArcFromUp(Renderer& r, float cx, float cy, float radius,
+                     float a0FromUp, float a1FromUp, float width,
+                     const Color& c) {
+  constexpr int kSeg = 32;
+  Point pts[kSeg + 1];
+  for (int i = 0; i <= kSeg; ++i) {
+    const float a =
+        a0FromUp + (a1FromUp - a0FromUp) * static_cast<float>(i) / kSeg;
+    pts[i] = polarFromUp(cx, cy, radius, a);
+  }
+  r.strokePolyline(pts, kSeg + 1, width, c);
+}
+
+}  // namespace
+
+void drawRangeCompass(Renderer& r, const MapViewConfig& config,
+                      const FlightData& flight, float cx, float cy,
+                      float radiusPx, float rotationDeg, float labelSize,
+                      const Color& c) {
+  const float majorLen = std::max(6.0f, labelSize * 0.55f);
+  const float minorLen = majorLen * 0.5f;
+  const float endLen = majorLen;
+  const float strokeW = 1.5f;
+  const float labelRadial = labelSize * 1.15f;
+  const float labelFont = labelSize * 0.72f;
+
+  strokeArcFromUp(r, cx, cy, radiusPx, -kArcHalfWidthDeg, kArcHalfWidthDeg,
+                  strokeW, c);
+
+  const Point leftInner = polarFromUp(cx, cy, radiusPx, -kArcHalfWidthDeg);
+  const Point leftOuter =
+      polarFromUp(cx, cy, radiusPx + endLen, -kArcHalfWidthDeg);
+  const Point rightInner = polarFromUp(cx, cy, radiusPx, kArcHalfWidthDeg);
+  const Point rightOuter =
+      polarFromUp(cx, cy, radiusPx + endLen, kArcHalfWidthDeg);
+  r.strokeLine(leftOuter.x, leftOuter.y, leftInner.x, leftInner.y, strokeW, c);
+  r.strokeLine(rightInner.x, rightInner.y, rightOuter.x, rightOuter.y, strokeW,
+               c);
+
+  // Ownship track/heading reference at the top of the arc.
+  const Point refInner = polarFromUp(cx, cy, radiusPx - minorLen, 0.0f);
+  const Point refOuter = polarFromUp(cx, cy, radiusPx + endLen * 0.35f, 0.0f);
+  r.strokeLine(refInner.x, refInner.y, refOuter.x, refOuter.y, strokeW, c);
+
+  for (int bearing = 0; bearing < 360;
+       bearing += static_cast<int>(kTickMinorIntervalDeg)) {
+    const float screenDeg =
+        diffAngleDeg(static_cast<float>(bearing), rotationDeg);
+    if (std::fabs(screenDeg) > kArcHalfWidthDeg + 0.5f) continue;
+
+    const bool isMajor =
+        (bearing % static_cast<int>(kTickMajorIntervalDeg)) == 0;
+    const float tickLen = isMajor ? majorLen : minorLen;
+    const Point tInner =
+        polarFromUp(cx, cy, radiusPx - tickLen, screenDeg);
+    const Point tOuter = polarFromUp(cx, cy, radiusPx, screenDeg);
+    r.strokeLine(tInner.x, tInner.y, tOuter.x, tOuter.y, strokeW, c);
+
+    if (isMajor) {
+      char buf[8];
+      std::snprintf(buf, sizeof(buf), "%03d", bearing);
+      const Point lp =
+          polarFromUp(cx, cy, radiusPx - labelRadial, screenDeg);
+      r.fillText(lp.x, lp.y, buf, labelFont, TextAlign::Center, c);
+    }
+  }
+
+  if (config.orientation == MapOrientation::HeadingUp && flight.headingValid) {
+    const float bugDeg =
+        diffAngleDeg(flight.selectedHeadingDeg, rotationDeg);
+    if (std::fabs(bugDeg) <= kArcHalfWidthDeg) {
+      const Point onArc = polarFromUp(cx, cy, radiusPx, bugDeg);
+      r.strokeLine(cx, cy, onArc.x, onArc.y, strokeW, colors::kCyan);
+      const float bugHalf = labelSize * 0.22f;
+      const Point bug[3] = {{onArc.x, onArc.y - bugHalf},
+                            {onArc.x - bugHalf * 0.65f, onArc.y + bugHalf * 0.4f},
+                            {onArc.x + bugHalf * 0.65f, onArc.y + bugHalf * 0.4f}};
+      r.fillPolygon(bug, 3, colors::kCyan);
+    }
+  }
 }
 
 }  // namespace avionics::mapview

@@ -46,6 +46,7 @@ class MockDataSource : public DataSource {
   bool requiresPowerUpAcknowledge() const override { return false; }
 
   void setMapPanCenter(bool active, double lat, double lon) override;
+  void setChartRangeNm(float rangeNm) override;
 
   // Fly along this route (needs >= 2 waypoints), looping back to the start.
   // Replaces the built-in demo route. Safe to call at runtime (e.g. once a
@@ -113,6 +114,12 @@ class MockDataSource : public DataSource {
   void setCasMessagesEnabled(bool enabled) { casMessagesEnabled_ = enabled; }
   bool casMessagesEnabled() const { return casMessagesEnabled_; }
 
+  // Screenshot / debug: populate the Alerts window with reversionary sensor
+  // failures (AHRS/ADC/NAV messages) without taking down the whole data link.
+  void setReversionaryAlertsDemo(bool enabled) {
+    reversionaryAlertsDemo_ = enabled;
+  }
+
   // Local stand-in for sim commands while the mock feed is active.
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
   void transferRadio(RadioUnit unit);
@@ -155,6 +162,7 @@ class MockDataSource : public DataSource {
   bool turbulenceEnabled_ = false;  // chaotic bumps on top of the base motion
   bool groundMode_ = false;         // parked at KFMY rwy 31 instead of flying
   bool casMessagesEnabled_ = true;  // demo CAS annunciations cycle on a timer
+  bool reversionaryAlertsDemo_ = false;
 
   // Active Direct-To: when set, navigateRoute flies straight to directToTarget_
   // instead of sequencing the route.

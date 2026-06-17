@@ -25,6 +25,15 @@ A high-performance glass-cockpit (G1000-style PFD/MFD) for X-Plane, built as
 Screenshots from the standalone shell (PFD with the HSI map enabled; MFD on the
 Navigation Map page), captured with the offscreen `--screenshot` tool.
 
+> **Yes, AI helped write this — but it wasn't a one-liner.** This codebase was
+> developed with substantial assistance from AI coding tools, and I'm transparent
+> about that. It is **not** as simple as telling an AI to "make a G1000 NXi" and
+> walking away. I spent significant time and resources on it: Garmin Pilot's
+> Guide research, architecture decisions, iterative debugging, visual comparison
+> against the real NXi and PC Trainer, and steering the AI through thousands of
+> small, precise changes until the behavior and layout were right. Judge the
+> result on its merits.
+
 ## Architecture
 
 One C++ engine (`avionics-core`) runs in two shells — an X-Plane plugin and a
@@ -407,6 +416,44 @@ This works identically in both shells (the X-Plane plugin and the standalone),
 needs an internet connection, and falls back to nothing when offline. The
 dedicated MFD **Weather Radar** page is separate and still driven by the
 airframe's onboard radar.
+
+## Map obstacles (FAA DDOF)
+
+The moving map draws **obstacle symbols** (towers, antennas, wind turbines) from
+the FAA **Daily Digital Obstacle File** in CSV format — the same US-only
+database the real G1000 NXi uses. Symbols appear at close range (Map Setup →
+**Obstacle Data**, default 10 NM) and are colored white/yellow/red by proximity
+to your altitude, matching the Pilot's Guide hazard bands.
+
+The CSV is large (~90 MB) and updated daily, so it is **not** committed to git.
+Fetch it once before building or packaging:
+
+```bash
+python3 tools/fetch_obstacles.py
+```
+
+That writes `shell-standalone/assets/obstacles.csv`. Both the standalone app and
+the X-Plane plugin resolve it automatically from their bundled `assets/` folder
+at runtime (`assets::resolve("obstacles.csv")`). Release builds run the fetch
+step in CI so installers ship the file. When the asset is missing the obstacle
+layer simply stays empty; everything else works normally.
+
+To refresh after the FAA publishes a new cycle:
+
+```bash
+rm -rf tools/.dof_cache    # optional: force a re-download
+python3 tools/fetch_obstacles.py
+```
+
+Then rebuild and redeploy (standalone: reinstall or copy the updated
+`assets/obstacles.csv`; plugin: run `tools/install-xplane-plugin.sh` or copy
+`obstacles.csv` into `Resources/plugins/xplane-avionics/assets/`).
+
+Override the path explicitly on the standalone shell:
+
+```bash
+./build/shell-standalone/avionics-standalone --obstacles /path/to/DOF.CSV
+```
 
 ## Status / next steps
 

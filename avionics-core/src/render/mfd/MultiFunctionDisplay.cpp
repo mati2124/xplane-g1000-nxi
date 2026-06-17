@@ -19,14 +19,16 @@ namespace {
 using mfd::mfdAlpha;
 using mfd::mfdFontPx;
 
-// Top bar height and typography match the PFD's NAV/COM bar (56 px, 24/16 px
-// fonts on the 768 canvas) -- on the real unit both GDUs share the same bar.
-constexpr float kTopBarHeightPx = 48.0f;
-constexpr float kBottomBarHeightPx = 35.0f;
+// Top bar height matches the PFD's NAV/COM bar (56 px on the 768 canvas) -- on
+// the real unit both GDUs share the same bar.
+constexpr float kTopBarHeightPx = pfd::kTopBarHeightPx;
+constexpr float kBottomBarHeightPx = pfd::kSoftkeyBarHeightPx;
 
+// Navigation data bar typography (WT MFDNavDataBar.css: 20 px fields, labels
+// at 0.75em, page title 20 px cyan).
 constexpr float kDataFieldLabelWt = 15.0f;
 constexpr float kDataFieldValueWt = 20.0f;
-constexpr float kPageTitleWt = 16.0f;
+constexpr float kPageTitleWt = 20.0f;
 constexpr float kSoftkeyFontWt = 17.0f;
 
 // Group-prefixed page title shown in the navigation data bar, verbatim from
@@ -118,38 +120,51 @@ std::string formatEte(float distNm, float gsKts) {
   return buf;
 }
 
-// Top data bar, mirroring the real NXi MFD: NAV1/NAV2 cells (left), the
-// navigation data bar (GS/DTK/TRK/ETE fields over the cyan page title) in the
-// middle, COM1/COM2 cells (right). The NAV/COM cells are drawn by the shared
-// PFD routine (pfd::drawNavComFreqCells) so the two displays render identical
-// radios -- same boxes, carets, idents, colors, and transfer animation.
+// WT WTG1000_MFD.css NavComBox: left 254 px, center 516 px at x=254, right
+// 254 px at x=770 -- the three panels are flush with each other and the top
+// edge of the display.
+constexpr float kMfdNavPanelWFrac = 254.0f / 1024.0f;
+constexpr float kMfdCenterPanelLFrac = 254.0f / 1024.0f;
+constexpr float kMfdCenterPanelWFrac = 516.0f / 1024.0f;
+constexpr float kMfdComPanelLFrac = 770.0f / 1024.0f;
+constexpr float kMfdComPanelWFrac = 254.0f / 1024.0f;
+
+// Top data bar, mirroring the real NXi MFD: three flush rounded panels (NAV
+// left, navigation data bar center, COM right). The NAV/COM frequency cells
+// are drawn by the shared PFD routine (pfd::drawNavComFreqCells). The decoded
+// COM station ID is PFD-only and is not drawn on the MFD.
 void drawNavComBar(Renderer& r, float w, float h, float barH,
                    const FlightData& d, const SoftkeyController& radios,
                    const std::string& title) {
-  r.fillRectVerticalGradient(0.0f, 0.0f, w, barH, 0.0f, barH,
-                             colors::kPanelBackground,
-                             colors::kPanelBackgroundBottom);
-  r.strokeLine(0.0f, barH, w, barH, 2.0f, colors::kPanelBorder);
+  const float cornerR = barH * (10.0f / pfd::kTopBarHeightPx);
 
-  // Same row fractions / panel geometry as the PFD bar so the rows line up
-  // across displays.
-  const float row1 = barH * 0.27f;
-  const float row2 = barH * 0.73f;
   const float navLeft = 0.0f;
-  const float navW = w * (250.0f / 1024.0f);
-  const float comLeft = w * (774.0f / 1024.0f);
-  const float comW = w - comLeft;
+  const float navW = w * kMfdNavPanelWFrac;
+  const float centerL = w * kMfdCenterPanelLFrac;
+  const float centerW = w * kMfdCenterPanelWFrac;
+  const float comLeft = w * kMfdComPanelLFrac;
+  const float comW = w * kMfdComPanelWFrac;
+
+  pfd::drawNavComPanelBg(r, navLeft, 0.0f, navW, barH, cornerR,
+                         pfd::NavComPanelShape::MfdLeft);
+  pfd::drawNavComPanelBg(r, centerL, 0.0f, centerW, barH, cornerR,
+                         pfd::NavComPanelShape::MfdCenter);
+  pfd::drawNavComPanelBg(r, comLeft, 0.0f, comW, barH, cornerR,
+                         pfd::NavComPanelShape::MfdRight);
 
   pfd::drawNavComFreqCells(r, h, barH, navLeft, navW, comLeft, comW, d, radios);
-  // Decoded COM station identifier sits in its own black rounded panel below the
-  // COM column, matching the PFD COM box.
-  pfd::drawComDecodePanel(r, h, barH, comLeft, comW, barH * (10.0f / 56.0f),
-                          pfd::navComDecodeIdent(d));
+
+  // Thin grey outline along the outer left/right edges and the bar foot
+  // (trainer MFD Default.bmp; no vertical rules between the touching panels).
+  r.strokeLine(0.0f, 0.0f, 0.0f, barH, 1.0f, colors::kPanelBorder);
+  r.strokeLine(w, 0.0f, w, barH, 1.0f, colors::kPanelBorder);
+  r.strokeLine(0.0f, barH, w, barH, 1.0f, colors::kPanelBorder);
 
   const bool linkValid = d.dataLinkValid;
 
   // Navigation data bar fields (default NXi set: GS, DTK, TRK, ETE), grey
-  // labels with magenta GPS-derived values, dashed when unknown.
+  // labels with magenta GPS-derived values, dashed when unknown. The top row
+  // occupies the upper half of the center panel (WT .nav-data-bar height 50%).
   char gsBuf[12];
   std::snprintf(gsBuf, sizeof(gsBuf), "%dKT",
                 static_cast<int>(std::lround(d.groundSpeedKts)));
@@ -169,22 +184,25 @@ void drawNavComBar(Renderer& r, float w, float h, float barH,
                   ? formatEte(d.fmaLegDistanceNm, d.groundSpeedKts)
                   : std::string("__:__")},
   };
+  const FontScope centerFont(r, FontFace::DejaVuSemiBold);
   const float fieldLabelSize = mfdFontPx(kDataFieldLabelWt, h);
   const float fieldValueSize = mfdFontPx(kDataFieldValueWt, h);
-  const float fieldW = w * 0.115f;
-  float fx = w * 0.27f;
+  const float fieldRowCy = barH * 0.25f;
+  const float fieldPadX = centerW * 0.02f;
+  const float fieldW = (centerW - fieldPadX * 2.0f) / 4.0f;
+  float fx = centerL + fieldPadX;
   for (const Field& f : fields) {
-    r.fillText(fx, row1, f.label, fieldLabelSize, TextAlign::Left,
+    r.fillText(fx, fieldRowCy, f.label, fieldLabelSize, TextAlign::Left,
                colors::kLabelText);
     const float lw = r.measureTextWidth(f.label, fieldLabelSize);
-    r.fillText(fx + lw + w * 0.008f, row1, f.value, fieldValueSize,
-               TextAlign::Left, colors::kMagenta);
+    r.fillText(fx + lw + fieldValueSize * 0.08f, fieldRowCy, f.value,
+               fieldValueSize, TextAlign::Left, colors::kMagenta);
     fx += fieldW;
   }
 
-  // Page title, centered below the data fields (cyan, like the NXi).
-  r.fillText(w * 0.5f, row2, title, mfdFontPx(kPageTitleWt, h),
-             TextAlign::Center, colors::kCyan);
+  // Page title, centered below the data fields (cyan, WT top 75%).
+  r.fillText(centerL + centerW * 0.5f, barH * 0.75f,
+             title, mfdFontPx(kPageTitleWt, h), TextAlign::Center, colors::kCyan);
 }
 
 // Transient page-select popup in the lower-right corner, in the NXi style

@@ -10,6 +10,7 @@
 #include "avionics/NavMath.h"
 #include "avionics/render/MapSymbols.h"
 #include "render/map/MapProjection.h"
+#include "render/map/MapViewInternal.h"
 #include "render/mfd/MfdPageSupport.h"
 #include "render/mfd/MfdStyle.h"
 
@@ -23,6 +24,14 @@ void drawPointerRow(Renderer& r, float x, float w, float cy, const char* label,
                     const Color& valueColor) {
   r.fillText(x, cy, label, sizePx, TextAlign::Left, colors::kTitleGray);
   r.fillText(x + w, cy, value, sizePx, TextAlign::Right, valueColor);
+}
+
+Color obstaclePointerColor(const MapObstacle& ob, const FlightData& d) {
+  if (!d.altitudeValid) return colors::kWhite;
+  const float rel = ob.mslFt - d.altitudeFt;
+  if (rel >= -100.0f) return colors::kBandRed;
+  if (rel >= -1000.0f) return colors::kBandYellow;
+  return colors::kWhite;
 }
 
 // Map rotation (degrees) for the active orientation, mirroring MapView's
@@ -57,12 +66,19 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
   config.style.terrain = ui.terrainDisplay();
   config.style.airways = ui.airwayDisplay();
   config.style.showTraffic = ui.showTraffic();
+  config.style.trafficSymbolsRangeNm =
+      ui.mapSettingRangeNm(MapSetting::TrafficSymbolsRange);
+  config.style.showTrafficLabels = ui.mapSettingOn(MapSetting::TrafficLabelsOn);
+  config.style.trafficLabelsRangeNm =
+      ui.mapSettingRangeNm(MapSetting::TrafficLabelsRange);
   config.style.showWeather = ui.showWeather();
+  config.style.nexradRangeNm = ui.mapSettingRangeNm(MapSetting::NexradRange);
   // Map Setup "Map" group items, driven by the Map Settings window (Fig. 5-7).
   config.style.showTrackVector = ui.mapSettingOn(MapSetting::TrackVectorOn);
   config.style.showWindVector = ui.mapSettingOn(MapSetting::WindVectorOn);
   config.style.showFuelRing = ui.mapSettingOn(MapSetting::FuelRangeOn);
   config.style.showObstacles = ui.mapSettingOn(MapSetting::ObstacleOn);
+  config.style.obstacleRangeNm = ui.mapSettingRangeNm(MapSetting::ObstacleRange);
   config.style.showFixes = ui.mapSettingOn(MapSetting::IntOn);
   // Map Setup "Aviation" group: per-size airport visibility + max display range
   // (Fig. 5-7), so the wide view keeps the major airports as the small ones
@@ -76,8 +92,27 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
       ui.mapSettingRangeNm(MapSetting::MediumAirportRange);
   config.style.smallAirportRangeNm =
       ui.mapSettingRangeNm(MapSetting::SmallAirportRange);
-  config.style.labelFontWt = 16.0f;
+  config.style.labelFontWt = 18.0f;
   applyMapDetail(config.style, ui.mapDetail());
+  const MapFeature* pointerFeature = ui.mapPointerActive() ? ui.mapPointerFeature()
+                                                           : nullptr;
+  const MapObstacle* pointerObstacle =
+      ui.mapPointerActive() ? ui.mapPointerObstacle() : nullptr;
+  const MapObstacle* selectedObstacle = nullptr;
+  if (pointerObstacle != nullptr) {
+    if (pointerFeature == nullptr) {
+      selectedObstacle = pointerObstacle;
+    } else {
+      const double featNm = navDistanceNm(ui.mapPointerLat(), ui.mapPointerLon(),
+                                          pointerFeature->lat, pointerFeature->lon);
+      const double obNm = navDistanceNm(ui.mapPointerLat(), ui.mapPointerLon(),
+                                        pointerObstacle->lat, pointerObstacle->lon);
+      if (obNm <= featNm) {
+        selectedObstacle = pointerObstacle;
+      }
+    }
+  }
+  config.selectedObstacle = selectedObstacle;
   if (ui.mapPointerActive()) {
     config.hasCenterOverride = true;
     config.centerLat = ui.mapPointerLat();
@@ -94,19 +129,29 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
     const float cy = y + h * 0.5f;
     const double ptLat = ui.mapPointerLat();
     const double ptLon = ui.mapPointerLon();
-    const MapFeature* sel = ui.mapPointerFeature();
+    const MapFeature* sel = selectedObstacle != nullptr ? nullptr : pointerFeature;
 
     // Highlight the selected feature with a cyan ring at its projected
     // position (it sits at/near the crosshair since the map centers on the
     // pointer).
     if (sel != nullptr && map.positionValid) {
-      const float mapRadiusPx = 0.45f * std::min(w, h);
+      const float mapRadiusPx = mapview::mapRangeSpanPx(config);
       const float pixelsPerNm = mapRadiusPx / std::max(0.5f, ui.rangeNm());
       const float rotation = pointerRotationDeg(ui.mapOrientation(), d);
       float fx = 0.0f, fy = 0.0f;
       map::latLonToLocalPx(sel->lat, sel->lon, ptLat, ptLon, cx, cy,
                            pixelsPerNm, rotation, fx, fy);
       strokeCircle(r, fx, fy, std::min(w, h) * 0.024f, 2.0f, colors::kCyan);
+    }
+
+    if (selectedObstacle != nullptr && map.positionValid) {
+      const Color obC = obstaclePointerColor(*selectedObstacle, d);
+      const float obstacleSize =
+          std::max(11.0f, mapview::fontPx(mapview::kObstacleSymbolWt, displayH));
+      const float labelSize = mapview::fontPx(config.style.labelFontWt, displayH);
+      mapview::drawObstacleSelectedTag(r, cx, cy, obstacleSize,
+                                       selectedObstacle->mslFt,
+                                       selectedObstacle->aglFt, labelSize, obC);
     }
 
     const float arm = std::min(w, h) * 0.028f;
@@ -124,11 +169,14 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
       const float identSize = mfdFontPx(20.0f, displayH);
       const float rowH = labelSize * 1.4f;
       const bool hasFeat = sel != nullptr;
+      const bool hasOb = selectedObstacle != nullptr;
       const float boxW = w * 0.30f;
       const float boxX = x + w * 0.5f - boxW * 0.5f;
       const float boxY = y + h * 0.04f;
+      const float extraRows = hasOb ? 1.0f : 0.0f;
       const float boxH =
-          pad * 2.0f + (hasFeat ? identSize * 1.35f : 0.0f) + rowH * 4.0f;
+          pad * 2.0f + (hasFeat ? identSize * 1.35f : 0.0f) +
+          rowH * (4.0f + extraRows);
 
       r.fillRect(boxX, boxY, boxW, boxH, Color{0.0f, 0.0f, 0.0f, 0.82f});
       r.strokeLine(boxX, boxY, boxX + boxW, boxY, 1.0f, colors::kPanelBorder);
@@ -144,6 +192,14 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
       if (hasFeat) {
         r.fillText(boxX + boxW * 0.5f, ty + identSize * 0.5f, sel->id,
                    identSize, TextAlign::Center, mapFeatureColor(*sel));
+        ty += identSize * 1.35f;
+      } else if (hasOb) {
+        char elevBuf[24];
+        std::snprintf(elevBuf, sizeof(elevBuf), "ELEV %dFT",
+                      static_cast<int>(std::lround(selectedObstacle->mslFt)));
+        r.fillText(boxX + boxW * 0.5f, ty + identSize * 0.5f, elevBuf,
+                   identSize, TextAlign::Center,
+                   obstaclePointerColor(*selectedObstacle, d));
         ty += identSize * 1.35f;
       }
 
@@ -169,6 +225,16 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
       r.fillText(boxX + boxW * 0.5f, ty + rowH * 0.5f,
                  formatLatLon(ptLon, false), labelSize, TextAlign::Center,
                  colors::kWhite);
+      if (hasOb) {
+        ty += rowH;
+        char obBuf[32];
+        std::snprintf(obBuf, sizeof(obBuf), "%dFT MSL / %dFT AGL",
+                      static_cast<int>(std::lround(selectedObstacle->mslFt)),
+                      static_cast<int>(std::lround(selectedObstacle->aglFt)));
+        r.fillText(boxX + boxW * 0.5f, ty + rowH * 0.5f, obBuf, labelSize,
+                   TextAlign::Center,
+                   obstaclePointerColor(*selectedObstacle, d));
+      }
     }
   }
 }

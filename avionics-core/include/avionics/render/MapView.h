@@ -2,7 +2,9 @@
 
 #include "avionics/FlightData.h"
 #include "avionics/MapData.h"
+#include "avionics/MapRange.h"
 #include "avionics/Renderer.h"
+#include "avionics/WeatherRadar.h"
 
 namespace avionics {
 
@@ -37,8 +39,17 @@ struct MapViewStyle {
   AirwayDisplay airways = AirwayDisplay::Off;
   // Traffic overlay (Traffic softkey).
   bool showTraffic = false;
+  // Max map range (NM) at which traffic symbols are drawn (Map Setup "Traffic
+  // Symbols" range). Declutters when zoomed out past this step.
+  float trafficSymbolsRangeNm = kTrafficMapRangeDefaultNm;
+  // Relative-altitude tags beside traffic symbols (Map Setup "Traffic Labels").
+  bool showTrafficLabels = true;
+  float trafficLabelsRangeNm = kTrafficMapRangeDefaultNm;
   // NEXRAD / precipitation overlay (NEXRAD softkey in MAP OPT).
   bool showWeather = false;
+  // Max map range (NM) at which the NEXRAD overlay is drawn (Map Setup
+  // "NEXRAD Data" range). Declutters when zoomed out past this step.
+  float nexradRangeNm = kNexradMapRangeDefaultNm;
   // Land data: rivers/lakes, roads, cities, borders (Map Setup "Land" group).
   bool showLand = true;
   // Runway diagrams at airports once zoomed below ~5 NM range.
@@ -48,6 +59,9 @@ struct MapViewStyle {
   bool showTaxiways = true;
   // Obstacle symbols (requires the optional FAA DOF data to be loaded).
   bool showObstacles = true;
+  // Max map range (NM) at which obstacle symbols are drawn (Map Setup
+  // "Obstacle Data" range). Declutters when zoomed out past this step.
+  float obstacleRangeNm = 10.0f;
   // Map Setup "Map" group items, on for the MFD navigation map by default:
   // ground-track lookahead line, wind arrow, and the fuel endurance rings.
   bool showTrackVector = false;
@@ -109,6 +123,9 @@ struct MapViewConfig {
   double centerLon = 0.0;
   // Optional procedure preview polyline (PROC menu on the FPL page).
   const std::vector<MapLeg>* procedurePreview = nullptr;
+  // Obstacle selected by the map pointer: skip its always-on MSL label (the
+  // detailed MSL/AGL tag is drawn at the pointer instead).
+  const MapObstacle* selectedObstacle = nullptr;
   MapViewStyle style;
 };
 
@@ -153,6 +170,7 @@ inline void applyMapDetail(MapViewStyle& style, MapDetail detail) {
   if (level >= static_cast<int>(MapDetail::Detail2)) {
     style.showAirspace = false;
     style.airways = AirwayDisplay::Off;
+    style.showObstacles = false;  // Table 5-4: obstacles declutter at Detail 2
   }
   if (level >= static_cast<int>(MapDetail::Detail1)) {
     style.showFeatures = false;

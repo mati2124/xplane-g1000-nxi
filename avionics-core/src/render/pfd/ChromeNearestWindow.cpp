@@ -16,13 +16,9 @@ namespace avionics::pfd {
 // Row 2: COM service label, tunable frequency (cyan), longest runway.
 void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
                        const SoftkeyController& ui) {
-  const FontScope fs(r, FontFace::DejaVuSemiBold);
-  // Same taller popout as Direct-To / Page Menu / Alerts (Pilot's Guide Fig. 4-4
-  // shows the Nearest Airports window as the same lower-right box). Each entry is
-  // 58 px tall with two 29 px rows.
   float panelW = 0.0f;
   float panelH = 0.0f;
-  tallPopoutPanelSize(w, h, panelW, panelH);
+  popoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::Nearest),
                       "Nearest Airports", panelW, panelH);
@@ -30,13 +26,9 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
   const float a = f.a;
 
   const auto& list = ui.nearestAirports();
-  // The Nearest window packs the most data of any popup: five columns in row 1
-  // (ident, symbol, bearing, distance, approach) plus a service label, tunable
-  // frequency, and runway length in row 2. At the 20 px standard body a towered
-  // field with a five-digit runway (e.g. KRSW's 12000FT) can't fit on one line,
-  // so this window uses a slightly smaller body that still reads clearly.
-  const float size = fontPx(18.0f, h);
-  const float smallSize = size * 0.875f;
+  // WT .nearest-airport-popout-container: 20 px body.
+  const float size = fontPx(wt::kInfoValue, h);
+  const float smallSize = fontPx(14.0f, h);
   if (list.empty()) {
     const char* msg = "None within 200";
     const float msgW = r.measureTextWidth(msg, size);
@@ -93,7 +85,7 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
     }
 
     // Row 1: ident (FMS cursor highlight), symbol, bearing, distance, approach.
-    putField(r, identX, row1Cy, apt.id, size, colors::kCyan, i == cursor, a,
+    putField(r, identX, row1Cy, apt.id, size, colors::kPopoutCyan, i == cursor, a,
              0.15f);
     MapFeature sym;
     sym.type = MapFeatureType::Airport;
@@ -110,7 +102,7 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
     // the column (Pilot's Guide Fig. 4-4 shows whole-number distances).
     std::snprintf(buf, sizeof(buf), "%.0f", apt.distanceNm);
     const float distNumW = r.measureTextWidth(buf, size);
-    const float unitGap = size * 0.06f;
+    const float unitGap = size * 0.12f;
     const float distNmW = r.measureTextWidth("NM", smallSize);
     const float distX = distanceCx - (distNumW + unitGap + distNmW) * 0.5f;
     r.fillText(distX, row1Cy, buf, size, TextAlign::Left,
@@ -154,7 +146,7 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
                                : r.measureTextWidth(apt.comLabel, smallSize);
       r.fillText(freqTypeX + serviceW + fontPx(9.0f, h), row2Cy,
                  formatFreq(apt.frequencyMhz, 3), size, TextAlign::Left,
-                 withAlpha(colors::kCyan, a));
+                 withAlpha(colors::kPopoutCyan, a));
     }
   }
 

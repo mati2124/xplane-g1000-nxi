@@ -17,6 +17,7 @@
 #include "avionics/Checklist.h"
 #include "avionics/Eis.h"
 #include "avionics/MapData.h"
+#include "avionics/MapRange.h"
 #include "avionics/Radio.h"
 #include "avionics/SimulatorConnection.h"
 #include "avionics/Terrain.h"
@@ -105,6 +106,7 @@ class XPlaneConnection : public SimulatorConnection {
   }
 
   void setMapPanCenter(bool active, double lat, double lon) override;
+  void setChartRangeNm(float rangeNm) override;
 
   // Pilot commands from the PFD bezel / softkeys (UDP DREF writes).
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
@@ -232,6 +234,7 @@ class XPlaneConnection : public SimulatorConnection {
   double mapPanLat_ = 0.0;
   double mapPanLon_ = 0.0;
   bool mapPanDirty_ = false;
+  float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
 
   std::string host_;
   std::uint16_t port_;

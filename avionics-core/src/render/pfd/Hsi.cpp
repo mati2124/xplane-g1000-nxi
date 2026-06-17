@@ -48,12 +48,18 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
   const Color navColor =
       (d.cdiSource == CdiSource::Gps) ? colors::kMagenta : colors::kActiveGreen;
   const float labelSize = fontPx(wt::kRoseLetter, displayH);
-  const float headingBoxW = fontPx(wt::kHeadingBox, displayH) * 2.8f;
-  const float headingBoxH = fontPx(wt::kHeadingBox, displayH) * 1.15f;
-  // HSI Map: heading box sits at container top + 27 px (WT hsi-map-hdg-box).
-  // Rose: just above the compass ring.
+  const float headingBoxW =
+      hsiMapMode ? X(hsi::kMapHeadingBoxW)
+                 : fontPx(wt::kHeadingBox, displayH) * 2.8f;
+  const float headingBoxH =
+      hsiMapMode ? Y(hsi::kMapHeadingBoxH)
+                 : fontPx(wt::kHeadingBox, displayH) * 1.15f;
+  const float headingBoxX =
+      hsiMapMode ? X(hsi::kOriginX + hsi::kMapContainerLeft + hsi::kMapHeadingBoxLeft)
+                 : cx - headingBoxW * 0.5f;
+  // HSI Map: WT hsi-map-hdg-box at container top + 27 px. Rose: above the ring.
   const float headingBoxY =
-      hsiMapMode ? Y(387.0f + 27.0f)
+      hsiMapMode ? Y(hsi::kOriginY + hsi::kMapHeadingBoxTop)
                  : cy - radius - displayH * 0.052f;
 
   drawTurnRateIndicator(r, cx, cy, radius, d.turnRateDegPerSec);
@@ -164,59 +170,85 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
   // PFD power-up the heading source is failed, so the box is drawn as a red-X'd
   // failure window in its place (NXi Maintenance Manual Fig 9-2).
   if (powerUp) {
-    drawFailureX(r, cx - headingBoxW * 0.5f, headingBoxY, headingBoxW,
-                 headingBoxH, "", displayH);
+    drawFailureX(r, headingBoxX, headingBoxY, headingBoxW, headingBoxH, "",
+                 displayH);
+  } else if (hsiMapMode) {
+    const std::string headingText = formatHeading(headingDeg) + "\u00b0";
+    const float headingSize = fontPx(wt::kHeadingBox, displayH);
+    constexpr FontFace kHeadingFace = FontFace::DejaVuSemiBold;
+    const float headingBottom = headingBoxY + headingBoxH;
+    r.fillRect(headingBoxX, headingBoxY, headingBoxW, headingBoxH,
+               colors::kReadoutBox);
+    const Point outline[5] = {
+        {headingBoxX, headingBoxY},
+        {headingBoxX + headingBoxW, headingBoxY},
+        {headingBoxX + headingBoxW, headingBottom},
+        {headingBoxX, headingBottom},
+        {headingBoxX, headingBoxY}};
+    r.strokePolyline(outline, 5, 2.0f, colors::kWhite);
+    const float textY = inkMidYAtRow(
+        r, (headingBoxY + headingBottom) * 0.5f, headingBoxY, headingBottom,
+        headingBoxX + headingBoxW * 0.5f, headingText, headingSize,
+        TextAlign::Center, kHeadingFace);
+    r.save();
+    r.clip(headingBoxX, headingBoxY, headingBoxW, headingBoxH);
+    r.fillText(headingBoxX + headingBoxW * 0.5f, textY, headingText,
+               headingSize, TextAlign::Center, colors::kWhite, kHeadingFace);
+    r.restore();
   } else {
-    drawReadoutBox(r, cx - headingBoxW * 0.5f, headingBoxY, headingBoxW,
-                   headingBoxH, formatHeading(headingDeg) + "\u00b0",
+    drawReadoutBox(r, headingBoxX, headingBoxY, headingBoxW, headingBoxH,
+                   formatHeading(headingDeg) + "\u00b0",
                    fontPx(wt::kHeadingBox, displayH), NotchSide::None);
   }
 
-  // Selected heading (HDG) and selected course (DTK/CRS) readouts. These are
-  // shared HSI chrome (WT hdgcrs-container, anchored to the #HSI parent): the
-  // same translucent rounded boxes in BOTH the standard rose and HSI Map
-  // layouts, so they never move or restyle when the map is toggled. Each box
-  // pairs a white label with a same-size colored value (cyan for the selected
-  // heading, GPS-magenta / VOR-green for the selected course). The HDG box's
-  // right edge lines up under the GPS source box, and the DTK box's left edge
-  // under the flight-phase box, of the course-deviation band above (the band is
-  // centered on the rose; the same anchors are reused in the rose layout).
+  // Selected heading (HDG) and selected course (DTK/CRS) readouts. Shared HSI
+  // chrome (WT hdgcrs-container on #HSI): fixed 84x26 translucent boxes at
+  // left 6 / left 276, top 26, in both rose and HSI Map layouts. Each pairs a
+  // 14 px white label with a 20 px colored value (cyan / GPS-magenta / green).
   const char* crsLabel = (d.cdiSource == CdiSource::Gps) ? "DTK " : "CRS ";
-  const float refBoxH = Y(30.0f);
-  const float refBoxY = Y(387.0f + 24.0f);
-  const float refBoxR = 5.0f * L.s;
-  const float refBoxMidY = refBoxY + refBoxH * 0.5f;
-  const float refSize = fontPx(wt::kHsiRefValue, displayH);  // label and value
-  const float refPad = X(8.0f);
+  const float refBoxW = X(hsi::kRefBoxW);
+  const float refBoxH = Y(hsi::kRefBoxH);
+  const float refBoxY = Y(hsi::kOriginY + hsi::kRefBoxTop);
+  const float refBoxR = hsi::kRefBoxRadius * L.s;
+  const float refBoxBottom = refBoxY + refBoxH;
+  const float hdgBoxX = X(hsi::kOriginX + hsi::kRefBoxHdgLeft);
+  const float dtkBoxX = X(hsi::kOriginX + hsi::kRefBoxDtkLeft);
+  const float refLabelSize = fontPx(wt::kHsiSource, displayH);
+  const float refValueSize = fontPx(wt::kHsiRefValue, displayH);
+  constexpr FontFace kRefLabelFace = FontFace::RobotoBold;
+  constexpr FontFace kRefValueFace = FontFace::DejaVuSemiBold;
 
-  const float bandDevW = X(183.0f);
-  const float bandGap = X(2.0f);
-  const float bandDevX = L.hsiMapCx - bandDevW * 0.5f;
-  const float gpsBoxRight = bandDevX - bandGap;
-  const float phaseBoxLeft = bandDevX + bandDevW + bandGap;
-
-  // Draws "<label> <value>" in a content-sized box: white label and colored
-  // value at the same size, anchored either by its right edge (HDG, under the
-  // GPS box) or its left edge (DTK, under the phase box).
-  const auto drawRefBox = [&](float anchorX, bool anchorRight,
-                              const std::string& label, const std::string& value,
+  const auto drawRefBox = [&](float boxX, const std::string& label,
+                              const std::string& value,
                               const Color& valueColor) {
-    const float labelW = r.measureTextWidth(label, refSize);
-    const float valueW = r.measureTextWidth(value, refSize);
-    const float boxW = labelW + valueW + 2.0f * refPad;
-    const float boxX = anchorRight ? anchorX - boxW : anchorX;
-    r.fillRoundedRect(boxX, refBoxY, boxW, refBoxH, refBoxR, colors::kWindBox);
-    r.fillText(boxX + refPad, refBoxMidY, label, refSize, TextAlign::Left,
-               colors::kWhite);
-    r.fillText(boxX + refPad + labelW, refBoxMidY, value, refSize,
-               TextAlign::Left, valueColor);
+    r.fillRoundedRect(boxX, refBoxY, refBoxW, refBoxH, refBoxR, colors::kWindBox);
+    const float labelW = r.measureTextWidth(label, refLabelSize, kRefLabelFace);
+    const float valueW = r.measureTextWidth(value, refValueSize, kRefValueFace);
+    const float startX = boxX + (refBoxW - labelW - valueW) * 0.5f;
+    const float valueY = inkMidYAtRow(
+        r, (refBoxY + refBoxBottom) * 0.5f, refBoxY, refBoxBottom,
+        startX + labelW, value, refValueSize, TextAlign::Left, kRefValueFace);
+    const TextRect valueRect =
+        r.measureTextRect(startX + labelW, valueY, value, refValueSize,
+                          TextAlign::Left, kRefValueFace);
+    const TextRect labelRect =
+        r.measureTextRect(startX, valueY, label, refLabelSize, TextAlign::Left,
+                          kRefLabelFace);
+    const float labelY = valueY + (valueRect.bottom - labelRect.bottom);
+    r.save();
+    r.clip(boxX, refBoxY, refBoxW, refBoxH);
+    r.fillText(startX, labelY, label, refLabelSize, TextAlign::Left,
+               colors::kWhite, kRefLabelFace);
+    r.fillText(startX + labelW, valueY, value, refValueSize, TextAlign::Left,
+               valueColor, kRefValueFace);
+    r.restore();
   };
 
   if (!powerUp) {
-    drawRefBox(gpsBoxRight, true, "HDG ",
-               formatHeading(selectedHeadingDeg) + "\u00b0", colors::kCyan);
-    drawRefBox(phaseBoxLeft, false, crsLabel,
-               formatHeading(d.courseDeg) + "\u00b0", navColor);
+    drawRefBox(hdgBoxX, "HDG ", formatHeading(selectedHeadingDeg) + "\u00b0",
+               colors::kCyan);
+    drawRefBox(dtkBoxX, crsLabel, formatHeading(d.courseDeg) + "\u00b0",
+               navColor);
   }
 
   // Bearing-pointer source/distance windows are rendered in the bottom info

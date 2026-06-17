@@ -57,23 +57,24 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
   // map -- a translucent box holding the lateral deviation scale (four dots, a
   // center line, and the TO/FROM deviation triangle), flanked by the GPS/VOR
   // source box on the left and the flight-phase (sensitivity) box on the right.
-  // Geometry follows the WT NXi HSIMapCourseDeviation (#HSI origin 277,387;
-  // container +7).
+  // Geometry follows WT NXi HSIMapCourseDeviation (#HSI origin 277,387;
+  // hsi-map-container left +7).
   const auto X = [&](float px) { return px * L.sx; };
   const auto Y = [&](float px) { return px * L.sy; };
 
-  const float bandY = Y(387.0f);
-  const float bandH = Y(23.0f);
-  const float midY = bandY + bandH * 0.5f;
-  const float radius = 5.0f * L.s;
-  const float devW = X(183.0f);
-  const float devX = L.hsiMapCx - devW * 0.5f;  // band centered on the rose
-  const float gap = X(2.0f);
-  const float srcW = X(53.0f);
-  const float phaseW = X(84.0f);
-  const float srcX = devX - gap - srcW;
-  const float phaseX = devX + devW + gap;
+  const float bandY = Y(hsi::kOriginY);
+  const float bandH = Y(hsi::kCourseBandH);
+  const float bandBottom = bandY + bandH;
+  const float radius = hsi::kRefBoxRadius * L.s;
+  const float mapLeft = hsi::kOriginX + hsi::kMapContainerLeft;
+  const float srcW = X(hsi::kCourseSrcW);
+  const float devW = X(hsi::kCourseDevW);
+  const float phaseW = X(hsi::kCoursePhaseW);
+  const float srcX = X(mapLeft + hsi::kCourseSrcLeft);
+  const float devX = X(mapLeft + hsi::kCourseDevLeft);
+  const float phaseX = X(mapLeft + hsi::kCoursePhaseLeft);
   const float size = fontPx(wt::kHsiBug, displayH);  // 18 px, per WT
+  constexpr FontFace kAnnunFace = FontFace::RobotoBold;
 
   const bool obs = ui.displayToggle(DisplayToggle::Obs);
   Color srcColor;
@@ -82,8 +83,16 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
 
   // Source box (left).
   r.fillRoundedRect(srcX, bandY, srcW, bandH, radius, colors::kWindBox);
-  r.fillText(srcX + srcW * 0.5f, midY, srcText, size, TextAlign::Center,
-             srcColor);
+  {
+    const float textY = inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY,
+                                      bandBottom, srcX + srcW * 0.5f, srcText,
+                                      size, TextAlign::Center, kAnnunFace);
+    r.save();
+    r.clip(srcX, bandY, srcW, bandH);
+    r.fillText(srcX + srcW * 0.5f, textY, srcText, size, TextAlign::Center,
+               srcColor, kAnnunFace);
+    r.restore();
+  }
 
   // Deviation box (center): translucent fill with a thin gray outline.
   r.fillRoundedRect(devX, bandY, devW, bandH, radius, colors::kWindBox);
@@ -121,8 +130,14 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
     }
     r.restore();
   } else {
-    r.fillText(devX + devW * 0.5f, midY, "NO DTK", size, TextAlign::Center,
-               colors::kWhitesmoke);
+    const float textY = inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY,
+                                      bandBottom, devX + devW * 0.5f, "NO DTK",
+                                      size, TextAlign::Center, kAnnunFace);
+    r.save();
+    r.clip(devX, bandY, devW, bandH);
+    r.fillText(devX + devW * 0.5f, textY, "NO DTK", size, TextAlign::Center,
+               colors::kWhitesmoke, kAnnunFace);
+    r.restore();
   }
 
   // Flight-phase / sensitivity box (right). For GPS this is the phase (e.g.
@@ -131,8 +146,14 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
       isGps ? (obs ? "SUSP" : d.gpsFlightPhase) : std::string();
   if (!phase.empty()) {
     r.fillRoundedRect(phaseX, bandY, phaseW, bandH, radius, colors::kWindBox);
-    r.fillText(phaseX + phaseW * 0.5f, midY, phase, size, TextAlign::Center,
-               colors::kMagenta);
+    const float textY = inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY,
+                                      bandBottom, phaseX + phaseW * 0.5f, phase,
+                                      size, TextAlign::Center, kAnnunFace);
+    r.save();
+    r.clip(phaseX, bandY, phaseW, bandH);
+    r.fillText(phaseX + phaseW * 0.5f, textY, phase, size, TextAlign::Center,
+               colors::kMagenta, kAnnunFace);
+    r.restore();
   }
 }
 

@@ -23,6 +23,7 @@ add_library(xplane-avionics MODULE
   src/FlightPlanBridge.cpp
   src/CommandBridge.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/DsfTerrainStore.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/ObstacleStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/XPlaneInstall.cpp
   # Shared portable SHA-256 (also used by the standalone updater) verifies the
   # downloaded plugin archive against the release's SHA256SUMS.
@@ -50,6 +51,8 @@ endif()
 
 target_compile_definitions(xplane-avionics PRIVATE
   AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/../avionics-core/assets/eis/c172s.eis")
+target_compile_definitions(xplane-avionics PRIVATE
+  AVIONICS_OBSTACLES="${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/assets/obstacles.csv")
 
 # Airspace parsing runs on a background std::thread.
 find_package(Threads REQUIRED)
@@ -103,3 +106,5 @@ endif()
 install(TARGETS xplane-avionics
   LIBRARY DESTINATION "xplane-avionics/${AVIONICS_XPL_PLATFORM_DIR}" COMPONENT plugin)
 avionics_install_shared_assets("xplane-avionics/assets" plugin)
+install(FILES ${AVIONICS_OBSTACLES_FILE}
+  DESTINATION xplane-avionics/assets COMPONENT plugin OPTIONAL)

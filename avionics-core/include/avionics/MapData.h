@@ -183,7 +183,8 @@ enum class LandClass {
   City,
   Coast,
   StateBorder,
-  Railroad
+  Railroad,
+  LandMass,
 };
 
 struct MapLandLine {
@@ -191,11 +192,20 @@ struct MapLandLine {
   std::vector<GeoPoint> points;
 };
 
+// Land label kinds packed into land_data.bin (v2+). Cities are populated
+// places; Hydro covers lakes and marine areas; Region covers states/provinces.
+enum class LandLabelKind : std::uint8_t {
+  City = 0,
+  Hydro = 1,
+  Region = 2,
+};
+
 struct MapLandCity {
   std::string name;
   double lat = 0.0;
   double lon = 0.0;
-  int rank = 0;  // higher = bigger city; drives range declutter
+  int rank = 0;  // higher = more prominent; drives range declutter
+  LandLabelKind labelKind = LandLabelKind::City;
 };
 
 // One runway of a nearby airport, for the close-range runway diagrams: the
@@ -247,6 +257,10 @@ struct MapObstacle {
   double lon = 0.0;
   float mslFt = 0.0f;
   float aglFt = 0.0f;
+  bool lighted = false;     // DDOF LIGHTING column (Pilot's Guide Table 6-7)
+  bool windTurbine = false; // DDOF TYPE = WINDMILL (Table 6-8)
+  bool isPole = false;      // POLE / UTILITY POLE — single-segment tower glyph
+  int quantity = 1;         // DDOF QUANTITY (grouped obstacles draw as a pair)
 };
 
 // Procedure category for the FPL PROC menu (Pilot's Guide, Section 5.8).

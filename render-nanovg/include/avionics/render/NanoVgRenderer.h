@@ -67,6 +67,11 @@ class NanoVgRenderer : public Renderer {
   void fillCircle(float cx, float cy, float radius, const Color& c) override;
   void fillRoundedRect(float x, float y, float w, float h, float radius,
                        const Color& c) override;
+  void fillRoundedRectVerticalGradient(float x, float y, float w, float h,
+                                       float radius, float gradientTopY,
+                                       float gradientBottomY,
+                                       const Color& topColor,
+                                       const Color& bottomColor) override;
   void strokeRoundedRect(float x, float y, float w, float h, float radius,
                          float widthPx, const Color& c) override;
   void fillTopRoundedRectVerticalGradient(float x, float y, float w, float h,
@@ -74,6 +79,12 @@ class NanoVgRenderer : public Renderer {
                                           const Color& bottomColor) override;
   void strokeTopRoundedRect(float x, float y, float w, float h, float radius,
                             float widthPx, const Color& c) override;
+  void fillRoundedRectVaryingVerticalGradient(
+      float x, float y, float w, float h, float radTL, float radTR, float radBR,
+      float radBL, const Color& topColor, const Color& bottomColor) override;
+  void strokeRoundedRectVarying(float x, float y, float w, float h, float radTL,
+                                float radTR, float radBR, float radBL,
+                                float widthPx, const Color& c) override;
   void fillPolygon(const Point* points, int count, const Color& c) override;
   void strokePolyline(const Point* points, int count, float widthPx,
                       const Color& c) override;

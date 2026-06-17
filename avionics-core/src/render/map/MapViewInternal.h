@@ -19,11 +19,43 @@ namespace avionics::mapview {
 
 constexpr float kWtCanvasHeight = 768.0f;
 
+// NXi navigation-map base colors (sampled from the PC Trainer screenshots):
+// deep navy ocean behind the land overlay, black continents, slightly dimmer
+// inland lakes.
+inline constexpr Color kMapOceanFill{0.0f, 0.0f, 0.52f, 1.0f};
+inline constexpr Color kMapLandFill{0.0f, 0.0f, 0.0f, 1.0f};
+inline constexpr Color kMapLakeFill{0.0f, 0.0f, 0.38f, 1.0f};
+
+// Past this map range the navigation chart keeps only geography (land/ocean
+// fills, nation outlines, major place names). Matches the Garmin PC Trainer
+// at 1000 NM (MFD Default.bmp): no airports, navaids, or route symbology.
+inline constexpr float kContinentalChartRangeNm = 500.0f;
+// Maximum navigation-map range; only the largest country/region names remain.
+inline constexpr float kWideChartRangeNm = 1000.0f;
+
 // Nav-feature symbol size, in 768-px-canvas units. Symbols are sized off the
 // display (like text) rather than the viewport, so they stay a fixed, legible
 // size on both the small PFD inset and the full-screen MFD MAP page instead of
 // ballooning on the larger viewport.
 constexpr float kFeatureSymbolWt = 8.0f;
+// High-res GSHHG land fill replaces coarse silhouettes at and below this range.
+constexpr float kDetailLandMaxRangeNm = 50.0f;
+
+// Obstacle symbols (Figs. 6-56 / 6-8): open-V tower/pole, 8-ray spark, turbine.
+// Sized to match the PC Trainer 10 NM chart (≈14–22 px at 768 px display height).
+// Sized against the PC Trainer / real NXi at 10 NM (lighted tower ≈ 16–25 px tall).
+constexpr float kObstacleSymbolWt = 24.0f;
+
+// Extra lift applied to ident labels so they clear the symbol geometry (trainer
+// keeps a small gap between the icon apex and the text baseline).
+constexpr float kMapLabelLiftPx = 15.0f;
+
+// Map symbology labels: semi-bold to match the Garmin PC Trainer weight.
+constexpr FontFace kMapLabelFace = FontFace::DejaVuSemiBold;
+// Scale applied to labelFontWt for nav/city/route idents (was 0.80–0.85).
+constexpr float kMapIdentLabelScale = 1.0f;
+// Extra scale for ranked geo/hydro place names on the continental chart.
+constexpr float kMapGeoLabelScale = 1.10f;
 
 // Ownship airplane symbol size, in the same 768-px-canvas units. The G1000 NXi
 // ownship icon is drawn noticeably larger than the nav-feature symbols so the
@@ -33,6 +65,26 @@ constexpr float kOwnshipSymbolWt = 15.0f;
 // Margin (px) added around the viewport when clipping per-pixel symbology, so
 // teeth/dashes near the edge are not cut early.
 constexpr float kSymbologyClipMarginPx = 32.0f;
+
+// On-screen span of the selected map range, as a fraction of viewport height.
+// Taken from WT NextGenNavMapBuilder range endpoints (MFD) and MapInset (PFD):
+// the range ring / compass arc sits at this radius, and the map scale is keyed
+// to the same distance so features match the labeled range.
+inline float mapRangeSpanFrac(MapOrientation orientation, float viewportHeightPx) {
+  const bool inset = viewportHeightPx < 300.0f;
+  switch (orientation) {
+    case MapOrientation::NorthUp:
+      return inset ? 0.40f : 0.25f;  // |0.5-0.1| inset, |0.5-0.25| MFD
+    case MapOrientation::HeadingUp:
+    case MapOrientation::TrackUp:
+      return inset ? 0.51f : 0.34f;  // |0.67-0.16| inset, |0.67-0.33| MFD
+  }
+  return 0.25f;
+}
+
+inline float mapRangeSpanPx(const MapViewConfig& config) {
+  return mapRangeSpanFrac(config.orientation, config.h) * config.h;
+}
 
 inline float fontPx(float wtPx, float displayH) {
   return wtPx * (displayH / kWtCanvasHeight);
@@ -49,30 +101,27 @@ struct Proj {
   float rotation = 0.0f;
   float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
 
-  // Per-frame projection constants, computed once in init(). The hot path
-  // projects thousands of vertices per render (coastlines, airspaces, airways,
-  // nav features), and the rotation sin/cos and longitude scale are identical
-  // for every one of them, so deriving them once here instead of per point
-  // removes ~3 trig calls per vertex from each map redraw.
+  // Per-frame Mercator projection constants, computed once in init().
   double cosR = 1.0;
   double sinR = 0.0;
-  double nmPerLon = map::kNmPerDegLat;
+  double mercatorYCenter = 0.0;
+  float mercatorPxPerRad = 0.0f;
 
   void init() {
-    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-    const double rot = static_cast<double>(rotation) * kDegToRad;
+    const double rot = static_cast<double>(rotation) * map::kDegToRad;
     cosR = std::cos(rot);
     sinR = std::sin(rot);
-    nmPerLon = map::nmPerDegLon(centerLat);
+    mercatorYCenter = map::mercatorYRad(centerLat);
+    mercatorPxPerRad =
+        pixelsPerNm * static_cast<float>(map::kNmPerEarthRad);
   }
 
   void toPx(double lat, double lon, float& x, float& y) const {
-    const double northNm = (lat - centerLat) * map::kNmPerDegLat;
-    const double eastNm = (lon - centerLon) * nmPerLon;
-    const double mapEast = eastNm * cosR - northNm * sinR;
-    const double mapNorth = eastNm * sinR + northNm * cosR;
-    x = cx + static_cast<float>(mapEast * static_cast<double>(pixelsPerNm));
-    y = cy - static_cast<float>(mapNorth * static_cast<double>(pixelsPerNm));
+    double eastRad = 0.0;
+    double northRad = 0.0;
+    map::mercatorOffsetRad(lat, lon, centerLat, centerLon, eastRad, northRad);
+    map::mercatorToScreen(eastRad, northRad, cx, cy, mercatorPxPerRad, cosR,
+                          sinR, x, y);
   }
 
   bool onScreen(float x, float y, float margin) const {
@@ -121,6 +170,54 @@ inline bool segmentVisibleSpan(float ax, float ay, float ux, float uy,
   return hi >= lo;
 }
 
+// True when any vertex is inside the clip rect (expanded by margin) or any edge
+// crosses it — needed for long border segments whose endpoints are off-screen.
+inline bool polylineIntersectsClip(const Point* pts, int count,
+                                   const ClipBounds& clip, float margin) {
+  for (int i = 0; i < count; ++i) {
+    const Point& p = pts[i];
+    if (p.x >= clip.minX - margin && p.x <= clip.maxX + margin &&
+        p.y >= clip.minY - margin && p.y <= clip.maxY + margin) {
+      return true;
+    }
+  }
+  for (int i = 0; i + 1 < count; ++i) {
+    const Point& a = pts[i];
+    const Point& b = pts[i + 1];
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.001f) continue;
+    float lo = 0.0f, hi = 0.0f;
+    if (segmentVisibleSpan(a.x, a.y, dx / len, dy / len, len, clip.minX,
+                           clip.minY, clip.maxX, clip.maxY, margin, lo, hi)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Strokes only the portion of each edge that lies inside the clip rect.
+void strokeClippedPolyline(Renderer& r, const Point* pts, int count,
+                           float widthPx, const Color& c,
+                           const ClipBounds& clip, float margin);
+
+// Sutherland–Hodgman clip of a closed polygon to an axis-aligned rectangle.
+// Used before land/lake fills so Mercator blow-up at high latitude cannot
+// paint a wedge across the viewport when ring vertices sit far off-screen.
+void clipPolygonToRect(const Point* pts, int count, const ClipBounds& clip,
+                       float margin, std::vector<Point>& out);
+
+// Continental landmass rings can project to tens of thousands of vertices after
+// geo clip + Mercator subdivision; decimate before NanoVG tessellation.
+inline constexpr std::size_t kMaxLandFillVerts = 4096;
+
+void decimateClosedPolygon(const std::vector<Point>& in, std::size_t maxVerts,
+                           std::vector<Point>& out);
+
+void simplifyColinearRing(const std::vector<Point>& in, float areaEps,
+                          std::vector<Point>& out);
+
 // --- Shared low-level primitives (MapPrimitives.cpp) ---
 
 // Strokes an open polyline emitting fixed-length dashes (screen-space), used
@@ -147,12 +244,23 @@ float drawChromeLabel(Renderer& r, float x, float y, const char* text,
 
 // Land data: lakes filled, rivers/roads/borders stroked, with per-class range
 // declutter. Drawn right above the map background so everything overlays it.
+// When a topo/rel terrain raster is showing at close range, skip only the
+// high-vertex landmass detail so the DEM shoreline stays visible; coarse
+// silhouettes and island fills still paint black under the terrain.
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm);
+                  float rangeNm, bool skipLandMassFill = false);
 
 // Populated places: a dot plus name, decluttered by city rank vs. range.
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,
                 float rangeNm, float symSize, float labelSize);
+
+// City dots only (drawn with other symbology).
+void drawCityDots(Renderer& r, const MapData& map, const Proj& proj, float rangeNm,
+                  float symSize);
+
+// Geo/city name labels (white/cyan, drawn on top of map symbology).
+void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
+                        float rangeNm, float labelSize);
 
 // Airways declutter above their max range. Low-altitude routes draw first;
 // high-altitude Jet/Q-routes draw on top when both are shown (Fig 5-15).
@@ -176,36 +284,58 @@ void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
 void drawTaxiwayLabels(Renderer& r, const MapData& map, const Proj& proj,
                        float rangeNm, float labelSize);
 
-// Nav-feature symbols (airports/VOR/NDB/fix) with range/size declutter and
-// identifier labels.
+// Nav-feature symbols (airports/VOR/NDB/fix) with range/size declutter.
 void drawNavFeatures(Renderer& r, const MapData& map, const Proj& proj,
-                     const MapViewConfig& config, float rangeNm, float symSize,
-                     float labelSize);
+                     const MapViewConfig& config, float rangeNm, float symSize);
 
-// Active flight-plan route (white, with the active leg magenta) and waypoint
-// idents.
+// Nav-feature identifier labels (white, centered above symbols).
+void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
+                          const MapViewConfig& config, float rangeNm,
+                          float symSize, float labelSize);
+
+// Active flight-plan route (white, with the active leg magenta).
 void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
                     const MapViewConfig& config, const FlightData& flight,
-                    float symSize, float labelSize);
+                    float symSize);
+
+// Flight-plan waypoint idents (white/magenta, centered above symbols).
+void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
+                          const MapViewConfig& config, const FlightData& flight,
+                          float symSize, float labelSize);
 
 // Procedure preview polyline (PROC menu): dashed cyan course through the
 // published fixes.
 void drawProcedurePreview(Renderer& r, const Proj& proj,
-                          const MapViewConfig& config, float symSize,
-                          float labelSize);
+                          const MapViewConfig& config, float symSize);
+
+// Procedure preview fix idents (cyan, centered above symbols).
+void drawProcedurePreviewLabels(Renderer& r, const Proj& proj,
+                                const MapViewConfig& config, float symSize,
+                                float labelSize);
 
 // Direct-To course: a magenta line from ownship to the direct-to waypoint.
 void drawDirectToCourse(Renderer& r, const MapData& map, const Proj& proj,
-                        const MapViewConfig& config, float symSize,
-                        float labelSize);
+                          const MapViewConfig& config, float symSize);
 
-// Obstacles (FAA DOF): tower symbol colored by proximity below ownship.
+// Direct-To waypoint ident (magenta, centered above symbol).
+void drawDirectToCourseLabel(Renderer& r, const MapData& map, const Proj& proj,
+                             const MapViewConfig& config, float symSize,
+                             float labelSize);
+
+// Obstacles (FAA DOF): open-V tower/pole, six-ray lighted spark, wind turbine.
+// wind-turbine blades, and paired group symbols (Tables 6-7/6-8).
 void drawObstacles(Renderer& r, const MapData& map, const Proj& proj,
-                   float rangeNm, float ownAltFt, bool altValid, float symSize);
+                   float rangeNm, float maxRangeNm, float ownAltFt, bool altValid,
+                   float symSize);
+
+// Map-pointer selection tag (Fig. 6-56): boxed MSL/AGL below the obstacle.
+void drawObstacleSelectedTag(Renderer& r, float x, float y, float symSize,
+                             float mslFt, float aglFt, float labelSize,
+                             const Color& c);
 
 // Traffic overlay (TIS symbology): diamonds/circles with relative-altitude tags.
 void drawTraffic(Renderer& r, const MapData& map, const Proj& proj,
-                 float symSize, float labelSize);
+                 float symSize, float labelSize, bool showLabels);
 
 // Track vector: a line projected along the current ground track.
 void drawTrackVector(Renderer& r, const FlightData& flight, float ownX,
@@ -236,8 +366,16 @@ void drawRangeLabel(Renderer& r, float x, float y, float rangeNm,
 void drawRelTerrainLegend(Renderer& r, const MapViewConfig& config,
                           float labelSize);
 
-// A single range ring circle.
+// A single range ring circle (north-up navigation map, Fig 5-2).
 void drawRangeRing(Renderer& r, float cx, float cy, float radiusPx,
                    const Color& c);
+
+// Range compass: fixed 120-degree arc with rotating bearing ticks (track-up /
+// heading-up navigation map). Replaces the range ring when the map is not
+// north-up, matching the real NXi and the WT MapRangeCompassController.
+void drawRangeCompass(Renderer& r, const MapViewConfig& config,
+                      const FlightData& flight, float cx, float cy,
+                      float radiusPx, float rotationDeg, float labelSize,
+                      const Color& c);
 
 }  // namespace avionics::mapview

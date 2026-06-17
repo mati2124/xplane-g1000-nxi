@@ -98,15 +98,15 @@ void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
   r.fillPolygon(bug, 5, colors::kCyan);
 }
 
-void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float stripBottom,
+void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float instrumentBottom,
                      float scale, float displayH, float baroInHg, bool hpa,
                      bool flashOff) {
-  // The BARO box matches the airspeed column's TAS box: a compact readout whose
-  // top edge slightly overlaps the tape scroll strip, with only the outer bottom
-  // corner rounded. The Baro Transition Alert flashes the setting (handled by
-  // the caller's blink phase via flashOff).
+  // The BARO box matches the airspeed column's TAS box: a compact readout flush
+  // with the bottom of the instrument column, with only the outer bottom corner
+  // rounded. The Baro Transition Alert flashes the setting (handled by the
+  // caller's blink phase via flashOff).
   const float boxH = kTapeBottomBoxHeightWt * scale;
-  const float boxY = stripBottom - kTapeBottomBoxTapeOverlapWt * scale;
+  const float boxY = instrumentBottom - boxH;
   // Only the bottom-right (outer) corner is rounded, mirroring the airspeed
   // column's TAS box (which rounds its bottom-left) so the altimeter column
   // carries the same smooth outer-bottom edge. The inner and top corners stay
@@ -242,55 +242,23 @@ void drawMinimums(Renderer& r, const Layout& L, const FlightData& d,
 }
 
 void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
-                         float altitudeFt, float textSize) {
-  const float midY = y + h * 0.5f;
-
-  // Layout (NXi/Garmin): the thousands/hundreds digits are static and full-size
-  // in a snug leading box; the last two digits (tens) ride a rolling drum in a
-  // full-height window that stands TALLER than the leading box, protruding above
-  // and below it.
-  const float leadH = h * 0.66f;
-  const float leadTop = midY - leadH * 0.5f;
-  const float leadBot = midY + leadH * 0.5f;
-  const float notchHalfH = leadH * 0.30f;
-  const float notchDepth = h * kAltReadoutCaretDepthFraction;
-
-  const float drumW = w * 0.34f;
-  const float drumRight = x + w;
-  const float drumX = drumRight - drumW;
-  const float drumCx = drumX + drumW * 0.5f;
+                         float altitudeFt, float textSize, float scale) {
   const float drumSize = textSize * 0.78f;
-  const float rowSpacing = h * 0.92f;
+  const float drumW = kAltReadoutDrumWidthPx * scale;
+  const float caretHalfH = kAltReadoutCaretHalfHeightPx * scale;
+  const TapeReadoutShape shape = buildTapeReadoutShape(
+      x, y, w, h, drumW, NotchSide::Left, caretHalfH,
+      kAltReadoutCaretDepthPx * scale, kAltReadoutLeadHeightFraction,
+      kReadoutCornerRadiusPx * scale, kReadoutDrumCornerRadiusPx * scale);
 
-  // Stepped silhouette (clockwise from the leading box's top-left): a snug
-  // leading-digit box on the left carrying the left-pointing caret, and a taller
-  // full-height drum on the right. The four outer corners and the drum corners
-  // are rounded to match the IAS pointer box; the step junctions and caret stay
-  // sharp (NXi rounded window corners).
-  const float cornerR = h * 0.06f;
-  const float drumCornerR = h * 0.04f;
-  const std::vector<Point> silhouette = {
-      {x, leadTop},             // leading box top-left
-      {drumX, leadTop},         // step up to drum top
-      {drumX, y},               // drum top-left
-      {drumRight, y},           // drum top-right
-      {drumRight, y + h},       // drum bottom-right
-      {drumX, y + h},           // drum bottom-left
-      {drumX, leadBot},         // step down from drum
-      {x, leadBot},             // leading box bottom-left
-      {x, midY + notchHalfH},   // caret bottom
-      {x - notchDepth, midY},   // caret tip
-      {x, midY - notchHalfH},   // caret top
-  };
-  const std::vector<float> radii = {cornerR,     0.0f, drumCornerR, drumCornerR,
-                                    drumCornerR, drumCornerR, 0.0f, cornerR,
-                                    0.0f,        0.0f, 0.0f};
-  std::vector<Point> shape = roundPolygonCorners(silhouette, radii);
-  r.fillPolygon(shape.data(), static_cast<int>(shape.size()),
-                colors::kReadoutBox);
-  shape.push_back(shape.front());
-  r.strokePolyline(shape.data(), static_cast<int>(shape.size()), 2.0f,
-                   colors::kWhite);
+  const float drumPad = drumSize * kReadoutDrumPadFraction;
+  const float drumAnchorX = shape.drumRight - drumPad;
+  const float drumClipTop = y + 2.0f;
+  const float drumClipH = h - 4.0f;
+  // One row spacing must fit within half the drum clip so rolling neighbors peek
+  // without escaping the window (h * 0.92 was too large for the 46 px box).
+  const float rowSpacing =
+      std::min(drumSize * 1.08f, drumClipH * 0.45f);
 
   const long snapped = std::lround(altitudeFt / 20.0f) * 20L;
   const long absSnap = std::labs(snapped);
@@ -299,34 +267,86 @@ void drawAltitudeReadout(Renderer& r, float x, float y, float w, float h,
   const float residual =
       (altitudeFt - static_cast<float>(snapped)) / 20.0f;
 
-  // fillText's NVG_ALIGN_MIDDLE centers on the font's ascender/descender
-  // midpoint; digits have no descender ink, so they ride high. Nudge the
-  // baseline down (per size, so the smaller drum digits track too) to center
-  // the glyph ink in the window and line it up with the caret.
-  auto inkMidY = [&](float size) { return midY + size * kCapInkCenterNudge; };
-  const float leadMidY = inkMidY(textSize);
-  const float drumMidY = inkMidY(drumSize);
+  char centerTens[4];
+  std::snprintf(centerTens, sizeof(centerTens), "%02ld",
+                ((tensCenter % 100) + 100) % 100);
+  const float activeTensW = r.measureTextWidth(centerTens, drumSize);
+  const float leadAnchorX = tapeReadoutLeadAnchorX(
+      shape.drumX, drumAnchorX, activeTensW, kReadoutColumnGapPx * scale);
 
-  // Build the leading-digits string with an explicit sign so altitudes between
-  // -1 and -99 ft (leading == 0) still read negative.
-  std::string lead = formatInt(static_cast<float>(leading));
-  if (snapped < 0) lead.insert(lead.begin(), '-');
-  r.fillText(drumX - w * 0.02f, leadMidY, lead, textSize, TextAlign::Right,
-             colors::kWhite);
+  std::vector<Point> poly =
+      roundPolygonCorners(shape.silhouette, shape.radii);
+  r.fillPolygon(poly.data(), static_cast<int>(poly.size()),
+                colors::kReadoutBox);
+
+  const std::string headStr =
+      snapped < 0 ? std::string("-") + formatInt(static_cast<float>(leading))
+                  : formatInt(static_cast<float>(leading));
+  const bool showHead = snapped < 0 || leading > 0;
+  const int leadColCount =
+      showHead ? std::max(1, static_cast<int>(headStr.size())) : 0;
+  const float leadColW = kAltReadoutDigitColumnWidthPx * scale;
+  const float leadColPitch = kAltReadoutDigitPitchPx * scale;
+  const float leadDrumGap = kAltReadoutLeadDrumGapPx * scale;
+  const float leadH = shape.leadBot - shape.leadTop;
+  std::vector<ReadoutColumnRect> leadCols;
+  if (leadColCount > 0) {
+    layoutReadoutDigitColumnsBeforeDrum(
+        shape.drumX, leadDrumGap, shape.leadTop, leadH, leadColCount,
+        leadColPitch, leadColW, leadCols);
+    for (const ReadoutColumnRect& col : leadCols) {
+      drawReadoutDigitDialShading(r, col.x, shape.leadTop, col.w, leadH,
+                                  colors::kReadoutBox);
+    }
+  }
+  // Full-height tens drum column (NXi alt-tens-scroller).
+  drawReadoutDigitDialShading(r, shape.drumX, y, shape.drumW, h,
+                              colors::kReadoutBox);
+
+  poly.push_back(poly.front());
+  r.strokePolyline(poly.data(), static_cast<int>(poly.size()),
+                   kReadoutOutlineWidthPx * scale, colors::kWhite);
+
+  const TapeReadoutDigitMidY midY = tapeReadoutDigitMidY(
+      r, shape.leadTop, shape.leadBot, drumClipTop, drumClipH, leadAnchorX,
+      headStr, textSize, drumAnchorX, centerTens, drumSize, false);
+
+  if (showHead) {
+    const float leadPad = scale;
+    for (int i = 0; i < leadColCount; ++i) {
+      const ReadoutColumnRect& col = leadCols[static_cast<size_t>(i)];
+      const std::string digit(1, headStr[static_cast<size_t>(i)]);
+      const bool lastLead = i == leadColCount - 1;
+      // Right-align toward the next column; keep the drum-adjacent digit
+      // centered so it does not touch the rolling tens (NXi: 1 px before 70 px).
+      const float anchorX =
+          lastLead ? col.x + col.w * 0.5f : col.x + col.w - leadPad;
+      const TextAlign align = lastLead ? TextAlign::Center : TextAlign::Right;
+      r.fillText(anchorX,
+                 tapeReadoutLeadMidY(r, shape.leadTop, shape.leadBot, anchorX,
+                                     digit, textSize, kAltReadoutLeadInkNudge,
+                                     0.0f, align),
+                 digit, textSize, align, colors::kWhite);
+    }
+  }
 
   r.save();
-  r.clip(drumX, y + 2.0f, drumW, h - 4.0f);
+  r.clip(shape.drumX, drumClipTop, shape.drumW, drumClipH);
   for (int j = -2; j <= 2; ++j) {
     const long m = tensCenter + static_cast<long>(j) * 20L;
     const long disp = ((m % 100) + 100) % 100;
-    const float ty = drumMidY - static_cast<float>(j) * rowSpacing +
+    const float ty = midY.drumMidY - static_cast<float>(j) * rowSpacing +
                      residual * rowSpacing;
     char buf[4];
     std::snprintf(buf, sizeof(buf), "%02ld", disp);
-    r.fillText(drumCx, ty, std::string(buf), drumSize, TextAlign::Center,
+    r.fillText(drumAnchorX, ty, std::string(buf), drumSize, TextAlign::Right,
                colors::kWhite);
   }
   r.restore();
+  // Mask is drawn on top of the scrolling digits (NXi alt-tens-overlay).
+  const float maskPad = scale;
+  drawReadoutDrumScrollerMask(r, shape.drumX - maskPad, y, shape.drumW + 2.0f * maskPad,
+                              h, colors::kReadoutBox);
 }
 
 }  // namespace
@@ -338,7 +358,8 @@ void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
   if (!d.altitudeValid) {
     // Altimeter tape sits right of the attitude; its ticks line the inner
     // (left) edge and are retained under the failure X (NXi Fig 9-2).
-    drawFailureX(r, L.altX, L.altTop, L.altW, L.altH, "", h, FailTicks::LeftEdge);
+    drawFailureX(r, L.altX, L.altTop, L.altW, L.altH, "", h, FailTicks::LeftEdge,
+                 kAltTapeMinorTickFraction, kAltTapeMajorTickFraction);
     return;
   }
 
@@ -352,33 +373,34 @@ void drawAltimeter(Renderer& r, const Layout& L, const FlightData& d,
   drawVerticalTape(r, L.altX, L.altW, L.stripTop, L.stripH, L.attCy, h,
                    d.altitudeFt, kAltitudeViewableFeet, kAltitudeMajorFeet,
                    kAltitudeMinorFeet, kAltitudeMinFeet, true,
+                   kAltTapeMinorTickFraction, kAltTapeMajorTickFraction,
                    /*topOuterCornerRadius=*/0.0f, /*tickInset=*/0.0f,
-                   kAltTrailingDigits);
+                   kAltTrailingDigits, L.tapeBgH);
   drawTrendVector(r, L.altX, L.stripTop, L.stripH, L.attCy, h,
                   L.stripH / kAltitudeViewableFeet, d.altitudeTrendFt);
 
-  const float readoutH = kAltReadoutHeightWt * L.s;
+  const float readoutH = kAltReadoutHeightPx * L.sy;
   const float readoutSize = fontPx(wt::kReadoutAlt, h);
-  // Keep the readout inside the tape: shift it right by the caret depth so the
-  // left-pointing caret tip lands exactly on the tape's left edge, with the box
-  // spanning to the tape's right edge.
-  const float caretDepth = readoutH * kAltReadoutCaretDepthFraction;
+  const float readoutY = kAltReadoutTopPx * L.sy;
+  const float readoutX = L.altX + kAltReadoutBodyLeftPx * L.sx;
+  const float readoutW = L.altW - kAltReadoutBodyLeftPx * L.sx -
+                         kAltReadoutBodyRightInsetPx * L.sx;
   drawMinimums(r, L, d, ui, h);
-  drawAltitudeReadout(r, L.altX + caretDepth, L.attCy - readoutH * 0.5f,
-                      L.altW - caretDepth, readoutH, d.altitudeFt, readoutSize);
+  drawAltitudeReadout(r, readoutX, readoutY, readoutW, readoutH, d.altitudeFt,
+                      readoutSize, L.s);
   drawSelectedAltitude(r, L.altX, L.altW, L.altTop, L.stripTop, L.stripH,
                        L.attCy, h, d.altitudeFt, d.selectedAltitudeFt,
                        ui.selectedAltStyle());
 
   const bool selected = std::fabs(d.selectedAltitudeFt) > kAltSelectedEpsilonFt;
   if (ui.displayToggle(DisplayToggle::AltMeters)) {
-    drawMetricAltitude(r, L.altX, L.altW, L.stripTop, L.attCy, readoutH, h,
-                       d.altitudeFt, d.selectedAltitudeFt, selected);
+    drawMetricAltitude(r, L.altX, L.altW, L.stripTop, readoutY + readoutH * 0.5f,
+                       readoutH, h, d.altitudeFt, d.selectedAltitudeFt, selected);
   }
 
   const bool hpa = ui.displayToggle(DisplayToggle::BaroHpa);
   const bool flashOff = d.baroTransitionAlert && !ui.blinkOn();
-  drawBaroSetting(r, L.altX, L.altW, L.stripTop + L.stripH, L.s, h,
+  drawBaroSetting(r, L.altX, L.altW, L.altTop + L.altH, L.s, h,
                   d.baroSettingInHg, hpa, flashOff);
 }
 

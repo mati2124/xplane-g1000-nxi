@@ -23,6 +23,11 @@ enum class TerrainRasterMode { Absolute, Relative };
 // (PFD inset, MFD MAP page, embedded airport windows) gets its own raster
 // without the callers managing lifetimes. Returns false while no raster is
 // ready for this view yet (caller should paint its plain background).
+// Above this map range the DSF tile cache cannot cover the raster footprint
+// (~2.4x range); skip terrain shading and let the plain background + land
+// overlay define the wide view instead of half-loaded procedural noise.
+inline constexpr float kTerrainMaxRangeNm = 75.0f;
+
 bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
                        TerrainRasterMode mode, float ownAltFt,
                        double viewCenterLat, double viewCenterLon, float cx,

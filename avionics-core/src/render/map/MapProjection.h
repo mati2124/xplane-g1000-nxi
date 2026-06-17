@@ -1,23 +1,77 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 namespace avionics::map {
 
-// Project a lat/lon offset from the map center into viewport-local pixels.
-// centerLat/centerLon is ownship; rotationDeg rotates the map so that angle
-// points toward the top of the screen (0 = north up, trackDeg = track up).
-// Returns false if the point is outside a generous clip margin (caller may
-// still draw off-screen segments clipped by the viewport).
+// G1000 NXi moving maps use a Mercator projection (Working Title MapProjection /
+// MercatorProjection). Range is calibrated along the meridian from the view
+// center to the range ring so panning north/south does not change the perceived
+// scale.
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+constexpr double kNmPerDegLat = 60.0;
+// Nautical miles per radian of meridian arc (Earth mean radius).
+constexpr double kNmPerEarthRad = kNmPerDegLat / kDegToRad;
+
+// Equirectangular longitude scale at a latitude; still used for approximate
+// ground-distance queries (terrain sampling, nav snap radii).
+inline double nmPerDegLon(double latDeg) {
+  return kNmPerDegLat * std::cos(latDeg * kDegToRad);
+}
+
+// Wrap a longitude delta into [-180, 180).
+inline double lonDeltaDeg(double lonDeg, double centerLonDeg) {
+  double d = lonDeg - centerLonDeg;
+  while (d > 180.0) d -= 360.0;
+  while (d < -180.0) d += 360.0;
+  return d;
+}
+
+// Mercator Y in radians (Garmin MercatorProjection::projectRaw). Use the full
+// formula to ~89.5°; clamping earlier (±85°) stacked polar vertices and drew a
+// visible horizontal seam when the view reached high latitudes at wide range.
+inline double mercatorYRad(double latDeg) {
+  constexpr double kMaxLat = 89.5;
+  const double clamped = std::max(-kMaxLat, std::min(kMaxLat, latDeg));
+  const double latRad = clamped * kDegToRad;
+  return std::asinh(std::tan(latRad));
+}
+
+inline double mercatorLatDegFromY(double mercatorY) {
+  return std::atan(std::sinh(mercatorY)) / kDegToRad;
+}
+
+// Pixels per Mercator radian so `rangeNm` along a meridian spans `mapRadiusPx`.
+inline float mercatorPixelsPerRad(float mapRadiusPx, float rangeNm) {
+  const double mercatorRangeRad =
+      static_cast<double>(std::max(0.5f, rangeNm)) / kNmPerEarthRad;
+  return mapRadiusPx / static_cast<float>(mercatorRangeRad);
+}
+
+// Mercator offset from the view center, in radians (east = dLon, north = dY).
+inline void mercatorOffsetRad(double lat, double lon, double centerLat,
+                              double centerLon, double& eastRad,
+                              double& northRad) {
+  eastRad = lonDeltaDeg(lon, centerLon) * kDegToRad;
+  northRad = mercatorYRad(lat) - mercatorYRad(centerLat);
+}
+
+// Rotate a Mercator east/north offset and convert to screen pixels.
+inline void mercatorToScreen(double eastRad, double northRad, float cx, float cy,
+                             float mercatorPxPerRad, double cosR, double sinR,
+                             float& outX, float& outY) {
+  const double mapEast = eastRad * cosR - northRad * sinR;
+  const double mapNorth = eastRad * sinR + northRad * cosR;
+  outX = cx + static_cast<float>(mapEast * static_cast<double>(mercatorPxPerRad));
+  outY = cy - static_cast<float>(mapNorth * static_cast<double>(mercatorPxPerRad));
+}
+
+// Project a lat/lon into viewport-local pixels. `pixelsPerNm` is the nominal
+// scale (mapRadiusPx / rangeNm); internally converted to Mercator radians.
 bool latLonToLocalPx(double lat, double lon, double centerLat, double centerLon,
                      float cx, float cy, float pixelsPerNm, float rotationDeg,
                      float& outX, float& outY);
-
-constexpr double kNmPerDegLat = 60.0;
-
-inline double nmPerDegLon(double latDeg) {
-  constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-  return kNmPerDegLat * std::cos(latDeg * kDegToRad);
-}
 
 }  // namespace avionics::map

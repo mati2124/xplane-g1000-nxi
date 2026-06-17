@@ -399,10 +399,11 @@ class SoftkeyController {
 
   // ---- Direct-To window (Direct-To bezel key) ----
   // The GPS Direct-To window (Pilot's Guide Fig. 5-45, "Direct-to Window -
-  // PFD"): the Direct-To key opens it over the PFD, pre-filled with the active
-  // flight-plan waypoint. The FMS knob spells the destination ident; the first
-  // ENT confirms the waypoint and arms Activate?, the second ENT engages the
-  // direct course. CLR (or the knob push) cancels the window.
+  // PFD"): the Direct-To key opens it over the PFD blank for ident entry. The
+  // FMS knob spells the destination ident; the first ENT confirms the waypoint
+  // and arms Activate?, the second ENT engages the direct course. CLR (or the
+  // knob push) cancels the window.
+  void openDirectToWindow(const std::string& initial = "");
   bool directToWindowOpen() const { return dtoOpen_; }
   // 0..1 open progress for the slide+fade animation (1 fully open, eases back
   // to 0 on close so the window animates out as well as in).
@@ -648,7 +649,7 @@ class SoftkeyController {
   // active waypoint, then route the FMS knob / ENT / CLR while it is open.
   // Returns true when the key was consumed by the Direct-To window.
   bool directToBezelKey(BezelKey key);
-  void directToOpen();
+  void directToOpen(const std::string& initial = "");
   // Active Flight Plan window (FPL bezel key): route the FMS knob / ENT / CLR /
   // MENU while the window is open. Returns true when the key was consumed so it
   // does not also scroll/close. Adopts external plan changes each frame and

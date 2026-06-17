@@ -86,6 +86,14 @@ class Renderer {
                                const Color& c) {
     fillRect(x, y, w, h, c);
   }
+  virtual void fillRoundedRectVerticalGradient(float x, float y, float w, float h,
+                                               float radius,
+                                               float gradientTopY,
+                                               float gradientBottomY,
+                                               const Color& topColor,
+                                               const Color& bottomColor) {
+    fillRoundedRect(x, y, w, h, radius, bottomColor);
+  }
   virtual void strokeRoundedRect(float x, float y, float w, float h,
                                  float radius, float widthPx, const Color& c) {
     const Point p[5] = {{x, y},     {x + w, y}, {x + w, y + h},
@@ -108,6 +116,22 @@ class Renderer {
                                     float radius, float widthPx,
                                     const Color& c) {
     strokeRoundedRect(x, y, w, h, radius, widthPx, c);
+  }
+
+  // Rounded rectangle with independent corner radii and a vertical gradient
+  // (topColor at y, bottomColor at y + h). Used for the NAV/COM bar panels,
+  // whose outer profile is square along the top edge and rounded on the bottom.
+  virtual void fillRoundedRectVaryingVerticalGradient(
+      float x, float y, float w, float h, float radTL, float radTR, float radBR,
+      float radBL, const Color& topColor, const Color& bottomColor) {
+    fillRectVerticalGradient(x, y, w, h, y, y + h, topColor, bottomColor);
+  }
+  virtual void strokeRoundedRectVarying(float x, float y, float w, float h,
+                                        float radTL, float radTR, float radBR,
+                                        float radBL, float widthPx,
+                                        const Color& c) {
+    const Point p[5] = {{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}, {x, y}};
+    strokePolyline(p, 5, widthPx, c);
   }
 
   // Filled, implicitly-closed polygon through `count` points (count >= 3).

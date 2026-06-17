@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,14 @@ std::string fmt(const char* pattern, double v) {
   char buf[24];
   std::snprintf(buf, sizeof(buf), pattern, v);
   return buf;
+}
+
+// G1000 NXi never prefixes zero with + or - on RPM or battery-amp readouts.
+std::string fmtNoZeroSign(const char* pattern, double v, double quantum = 0.0) {
+  const double display =
+      quantum > 0.0 ? std::round(v / quantum) * quantum : std::round(v);
+  if (display == 0.0) return "0";
+  return fmt(pattern, quantum > 0.0 ? display : v);
 }
 
 void strokeArc(Renderer& r, float cx, float cy, float radius, float a0Deg,
@@ -150,8 +159,7 @@ void drawRpmDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
              colors::kWhite, FontFace::DejaVuSemiBold);
   const bool overspeed = valid && gauge.hasRedline && rpm >= gauge.redline;
   r.fillText(cx, cy + radius * 0.56f,
-             valid ? fmt("%.0f", std::round(rpm / 10.0) * 10.0)
-                   : std::string("____"),
+             valid ? fmtNoZeroSign("%.0f", rpm, 10.0) : std::string("____"),
              mfdFontPx(kRpmReadoutWt, displayH), TextAlign::Center,
              overspeed ? colors::kBandRed : colors::kWhite,
              FontFace::DejaVuSemiBold);
@@ -346,8 +354,13 @@ float drawElectricalRow(Renderer& r, const Rect& area, float y,
   r.fillText(xR, y, rightTag, labelSize, TextAlign::Center, colors::kLabelText);
 
   y += valueSize * 1.05f;
-  const std::string lv = valid ? fmt(pattern, leftVal) : std::string("__._");
-  const std::string rv = valid ? fmt(pattern, rightVal) : std::string("__._");
+  const bool signedFmt = std::strchr(pattern, '+') != nullptr;
+  auto formatVal = [&](float val) -> std::string {
+    if (!valid) return "__._";
+    return signedFmt ? fmtNoZeroSign(pattern, val) : fmt(pattern, val);
+  };
+  const std::string lv = formatVal(leftVal);
+  const std::string rv = formatVal(rightVal);
   r.fillText(xL, y, lv, valueSize, TextAlign::Center, colors::kWhite);
   r.fillText(cx, y, unit, labelSize, TextAlign::Center, colors::kLabelText);
   r.fillText(xR, y, rv, valueSize, TextAlign::Center, colors::kWhite);

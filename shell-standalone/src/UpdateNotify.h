@@ -7,4 +7,10 @@ namespace avionics {
 // is set in the environment.
 void startUpdateCheckOnLaunch();
 
+#if defined(_WIN32)
+// HWND values for the PFD/MFD GLFW windows so update dialogs appear above the
+// borderless full-screen displays (WS_EX_TOPMOST). Pass null for absent windows.
+void setUpdateDialogOwnerWindows(void* primaryHwnd, void* secondaryHwnd);
+#endif
+
 }  // namespace avionics

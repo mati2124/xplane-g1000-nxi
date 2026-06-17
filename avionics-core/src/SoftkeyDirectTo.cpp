@@ -4,20 +4,23 @@
 #include "avionics/render/BezelKeys.h"
 
 // Direct-To window (Direct-To bezel key, Pilot's Guide Fig. 5-45): opens over
-// the PFD pre-filled with the active flight-plan waypoint; the first ENT
-// confirms the waypoint and arms Activate?, the second engages the direct
-// course.
+// the PFD blank for ident entry; the first ENT confirms the waypoint and arms
+// Activate?, the second engages the direct course.
 namespace avionics {
 
-void SoftkeyController::directToOpen() {
+void SoftkeyController::openDirectToWindow(const std::string& initial) {
+  directToOpen(initial);
+}
+
+void SoftkeyController::directToOpen(const std::string& initial) {
   dtoOpen_ = true;
   dtoArmed_ = false;
   pageMenuOpen_ = false;
   // Close any open softkey pop-up so the Direct-To window does not overlap it.
   window_ = PfdWindow::None;
-  // The destination defaults to the active flight-plan waypoint (Pilot's Guide:
-  // the field defaults to the active waypoint, or blank with no flight plan).
-  dtoEntry_.open(navSource_, mapData_, activeWaypoint_);
+  // Open blank so the pilot enters a destination (trainer PFD Direct To.bmp).
+  // Callers that need a pre-filled ident (e.g. screenshot harness) pass one in.
+  dtoEntry_.open(navSource_, mapData_, initial);
 }
 
 bool SoftkeyController::directToBezelKey(BezelKey key) {

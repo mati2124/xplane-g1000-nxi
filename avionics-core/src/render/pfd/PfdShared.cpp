@@ -1,6 +1,7 @@
 #include "render/pfd/PfdInternal.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace avionics::pfd {
 
@@ -25,23 +26,22 @@ Layout computeLayout(float w, float h) {
   const auto X = [&](float px) { return px * L.sx; };
   const auto Y = [&](float px) { return px * L.sy; };
 
-  // Top NavComBox: the real unit is 56 px, trimmed slightly here so the two-row
-  // center panel reads less heavy. Bottom info panel 55 px at y=679.
-  L.topBarH = Y(50.0f);
+  // Top NavComBox and bottom chrome match the PFD Default trainer screenshot.
+  L.topBarH = Y(kTopBarHeightPx);
   L.infoPanelTop = Y(679.0f);
   L.infoPanelH = Y(55.0f);
-  L.bottomBarH = Y(kWtCanvasHeightPx - 733.0f);
+  L.bottomBarH = Y(kWtCanvasHeightPx - kSoftkeyBarTopPx);
 
-  // Airspeed indicator x=154 w=87 y=82 h=390; tape (scroll) area y=113 h=330.
+  // Airspeed indicator x=154 w=87 y=82 h=400; tape (scroll) area y=113 h=330.
   L.asiX = X(154.0f);
   L.asiW = X(87.0f);
   L.asiTop = Y(82.0f);
-  L.asiH = Y(390.0f);
-  // Altimeter x=700 w=108 y=82 h=392.
+  L.asiH = Y(kAsiInstrumentHeightPx);
+  // Altimeter x=700 w=108 y=82 h=400.
   L.altX = X(700.0f);
   L.altW = X(108.0f);
   L.altTop = Y(82.0f);
-  L.altH = Y(392.0f);
+  L.altH = Y(kAltInstrumentHeightPx);
   // VSI x=808 w=48 y=132 h=296.
   L.vsiX = X(808.0f);
   L.vsiW = X(48.0f);
@@ -49,9 +49,11 @@ Layout computeLayout(float w, float h) {
   L.vsiH = Y(296.0f);
 
   // Both tapes share a scroll strip from y=113 (top box) to y=443, centered on
-  // the aircraft reference / horizon pivot at y=278.
-  L.stripTop = Y(113.0f);
-  L.stripH = Y(330.0f);
+  // the aircraft reference / horizon pivot at y=278. The tape background extends
+  // through y=454 where the GS/TAS and BARO boxes begin (trainer pixels).
+  L.stripTop = Y(kTapeScrollTopPx);
+  L.stripH = Y(kTapeScrollHeightPx);
+  L.tapeBgH = Y(kTapeBackgroundHeightPx);
 
   // Attitude window: container x=253 w=414 y=73 h=315, pivot (460, 277).
   L.attTop = Y(73.0f);
@@ -98,13 +100,11 @@ Layout computeLayout(float w, float h) {
   L.casAnnunLeft = L.vsiX + L.vsiW + X(28.0f);  // gap to the right of the VSI
   L.casAnnunW = X(1018.0f) - L.casAnnunLeft;
 
-  // Inset map: far lower-left corner of the PFD (G1000 Pilot's Guide). It sits
-  // below the wind window (which occupies the upper-left of the HSI region) and
-  // left of the HSI rose, down to just above the info panel (top 679).
-  L.insetMapX = X(8.0f);
-  L.insetMapY = Y(504.0f);
-  L.insetMapW = X(272.0f);
-  L.insetMapH = Y(170.0f);
+  // Inset map: lower-left moving-map viewport (trainer PFD Inset Map.bmp).
+  L.insetMapX = X(kInsetMapLeftPx);
+  L.insetMapY = Y(kInsetMapTopPx);
+  L.insetMapW = X(kInsetMapWidthPx);
+  L.insetMapH = Y(kInsetMapHeightPx);
   return L;
 }
 
@@ -161,7 +161,8 @@ std::string formatTimer(int totalSeconds) {
   const int m = (totalSeconds % 3600) / 60;
   const int s = totalSeconds % 60;
   char buf[16];
-  std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
+  // WT Utils.SecondsToDisplayDuration: hours without a leading zero (0:00:00).
+  std::snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, s);
   return std::string(buf);
 }
 
@@ -294,6 +295,79 @@ std::vector<Point> roundPolygonCorners(const std::vector<Point>& poly,
   return out;
 }
 
+TapeReadoutShape buildTapeReadoutShape(float x, float y, float w, float h,
+                                       float drumW, NotchSide caretSide,
+                                       float caretHalfH, float caretDepth,
+                                       float leadHeightFraction, float cornerR,
+                                       float drumCornerR) {
+  TapeReadoutShape out;
+  const float midY = y + h * 0.5f;
+  const float leadH = h * leadHeightFraction;
+  out.drumRight = x + w;
+  out.drumW = drumW;
+  out.drumX = out.drumRight - drumW;
+  // Leading section is vertically centered; the drum column is full height.
+  // That yields the characteristic step at both the top and bottom inner edge.
+  out.leadTop = midY - leadH * 0.5f;
+  out.leadBot = midY + leadH * 0.5f;
+
+  if (caretSide == NotchSide::Right) {
+    out.silhouette = {{x, out.leadTop},
+                      {out.drumX, out.leadTop},
+                      {out.drumX, y},
+                      {out.drumRight, y},
+                      {out.drumRight, midY - caretHalfH},
+                      {out.drumRight + caretDepth, midY},
+                      {out.drumRight, midY + caretHalfH},
+                      {out.drumRight, y + h},
+                      {out.drumX, y + h},
+                      {out.drumX, out.leadBot},
+                      {x, out.leadBot}};
+    out.radii = {cornerR,     0.0f, drumCornerR, drumCornerR, 0.0f, 0.0f,
+                 0.0f,        drumCornerR, drumCornerR, 0.0f, cornerR};
+  } else {
+    out.silhouette = {{x, out.leadTop},
+                      {out.drumX, out.leadTop},
+                      {out.drumX, y},
+                      {out.drumRight, y},
+                      {out.drumRight, y + h},
+                      {out.drumX, y + h},
+                      {out.drumX, out.leadBot},
+                      {x, out.leadBot},
+                      {x, midY + caretHalfH},
+                      {x - caretDepth, midY},
+                      {x, midY - caretHalfH}};
+    out.radii = {cornerR,     0.0f, drumCornerR, drumCornerR,
+                 drumCornerR, drumCornerR, 0.0f, cornerR,
+                 0.0f,        0.0f, 0.0f};
+  }
+  return out;
+}
+
+void drawAltitudeTapeLabel(Renderer& r, float tapeX, float tapeW, float midY,
+                           const std::string& text, float size, float smallScale,
+                           const Color& color) {
+  const int smallCount = kAltTrailingDigits;
+  const int len = static_cast<int>(text.size());
+  const float zerosAnchorX =
+      tapeX + tapeW * kAltTapeLabelZerosAnchorFraction;
+  if (smallCount <= 0 || len <= smallCount) {
+    r.fillText(zerosAnchorX, midY, text, size, TextAlign::Right, color);
+    return;
+  }
+  const std::string head = text.substr(0, len - smallCount);
+  const std::string tail = text.substr(len - smallCount);
+  const float smallSize = size * smallScale;
+  const float headAnchorX = tapeX + tapeW * kAltTapeLabelHeadAnchorFraction;
+  const TextRect big =
+      r.measureTextRect(headAnchorX, midY, head, size, TextAlign::Right);
+  const TextRect small = r.measureTextRect(zerosAnchorX, midY, tail, smallSize,
+                                           TextAlign::Right);
+  const float tailMidY = midY + (big.bottom - small.bottom);
+  r.fillText(zerosAnchorX, tailMidY, tail, smallSize, TextAlign::Right, color);
+  r.fillText(headAnchorX, midY, head, size, TextAlign::Right, color);
+}
+
 void drawAltitudeNumber(Renderer& r, float anchorX, float midY,
                         const std::string& text, float size, int smallCount,
                         float smallScale, TextAlign align, const Color& color) {
@@ -323,27 +397,199 @@ void drawAltitudeNumber(Renderer& r, float anchorX, float midY,
   }
 }
 
+float inkMidYInBand(Renderer& r, float top, float bot, float anchorX,
+                    const std::string& text, float size, TextAlign align) {
+  const float bandMid = (top + bot) * 0.5f;
+  const TextRect first =
+      r.measureTextRect(anchorX, bandMid, text, size, align);
+  const float firstMid = (first.top + first.bottom) * 0.5f;
+  const float y = bandMid + (bandMid - firstMid);
+  const TextRect second = r.measureTextRect(anchorX, y, text, size, align);
+  const float secondMid = (second.top + second.bottom) * 0.5f;
+  return y + (bandMid - secondMid);
+}
+
+float inkMidYAtRow(Renderer& r, float rowY, float top, float bot, float anchorX,
+                   const std::string& text, float size, TextAlign align,
+                   FontFace face) {
+  const TextRect first =
+      r.measureTextRect(anchorX, rowY, text, size, align, face);
+  const float firstMid = (first.top + first.bottom) * 0.5f;
+  float y = rowY + (rowY - firstMid);
+  const TextRect second = r.measureTextRect(anchorX, y, text, size, align, face);
+  const float secondMid = (second.top + second.bottom) * 0.5f;
+  y = y + (rowY - secondMid);
+  TextRect ink = r.measureTextRect(anchorX, y, text, size, align, face);
+  if (ink.top < top) {
+    y += top - ink.top;
+  }
+  if (ink.bottom > bot) {
+    y -= ink.bottom - bot;
+  }
+  return y;
+}
+
+Color readoutDialMidShade(const Color& edge) {
+  // Alert fills (red) stay flat; the normal black box uses the NXi mid grey.
+  if (edge.r > 0.9f && edge.g < 0.1f && edge.b < 0.1f) {
+    return edge;
+  }
+  return colors::kReadoutBoxMid;
+}
+
+void drawReadoutDigitDialShading(Renderer& r, float x, float y, float w, float h,
+                                 const Color& edge) {
+  if (w <= 0.0f || h <= 0.0f) {
+    return;
+  }
+  const Color mid = readoutDialMidShade(edge);
+  const float halfH = h * 0.5f;
+  const float midY = y + halfH;
+  r.fillRectVerticalGradient(x, y, w, halfH, y, midY, edge, mid);
+  r.fillRectVerticalGradient(x, midY, w, halfH, midY, y + h, mid, edge);
+}
+
+void drawReadoutDrumScrollerMask(Renderer& r, float x, float y, float w, float h,
+                                 const Color& edge) {
+  if (w <= 0.0f || h <= 0.0f) {
+    return;
+  }
+  const Color clear{edge.r, edge.g, edge.b, 0.0f};
+  const float solidH = h * kReadoutDrumMaskSolidFraction;
+  const float fadeTopY = y + h * kReadoutDrumMaskFadeFraction;
+  const float fadeBotY = y + h * (1.0f - kReadoutDrumMaskFadeFraction);
+  const float solidBotY = y + h * (1.0f - kReadoutDrumMaskSolidFraction);
+  // Top cap + fade (NXi: black 5%, transparent by 20%).
+  r.fillRect(x, y, w, solidH, edge);
+  r.fillRectVerticalGradient(x, y + solidH, w, fadeTopY - (y + solidH), y + solidH,
+                             fadeTopY, edge, clear);
+  // Bottom fade + cap (NXi: transparent until 80%, black by 95%).
+  r.fillRectVerticalGradient(x, fadeBotY, w, solidBotY - fadeBotY, fadeBotY,
+                             solidBotY, clear, edge);
+  r.fillRect(x, solidBotY, w, y + h - solidBotY, edge);
+}
+
+void layoutReadoutDigitColumns(float left, float right, float top, float height,
+                               int columnCount, float gapPx,
+                               std::vector<ReadoutColumnRect>& out) {
+  out.clear();
+  if (columnCount <= 0 || right <= left || height <= 0.0f) {
+    return;
+  }
+  const float span = right - left;
+  const float gapTotal = gapPx * static_cast<float>(columnCount - 1);
+  const float colW = (span - gapTotal) / static_cast<float>(columnCount);
+  if (colW <= 0.0f) {
+    return;
+  }
+  out.reserve(static_cast<size_t>(columnCount));
+  for (int i = 0; i < columnCount; ++i) {
+    out.push_back({left + static_cast<float>(i) * (colW + gapPx), top, colW,
+                   height});
+  }
+}
+
+void layoutReadoutDigitColumnsPackedRight(float right, float top, float height,
+                                          int columnCount, float gapPx,
+                                          float colW,
+                                          std::vector<ReadoutColumnRect>& out) {
+  out.clear();
+  if (columnCount <= 0 || colW <= 0.0f || height <= 0.0f) {
+    return;
+  }
+  out.reserve(static_cast<size_t>(columnCount));
+  float x = right;
+  for (int i = columnCount - 1; i >= 0; --i) {
+    x -= colW;
+    out.push_back({x, top, colW, height});
+    if (i > 0) {
+      x -= gapPx;
+    }
+  }
+  std::reverse(out.begin(), out.end());
+}
+
+void layoutReadoutDigitColumnsBeforeDrum(float drumX, float drumGap, float top,
+                                         float height, int columnCount,
+                                         float pitch, float colW,
+                                         std::vector<ReadoutColumnRect>& out) {
+  out.clear();
+  if (columnCount <= 0 || colW <= 0.0f || height <= 0.0f) {
+    return;
+  }
+  const float lastLeft = drumX - drumGap - colW;
+  out.reserve(static_cast<size_t>(columnCount));
+  for (int i = 0; i < columnCount; ++i) {
+    out.push_back({lastLeft - static_cast<float>(columnCount - 1 - i) * pitch,
+                   top, colW, height});
+  }
+}
+
+float tapeReadoutLeadMidY(Renderer& r, float leadTop, float leadBot,
+                          float anchorX, const std::string& text, float size,
+                          float inkNudgeEm, float inkNudgePx, TextAlign align) {
+  return inkMidYInBand(r, leadTop, leadBot, anchorX, text, size, align) +
+         size * inkNudgeEm + inkNudgePx;
+}
+
+float tapeReadoutLeadAnchorX(float drumX, float drumAnchorX,
+                             float activeDrumDigitW, float gapPx) {
+  const float tightAbut = drumAnchorX - activeDrumDigitW;
+  return std::min(tightAbut, drumX - gapPx);
+}
+
+TapeReadoutDigitMidY tapeReadoutDigitMidY(
+    Renderer& r, float leadTop, float leadBot, float drumClipTop,
+    float drumClipH, float leadAnchorX, const std::string& headStr,
+    float headSize, float drumAnchorX, const std::string& drumStr,
+    float drumSize, bool showHead) {
+  TapeReadoutDigitMidY out;
+  out.drumMidY =
+      inkMidYInBand(r, drumClipTop, drumClipTop + drumClipH, drumAnchorX,
+                    drumStr, drumSize, TextAlign::Right);
+  if (!showHead) {
+    return out;
+  }
+
+  out.leadMidY = inkMidYAtRow(r, out.drumMidY, leadTop, leadBot, leadAnchorX,
+                              headStr, headSize, TextAlign::Right);
+  return out;
+}
+
 void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
                       float stripH, float cy, float displayH, float value,
                       float viewableUnits, float majorInterval,
                       float minorInterval, float minValue, bool tapeOnRight,
+                      float minorTickFraction, float majorTickFraction,
                       float topOuterCornerRadius, float tickInset,
-                      int labelSmallTrailing) {
+                      int labelSmallTrailing, float tapeBgH) {
+  if (tapeBgH < stripH) tapeBgH = stripH;
   const float pixelsPerUnit = stripH / viewableUnits;
-  const float minorLen = tapeW * kTapeMinorTickFraction;
-  const float majorLen = tapeW * kTapeMajorTickFraction;
+  const float minorLen = tapeW * minorTickFraction;
+  const float majorLen = tapeW * majorTickFraction;
   const float labelSize = fontPx(wt::kTapeLabel, displayH);
   const float labelPad = displayH * 0.006f;
   const long majorEveryN = std::lround(majorInterval / minorInterval);
+  const float tickStroke =
+      kTapeTickStrokePx * (displayH / kWtCanvasHeightPx);
+
+  const float borderX = tapeOnRight ? tapeX : tapeX + tapeW;
+
+  drawTapeBackground(r, tapeX, stripTop, tapeW, stripH, colors::kTapeEdge,
+                     tapeOnRight, topOuterCornerRadius);
+  if (tapeBgH > stripH) {
+    const float extTop = stripTop + stripH;
+    const float extH = tapeBgH - stripH;
+    r.fillRect(tapeX, extTop, tapeW, extH, colors::kTapeEdge);
+    r.strokeLine(borderX, extTop, borderX, stripTop + tapeBgH, 1.5f,
+                 colors::kTapeBottomBorder);
+  }
 
   r.save();
   r.clip(tapeX, stripTop, tapeW, stripH);
-  drawTapeBackground(r, tapeX, stripTop, tapeW, stripH, colors::kTapeEdge,
-                     tapeOnRight, topOuterCornerRadius);
 
   // Inner-edge border: a vertical gradient from #646464 (top) to #2c2c2c
   // (bottom), per the NXi tape window border-image.
-  const float borderX = tapeOnRight ? tapeX : tapeX + tapeW;
   const float midY = stripTop + stripH * 0.5f;
   r.strokeLine(borderX, stripTop, borderX, midY, 1.5f, colors::kTapeTopBorder);
   r.strokeLine(borderX, midY, borderX, stripTop + stripH, 1.5f,
@@ -367,17 +613,17 @@ void drawVerticalTape(Renderer& r, float tapeX, float tapeW, float stripTop,
     const float y = cy - (s - value) * pixelsPerUnit;
     const bool major = (i % majorEveryN) == 0;
     const float len = major ? majorLen : minorLen;
-    const float lineWidth = major ? 2.5f : 1.5f;
 
     if (tapeOnRight) {
-      r.strokeLine(tickEdge, y, tickEdge + len, y, lineWidth, colors::kWhite);
+      r.strokeLine(tickEdge, y, tickEdge + len, y, tickStroke, colors::kWhite);
       if (major) {
-        drawAltitudeNumber(r, tickEdge + majorLen + labelPad, y, formatInt(s),
-                           labelSize, labelSmallTrailing, kAltTapeTensScale,
-                           TextAlign::Left, colors::kWhite);
+        // Altitude tape labels sit on the right side of the tape (hundreds at
+        // ~133/179, "00" at ~175/179 of tape width), not beside the ticks.
+        drawAltitudeTapeLabel(r, tapeX, tapeW, y, formatInt(s), labelSize,
+                              kAltTapeTensScale, colors::kWhite);
       }
     } else {
-      r.strokeLine(tickEdge - len, y, tickEdge, y, lineWidth, colors::kWhite);
+      r.strokeLine(tickEdge - len, y, tickEdge, y, tickStroke, colors::kWhite);
       if (major) {
         drawAltitudeNumber(r, tickEdge - majorLen - labelPad, y, formatInt(s),
                            labelSize, labelSmallTrailing, kAltTapeTensScale,
@@ -414,7 +660,8 @@ float putText(Renderer& r, float x, float y, const std::string& s, float size,
 }
 
 void drawFailureX(Renderer& r, float x, float y, float w, float h,
-                  const std::string& label, float displayH, FailTicks ticks) {
+                  const std::string& label, float displayH, FailTicks ticks,
+                  float minorTickFraction, float majorTickFraction) {
   r.save();
   r.clip(x, y, w, h);
   // Failed instruments fill with dark maroon behind a red X and keep their
@@ -425,20 +672,21 @@ void drawFailureX(Renderer& r, float x, float y, float w, float h,
   // Retained moving-tape ticks (airspeed/altitude/VSI), drawn under the X so
   // the window still reads as a graduated tape (NXi Fig 9-2).
   if (ticks != FailTicks::None) {
-    const float minorLen = w * kTapeMinorTickFraction;
-    const float majorLen = w * kTapeMajorTickFraction;
+    const float minorLen = w * minorTickFraction;
+    const float majorLen = w * majorTickFraction;
     const bool leftEdge = ticks == FailTicks::LeftEdge;
     const float edge = leftEdge ? x : x + w;
+    const float tickStroke =
+        kTapeTickStrokePx * (displayH / kWtCanvasHeightPx);
     constexpr int kTickCount = 16;
     for (int i = 0; i <= kTickCount; ++i) {
       const float ty = y + h * (static_cast<float>(i) / kTickCount);
       const bool major = (i % 2) == 0;
       const float len = major ? majorLen : minorLen;
-      const float lw = major ? 2.5f : 1.5f;
       if (leftEdge) {
-        r.strokeLine(edge, ty, edge + len, ty, lw, colors::kWhite);
+        r.strokeLine(edge, ty, edge + len, ty, tickStroke, colors::kWhite);
       } else {
-        r.strokeLine(edge - len, ty, edge, ty, lw, colors::kWhite);
+        r.strokeLine(edge - len, ty, edge, ty, tickStroke, colors::kWhite);
       }
     }
   }

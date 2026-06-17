@@ -89,96 +89,128 @@ void drawVspeedBugs(Renderer& r, float tapeX, float tapeW, float stripTop,
 // (the last digit scrolls like a drum), matching the real G1000 NXi.
 void drawAirspeedReadout(Renderer& r, float x, float y, float w, float h,
                          float value, float textSize, const Color& boxColor,
-                         const Color& textColor) {
-  const float midY = y + h * 0.5f;
-  const float notchHalfH = h * 0.20f;
-  const float notchDepth = h * 0.15f;
-  const float rightX = x + w;
-
+                         const Color& textColor, float scale) {
   if (value < 0.0f) value = 0.0f;
   const long snapped = std::lround(value);
   const long onesCenter = ((snapped % 10) + 10) % 10;
   const float residual = value - static_cast<float>(snapped);
 
-  // Layout (NXi/Garmin), mirroring the altimeter: the leading digits sit in a
-  // snug box; the ones digit rides a rolling drum in a full-height window that
-  // stands TALLER than the leading box (protruding above and below) and carries
-  // the pointer caret on its right edge.
-  const float leadH = h * 0.66f;
-  const float leadTop = midY - leadH * 0.5f;
-  const float leadBot = midY + leadH * 0.5f;
+  const float drumW = kAsiReadoutDrumWidthPx * scale;
+  const TapeReadoutShape shape = buildTapeReadoutShape(
+      x, y, w, h, drumW, NotchSide::Right,
+      kAsiReadoutCaretHalfHeightPx * scale, kAsiReadoutCaretDepthPx * scale,
+      kAsiReadoutLeadHeightFraction, kReadoutCornerRadiusPx * scale,
+      kReadoutDrumCornerRadiusPx * scale);
 
-  // Three equal-width digit cells span the box (NXi: hundreds/tens in the snug
-  // leading box, ones on the full-height drum), so the digits fill the box from
-  // the tape's left edge rather than clustering against the drum.
-  const float cellW = w / 3.0f;
-  const float drumW = cellW;
-  const float drumRight = rightX;
-  const float drumX = drumRight - drumW;      // x + 2*cellW
-  const float drumCx = drumX + drumW * 0.5f;  // ones-digit cell center
-  const float hundredsCx = x + cellW * 0.5f;
-  const float tensCx = x + cellW * 1.5f;
-  const float rowSpacing = h * 0.92f;
+  const float drumPad = textSize * kReadoutDrumPadFraction;
+  const float drumAnchorX = shape.drumRight - drumPad;
+  const float drumClipTop = y + 2.0f;
+  const float drumClipH = h - 4.0f;
+  const float rowSpacing =
+      std::min(textSize * 1.08f, drumClipH * 0.45f);
 
-  // Stepped silhouette (clockwise from the leading box's top-left): a snug
-  // leading-digit box on the left and a taller full-height drum on the right
-  // that carries the right-pointing caret. The four outer corners and the drum
-  // corners are rounded; the step junctions and caret stay sharp (NXi).
-  const float cornerR = h * 0.06f;
-  const float drumCornerR = h * 0.04f;
-  const std::vector<Point> silhouette = {
-      {x, leadTop},                    // leading box top-left
-      {drumX, leadTop},                // step
-      {drumX, y},                      // drum top-left
-      {drumRight, y},                  // drum top-right
-      {drumRight, midY - notchHalfH},  // caret top
-      {rightX + notchDepth, midY},     // caret tip
-      {drumRight, midY + notchHalfH},  // caret bottom
-      {drumRight, y + h},              // drum bottom-right
-      {drumX, y + h},                  // drum bottom-left
-      {drumX, leadBot},                // step
-      {x, leadBot},                    // leading box bottom-left
-  };
-  const std::vector<float> radii = {cornerR, 0.0f, drumCornerR, drumCornerR,
-                                    0.0f,    0.0f, 0.0f,        drumCornerR,
-                                    drumCornerR, 0.0f, cornerR};
-  std::vector<Point> shape = roundPolygonCorners(silhouette, radii);
-  r.fillPolygon(shape.data(), static_cast<int>(shape.size()), boxColor);
-  shape.push_back(shape.front());
-  r.strokePolyline(shape.data(), static_cast<int>(shape.size()), 2.0f,
-                   colors::kWhite);
+  char centerOnes[2];
+  std::snprintf(centerOnes, sizeof(centerOnes), "%ld", onesCenter);
+  const float activeOnesW = r.measureTextWidth(centerOnes, textSize);
+  const float leadAnchorX = tapeReadoutLeadAnchorX(
+      shape.drumX, drumAnchorX, activeOnesW, kReadoutColumnGapPx * scale);
 
-  // fillText's NVG_ALIGN_MIDDLE centers on the font's ascender/descender
-  // midpoint; digits have no descender ink, so they ride high. Nudge the
-  // baseline down so the glyph ink sits centered in the window and lines up
-  // with the caret.
-  const float textMidY = midY + textSize * kCapInkCenterNudge;
+  std::vector<Point> poly =
+      roundPolygonCorners(shape.silhouette, shape.radii);
+  r.fillPolygon(poly.data(), static_cast<int>(poly.size()), boxColor);
 
-  // Leading digits, one per cell and centered in it, so the number spreads
-  // evenly across the box up to the drum. Leading zeros are suppressed.
-  const long hundreds = (snapped / 100) % 10;
-  const long tens = (snapped / 10) % 10;
-  if (snapped >= 100) {
-    r.fillText(hundredsCx, textMidY, formatInt(static_cast<float>(hundreds)),
-               textSize, TextAlign::Center, textColor);
+  const float digitLeft = x + kReadoutDigitAreaInsetPx * scale;
+  const float digitRight = shape.drumRight;
+  const float colGap = kReadoutDigitColumnGapPx * scale;
+  const float leadH = shape.leadBot - shape.leadTop;
+  std::vector<ReadoutColumnRect> digitCols;
+  layoutReadoutDigitColumns(digitLeft, digitRight, shape.leadTop, leadH,
+                            kAsiReadoutDigitColumnCount, colGap, digitCols);
+
+  for (int i = 0; i < 2 && i < static_cast<int>(digitCols.size()); ++i) {
+    const ReadoutColumnRect& col = digitCols[static_cast<size_t>(i)];
+    drawReadoutDigitDialShading(r, col.x, shape.leadTop, col.w, leadH, boxColor);
   }
-  if (snapped >= 10) {
-    r.fillText(tensCx, textMidY, formatInt(static_cast<float>(tens)), textSize,
-               TextAlign::Center, textColor);
+  // Ones digit column spans the full box height (NXi airspeed-ias-box-ones).
+  if (digitCols.size() >= 3) {
+    const ReadoutColumnRect& col = digitCols[static_cast<size_t>(2)];
+    drawReadoutDigitDialShading(r, col.x, y, col.w, h, boxColor);
+  }
+
+  poly.push_back(poly.front());
+  r.strokePolyline(poly.data(), static_cast<int>(poly.size()),
+                   kReadoutOutlineWidthPx * scale, colors::kWhite);
+
+  // Below the tape minimum (20 kt) the NXi readout shows three dashes instead
+  // of digits (Garmin DigitScroller NaN / off-scale behavior). All three sit
+  // on the lead-digit row — not the ones-drum band.
+  if (value < kAirspeedMinKnots) {
+    const float dashY = tapeReadoutLeadMidY(
+        r, shape.leadTop, shape.leadBot,
+        digitCols[1].x + digitCols[1].w * 0.5f, std::string("-"), textSize,
+        kAsiReadoutLeadInkNudge, -scale, TextAlign::Center);
+    for (int i = 0; i < kAsiReadoutOffScaleDashCount &&
+                    i < static_cast<int>(digitCols.size());
+         ++i) {
+      const ReadoutColumnRect& col = digitCols[static_cast<size_t>(i)];
+      const float cx = col.x + col.w * 0.5f;
+      r.fillText(cx, dashY, std::string("-"), textSize, TextAlign::Center,
+                 textColor);
+    }
+    const float maskPad = scale;
+    drawReadoutDrumScrollerMask(r, shape.drumX - maskPad, y,
+                                shape.drumW + 2.0f * maskPad, h, boxColor);
+    return;
+  }
+
+  const long leadValue = snapped / 10;
+  const bool showHead = leadValue > 0;
+  const long hundreds = snapped / 100;
+  const long tens = (snapped / 10) % 10;
+  const TapeReadoutDigitMidY midY = tapeReadoutDigitMidY(
+      r, shape.leadTop, shape.leadBot, drumClipTop, drumClipH, leadAnchorX,
+      std::string(), textSize, drumAnchorX, centerOnes, textSize, false);
+
+  auto drawLeadDigit = [&](int colIdx, char ch) {
+    if (ch == '\0' || colIdx >= static_cast<int>(digitCols.size())) {
+      return;
+    }
+    const ReadoutColumnRect& col = digitCols[static_cast<size_t>(colIdx)];
+    const std::string s(1, ch);
+    const float cx = col.x + col.w * 0.5f;
+    r.fillText(cx,
+               tapeReadoutLeadMidY(r, shape.leadTop, shape.leadBot, cx, s,
+                                   textSize, kAsiReadoutLeadInkNudge, -scale,
+                                   TextAlign::Center),
+               s, textSize, TextAlign::Center, textColor);
+  };
+
+  if (showHead) {
+    if (hundreds > 0) {
+      drawLeadDigit(0, static_cast<char>('0' + hundreds));
+    }
+    if (snapped >= 10 || hundreds > 0) {
+      drawLeadDigit(1, static_cast<char>('0' + tens));
+    } else if (snapped > 0) {
+      drawLeadDigit(1, static_cast<char>('0' + onesCenter));
+    }
   }
 
   r.save();
-  r.clip(drumX, y + 2.0f, drumW, h - 4.0f);
+  r.clip(shape.drumX, drumClipTop, shape.drumW, drumClipH);
   for (int j = -1; j <= 1; ++j) {
     const long disp = (((onesCenter + j) % 10) + 10) % 10;
-    const float ty =
-        textMidY - static_cast<float>(j) * rowSpacing + residual * rowSpacing;
+    const float ty = midY.drumMidY - static_cast<float>(j) * rowSpacing +
+                     residual * rowSpacing;
     char buf[2];
     std::snprintf(buf, sizeof(buf), "%ld", disp);
-    r.fillText(drumCx, ty, std::string(buf), textSize, TextAlign::Center,
+    r.fillText(drumAnchorX, ty, std::string(buf), textSize, TextAlign::Right,
                textColor);
   }
   r.restore();
+  const float maskPad = scale;
+  drawReadoutDrumScrollerMask(r, shape.drumX - maskPad, y,
+                              shape.drumW + 2.0f * maskPad, h, boxColor);
 }
 
 // Below 20 kt the airspeed scale bottoms out, so the enabled V-speed reference
@@ -222,7 +254,8 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   if (!d.airspeedValid) {
     // Airspeed tape sits left of the attitude; its ticks line the inner (right)
     // edge and are retained under the failure X (NXi Fig 9-2).
-    drawFailureX(r, L.asiX, L.asiTop, L.asiW, L.asiH, "", h, FailTicks::RightEdge);
+    drawFailureX(r, L.asiX, L.asiTop, L.asiW, L.asiH, "", h, FailTicks::RightEdge,
+                 kAsiTapeMinorTickFraction, kAsiTapeMajorTickFraction);
     return;
   }
 
@@ -235,8 +268,9 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   drawVerticalTape(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
                    d.airspeedKts, kAirspeedViewableKnots, kAirspeedMajorKnots,
                    kAirspeedMinorKnots, kAirspeedMinKnots, false,
+                   kAsiTapeMinorTickFraction, kAsiTapeMajorTickFraction,
                    kTapeCornerRadiusWt * L.s,
-                   L.asiW * kAirspeedBandWidthFraction);
+                   L.asiW * kAirspeedBandWidthFraction, 0, L.tapeBgH);
   drawAirspeedColorBands(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy,
                          d.airspeedKts);
   drawVspeedBugs(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
@@ -247,14 +281,13 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   drawTrendVector(r, L.asiX + L.asiW, L.stripTop, L.stripH, L.attCy, h,
                   L.stripH / kAirspeedViewableKnots, d.airspeedTrendKts);
 
-  const float readoutH = kAsiReadoutHeightWt * L.s;
-  // Use the same digit size as the altimeter readout so the two windows match.
+  const float readoutH = kAsiReadoutHeightPx * L.sy;
   const float readoutSize = fontPx(wt::kReadoutAlt, h);
-  // Size the window to its three digits (snug) and right-align it so the caret
-  // still sits at the tape's right edge -- the window is inset from the tape's
-  // left edge rather than spanning the full tape width (which spread the digits).
-  const float readoutW = r.measureTextWidth("0", readoutSize) * 3.75f;
-  const float readoutX = L.asiX + L.asiW - readoutW;
+  const float readoutW =
+      L.asiW -
+      (kAsiReadoutLeftInsetPx + kAsiReadoutBodyRightInsetPx) * L.sx;
+  const float readoutX = L.asiX + kAsiReadoutLeftInsetPx * L.sx;
+  const float readoutY = kAsiReadoutTopPx * L.sy;
 
   // The pointer is black until VNE, then red. If the trend vector crosses VNE
   // (but current speed has not), the digits turn amber as an early warning.
@@ -263,8 +296,8 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   const Color boxColor = overVne ? colors::kBandRed : colors::kReadoutBox;
   const Color textColor =
       (!overVne && trendOverVne) ? colors::kBandYellow : colors::kWhite;
-  drawAirspeedReadout(r, readoutX, L.attCy - readoutH * 0.5f, readoutW, readoutH,
-                      d.airspeedKts, readoutSize, boxColor, textColor);
+  drawAirspeedReadout(r, readoutX, readoutY, readoutW, readoutH,
+                      d.airspeedKts, readoutSize, boxColor, textColor, L.s);
 
   // Mach readout: shown just below the IAS pointer box when the Mach number
   // reaches 0.40, matching the G1000 NXi (suppressed in the normal piston
@@ -275,7 +308,7 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
     char mbuf[16];
     std::snprintf(mbuf, sizeof(mbuf), "M %.3f", mach);
     const float machSize = fontPx(wt::kInfoValue, h);
-    r.fillText(L.asiX + L.asiW * 0.5f, L.attCy + readoutH * 0.5f + machSize,
+    r.fillText(L.asiX + L.asiW * 0.5f, readoutY + readoutH + machSize,
                std::string(mbuf), machSize, TextAlign::Center, colors::kWhite);
   }
 
@@ -287,10 +320,8 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   const float labelSize = fontPx(wt::kInfoLabel, h);
   const float valueSize = fontPx(wt::kInfoValue, h);
   const float boxH = kTapeBottomBoxHeightWt * L.s;
-  // Top edge of the boxes touches (overlaps a couple px) the bottom of the
-  // tape's scroll strip, rather than floating at the instrument bottom.
-  const float boxY =
-      L.stripTop + L.stripH - kTapeBottomBoxTapeOverlapWt * L.s;
+  // Bottom edge flush with the airspeed instrument column (WT bottom: 0).
+  const float boxY = L.asiTop + L.asiH - boxH;
   const float gap = labelSize * 0.25f;
   const float padX = labelSize * 0.5f;
   const float boxGap = labelSize * 0.45f;

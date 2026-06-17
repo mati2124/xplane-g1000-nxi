@@ -4,6 +4,156 @@
 #include <cmath>
 
 namespace avionics::mapview {
+namespace {
+
+void clipPolygonAgainstEdge(const std::vector<Point>& in,
+                            std::vector<Point>& out, float edge,
+                            bool vertical, bool keepGreater) {
+  out.clear();
+  if (in.empty()) return;
+  const int n = static_cast<int>(in.size());
+  Point prev = in[n - 1];
+  bool prevInside =
+      vertical ? (keepGreater ? prev.x >= edge : prev.x <= edge)
+               : (keepGreater ? prev.y >= edge : prev.y <= edge);
+  for (int i = 0; i < n; ++i) {
+    const Point& curr = in[i];
+    const bool currInside =
+        vertical ? (keepGreater ? curr.x >= edge : curr.x <= edge)
+                 : (keepGreater ? curr.y >= edge : curr.y <= edge);
+    if (currInside) {
+      if (!prevInside) {
+        if (vertical) {
+          const float denom = curr.x - prev.x;
+          if (std::fabs(denom) > 1e-5f) {
+            const float t = (edge - prev.x) / denom;
+            out.push_back({edge, prev.y + t * (curr.y - prev.y)});
+          }
+        } else {
+          const float denom = curr.y - prev.y;
+          if (std::fabs(denom) > 1e-5f) {
+            const float t = (edge - prev.y) / denom;
+            out.push_back({prev.x + t * (curr.x - prev.x), edge});
+          }
+        }
+      }
+      out.push_back(curr);
+    } else if (prevInside) {
+      if (vertical) {
+        const float denom = curr.x - prev.x;
+        if (std::fabs(denom) > 1e-5f) {
+          const float t = (edge - prev.x) / denom;
+          out.push_back({edge, prev.y + t * (curr.y - prev.y)});
+        }
+      } else {
+        const float denom = curr.y - prev.y;
+        if (std::fabs(denom) > 1e-5f) {
+          const float t = (edge - prev.y) / denom;
+          out.push_back({prev.x + t * (curr.x - prev.x), edge});
+        }
+      }
+    }
+    prev = curr;
+    prevInside = currInside;
+  }
+}
+
+}  // namespace
+
+void clipPolygonToRect(const Point* pts, int count, const ClipBounds& clip,
+                       float margin, std::vector<Point>& out) {
+  out.clear();
+  if (count < 3) return;
+  static thread_local std::vector<Point> stage;
+  stage.assign(pts, pts + count);
+  const float x0 = clip.minX - margin;
+  const float x1 = clip.maxX + margin;
+  const float y0 = clip.minY - margin;
+  const float y1 = clip.maxY + margin;
+  clipPolygonAgainstEdge(stage, out, x0, true, true);
+  if (out.empty()) return;
+  clipPolygonAgainstEdge(out, stage, x1, true, false);
+  if (stage.empty()) {
+    out.clear();
+    return;
+  }
+  clipPolygonAgainstEdge(stage, out, y0, false, true);
+  if (out.empty()) return;
+  clipPolygonAgainstEdge(out, stage, y1, false, false);
+  out = stage;
+}
+
+void decimateClosedPolygon(const std::vector<Point>& in, std::size_t maxVerts,
+                           std::vector<Point>& out) {
+  out.clear();
+  if (in.empty()) return;
+  if (in.size() <= maxVerts) {
+    out = in;
+    return;
+  }
+  const std::size_t step = (in.size() + maxVerts - 1) / maxVerts;
+  out.reserve(maxVerts + 1);
+  for (std::size_t i = 0; i < in.size(); i += step) {
+    out.push_back(in[i]);
+  }
+}
+
+void simplifyColinearRing(const std::vector<Point>& in, float areaEps,
+                          std::vector<Point>& out) {
+  out.clear();
+  if (in.size() < 3) return;
+  out.push_back(in[0]);
+  for (std::size_t i = 1; i + 1 < in.size(); ++i) {
+    const Point& a = out.back();
+    const Point& b = in[i];
+    const Point& c = in[i + 1];
+    const float cross =
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if (std::fabs(cross) > areaEps) {
+      out.push_back(b);
+    }
+  }
+  if (in.size() > 2) {
+    out.push_back(in.back());
+  }
+}
+
+void strokeClippedPolyline(Renderer& r, const Point* pts, int count,
+                           float widthPx, const Color& c,
+                           const ClipBounds& clip, float margin) {
+  if (count < 2) return;
+  static thread_local std::vector<Point> segs;
+  segs.clear();
+  const float viewW = clip.maxX - clip.minX + 2.0f * margin;
+  const float viewH = clip.maxY - clip.minY + 2.0f * margin;
+  const float diag = std::hypot(viewW, viewH);
+  for (int i = 0; i + 1 < count; ++i) {
+    const Point& a = pts[i];
+    const Point& b = pts[i + 1];
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.001f) continue;
+    if (len > diag * 2.0f) continue;
+    const float ux = dx / len;
+    const float uy = dy / len;
+    float lo = 0.0f, hi = len;
+    if (!segmentVisibleSpan(a.x, a.y, ux, uy, len, clip.minX, clip.minY,
+                            clip.maxX, clip.maxY, margin, lo, hi)) {
+      continue;
+    }
+    const float visLen = hi - lo;
+    const float spanX = std::fabs(ux * visLen);
+    const float spanY = std::fabs(uy * visLen);
+    if (spanY < widthPx * 2.5f && spanX > viewW * 0.82f) continue;
+    segs.push_back({a.x + ux * lo, a.y + uy * lo});
+    segs.push_back({a.x + ux * hi, a.y + uy * hi});
+  }
+  if (!segs.empty()) {
+    r.strokeSegments(segs.data(), static_cast<int>(segs.size() / 2), widthPx,
+                     c);
+  }
+}
 
 void strokeDashedPolyline(Renderer& r, const Point* pts, int count,
                           float widthPx, const Color& c,

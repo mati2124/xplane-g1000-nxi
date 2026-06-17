@@ -353,8 +353,8 @@ constexpr float kMetersToFeet = 3.28084f;
 constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 constexpr double kNmPerDegLat = 60.0;
 
-constexpr std::size_t kMaxMapLandLines = 2500;
-constexpr std::size_t kMaxMapCities = 200;
+constexpr std::size_t kMaxMapLandLines = 8000;
+constexpr std::size_t kMaxMapCities = 600;
 
 // Map the active GPS CDI sensitivity (NM per dot; the G1000 uses a 2-dot full
 // scale) to the flight-phase annunciation shown in the HSI. Full-scale NM is
@@ -939,7 +939,7 @@ void XPlaneConnection::updateZuluClock(double dtSeconds) {
 }
 
 void XPlaneConnection::updateMap(double dtSeconds) {
-  map_.rangeNm = kMapRangeNm;
+  map_.rangeNm = chartRangeNm_;
   map_.terrain = terrain_;
   map_.positionValid = haveLat_ && haveLon_;
   if (!map_.positionValid) return;
@@ -1010,8 +1010,8 @@ void XPlaneConnection::updateMap(double dtSeconds) {
     }
     if (landData_.loaded()) {
       map_.landLines = landData_.nearbyLines(queryLat, queryLon,
-                                             kLandQueryRangeNm, kMaxMapLandLines);
-      map_.cities = landData_.nearbyCities(queryLat, queryLon, kLandQueryRangeNm,
+                                             chartRangeNm_, kMaxMapLandLines);
+      map_.cities = landData_.nearbyCities(queryLat, queryLon, chartRangeNm_,
                                            kMaxMapCities);
     }
     if (obstacles_ != nullptr && obstacles_->loaded()) {
@@ -1239,6 +1239,13 @@ void XPlaneConnection::setMapPanCenter(bool active, double lat, double lon) {
   mapPanActive_ = active;
   mapPanLat_ = lat;
   mapPanLon_ = lon;
+}
+
+void XPlaneConnection::setChartRangeNm(float rangeNm) {
+  if (chartRangeNm_ != rangeNm) {
+    chartRangeNm_ = rangeNm;
+    mapPanDirty_ = true;
+  }
 }
 
 void XPlaneConnection::tuneRadioStandby(RadioUnit unit, float standbyMhz) {

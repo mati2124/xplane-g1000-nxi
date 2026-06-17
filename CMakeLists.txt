@@ -64,6 +64,9 @@ file(GLOB AVIONICS_CHECKLIST_FILES CONFIGURE_DEPENDS
 # Generated map overlay (large, often gitignored); optional so the build/package
 # never fails when it has not been generated/committed.
 set(AVIONICS_LAND_FILE ${CMAKE_SOURCE_DIR}/shell-standalone/assets/land_data.bin)
+# FAA Daily Digital Obstacle File CSV (~90 MB, fetched by tools/fetch_obstacles.py;
+# optional so the build/package never fails when it has not been downloaded).
+set(AVIONICS_OBSTACLES_FILE ${CMAKE_SOURCE_DIR}/shell-standalone/assets/obstacles.csv)
 
 # X-Plane plugin platform subfolder (<plugin>/<platform>/<plugin>.xpl).
 if(APPLE)

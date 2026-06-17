@@ -22,7 +22,7 @@ Color withAlpha(Color c, float a) {
 constexpr float kLogoWordmarkSize = 0.14f;
 constexpr float kLogoTriangleHeight = 0.055f;
 
-constexpr float kBottomBarFrac = 35.0f / 768.0f;
+constexpr float kBottomBarFrac = 34.0f / 768.0f;
 
 constexpr const char* kAirframeType = "Cessna 172S";
 constexpr const char* kSystemVersion = "2026.1";

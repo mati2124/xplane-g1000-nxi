@@ -45,6 +45,7 @@
 
 #include "CommandBridge.h"
 #include "DatarefDataSource.h"
+#include "ObstacleStore.h"
 #include "PluginNavMapData.h"
 #include "FlightPlanBridge.h"
 #include "UpdateNotify.h"
@@ -75,6 +76,11 @@ void Log(const char* msg) { XPLMDebugString(msg); }
 // shell's live-source naming).
 constexpr const char* kSourceLabel = "X-PLANE";
 
+#ifndef AVIONICS_OBSTACLES
+#define AVIONICS_OBSTACLES ""
+#endif
+constexpr const char* kObstaclesAssetPath = AVIONICS_OBSTACLES;
+
 // Fallback device-screen size if X-Plane reports an empty viewport (it always
 // sets one to the device's native resolution; this just avoids a zero divide).
 constexpr int kFallbackScreenW = 1024;
@@ -83,6 +89,7 @@ constexpr int kFallbackScreenH = 768;
 // The data source is shared by both device engines; the PFD engine pumps it,
 // the MFD engine reads the same snapshot without double-stepping it.
 std::unique_ptr<avionics::DatarefDataSource> g_dataSource;
+std::unique_ptr<avionics::ObstacleStore> g_obstacleStore;
 std::unique_ptr<avionics::PluginNavMapData> g_navMapData;
 std::unique_ptr<avionics::EisStore> g_eisStore;
 std::unique_ptr<avionics::ChecklistStore> g_checklistStore;
@@ -1495,8 +1502,11 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
 
   g_eisStore = std::make_unique<avionics::EisStore>();
   g_checklistStore = std::make_unique<avionics::ChecklistStore>();
+  g_obstacleStore = std::make_unique<avionics::ObstacleStore>(
+      avionics::assets::resolve("obstacles.csv", kObstaclesAssetPath));
   g_dataSource = std::make_unique<avionics::DatarefDataSource>(g_eisStore.get());
   g_dataSource->setChecklistSource(g_checklistStore.get());
+  g_dataSource->setObstacleStore(g_obstacleStore.get());
   g_navMapData = std::make_unique<avionics::PluginNavMapData>(g_dataSource.get());
 
   g_flightPlanBridge = std::make_unique<avionics::FlightPlanBridge>(
@@ -1565,6 +1575,7 @@ PLUGIN_API void XPluginStop(void) {
   g_commandBridge.reset();
   g_flightPlanBridge.reset();
   g_dataSource.reset();
+  g_obstacleStore.reset();
   g_navMapData.reset();
   g_eisStore.reset();
   g_checklistStore.reset();

@@ -73,6 +73,23 @@ const MapFeature* MfdController::mapPointerFeature() const {
   return best;
 }
 
+const MapObstacle* MfdController::mapPointerObstacle() const {
+  if (!mapPointerActive_ || mapData_ == nullptr) return nullptr;
+  const double snapNm =
+      std::max(kMapPointerSnapMinNm, rangeNm() * kMapPointerSnapFrac);
+  const MapObstacle* best = nullptr;
+  double bestNm = snapNm;
+  for (const MapObstacle& ob : mapData_->obstacles) {
+    const double dNm =
+        navDistanceNm(mapPointerLat_, mapPointerLon_, ob.lat, ob.lon);
+    if (dNm < bestNm) {
+      bestNm = dNm;
+      best = &ob;
+    }
+  }
+  return best;
+}
+
 bool MfdController::mapBezelKey(BezelKey key) {
   if (page() != MfdPage::NavigationMap) return false;
 

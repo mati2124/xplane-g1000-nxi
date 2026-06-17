@@ -30,18 +30,15 @@ void drawPageMenuWindow(Renderer& r, float w, float h, const Layout& L,
   const float rawAnim = ui.pageMenuAnim();
   if (rawAnim <= 0.0f) return;
 
-  const FontScope fs(r, FontFace::DejaVuSemiBold);
-  // Same taller 310-wide popout as the Direct-To window; the Options group box
-  // fills the body, matching the populated menu in Pilot's Guide Fig. 1-10.
   float panelW = 0.0f;
   float panelH = 0.0f;
-  tallPopoutPanelSize(w, h, panelW, panelH);
+  popoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, rawAnim, "Page Menu", panelW, panelH);
   if (f.a <= 0.0f) return;
   const float a = f.a;
 
-  const float rowSize = fontPx(wt::kInfoValue, h);
+  const float rowSize = fontPx(18.0f, h);
   const float rowH = h * (kWtPageMenuRowHeightPx / kWtCanvasHeightPx);
   const float pad = f.w * 0.04f;
   const float groupX = f.x + pad;
@@ -76,12 +73,12 @@ void drawPageMenuWindow(Renderer& r, float w, float h, const Layout& L,
       if (ui.blinkOn()) {
         r.fillRect(textX - pad * 0.25f, cy - rowSize * 0.62f,
                    groupW - pad * 0.5f, rowSize * 1.24f,
-                   withAlpha(colors::kCyan, a));
+                   withAlpha(colors::kPopoutCyan, a));
         r.fillText(textX, cy, text, rowSize, TextAlign::Left,
                    withAlpha(colors::kBlack, a));
       } else {
         r.fillText(textX, cy, text, rowSize, TextAlign::Left,
-                   withAlpha(colors::kCyan, a));
+                   withAlpha(colors::kPopoutCyan, a));
       }
     } else {
       r.fillText(textX, cy, text, rowSize, TextAlign::Left,
@@ -99,7 +96,7 @@ void drawPageMenuWindow(Renderer& r, float w, float h, const Layout& L,
     const float thumbH = barH * (static_cast<float>(visible) / n);
     const float thumbY =
         barTop + (barH - thumbH) * (static_cast<float>(scroll) / (n - visible));
-    r.fillRect(barX - 1.0f, thumbY, 2.0f, thumbH, withAlpha(colors::kCyan, a));
+    r.fillRect(barX - 1.0f, thumbY, 2.0f, thumbH, withAlpha(colors::kPopoutCyan, a));
   }
 }
 

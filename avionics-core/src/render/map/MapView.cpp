@@ -47,7 +47,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
 
   const float cx = config.x + config.w * 0.5f;
   const float cy = config.y + config.h * 0.5f;
-  const float mapRadiusPx = 0.45f * std::min(config.w, config.h);
+  const float mapRadiusPx = mapview::mapRangeSpanPx(config);
   // A per-view range override lets the MFD MAP page zoom independently of the
   // PFD inset while reading the same MapData.
   const float rangeNm =
@@ -71,9 +71,15 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
 
-  // Terrain background (topo or relative), drawn first so everything else
-  // overlays it. Falls back to the plain background when no terrain source is
-  // available or the raster has not finished its first build yet.
+  // NXi navy ocean base whenever land styling is active. Terrain and land fills
+  // paint on top; this guarantees water shows at close range when terrain is
+  // off, still building, or does not cover the full viewport.
+  if (config.style.showLand && map.positionValid &&
+      (config.style.showChrome || config.style.showLand)) {
+    r.fillRect(config.x, config.y, config.w, config.h, mapview::kMapOceanFill);
+  }
+
+  // Terrain background (topo or relative), drawn over the ocean base.
   bool terrainDrawn = false;
   if (config.style.terrain != TerrainDisplay::Off && map.terrain != nullptr &&
       map.positionValid) {
@@ -86,12 +92,12 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
         viewCenterLat, viewCenterLon, cx, cy, pixelsPerNm, rotation, rangeNm);
   }
 
-  // Plain background fill when no terrain raster is shown. Drawn here -- before
-  // the weather overlay -- so it sits behind the NEXRAD returns rather than
-  // dimming them.
-  if (config.style.showChrome && !terrainDrawn) {
-    r.fillRect(config.x, config.y, config.w, config.h,
-               Color{0.0f, 0.0f, 0.0f, 0.82f});
+  // Dim fallback when land styling is off and no terrain raster is shown.
+  if (!terrainDrawn && !config.style.showLand) {
+    if (config.style.showChrome) {
+      r.fillRect(config.x, config.y, config.w, config.h,
+                 Color{0.0f, 0.0f, 0.0f, 0.82f});
+    }
   }
 
   if (config.style.showChrome) {
@@ -116,6 +122,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
 
   const float symSize =
       std::max(5.0f, mapview::fontPx(mapview::kFeatureSymbolWt, displayH));
+  const float obstacleSize =
+      std::max(11.0f, mapview::fontPx(mapview::kObstacleSymbolWt, displayH));
 
   mapview::Proj proj;
   proj.centerLat = viewCenterLat;
@@ -136,9 +144,9 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // consistently either way.
   if (config.style.showLand &&
       (!map.landLines.empty() || !map.cities.empty())) {
-    mapview::drawLandData(r, map, proj, rangeNm);
+    mapview::drawLandData(r, map, proj, rangeNm, false);
     if (config.style.showLabels) {
-      mapview::drawCities(r, map, proj, rangeNm, symSize, labelSize);
+      mapview::drawCityDots(r, map, proj, rangeNm, symSize);
     }
   }
 
@@ -149,30 +157,35 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // real G1000 NXi, rather than being painted over by them.
   const WeatherRadarSource* overlayWx =
       map.nexrad != nullptr ? map.nexrad : map.weather;
-  if (config.style.showWeather && overlayWx != nullptr && overlayWx->active()) {
+  if (config.style.showWeather && rangeNm <= config.style.nexradRangeNm &&
+      overlayWx != nullptr && overlayWx->active()) {
     // The overlay is anchored to the aircraft: datalink NEXRAD is geo-referenced
     // and centered on ownship, and the onboard radar sweep emanates from it.
     // Draw it at ownship's *screen* location (not the view center) so it stays
     // fixed to the ground/aircraft when the map is panned away from ownship.
-    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-    const double rot = static_cast<double>(rotation) * kDegToRad;
+    const double rot = static_cast<double>(rotation) * map::kDegToRad;
     const double cosR = std::cos(rot);
     const double sinR = std::sin(rot);
-    const double northNm = (map.ownshipLat - viewCenterLat) * map::kNmPerDegLat;
-    const double eastNm =
-        (map.ownshipLon - viewCenterLon) * map::nmPerDegLon(viewCenterLat);
-    const double mapEast = eastNm * cosR - northNm * sinR;
-    const double mapNorth = eastNm * sinR + northNm * cosR;
-    const float wx =
-        cx + static_cast<float>(mapEast * static_cast<double>(pixelsPerNm));
-    const float wy =
-        cy - static_cast<float>(mapNorth * static_cast<double>(pixelsPerNm));
+    const float mercatorPxPerRad =
+        pixelsPerNm * static_cast<float>(map::kNmPerEarthRad);
+    double eastRad = 0.0;
+    double northRad = 0.0;
+    map::mercatorOffsetRad(map.ownshipLat, map.ownshipLon, viewCenterLat,
+                           viewCenterLon, eastRad, northRad);
+    float wx = 0.0f;
+    float wy = 0.0f;
+    map::mercatorToScreen(eastRad, northRad, cx, cy, mercatorPxPerRad, cosR,
+                          sinR, wx, wy);
     map::drawWeatherRaster(r, *overlayWx, wx, wy, pixelsPerNm, rotation);
   }
 
   if (config.style.showRangeRings) {
-    mapview::drawRangeRing(r, cx, cy, mapRadiusPx, colors::kLabelText);
-    mapview::drawRangeRing(r, cx, cy, mapRadiusPx * 0.5f, colors::kLabelText);
+    if (config.orientation == MapOrientation::NorthUp) {
+      mapview::drawRangeRing(r, cx, cy, mapRadiusPx, colors::kLabelText);
+    } else {
+      mapview::drawRangeCompass(r, config, flight, cx, cy, mapRadiusPx,
+                                rotation, labelSize, colors::kLabelText);
+    }
   }
 
   // Airspace boundaries draw beneath the route and features.
@@ -187,16 +200,16 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   }
 
   if (config.style.showFlightPlan && map.flightPlan.size() >= 2) {
-    mapview::drawFlightPlan(r, map, proj, config, flight, symSize, labelSize);
+    mapview::drawFlightPlan(r, map, proj, config, flight, symSize);
   }
 
   if (config.procedurePreview != nullptr &&
       config.procedurePreview->size() >= 2) {
-    mapview::drawProcedurePreview(r, proj, config, symSize, labelSize);
+    mapview::drawProcedurePreview(r, proj, config, symSize);
   }
 
   if (config.style.showFlightPlan && map.directToActive && map.positionValid) {
-    mapview::drawDirectToCourse(r, map, proj, config, symSize, labelSize);
+    mapview::drawDirectToCourse(r, map, proj, config, symSize);
   }
 
   // Taxiway/apron pavement at very close range, under the runway quads.
@@ -218,15 +231,37 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   }
 
   if (config.style.showFeatures) {
-    mapview::drawNavFeatures(r, map, proj, config, rangeNm, symSize, labelSize);
+    mapview::drawNavFeatures(r, map, proj, config, rangeNm, symSize);
   }
 
-  // Obstacles draw with the nav features (same declutter switch).
-  if (config.style.showObstacles && config.style.showFeatures &&
-      !map.obstacles.empty()) {
+  // Obstacles (FAA DOF): independent of nav-feature declutter (Table 5-4).
+  if (config.style.showObstacles && !map.obstacles.empty()) {
     mapview::drawObstacles(r, map, proj, rangeNm,
+                           config.style.obstacleRangeNm,
                            flight.altitudeValid ? flight.altitudeFt : 0.0f,
-                           flight.altitudeValid, symSize);
+                           flight.altitudeValid, obstacleSize);
+  }
+
+  // Place and nav idents draw above symbology (white labels centered on top).
+  if (config.style.showLabels) {
+    if (config.style.showLand && !map.cities.empty()) {
+      mapview::drawMapPlaceLabels(r, map, proj, rangeNm, labelSize);
+    }
+    if (config.style.showFeatures) {
+      mapview::drawNavFeatureLabels(r, map, proj, config, rangeNm, symSize,
+                                    labelSize);
+    }
+    if (config.style.showFlightPlan && map.flightPlan.size() >= 2) {
+      mapview::drawFlightPlanLabels(r, map, proj, config, flight, symSize,
+                                    labelSize);
+    }
+    if (config.procedurePreview != nullptr &&
+        config.procedurePreview->size() >= 2) {
+      mapview::drawProcedurePreviewLabels(r, proj, config, symSize, labelSize);
+    }
+    if (config.style.showFlightPlan && map.directToActive && map.positionValid) {
+      mapview::drawDirectToCourseLabel(r, map, proj, config, symSize, labelSize);
+    }
   }
 
   // Ownship sits at the view center unless the center is overridden (the WPT/
@@ -244,8 +279,11 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   }
 
   // Traffic overlays everything except ownship and the chrome.
-  if (config.style.showTraffic && !map.traffic.empty()) {
-    mapview::drawTraffic(r, map, proj, symSize, labelSize);
+  if (config.style.showTraffic && rangeNm <= config.style.trafficSymbolsRangeNm &&
+      !map.traffic.empty()) {
+    const bool showLabels = config.style.showTrafficLabels &&
+                            rangeNm <= config.style.trafficLabelsRangeNm;
+    mapview::drawTraffic(r, map, proj, symSize, labelSize, showLabels);
   }
 
   const float ownSize =

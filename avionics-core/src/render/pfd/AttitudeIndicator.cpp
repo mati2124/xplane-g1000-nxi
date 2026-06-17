@@ -64,10 +64,9 @@ void drawUnusualAttitudeChevrons(Renderer& r, float attVisW, float attRegionH,
   }
 }
 
-// Roll scale: ticks plus the inverted zero-reference triangle. Per the G1000
-// NXi (WT AttitudeIndicator: the scale lives in the rotating bank container),
-// the whole scale rotates WITH the horizon so the zero-reference triangle stays
-// earth-referenced, while the roll pointer below it is fixed to the airframe.
+// Roll scale: ticks plus the inverted zero-reference triangle. The scale
+// rotates WITH the horizon so the zero-reference triangle stays earth-referenced,
+// while the roll pointer below it is fixed to the airframe (Garmin trainer).
 void drawRollScale(Renderer& r, float cx, float cy, float radius, float s,
                    float rollDeg) {
   // The real G1000 roll-scale ticks sit directly on the sky (no dark band).
@@ -102,12 +101,11 @@ void drawRollScale(Renderer& r, float cx, float cy, float radius, float s,
     r.restore();
   }
 
-  // Zero-bank reference triangle (WT NXi attitude SVG: 20x20 units, apex on the
-  // bank arc, base 20 units outboard, pointing inward/down). It rotates with the
-  // scale so it meets the fixed roll pointer below to form the hourglass.
-  const float u = radius / 193.0f;  // one WT attitude-SVG unit in display px
-  const float halfW = 10.0f * u;
-  const float triH = 20.0f * u;
+  // Zero-bank reference triangle (trainer: 16 px tall, 18 px wide at the base,
+  // apex on the bank arc). Rotates with the scale to meet the fixed pointer.
+  const float sy = radius / 193.0f;
+  const float halfW = kTrainerRollZeroTriHalfWidthPx * sy;
+  const float triH = kTrainerRollZeroTriHeightPx * sy;
   const Point zero[3] = {
       {-halfW, -radius - triH}, {halfW, -radius - triH}, {0.0f, -radius}};
   r.fillPolygon(zero, 3, colors::kWhite);
@@ -115,30 +113,24 @@ void drawRollScale(Renderer& r, float cx, float cy, float radius, float s,
 }
 
 // Roll pointer and slip/skid indicator, fixed at top center: the pointer stays
-// aircraft-referenced (the rotating scale's zero triangle indicates the bank
-// against it), and the slip/skid bar beneath it displaces laterally only
-// (G1000 Pilot's Guide, Attitude Indicator; WT NXi turn-coordinator element).
+// aircraft-referenced and the slip/skid bar beneath it displaces laterally only
+// (Garmin trainer PFD Default.bmp).
 void drawRollPointer(Renderer& r, float cx, float cy, float radius, float s,
                      float slipDeg) {
   r.save();
   r.translate(cx, cy);
 
-  const float u = radius / 193.0f;  // one WT attitude-SVG unit in display px
-  const float halfW = 10.0f * u;
-  const float triH = 20.0f * u;
-  // Up-pointing roll pointer (WT NXi: 20x20 units, apex 1 unit inside the arc so
-  // it meets the rotating zero-reference triangle, forming the hourglass).
-  const float apexY = -radius + 1.0f * u;
-  const Point ptr[3] = {
-      {0.0f, apexY}, {-halfW, apexY + triH}, {halfW, apexY + triH}};
+  const float sy = radius / 193.0f;
+  const float halfW = kTrainerRollPointerHalfWidthPx * sy;
+  const float apexY = -radius + kTrainerRollPointerApexInsetPx * sy;
+  const float baseY = apexY + kTrainerRollPointerHeightPx * sy;
+  const Point ptr[3] = {{0.0f, apexY}, {-halfW, baseY}, {halfW, baseY}};
   r.fillPolygon(ptr, 3, colors::kWhite);
 
-  // Slip/skid bar (WT NXi turn-coordinator: a trapezoid 24 units wide at the top
-  // and 30 at the bottom, 6 units tall, sitting 5 units below the pointer base).
-  const float trapTopY = -radius + 26.0f * u;
-  const float trapBotY = -radius + 32.0f * u;
-  const float trapTopHalf = 12.0f * u;
-  const float trapBotHalf = 15.0f * u;
+  const float trapTopY = baseY + kTrainerRollSlipGapPx * sy;
+  const float trapBotY = trapTopY + kTrainerRollSlipHeightPx * sy;
+  const float trapTopHalf = kTrainerRollSlipTopHalfPx * sy;
+  const float trapBotHalf = kTrainerRollSlipBotHalfPx * sy;
   // X-Plane's slip_deg is positive when the inclinometer ball is to the left, so
   // negate to make the G1000 skid/slip bar displace toward the ball (the side
   // the pilot must "step on" to coordinate).
@@ -262,8 +254,8 @@ void drawAttitude(Renderer& r, const Layout& L, const FlightData& d, float w,
   // Sky/ground fill the entire PFD background (NXi #HorizonContainer); the HSI
   // compass rose is overlaid on top with a translucent dark backing, so the
   // brown ground still shows through dimmed at the bottom (blue-over-brown
-  // without SVT). The sky is a near-flat deep blue that blends slightly toward
-  // the horizon; the ground is flat dark brown.
+  // without SVT). The sky is mostly flat #004cff with a vertical blend to
+  // #4a65e6 in the lower ~55% above the horizon; the ground is flat #54350a.
   r.save();
   r.clip(0.0f, 0.0f, w, h);
   r.translate(L.attCx, L.attCy);

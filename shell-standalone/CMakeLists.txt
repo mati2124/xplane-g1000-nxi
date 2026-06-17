@@ -93,6 +93,8 @@ target_compile_definitions(avionics-standalone PRIVATE
 # gracefully when the file is absent).
 target_compile_definitions(avionics-standalone PRIVATE
   AVIONICS_LAND_DATA="${CMAKE_CURRENT_SOURCE_DIR}/assets/land_data.bin")
+target_compile_definitions(avionics-standalone PRIVATE
+  AVIONICS_OBSTACLES="${CMAKE_CURRENT_SOURCE_DIR}/assets/obstacles.csv")
 
 if(APPLE)
   target_compile_definitions(avionics-standalone PRIVATE GL_SILENCE_DEPRECATION)
@@ -123,3 +125,4 @@ install(TARGETS avionics-standalone
   BUNDLE DESTINATION . COMPONENT standalone)
 avionics_install_shared_assets("assets" standalone)
 install(FILES ${AVIONICS_LAND_FILE} DESTINATION assets COMPONENT standalone OPTIONAL)
+install(FILES ${AVIONICS_OBSTACLES_FILE} DESTINATION assets COMPONENT standalone OPTIONAL)

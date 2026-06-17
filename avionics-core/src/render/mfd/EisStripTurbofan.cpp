@@ -50,6 +50,11 @@ std::string fmt(const char* pattern, double v) {
   return buf;
 }
 
+std::string fmtNoZeroSign(const char* pattern, double v) {
+  if (std::round(v) == 0.0) return "0";
+  return fmt(pattern, v);
+}
+
 void strokeArc(Renderer& r, float cx, float cy, float radius, float a0Deg,
                float a1Deg, float widthPx, const Color& c) {
   constexpr int kSegments = 28;
@@ -425,10 +430,10 @@ void drawElecBlock(Renderer& r, const FlightData& d, const Rect& a, bool valid,
   const float rowY = barTop + barH + smallSize * 0.95f;
   auto col = [&](float cxCol, float vL, float vR, const char* tag) {
     r.fillText(cxCol - dx, rowY,
-               valid ? fmt("%.0f", std::round(vL)) : std::string("--"),
+               valid ? fmtNoZeroSign("%.0f", vL) : std::string("--"),
                smallSize, TextAlign::Center, colors::kWhite);
     r.fillText(cxCol + dx, rowY,
-               valid ? fmt("%.0f", std::round(vR)) : std::string("--"),
+               valid ? fmtNoZeroSign("%.0f", vR) : std::string("--"),
                smallSize, TextAlign::Center, colors::kWhite);
     r.fillText(cxCol, rowY + smallSize * 1.2f, tag, smallSize,
                TextAlign::Center, colors::kLabelText);

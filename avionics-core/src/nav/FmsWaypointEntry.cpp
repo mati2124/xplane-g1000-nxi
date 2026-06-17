@@ -36,7 +36,11 @@ void FmsWaypointEntry::open(const NavFeatureSource* nav, const MapData* map,
   match = MapFeature{};
   hasMatch = false;
   notFound = false;
-  if (!chars.empty()) updateAutofill(nav, map);
+  if (!chars.empty()) {
+    updateAutofill(nav, map);
+    pos = std::min(std::max(0, static_cast<int>(chars.size()) - 1),
+                   kMaxChars - 1);
+  }
 }
 
 void FmsWaypointEntry::updateAutofill(const NavFeatureSource* nav,

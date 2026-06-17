@@ -53,6 +53,10 @@ class DataSource {
   virtual void setMapPanCenter(bool /*active*/, double /*lat*/,
                                double /*lon*/) {}
 
+  // MFD map range ladder step (NM). Land-layer queries use this for range-tier
+  // selection (continental silhouettes vs high-res detail) and geographic overlap.
+  virtual void setChartRangeNm(float /*rangeNm*/) {}
+
   // Health of this source. Sources that are always available (the mock feed,
   // the in-process dataref reader) keep the default; network-backed sources
   // override it so the display can show the boot / connection-lost screens.

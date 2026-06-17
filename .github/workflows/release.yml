@@ -37,6 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fetch map assets
+        run: python3 tools/fetch_obstacles.py
+
       # Release version, no leading "v". From the tag on a tag push, otherwise
       # the workflow_dispatch input.
       - name: Resolve version

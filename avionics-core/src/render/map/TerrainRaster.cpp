@@ -41,11 +41,6 @@ constexpr float kRecenterDriftFactor = 0.30f;
 // still fills in a few seconds after the tiles load.
 constexpr int kRevisionRebuildIntervalFrames = 180;
 
-// Above this map range the DSF tile cache cannot cover the raster footprint
-// (~2.4x range); skip terrain shading and let the plain background + land
-// overlay define the wide view instead of half-loaded procedural noise.
-constexpr float kTerrainMaxRangeNm = 75.0f;
-
 // DEM rows sampled per frame during an incremental rebuild. Kept small enough
 // that a live-every-frame shell (the standalone) stays near 60 fps while a
 // rebuild is in flight (~48 rows ≈ 10 ms on typical hardware); a full 512-row
@@ -523,11 +518,14 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   // orientation and offset by the snapshot-vs-view center displacement so the
   // image stays geographically pinned while the aircraft drifts between
   // rebuilds.
-  const double dLat = v.front.centerLat - viewCenterLat;
-  const double dLon = v.front.centerLon - viewCenterLon;
-  const float dxPx =
-      static_cast<float>(dLon * nmPerDegLon(viewCenterLat)) * pixelsPerNm;
-  const float dyPx = -static_cast<float>(dLat * kNmPerDegLat) * pixelsPerNm;
+  const float mercatorPxPerRad =
+      pixelsPerNm * static_cast<float>(kNmPerEarthRad);
+  double eastRad = 0.0;
+  double northRad = 0.0;
+  mercatorOffsetRad(v.front.centerLat, v.front.centerLon, viewCenterLat,
+                    viewCenterLon, eastRad, northRad);
+  const float dxPx = static_cast<float>(eastRad * mercatorPxPerRad);
+  const float dyPx = -static_cast<float>(northRad * mercatorPxPerRad);
   const float halfPx = v.front.halfNm * pixelsPerNm;
 
   r.save();

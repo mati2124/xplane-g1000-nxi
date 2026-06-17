@@ -239,6 +239,11 @@ void ShowUpdateAvailableAlert(const char* currentVersion,
       alert.informativeText = message;
       [alert addButtonWithTitle:primary];
       [alert addButtonWithTitle:@"Not Now"];
+      // Borderless full-screen GLFW displays use NSMainMenuWindowLevel + 1,
+      // which sits above NSModalPanelWindowLevel. Raise the alert so it is not
+      // hidden behind the PFD/MFD windows.
+      [NSApp activateIgnoringOtherApps:YES];
+      [alert.window setLevel:NSPopUpMenuWindowLevel];
       const NSModalResponse response = [alert runModal];
       if (response == NSAlertFirstButtonReturn && accept) {
         // Run the (network/file) work off the main thread so the UI is not

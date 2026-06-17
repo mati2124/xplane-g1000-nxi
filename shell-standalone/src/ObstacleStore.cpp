@@ -69,6 +69,7 @@ void ObstacleStore::load() {
   // Header row: locate the columns we need by name, so reordered or extended
   // future DOF revisions keep working.
   int colLat = -1, colLon = -1, colAgl = -1, colAmsl = -1;
+  int colType = -1, colLighting = -1, colQuantity = -1;
   if (std::getline(in, line)) {
     splitCsv(line, fields);
     for (std::size_t i = 0; i < fields.size(); ++i) {
@@ -78,6 +79,9 @@ void ObstacleStore::load() {
       if (name == "LONDEC") colLon = idx;
       if (name == "AGL") colAgl = idx;
       if (name == "AMSL") colAmsl = idx;
+      if (name == "TYPE") colType = idx;
+      if (name == "LIGHTING") colLighting = idx;
+      if (name == "QUANTITY") colQuantity = idx;
     }
   }
   if (colLat < 0 || colLon < 0 || colAgl < 0 || colAmsl < 0) {
@@ -102,6 +106,18 @@ void ObstacleStore::load() {
     ob.lon = lon;
     ob.aglFt = static_cast<float>(std::atof(fields[colAgl].c_str()));
     ob.mslFt = static_cast<float>(std::atof(fields[colAmsl].c_str()));
+    if (colType >= 0 && static_cast<int>(fields.size()) > colType) {
+      const std::string type = trimUpper(fields[colType]);
+      ob.windTurbine = type.find("WINDMILL") != std::string::npos;
+      ob.isPole = type.find("POLE") != std::string::npos;
+    }
+    if (colLighting >= 0 && static_cast<int>(fields.size()) > colLighting) {
+      const std::string lighting = trimUpper(fields[colLighting]);
+      ob.lighted = !lighting.empty() && lighting != "N" && lighting != "U";
+    }
+    if (colQuantity >= 0 && static_cast<int>(fields.size()) > colQuantity) {
+      ob.quantity = std::max(1, std::atoi(fields[colQuantity].c_str()));
+    }
     cells_[cellKey(lat, lon)].push_back(ob);
   }
 

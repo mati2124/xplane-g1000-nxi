@@ -10,9 +10,10 @@ void drawTurnRateIndicator(Renderer& r, float cx, float cy, float radius,
   // The turn-rate scale hugs the top of the compass ring. The G1000 maps a
   // standard-rate turn (3 deg/sec, an 18 deg heading change in 6 s) to the long
   // outer tick and half-standard (9 deg) to the short inner tick, on each side
-  // of the lubber line.
-  const float stdTick = radius * 0.10f;
-  const float halfTick = radius * 0.055f;
+  // of the lubber line. Tick lengths from Garmin trainer PFD Default.bmp.
+  const float tickScale = radius / kTrainerHsiTickRingRadiusPx;
+  const float stdTick = kTrainerTurnRateStdTickPx * tickScale;
+  const float halfTick = kTrainerTurnRateHalfTickPx * tickScale;
 
   r.save();
   r.translate(cx, cy);

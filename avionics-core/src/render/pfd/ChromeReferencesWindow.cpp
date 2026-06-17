@@ -11,12 +11,9 @@ namespace avionics::pfd {
 // moves the cursor between fields; ENT activates the highlighted field.
 void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
                           const SoftkeyController& ui) {
-  const FontScope fs(r, FontFace::DejaVuSemiBold);
-  // Same standard taller popout as Direct-To / Page Menu / PFD Setup / Alerts /
-  // Nearest so every PFD popout shares one footprint (Pilot's Guide Fig. 2-6).
   float panelW = 0.0f;
   float panelH = 0.0f;
-  tallPopoutPanelSize(w, h, panelW, panelH);
+  popoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::References),
                       "References", panelW, panelH);
@@ -25,22 +22,19 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
   const RefField cursor = ui.referencesCursor();
   const bool blinkOn = ui.blinkOn();
 
-  // Standard popout body size, shared with the other PFD popups.
-  const float size = fontPx(wt::kInfoValue, h);
-  // Unit suffixes (KT/FT) are rendered smaller than the value, like the unit.
-  const float unitSize = size * 0.72f;
-  // Up to seven rows (TIMER, four V-speeds, MINS, and the TEMP-COMP row).
-  const float lineH = (f.top + f.h - f.contentTop) / 7.5f;
+  // WT .timerref-container: 18 px base; ref rows are 20 px tall.
+  const float size = fontPx(18.0f, h);
+  const float unitSize = fontPx(14.0f, h);
+  const float lineH = fontPx(20.0f, h);
   const float labelX = f.x + f.w * 0.06f;
   const float numRightX = f.x + f.w * 0.60f;    // right edge of a V-speed value
   const float minsNumRightX = f.x + f.w * 0.80f;  // right edge of the MINS value
   const float toggleCenterX = f.x + f.w * 0.85f;  // On/Off toggle center
   const float minsModeCenterX = f.x + f.w * 0.46f;
-  float cy = f.contentTop + lineH * 0.75f;
+  float cy = f.contentTop + lineH * 0.65f;
 
-  // Small filled triangle carrot (the cyan toggle/list arrowheads flanking the
-  // On/Off and MINS-mode fields on the real unit).
-  const auto carrot = [&](float ax, float acy, bool pointRight) {
+  // Small filled triangle carrot; the available toggle direction is green.
+  const auto carrot = [&](float ax, float acy, bool pointRight, bool active) {
     const float aw = size * 0.26f;
     const float ah = size * 0.42f;
     Point t[3];
@@ -53,13 +47,14 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
       t[1] = {ax, acy};
       t[2] = {ax + aw, acy + ah * 0.5f};
     }
-    r.fillPolygon(t, 3, withAlpha(colors::kCyan, a));
+    const Color c = active ? colors::kActiveGreen : colors::kLabelText;
+    r.fillPolygon(t, 3, withAlpha(c, a));
   };
 
   // Center-anchored toggle/list field (On/Off, MINS mode): cyan value flanked
   // by carrots; pulses as a cyan plate while it is the cursor field.
   const auto toggleField = [&](float centerX, const std::string& text,
-                               bool highlighted) {
+                               bool highlighted, bool canDec, bool canInc) {
     const float tw = r.measureTextWidth(text, size);
     const float gap = size * 0.30f;
     const float aw = size * 0.26f;
@@ -68,14 +63,14 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
       const float padY = size * 0.18f;
       r.fillRect(centerX - tw * 0.5f - padX, cy - size * 0.5f - padY,
                  tw + 2.0f * padX, size + 2.0f * padY,
-                 withAlpha(colors::kCyan, a));
+                 withAlpha(colors::kPopoutCyan, a));
     }
-    const Color textColor = highlighted ? (blinkOn ? colors::kBlack : colors::kCyan)
-                                         : colors::kCyan;
+    const Color textColor = highlighted ? (blinkOn ? colors::kBlack : colors::kPopoutCyan)
+                                         : colors::kPopoutCyan;
     r.fillText(centerX, cy, text, size, TextAlign::Center,
                withAlpha(textColor, a));
-    carrot(centerX - tw * 0.5f - gap - aw, cy, /*pointRight=*/false);
-    carrot(centerX + tw * 0.5f + gap, cy, /*pointRight=*/true);
+    carrot(centerX - tw * 0.5f - gap - aw, cy, /*pointRight=*/false, canDec);
+    carrot(centerX + tw * 0.5f + gap, cy, /*pointRight=*/true, canInc);
   };
 
   // Right-aligned numeric value with a smaller unit suffix and an optional
@@ -93,10 +88,10 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
       const float padY = size * 0.18f;
       r.fillRect(left - padX, cy - size * 0.5f - padY,
                  numW + unitW + starW + 2.0f * padX, size + 2.0f * padY,
-                 withAlpha(colors::kCyan, a));
+                 withAlpha(colors::kPopoutCyan, a));
     }
-    const Color c = highlighted ? (blinkOn ? colors::kBlack : colors::kCyan)
-                                 : colors::kCyan;
+    const Color c = highlighted ? (blinkOn ? colors::kBlack : colors::kPopoutCyan)
+                                 : colors::kPopoutCyan;
     r.fillText(left, cy, num, size, TextAlign::Left, withAlpha(c, a));
     r.fillText(numRight, cy, unit, unitSize, TextAlign::Left, withAlpha(c, a));
     if (modified) {
@@ -110,9 +105,9 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
   r.fillText(labelX, cy, "Timer", size, TextAlign::Left,
              withAlpha(colors::kWhite, a));
   r.fillText(f.x + f.w * 0.28f, cy, formatTimer(ui.timerSeconds()), size,
-             TextAlign::Left, withAlpha(colors::kCyan, a));
+             TextAlign::Left, withAlpha(colors::kPopoutCyan, a));
   r.fillText(f.x + f.w * 0.58f, cy, "Up", size, TextAlign::Left,
-             withAlpha(colors::kCyan, a));
+             withAlpha(colors::kPopoutCyan, a));
   {
     const std::string cmd = ui.timerCommandLabel();
     const float cmdW = r.measureTextWidth(cmd, size);
@@ -124,14 +119,9 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
     const float bw = cmdW + 2.0f * padX;
     const float bh = size + 2.0f * padY;
     const float rad = bh * 0.5f;
-    const bool hl = cursor == RefField::TimerCmd && blinkOn;
-    if (hl) {
-      r.fillRoundedRect(bx, by, bw, bh, rad, withAlpha(colors::kCyan, a));
-    }
-    r.strokeRoundedRect(bx, by, bw, bh, rad, 1.5f,
-                        withAlpha(colors::kMenuBorderGray, a));
+    r.fillRoundedRect(bx, by, bw, bh, rad, withAlpha(colors::kPopoutCyan, a));
     r.fillText(cmdCx, cy, cmd, size, TextAlign::Center,
-               withAlpha(hl ? colors::kBlack : colors::kWhite, a));
+               withAlpha(colors::kBlack, a));
   }
   // Extra breathing room below the (taller) timer command button before the
   // separator rule / V-speed list, so the rounded button doesn't crowd the line.
@@ -158,7 +148,8 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
     r.fillText(labelX, cy, v.windowLabel, size, TextAlign::Left,
                withAlpha(colors::kWhite, a));
     valueField(numRightX, formatInt(vKt), "KT", modified, cursor == field);
-    toggleField(toggleCenterX, on ? "On" : "Off", /*highlighted=*/false);
+    toggleField(toggleCenterX, on ? "On" : "Off", /*highlighted=*/false,
+                /*canDec=*/on, /*canInc=*/!on);
     cy += lineH;
   }
 
@@ -171,7 +162,8 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
                                                               : "OFF";
   r.fillText(labelX, cy, "MINS", size, TextAlign::Left,
              withAlpha(colors::kWhite, a));
-  toggleField(minsModeCenterX, minsModeLabel, cursor == RefField::MinsMode);
+  toggleField(minsModeCenterX, minsModeLabel, cursor == RefField::MinsMode,
+              minsMode != MinimumsMode::Off, minsMode != MinimumsMode::Temp);
   if (minsOn) {
     valueField(minsNumRightX, formatInt(ui.minimumsAltitudeFt()), "FT",
                /*modified=*/false, cursor == RefField::MinsValue);
@@ -183,7 +175,7 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
     char tbuf[16];
     std::snprintf(tbuf, sizeof(tbuf), "%+d\u00b0C",
                   static_cast<int>(std::lround(ui.minimumsTempC())));
-    toggleField(minsModeCenterX, tbuf, cursor == RefField::MinsTemp);
+    toggleField(minsModeCenterX, tbuf, cursor == RefField::MinsTemp, true, true);
     valueField(minsNumRightX, formatInt(ui.effectiveMinimumsFt()), "FT",
                /*modified=*/false, /*highlighted=*/false);
   }

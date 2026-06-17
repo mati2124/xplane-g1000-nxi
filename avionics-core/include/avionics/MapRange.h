@@ -13,21 +13,25 @@ namespace avionics {
 // hard-coding their own.
 inline constexpr float kMapRangeLadderNm[] = {
     0.5f,   1.0f,   1.5f,   2.5f,   5.0f,   10.0f,  15.0f,  25.0f,
-    50.0f,  100.0f, 150.0f, 250.0f, 350.0f, 500.0f, 750.0f, 1000.0f,
-    1500.0f, 2000.0f};
+    50.0f,  100.0f, 150.0f, 250.0f, 350.0f, 500.0f, 750.0f, 1000.0f};
 inline constexpr int kMapRangeLadderCount =
     static_cast<int>(sizeof(kMapRangeLadderNm) / sizeof(kMapRangeLadderNm[0]));
 
 // Default ladder position (10 NM), the G1000 power-on map range.
 inline constexpr int kMapRangeDefaultIndex = 5;
 
-// Top of the shared range ladder (2000 NM on the NXi).
+// Default max map range (NM) for traffic symbols and labels on the navigation
+// map (Map Setup "Traffic Symbols" / "Traffic Labels" ranges).
+inline constexpr float kTrafficMapRangeDefaultNm = 15.0f;
+
+// Top of the shared range ladder (1000 NM on the NXi).
 inline constexpr float kMapRangeMaxNm =
     kMapRangeLadderNm[kMapRangeLadderCount - 1];
 
 // Land/border vector queries must cover the full ladder with margin so
-// coastlines and country borders reach the edges of a wide view.
-inline constexpr float kLandQueryRangeNm = kMapRangeMaxNm * 1.1f;
+// coastlines and country borders reach the edges of a wide view (the US–Mexico
+// border reaches ~118°W).
+inline constexpr float kLandQueryRangeNm = kMapRangeMaxNm * 1.15f;
 
 // Embedded WPT Airport Information map range: tight enough to show the
 // SafeTaxi-style runway + taxiway pavement diagram.

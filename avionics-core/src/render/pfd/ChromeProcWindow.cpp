@@ -14,13 +14,13 @@ void drawMenuRow(Renderer& r, float textX, float plateX, float plateW, float cy,
                  bool enabled, bool blinkOn, float a) {
   if (selected && blinkOn) {
     r.fillRect(plateX, cy - size * 0.62f, plateW, size * 1.24f,
-               withAlpha(colors::kCyan, a));
+               withAlpha(colors::kPopoutCyan, a));
     r.fillText(textX, cy, text, size, TextAlign::Left,
                withAlpha(colors::kBlack, a));
     return;
   }
-  const Color color = selected    ? colors::kCyan
-                      : enabled    ? colors::kWhite
+  const Color color = selected    ? colors::kPopoutCyan
+                      : enabled    ? colors::kPopoutCyan
                                    : colors::kDisabledGray;
   r.fillText(textX, cy, text, size, TextAlign::Left, withAlpha(color, a));
 }
@@ -38,23 +38,22 @@ void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
   const float rawAnim = ui.windowAnim(PfdWindow::Procedures);
   if (rawAnim <= 0.0f) return;
 
-  const FontScope fs(r, FontFace::DejaVuSemiBold);
   float panelW = 0.0f;
   float panelH = 0.0f;
-  tallPopoutPanelSize(w, h, panelW, panelH);
+  popoutPanelSize(w, h, panelW, panelH);
   const WindowFrame f = drawWindowFrame(r, w, h, L, rawAnim,
                                         ui.procWindowTitle(), panelW, panelH);
   if (f.a <= 0.0f) return;
   const float a = f.a;
 
-  const float rowSize = fontPx(wt::kInfoValue, h);
+  const float rowSize = fontPx(18.0f, h);
   const float rowH = h * (kWtPageMenuRowHeightPx / kWtCanvasHeightPx);
   const float pad = f.w * 0.05f;
   const float textX = f.x + pad;
   const float plateX = f.x + pad * 0.5f;
   const float plateW = f.w - pad;
   const bool blinkOn = ui.blinkOn();
-  float listTop = f.contentTop + rowSize * 0.9f;
+  float listTop = f.contentTop + rowSize * 0.55f;
 
   if (!ui.procSelectMode()) {
     // Top-level menu: the six Procedures items.
@@ -72,10 +71,10 @@ void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
   // list. On the transition step the chosen procedure name heads the list.
   const std::string icao = ui.procAirportIcao();
   r.fillText(textX, listTop, icao.empty() ? "_____" : icao, rowSize,
-             TextAlign::Left, withAlpha(colors::kCyan, a));
+             TextAlign::Left, withAlpha(colors::kPopoutCyan, a));
   if (ui.procStep() == SoftkeyController::ProcStep::TransitionList) {
     r.fillText(f.x + f.w - pad, listTop, ui.procSelectedName(), rowSize,
-               TextAlign::Right, withAlpha(colors::kCyan, a));
+               TextAlign::Right, withAlpha(colors::kPopoutCyan, a));
   }
   const float sepY = listTop + rowSize * 0.45f;
   r.strokeLine(f.x + pad * 0.5f, sepY, f.x + f.w - pad * 0.5f, sepY, 1.0f,
@@ -115,7 +114,7 @@ void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
                          static_cast<float>(total);
     const float thumbY = barTop + (barH - thumbH) * static_cast<float>(first) /
                                       static_cast<float>(total - maxRows);
-    r.fillRect(barX - 1.0f, thumbY, 2.0f, thumbH, withAlpha(colors::kCyan, a));
+    r.fillRect(barX - 1.0f, thumbY, 2.0f, thumbH, withAlpha(colors::kPopoutCyan, a));
   }
 }
 

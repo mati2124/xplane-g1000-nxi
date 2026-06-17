@@ -180,12 +180,6 @@ void AvionicsEngine::setDataSource(DataSource& dataSource,
 }
 
 void AvionicsEngine::update(double dtSeconds) {
-  // A secondary engine sharing the source (the MFD window) must not pump it a
-  // second time. The pump runs regardless of this GDU's power so the switch
-  // datarefs are still read while the screen is dark (and so the other GDU
-  // sharing the source keeps getting fresh data when only one is powered).
-  if (drivesDataSource_) dataSource_->update(dtSeconds);
-
   const bool powered = displayPowered();
   if (!powerInitialized_) {
     powerInitialized_ = true;
@@ -198,12 +192,28 @@ void AvionicsEngine::update(double dtSeconds) {
     powerUpAcknowledged_ = true;
   }
   wasPowered_ = powered;
-  if (!powered) return;  // dark screen: no boot timer or UI animation
+
+  if (!powered) {
+    // A secondary engine sharing the source (the MFD window) must not pump it a
+    // second time. The pump still runs while the screen is dark so switch
+    // datarefs are read and the other GDU sharing the source stays current.
+    if (drivesDataSource_) dataSource_->update(dtSeconds);
+    return;  // dark screen: no boot timer or UI animation
+  }
 
   bootElapsedSeconds_ += dtSeconds;
   softkeys_.update(dtSeconds, dataSource_->snapshot(),
                    dataSource_->mapSnapshot());
   mfd_.update(dtSeconds, dataSource_->snapshot());
+
+  // Nearby-data queries (land vectors, airspaces, nav features) must center on
+  // the Map Pointer before the source refresh so panning matches the view in
+  // the same frame (screenshot settle and the last update before render).
+  dataSource_->setMapPanCenter(mfd_.mapPointerActive(), mfd_.mapPointerLat(),
+                               mfd_.mapPointerLon());
+  dataSource_->setChartRangeNm(mfd_.rangeNm());
+  if (drivesDataSource_) dataSource_->update(dtSeconds);
+
   // Keep the MFD's checklist navigation in step with the loaded file (the data
   // is owned by the source; the controller only holds the interactive state).
   mfd_.syncChecklist(dataSource_->checklistSnapshot());

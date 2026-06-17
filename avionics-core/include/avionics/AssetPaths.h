@@ -3,7 +3,7 @@
 #include <string>
 
 // Runtime resolution of bundled assets (fonts, EIS samples, map land data,
-// checklists). During development the build bakes in absolute paths into the
+// FAA obstacle database, checklists). During development the build bakes in absolute paths into the
 // source tree (the various AVIONICS_*_DIR / AVIONICS_DEFAULT_* macros), which
 // only exist on the build machine. For a distributed build those paths are
 // gone, so each shell registers one or more search directories derived from the
