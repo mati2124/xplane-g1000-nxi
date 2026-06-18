@@ -1,11 +1,16 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -14,26 +19,12 @@
 namespace avionics {
 
 // Samples real-world elevation from X-Plane Global Scenery DSF tiles (the same
-// 1°x1° raster DEMs the simulator meshes). When no install or tile is available
-// it falls back to ProceduralTerrain so the map still renders.
-//
-// Loading a tile is expensive (full file read, often a 7z decompress through a
-// subprocess), and the terrain raster samples tens of thousands of points per
-// frame while rebuilding, so all tile loading happens on a dedicated worker
-// thread: a render-thread sample that misses the cache enqueues the tile and
-// returns the procedural fallback, and `revision()` bumps when the real tile
-// arrives so cached terrain rasters know to resample. A negative cache keeps
-// absent tiles (ocean / scenery not installed) from retrying the filesystem.
+// 1°x1° raster DEMs the simulator meshes). When no install is available it
+// falls back to ProceduralTerrain so the map still renders offline.
 class DsfTerrainStore : public TerrainSource {
  public:
-  // Discovers the Global Scenery "Earth nav data" directory via the per-OS
-  // install-list files (used by the standalone shell).
   DsfTerrainStore();
 
-  // Uses a caller-provided "Earth nav data" directory. The X-Plane plugin shell
-  // resolves the install root through the SDK (XPLMGetSystemPath) rather than
-  // the install-list files, so it passes the directory in directly. An empty
-  // string disables tile loading and falls back to ProceduralTerrain.
   explicit DsfTerrainStore(std::string earthNavDir);
 
   ~DsfTerrainStore() override;
@@ -44,6 +35,12 @@ class DsfTerrainStore : public TerrainSource {
   float elevationFt(double lat, double lon) const override;
   void elevationFtRow(double lat, double lonStart, double lonStep, int count,
                       float* out) const override;
+  void ensureCoverage(double minLat, double maxLat, double minLon,
+                      double maxLon, bool waitForTiles = false) const override;
+  void setBulkTerrainSample(bool enabled) const override;
+  void setCoarseTerrainSample(bool enabled) const override;
+  void setTerrainViewCenter(double lat, double lon,
+                            float detailHalfNm) const override;
   unsigned revision() const override {
     return revision_.load(std::memory_order_relaxed);
   }
@@ -51,8 +48,6 @@ class DsfTerrainStore : public TerrainSource {
  private:
   struct TileCacheEntry;
 
-  // A queued tile load: the integer tile key plus a point inside the tile
-  // (the path's 10x10-degree folder bucket needs a real signed lat/lon).
   struct PendingLoad {
     int southLat = 0;
     int lonIndex = 0;
@@ -60,36 +55,78 @@ class DsfTerrainStore : public TerrainSource {
     double lon = 0.0;
   };
 
+  static std::uint64_t tileKey(int southLat, int lonIndex);
+  static float tileAbsentElevationFt() {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+
   void workerMain();
   std::string tilePath(int southLat, int lonIndex, double lat,
                        double lon) const;
 
-  // Cache/queue helpers that assume mu_ is already held, so a single lock can
-  // cover a whole raster row (see elevationFtRow). findResidentTileLocked
-  // returns the resident tile for a key (LRU-touched) or nullptr; on a miss
-  // queueTileLocked records the negative cache / enqueues a worker load.
+  static constexpr int kQuickGridSize = 4;
+  static constexpr int kCoarseGridSize = 16;
+  static constexpr int kCoarseGridCells =
+      kCoarseGridSize * kCoarseGridSize;
+
+  struct CoarseSummary {
+    std::uint8_t gridSize = 0;
+    float elevFt[kCoarseGridCells] = {};
+  };
+
   TileCacheEntry* findResidentTileLocked(
       int southLat, int lonIndex,
       std::chrono::steady_clock::time_point now) const;
+  const CoarseSummary* findSummaryLocked(int southLat, int lonIndex) const;
+  float sampleCoarseGridLocked(const CoarseSummary& summary, int southLat,
+                               int lonIndex, double lat, double lon) const;
+  float sampleElevationLocked(int southLat, int lonIndex, double lat,
+                              double lon,
+                              std::chrono::steady_clock::time_point now) const;
   void queueTileLocked(int southLat, int lonIndex, double lat, double lon,
                        std::chrono::steady_clock::time_point now) const;
+  void queueTileLocked(int southLat, int lonIndex, double lat, double lon,
+                       std::chrono::steady_clock::time_point now,
+                       bool force) const;
+  bool tileMissedLocked(int southLat, int lonIndex) const;
+  bool tileInDetailZoneLocked(int southLat, int lonIndex) const;
+  bool popPendingLoadLocked(PendingLoad& out);
+  bool tileReadyLocked(int southLat, int lonIndex,
+                       std::chrono::steady_clock::time_point now) const;
+
+  std::size_t maxCacheTilesLocked() const {
+    return bulkSample_ ? static_cast<std::size_t>(kBulkMaxCachedTiles)
+                       : static_cast<std::size_t>(kMaxCachedTiles);
+  }
+
+  std::size_t maxPendingLoadsLocked() const {
+    return bulkSample_ ? kBulkMaxPendingLoads : kMaxPendingLoads;
+  }
 
   std::string earthNavDir_;
   ProceduralTerrain fallback_;
 
-  static constexpr int kMaxCachedTiles = 32;
-  static constexpr int kMaxMissEntries = 256;
-  static constexpr std::size_t kMaxPendingLoads = 4;
+  static constexpr int kWorkerCount = 4;
+  static constexpr int kMaxCachedTiles = 64;
+  static constexpr int kBulkMaxCachedTiles = 64;
+  static constexpr std::size_t kMaxPendingLoads = 16;
+  static constexpr std::size_t kBulkMaxPendingLoads = 128;
+  static constexpr int kMaxBlockingEnsureTiles = 48;
 
   mutable std::mutex mu_;
   mutable std::condition_variable cv_;
-  mutable std::vector<TileCacheEntry*> cache_;       // front = most recent
-  mutable std::vector<std::pair<int, int>> misses_;  // {southLat, lonIndex}
-  // Tiles queued for (or currently in) a worker load; guards re-enqueueing.
+  mutable std::vector<TileCacheEntry*> cache_;
+  mutable std::unordered_set<std::uint64_t> misses_;
+  mutable std::unordered_map<std::uint64_t, CoarseSummary> summaries_;
   mutable std::vector<PendingLoad> pending_;
+  mutable bool bulkSample_ = false;
+  mutable bool coarseSample_ = false;
+  mutable double viewCenterLat_ = 0.0;
+  mutable double viewCenterLon_ = 0.0;
+  mutable float detailHalfNm_ = 0.0f;
   std::atomic<unsigned> revision_{0};
   bool stop_ = false;
-  std::thread worker_;
+  std::array<std::thread, kWorkerCount> workers_;
 };
 
 }  // namespace avionics

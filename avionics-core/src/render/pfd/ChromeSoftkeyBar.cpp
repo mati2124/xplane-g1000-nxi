@@ -34,8 +34,16 @@ void drawSoftkeyBar(Renderer& r, float w, float h, const Layout& L,
                        : colors::kWhite;
       if (!ui.blinkOn()) labelColor = withAlpha(labelColor, 0.0f);
     }
-    render::drawSoftkeyCell(r, static_cast<float>(i) * cellW, top, cellW,
-                            L.bottomBarH, ui.label(i), level, labelColor, size);
+    std::string mainLabel = ui.label(i);
+    std::string valueLabel;
+    if (render::splitStateSoftkeyLabel(ui.label(i), mainLabel, valueLabel)) {
+      render::drawSoftkeyCell(r, static_cast<float>(i) * cellW, top, cellW,
+                              L.bottomBarH, mainLabel, level, labelColor, size,
+                              valueLabel, colors::kCyan);
+    } else {
+      render::drawSoftkeyCell(r, static_cast<float>(i) * cellW, top, cellW,
+                              L.bottomBarH, mainLabel, level, labelColor, size);
+    }
   }
 }
 

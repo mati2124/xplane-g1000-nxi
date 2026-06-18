@@ -121,11 +121,11 @@
 #include "avionics/ConnectionState.h"
 #include "avionics/ComDecode.h"
 #include "avionics/MockDataSource.h"
+#include "avionics/PersistentState.h"
 #include "avionics/UpdateChecker.h"
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/BootScreen.h"
-#include "avionics/Terrain.h"
 #include "avionics/render/GlLoader.h"
 #include "avionics/render/NanoVgRenderer.h"
 #include "avionics/render/SoftkeyBezel.h"
@@ -780,10 +780,44 @@ inline void RenderSuiteSettled(avionics::NanoVgRenderer& renderer,
                                int fbHeight, bool showBezel) {
   constexpr int kSettleFrames = 60;
   for (int i = 0; i < kSettleFrames; ++i) {
+    // Update before each render so map pan scroll and land-data queries stay
+    // aligned with the projected view center (viewport sync runs during render).
+    eng.update(1.0 / 60.0);
     RenderSuite(renderer, eng, fbWidth, fbHeight, showBezel);
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
   }
+  eng.update(1.0 / 60.0);
   RenderSuite(renderer, eng, fbWidth, fbHeight, showBezel);
+}
+
+// Block until DSF tiles cover the terrain raster footprint (rangeNm * 2.4) so
+// wide-map topo screenshots and the first async rebuild sample real elevation.
+void WarmTerrainTilesForRange(avionics::DsfTerrainStore& terrain,
+                              double centerLat, double centerLon,
+                              float rangeNm) {
+  if (!terrain.ready()) return;
+  constexpr float kCoverageRangeFactor = 2.4f;
+  constexpr float kTerrainCornerRangeFactor = 3.5f;
+  constexpr float kFullDetailTerrainMaxNm = 200.0f;
+  constexpr double kNmPerDegLat = 60.0;
+  const double halfNm =
+      std::max(static_cast<double>(rangeNm) * kCoverageRangeFactor,
+               static_cast<double>(rangeNm) * kTerrainCornerRangeFactor);
+  const double nmLon =
+      kNmPerDegLat * std::cos(centerLat * 3.14159265358979323846 / 180.0);
+  const bool coarse = rangeNm > kFullDetailTerrainMaxNm;
+  terrain.setBulkTerrainSample(true);
+  terrain.setCoarseTerrainSample(coarse);
+  terrain.setTerrainViewCenter(centerLat, centerLon,
+                               coarse ? rangeNm * 0.25f
+                                      : static_cast<float>(halfNm));
+  terrain.ensureCoverage(centerLat - halfNm / kNmPerDegLat,
+                         centerLat + halfNm / kNmPerDegLat,
+                         centerLon - halfNm / nmLon,
+                         centerLon + halfNm / nmLon,
+                         /*waitForTiles=*/true);
+  terrain.setBulkTerrainSample(false);
+  terrain.setCoarseTerrainSample(false);
 }
 
 // Renders a deterministic frame offscreen and writes it to a binary PPM
@@ -1191,7 +1225,9 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
-    engine.pressSoftkey(3);  // NRST -> Nearest Airports page group
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // NRST
     // Let the 3 s page-select popup fade so the Approaches box is captured.
     for (int i = 0; i < 260; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
@@ -1202,7 +1238,10 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
-    for (int p = 0; p < 4; ++p) engine.pressSoftkey(2);  // AUX -> SimBrief
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // AUX
+    for (int p = 0; p < 5; ++p)
+      engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // -> SimBrief
     engine.pressSoftkey(8);  // "ID" -> digit entry
     engine.pressSoftkey(8);  // digit 8
     engine.pressSoftkey(4);  // digit 4
@@ -1215,9 +1254,9 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
-    engine.pressSoftkey(5);  // "Map Opt" -> open submenu
-    engine.pressSoftkey(1);  // "Traffic" on
-    engine.pressSoftkey(3);  // "AWY" Off -> On
+    engine.pressSoftkey(2);  // "Map Opt" -> open submenu
+    engine.pressSoftkey(0);  // "Traffic" on
+    engine.pressSoftkey(4);  // "AWY" Off -> On
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdawy") == 0) {
@@ -1231,9 +1270,9 @@ int RunScreenshot(const char* path, double seconds, const char* state,
       engine.pressBezelKey(avionics::BezelKey::RangeUp);
       for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
     }
-    engine.pressSoftkey(5);   // "Map Opt" -> open submenu
-    engine.pressSoftkey(3);   // "AWY" Off -> On
-    engine.pressSoftkey(11);  // "Back" -> root bar
+    engine.pressSoftkey(2);   // "Map Opt" -> open submenu
+    engine.pressSoftkey(4);   // "AWY" Off -> On
+    engine.pressSoftkey(10);  // "Back" -> root bar
     for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdwx") == 0) {
@@ -1245,14 +1284,17 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
-    for (int p = 0; p < 4; ++p) engine.pressSoftkey(11);  // RNG+ -> ~100 NM
-    engine.pressSoftkey(5);  // "Map Opt" -> open submenu
+    for (int p = 0; p < 4; ++p) {
+      engine.pressBezelKey(avionics::BezelKey::RangeUp);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
+    engine.pressSoftkey(2);  // "Map Opt" -> open submenu
     // TER cycles Off -> Topo -> Rel -> Off; press three times back to Off for a
     // clean background under the weather overlay.
-    engine.pressSoftkey(2);  // TER Off -> Topo
-    engine.pressSoftkey(2);  // TER Topo -> Rel
-    engine.pressSoftkey(2);  // TER Rel -> Off (clean background)
-    engine.pressSoftkey(4);  // "NEXRAD" on
+    engine.pressSoftkey(3);  // TER Off -> Topo
+    engine.pressSoftkey(3);  // TER Topo -> Rel
+    engine.pressSoftkey(3);  // TER Rel -> Off (clean background)
+    engine.pressSoftkey(6);  // "NEXRAD" on
     for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);  // settle zoom
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdwxr") == 0) {
@@ -1263,14 +1305,17 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
-    engine.pressSoftkey(0);  // Map -> Traffic Map
-    engine.pressSoftkey(0);  // Map -> Weather Radar
-    engine.pressSoftkey(0);  // "Mode" -> submenu
-    engine.pressSoftkey(2);  // "Weather"
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // Traffic Map
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // Weather Radar
+    engine.pressSoftkey(3);  // "Mode" -> submenu
+    engine.pressSoftkey(4);  // "Weather"
     for (int i = 0; i < 4; ++i)
       engine.pressBezelKey(avionics::BezelKey::FmsInnerCcw);  // tilt DN 1.00
-    engine.pressSoftkey(4);                                   // "BRG" line on
-    for (int p = 0; p < 5; ++p) engine.pressSoftkey(11);      // RNG+ -> wide
+    engine.pressSoftkey(10);  // "BRG" line on
+    for (int p = 0; p < 5; ++p) {
+      engine.pressBezelKey(avionics::BezelKey::RangeUp);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
     // Settle past the 3 s page-select popup so it fades clear of the readouts.
     for (int i = 0; i < 260; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
@@ -1338,17 +1383,18 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     for (int i = 0; i < 200; ++i) engine.update(1.0 / 60.0);  // popup fades out
     // Fig. 5-7 shows Terrain Display = Topo; cycle once from the suite default
     // (Off) via the Map Opt softkey submenu.
-    engine.pressSoftkey(5);  // Map Opt
-    engine.pressSoftkey(2);  // Terrain -> Topo
+    engine.pressSoftkey(2);  // Map Opt
+    engine.pressSoftkey(3);  // Terrain -> Topo
     engine.pressBezelKey(avionics::BezelKey::Menu);
     engine.pressBezelKey(avionics::BezelKey::Ent);  // open Map Settings
     for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr &&
              (std::strncmp(state, "mfdmap1000pann", 14) == 0 ||
-              std::strncmp(state, "mfdmap1000pans", 14) == 0)) {
-    // MFD MAP at 1000 NM with the map pointer panned north or south (range
-    // locked). Optional trailing digits set pan steps (default 8); e.g.
+              std::strncmp(state, "mfdmap1000pans", 14) == 0 ||
+              std::strncmp(state, "mfdmap1000pane", 14) == 0)) {
+    // MFD MAP at 1000 NM with the map pointer panned north, south, or east
+    // (range locked). Optional trailing digits set pan steps (default 8); e.g.
     // mfdmap1000pann18 pans ~1800 NM north toward Hudson Bay.
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
@@ -1359,8 +1405,11 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     }
     engine.pressBezelKey(avionics::BezelKey::PanPush);
     const bool panNorth = std::strncmp(state, "mfdmap1000pann", 14) == 0;
+    const bool panEast = std::strncmp(state, "mfdmap1000pane", 14) == 0;
     const avionics::BezelKey panKey =
-        panNorth ? avionics::BezelKey::PanUp : avionics::BezelKey::PanDown;
+        panNorth ? avionics::BezelKey::PanUp
+        : panEast ? avionics::BezelKey::PanRight
+                  : avionics::BezelKey::PanDown;
     const char* panDigits = state + 14;
     const int panSteps =
         *panDigits != '\0' ? std::max(1, std::atoi(panDigits)) : 8;
@@ -1368,26 +1417,94 @@ int RunScreenshot(const char* path, double seconds, const char* state,
       engine.pressBezelKey(panKey);
       for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
     }
-    for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
+    WarmTerrainTilesForRange(terrain, 26.5862, -81.7552, 1000.0f);
+    engine.pressSoftkey(2);   // Map Opt
+    engine.pressSoftkey(3);   // TER Off -> Topo
+    engine.pressSoftkey(10);  // Back
+    for (int i = 0; i < 240; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdterrain") == 0) {
+    // MFD MAP at 25 NM with TER Topo (trainer MFD Terrain Colors.bmp).
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int p = 0; p < 2; ++p) {
+      engine.pressBezelKey(avionics::BezelKey::RangeUp);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
+    WarmTerrainTilesForRange(terrain, 26.5862, -81.7552, 25.0f);
+    engine.pressSoftkey(2);   // Map Opt
+    engine.pressSoftkey(3);   // TER Off -> Topo
+    engine.pressSoftkey(10);  // Back
+    for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdtopo10") == 0) {
+    // MFD MAP at 10 NM (default range) with TER Topo.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    WarmTerrainTilesForRange(terrain, 26.5862, -81.7552, 10.0f);
+    engine.pressSoftkey(2);   // Map Opt
+    engine.pressSoftkey(3);   // TER Off -> Topo
+    engine.pressSoftkey(10);  // Back
+    for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdtopo50") == 0) {
+    // MFD MAP at 50 NM with TER Topo (wide view; open ocean must stay navy).
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int p = 0; p < 3; ++p) {
+      engine.pressBezelKey(avionics::BezelKey::RangeUp);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
+    WarmTerrainTilesForRange(terrain, 26.5862, -81.7552, 50.0f);
+    engine.pressSoftkey(2);   // Map Opt
+    engine.pressSoftkey(3);   // TER Off -> Topo
+    engine.pressSoftkey(10);  // Back
+    for (int i = 0; i < 240; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strncmp(state, "mfd", 3) == 0) {
-    // MFD page screenshots. The state encodes a page-group softkey plus an
-    // optional repeat count (pressing the active group's key again steps to
-    // the group's next page): "mfdwpt" = WPT page 1, "mfdwpt3" = WPT page 3.
-    // "mfdfpl" presses the FPL bezel key instead, and "mfdtrk" toggles
-    // track-up on the MAP page. "mfdrng<N>" zooms the MAP page out N range
-    // steps (RangeUp) to capture wide/continental views.
+    // MFD page screenshots. Page groups are selected with the large FMS knob;
+    // pages within a group use the small FMS knob. "mfdwpt" = WPT page 1,
+    // "mfdwpt3" = WPT page 3. "mfdfpl" presses the FPL bezel key, and
+    // "mfdtrk" sets track-up on the MAP page. "mfdrng<N>" zooms the MAP page
+    // out N range steps (RangeUp) to capture wide/continental views.
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
     const char* suffix = state + 3;
-    int cell = -1;
-    if (std::strncmp(suffix, "wpt", 3) == 0) cell = 1;
-    if (std::strncmp(suffix, "aux", 3) == 0) cell = 2;
-    if (std::strncmp(suffix, "nrst", 4) == 0) cell = 3;
-    if (std::strncmp(suffix, "trk", 3) == 0) cell = 4;
-    if (std::strncmp(suffix, "chklist", 7) == 0) cell = 7;
-    if (std::strncmp(suffix, "rngdn", 5) == 0) {
+    if (std::strncmp(suffix, "wpt", 3) == 0) {
+      engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+      const char* digits = suffix + 3;
+      const int pageSteps =
+          *digits != '\0' ? std::max(0, std::atoi(digits) - 1) : 0;
+      for (int p = 0; p < pageSteps; ++p)
+        engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);
+    } else if (std::strncmp(suffix, "aux", 3) == 0) {
+      engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+      engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+      const char* digits = suffix + 3;
+      const int pageSteps =
+          *digits != '\0' ? std::max(0, std::atoi(digits) - 1) : 0;
+      for (int p = 0; p < pageSteps; ++p)
+        engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);
+    } else if (std::strncmp(suffix, "nrst", 4) == 0) {
+      for (int i = 0; i < 3; ++i)
+        engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+      const char* digits = suffix + 4;
+      const int pageSteps =
+          *digits != '\0' ? std::max(0, std::atoi(digits) - 1) : 0;
+      for (int p = 0; p < pageSteps; ++p)
+        engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);
+    } else if (std::strncmp(suffix, "trk", 3) == 0) {
+      avionics::MfdPersistentState mfdState;
+      avionics::captureMfdState(engine.mfdController(), mfdState);
+      mfdState.orientation = avionics::MapOrientation::TrackUp;
+      avionics::applyMfdState(engine.mfdController(), mfdState);
+    } else if (std::strncmp(suffix, "chklist", 7) == 0) {
+      engine.pressSoftkey(11);  // Checklist page group
+    } else if (std::strncmp(suffix, "rngdn", 5) == 0) {
       const char* digits = suffix + 5;
       const int presses = *digits != '\0' ? std::atoi(digits) : 1;
       for (int p = 0; p < presses; ++p) {
@@ -1401,13 +1518,18 @@ int RunScreenshot(const char* path, double seconds, const char* state,
         engine.pressBezelKey(avionics::BezelKey::RangeUp);
         for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
       }
+    } else if (std::strncmp(suffix, "pan", 3) == 0) {
+      // MAP page with the pan pointer active and nudged north N times
+      // (mfdpan3 = three PanUp steps after PanPush).
+      const char* digits = suffix + 3;
+      const int presses = *digits != '\0' ? std::atoi(digits) : 3;
+      engine.pressBezelKey(avionics::BezelKey::PanPush);
+      for (int p = 0; p < presses; ++p) {
+        engine.pressBezelKey(avionics::BezelKey::PanUp);
+        for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
+      }
     } else if (std::strncmp(suffix, "fpl", 3) == 0) {
       engine.pressBezelKey(avionics::BezelKey::Fpl);
-    } else if (cell >= 0) {
-      const char* digits = suffix;
-      while (*digits != '\0' && (*digits < '0' || *digits > '9')) ++digits;
-      const int presses = *digits != '\0' ? std::atoi(digits) : 1;
-      for (int p = 0; p < presses; ++p) engine.pressSoftkey(cell);
     }
     // On the Checklist page, check off the first few items so the captured frame
     // shows the cursor, the green checks, and the auto-advance flow.
@@ -2843,18 +2965,14 @@ int main(int argc, char** argv) {
         xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, proc.frequencyMhz);
       }
 
-      // Map panning: keep the feed's nearby-data queries centered on the MFD
-      // Map Pointer while panning, so the panned-to area loads features /
-      // airspaces instead of staying empty around the aircraft.
-      const avionics::MfdController& mapUi = mfdEngine->mfdController();
-      // Route to whichever feed is live so panning the demo map recenters its
-      // nearby-data queries too, not just the X-Plane feed's.
+      // Map panning: keep the feed's nearby-data queries centered on the panned
+      // map view (not just the pointer geo) so land and symbols match the screen.
+      avionics::MfdController& mapUi = mfdEngine->mfdController();
       avionics::DataSource* mapSource =
           app.activeSource != nullptr
               ? app.activeSource
               : static_cast<avionics::DataSource*>(&xplane);
-      mapSource->setMapPanCenter(mapUi.mapPointerActive(), mapUi.mapPointerLat(),
-                                 mapUi.mapPointerLon());
+      mapUi.applyMapPanToDataSource(*mapSource, mapSource->snapshot());
       mapSource->setChartRangeNm(mapUi.rangeNm());
     }
 

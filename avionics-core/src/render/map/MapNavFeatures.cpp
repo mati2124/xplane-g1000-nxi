@@ -1,5 +1,10 @@
 #include "render/map/MapViewInternal.h"
 
+#include <algorithm>
+#include <unordered_set>
+#include <vector>
+
+#include "avionics/MapRange.h"
 #include "avionics/render/MapSymbols.h"
 
 namespace avionics::mapview {
@@ -41,6 +46,50 @@ bool airportVisible(const MapFeature& f, const MapViewConfig& config,
          rangeNm <= config.style.smallAirportRangeNm;
 }
 
+int airportImportance(const MapFeature& f) {
+  int score = f.longestRunwayFt;
+  if (f.airportTowered) score += 2000;
+  if (f.airportServiced) score += 500;
+  return score;
+}
+
+// At regional scale the NXi draws only the highest-priority airports that pass
+// the Map Setup size-class gates, not every towered field in the query radius.
+std::unordered_set<std::size_t> rankedAirportDrawSet(
+    const MapData& map, const MapViewConfig& config, float rangeNm) {
+  struct Cand {
+    int score = 0;
+    std::size_t idx = 0;
+  };
+  std::vector<Cand> candidates;
+  candidates.reserve(64);
+  for (std::size_t i = 0; i < map.features.size(); ++i) {
+    const MapFeature& f = map.features[i];
+    if (f.type != MapFeatureType::Airport) continue;
+    if (!airportVisible(f, config, rangeNm)) continue;
+    candidates.push_back({airportImportance(f), i});
+  }
+
+  std::unordered_set<std::size_t> allowed;
+  allowed.reserve(candidates.size());
+  if (rangeNm < kAirportImportanceBudgetMinNm ||
+      static_cast<int>(candidates.size()) <= kAirportImportanceBudget) {
+    for (const Cand& c : candidates) allowed.insert(c.idx);
+    return allowed;
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Cand& a, const Cand& b) {
+              if (a.score != b.score) return a.score > b.score;
+              return a.idx < b.idx;
+            });
+  const std::size_t keep =
+      std::min(candidates.size(),
+               static_cast<std::size_t>(kAirportImportanceBudget));
+  for (std::size_t i = 0; i < keep; ++i) allowed.insert(candidates[i].idx);
+  return allowed;
+}
+
 bool featureVisible(const MapFeature& f, const MapViewConfig& config,
                     float rangeNm) {
   if (f.type == MapFeatureType::Airport) {
@@ -49,15 +98,30 @@ bool featureVisible(const MapFeature& f, const MapViewConfig& config,
   return visibleAtRange(f.type, rangeNm);
 }
 
+bool drawFeature(const MapFeature& f, std::size_t featureIdx,
+                 const std::unordered_set<std::size_t>& airportDrawSet,
+                 const MapViewConfig& config, float rangeNm) {
+  if (!featureVisible(f, config, rangeNm)) return false;
+  if (f.type == MapFeatureType::Airport &&
+      airportDrawSet.find(featureIdx) == airportDrawSet.end()) {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 void drawNavFeatures(Renderer& r, const MapData& map, const Proj& proj,
                      const MapViewConfig& config, float rangeNm, float symSize) {
   if (rangeNm > kContinentalChartRangeNm) return;
 
+  const std::unordered_set<std::size_t> airportDrawSet =
+      rankedAirportDrawSet(map, config, rangeNm);
+
   int fixesDrawn = 0;
-  for (const MapFeature& f : map.features) {
-    if (!featureVisible(f, config, rangeNm)) continue;
+  for (std::size_t i = 0; i < map.features.size(); ++i) {
+    const MapFeature& f = map.features[i];
+    if (!drawFeature(f, i, airportDrawSet, config, rangeNm)) continue;
     const bool isFix =
         f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
     if (isFix && (!config.style.showFixes || fixesDrawn >= kMaxFixesDrawn)) {
@@ -80,9 +144,13 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
                           float symSize, float labelSize) {
   if (rangeNm > kContinentalChartRangeNm || !config.style.showLabels) return;
 
+  const std::unordered_set<std::size_t> airportDrawSet =
+      rankedAirportDrawSet(map, config, rangeNm);
+
   int fixesDrawn = 0;
-  for (const MapFeature& f : map.features) {
-    if (!featureVisible(f, config, rangeNm)) continue;
+  for (std::size_t i = 0; i < map.features.size(); ++i) {
+    const MapFeature& f = map.features[i];
+    if (!drawFeature(f, i, airportDrawSet, config, rangeNm)) continue;
     const bool isFix =
         f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
     if (isFix && (!config.style.showFixes || fixesDrawn >= kMaxFixesDrawn)) {

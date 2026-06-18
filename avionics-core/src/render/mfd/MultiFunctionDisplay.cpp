@@ -349,8 +349,20 @@ void drawSoftkeyBar(Renderer& r, float w, float h, float barH,
   for (int i = 0; i < MfdController::kSoftkeyCount; ++i) {
     const float level =
         std::max(ui.pressLevel(i), ui.keyActive(i) ? 1.0f : 0.0f);
-    render::drawSoftkeyCell(r, static_cast<float>(i) * cellW, top, cellW, barH,
-                            ui.label(i), level, colors::kWhite, size);
+    const Color labelColor =
+        ui.keyEnabled(i) ? colors::kWhite : colors::kTitleGray;
+    const Color valueColor =
+        ui.keyEnabled(i) ? colors::kCyan : Color{0.07f, 0.37f, 0.37f, 1.0f};
+    std::string mainLabel = ui.label(i);
+    std::string valueLabel;
+    if (render::splitStateSoftkeyLabel(ui.label(i), mainLabel, valueLabel)) {
+      render::drawSoftkeyCell(r, static_cast<float>(i) * cellW, top, cellW,
+                              barH, mainLabel, level, labelColor, size,
+                              valueLabel, valueColor);
+    } else {
+      render::drawSoftkeyCell(r, static_cast<float>(i) * cellW, top, cellW,
+                              barH, mainLabel, level, labelColor, size);
+    }
   }
 }
 
@@ -432,7 +444,7 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
                                   const MapData& map,
                                   const ChecklistData& checklist,
                                   const EisLayout& eisLayout,
-                                  const MfdController& ui,
+                                  MfdController& ui,
                                   const SoftkeyController& radios, int widthPx,
                                   int heightPx) {
   const float w = static_cast<float>(widthPx);

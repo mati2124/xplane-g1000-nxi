@@ -846,7 +846,7 @@ void MockDataSource::refreshFeatures(double dt) {
   mapPanDirty_ = false;
 
   // When the Map Pointer is active the view (and therefore the queries) center
-  // on the pointer rather than ownship; see setMapPanCenter().
+  // on the panned map view center rather than ownship; see applyMapPanToDataSource().
   const double lat = mapPanActive_ ? mapPanLat_ : map_.ownshipLat;
   const double lon = mapPanActive_ ? mapPanLon_ : map_.ownshipLon;
   if (navFeatures_->ready()) {

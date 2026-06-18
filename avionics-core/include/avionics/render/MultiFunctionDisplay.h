@@ -21,7 +21,7 @@ class MultiFunctionDisplay {
  public:
   static void render(Renderer& r, const FlightData& data, const MapData& map,
                      const ChecklistData& checklist, const EisLayout& eisLayout,
-                     const MfdController& ui, const SoftkeyController& radios,
+                     MfdController& ui, const SoftkeyController& radios,
                      int widthPx, int heightPx);
 };
 

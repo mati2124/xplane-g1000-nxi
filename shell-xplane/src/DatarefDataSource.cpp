@@ -17,6 +17,7 @@
 #include "XPLMUtilities.h"
 #include "avionics/AptDatGeometryCache.h"
 #include "avionics/AptDatParser.h"
+#include "avionics/AssetPaths.h"
 #include "avionics/Datarefs.h"
 #include "avionics/OpenAirParser.h"
 
@@ -43,6 +44,13 @@ constexpr std::size_t kMaxMapTaxiwayLabels = 400;
 // Obstacles only draw at low ranges (and the DOF is dense).
 constexpr float kObstacleQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxMapObstacles = 300;
+constexpr std::size_t kMaxMapLandLines = 8000;
+constexpr std::size_t kMaxMapCities = 600;
+
+#ifndef AVIONICS_LAND_DATA
+#define AVIONICS_LAND_DATA ""
+#endif
+constexpr const char* kLandDataAssetPath = AVIONICS_LAND_DATA;
 
 // X-Plane's bundled OpenAir airspace file, relative to the system path
 // (XPLMGetSystemPath). User-updated data under Custom Data wins when present.
@@ -379,6 +387,11 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   acfIcao_ = XPLMFindDataRef("sim/aircraft/view/acf_ICAO");
 
   rebuildEisBindings();
+
+  // Natural Earth land overlay (coastlines, borders, cities). The plugin
+  // assets search dir is registered in plugin_main before this constructor runs.
+  landData_ = std::make_unique<LandDataStore>(
+      assets::resolve("land_data.bin", kLandDataAssetPath));
 }
 
 void DatarefDataSource::rebuildEisBindings() {
@@ -798,6 +811,12 @@ void DatarefDataSource::updateMap(double dtSeconds) {
   if (!navCacheBuilt_) buildNavCache();
   adoptMapQueryResult();
 
+  if (landData_ && landData_->loaded() && !landEverLoaded_) {
+    landEverLoaded_ = true;
+    sinceMapRebuildSeconds_ = kMapRebuildIntervalSeconds;
+    XPLMDebugString("G1000 NXi: land chart data ready\n");
+  }
+
   sinceMapRebuildSeconds_ += dtSeconds;
   if (aptMapDirty_.load(std::memory_order_acquire)) {
     sinceMapRebuildSeconds_ = kMapRebuildIntervalSeconds;
@@ -844,6 +863,8 @@ bool DatarefDataSource::submitMapQuery(double lat, double lon) {
   mapQueryReqAirspace_ = airspaceLoaded_.load(std::memory_order_acquire);
   mapQueryReqObstacles_ =
       obstacles_ != nullptr && obstacles_->loaded();
+  mapQueryReqLand_ = landData_ != nullptr && landData_->loaded();
+  mapQueryLandRangeNm_ = chartRangeNm_;
   mapQueryPhase_ = MapQueryPhase::Running;
   mapQueryCv_.notify_one();
   return true;
@@ -894,6 +915,11 @@ bool DatarefDataSource::adoptMapQueryResult() {
   if (result.obstaclesIncluded) {
     map_.obstacles = std::move(result.obstacles);
   }
+
+  if (result.landIncluded) {
+    map_.landLines = std::move(result.landLines);
+    map_.cities = std::move(result.cities);
+  }
   return true;
 }
 
@@ -907,7 +933,10 @@ void DatarefDataSource::mapQueryWorkerMain() {
     bool wantApt = false;
     bool wantAirspace = false;
     bool wantObstacles = false;
+    bool wantLand = false;
+    float landRangeNm = 0.0f;
     const ObstacleStore* obstacles = nullptr;
+    const LandDataStore* land = nullptr;
     {
       std::unique_lock<std::mutex> lock(mapQueryMu_);
       mapQueryCv_.wait(lock, [this] {
@@ -919,7 +948,10 @@ void DatarefDataSource::mapQueryWorkerMain() {
       wantApt = mapQueryReqApt_;
       wantAirspace = mapQueryReqAirspace_;
       wantObstacles = mapQueryReqObstacles_;
+      wantLand = mapQueryReqLand_;
+      landRangeNm = mapQueryLandRangeNm_;
       obstacles = obstacles_;
+      land = landData_.get();
     }
 
     MapQueryResult res;
@@ -948,6 +980,12 @@ void DatarefDataSource::mapQueryWorkerMain() {
                                         kMaxMapObstacles);
       res.obstaclesIncluded = true;
     }
+    if (wantLand && land != nullptr) {
+      res.landLines =
+          land->nearbyLines(lat, lon, landRangeNm, kMaxMapLandLines);
+      res.cities = land->nearbyCities(lat, lon, landRangeNm, kMaxMapCities);
+      res.landIncluded = true;
+    }
 
     {
       std::lock_guard<std::mutex> lock(mapQueryMu_);
@@ -966,6 +1004,13 @@ void DatarefDataSource::setMapPanCenter(bool active, double lat, double lon) {
   mapPanActive_ = active;
   mapPanLat_ = lat;
   mapPanLon_ = lon;
+}
+
+void DatarefDataSource::setChartRangeNm(float rangeNm) {
+  if (chartRangeNm_ != rangeNm) {
+    chartRangeNm_ = rangeNm;
+    mapPanDirty_ = true;
+  }
 }
 
 std::vector<MapAirportFrequency> DatarefDataSource::airportFrequencies(

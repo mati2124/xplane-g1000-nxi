@@ -8,45 +8,62 @@
 namespace avionics {
 namespace {
 
-// Softkey cell assignments for the MFD root bar. The four page groups form a
-// radio group on the left (standing in for the large FMS knob); range control
-// sits on the right two cells, mirroring the G1000 MFD softkey layout. Map Opt
-// opens the navigation-map options submenu and Detail cycles the declutter
-// level, per the NXi MFD softkey map.
-constexpr int kKeyMap = 0;
-constexpr int kKeyWaypoint = 1;
-constexpr int kKeyAux = 2;
-constexpr int kKeyNearest = 3;
-constexpr int kKeyOrient = 4;
-constexpr int kKeyMapOpt = 5;
-constexpr int kKeyDetail = 6;
-constexpr int kKeyChecklist = 7;  // Checklist: selects the Checklist page group
-constexpr int kKeyRangeDown = 10;
-constexpr int kKeyRangeUp = 11;
+// Softkey cell assignments for the MFD, matching the NXi trainer / WT
+// MFDNavMapRootMenu. Page groups (MAP/WPT/AUX/NRST) and map range are on the
+// FMS knob and RNG rocker, not the softkey bar.
+constexpr int kKeyEngine = 0;
+constexpr int kKeyMapOpt = 2;
+constexpr int kKeyDetail = 9;
+constexpr int kKeyCharts = 10;
+constexpr int kKeyChecklist = 11;
 
-// Map Opt submenu cells (Pilot's Guide: Traffic, TER, AWY, ..., Back).
-constexpr int kKeyOptTraffic = 1;
-constexpr int kKeyOptTer = 2;
-constexpr int kKeyOptAwy = 3;
-constexpr int kKeyOptNexrad = 4;
-constexpr int kKeyOptBack = 11;
+// Engine submenu (Engine softkey, WT EngineMenu).
+constexpr int kKeyEngEngine = 0;
+constexpr int kKeyEngLean = 1;
+constexpr int kKeyEngSystem = 2;
+constexpr int kKeyEngBack = 10;
 
-// MAP - Weather Radar page root bar (Pilot's Guide, Hazard Avoidance -
-// Airborne Color Weather Radar): Mode opens the Standby/Weather/Ground submenu;
-// Horizon/Vertical pick the scan; the fifth cell is BRG (horizontal scan, the
-// bearing line) or Tilt (vertical scan); range stays on the rocker, like the
-// other MAP-group pages.
-constexpr int kKeyRdrMode = 0;
-constexpr int kKeyRdrHorizon = 1;
-constexpr int kKeyRdrVertical = 2;
-constexpr int kKeyRdrGain = 3;
-constexpr int kKeyRdrBrg = 4;
-constexpr int kKeyRdrFeatures = 5;
-// Mode submenu cells.
-constexpr int kKeyRdrStandby = 1;
-constexpr int kKeyRdrWeather = 2;
-constexpr int kKeyRdrGround = 3;
-constexpr int kKeyRdrModeBack = 11;
+// Map Opt submenu (WT MapOptMenu).
+constexpr int kKeyOptTraffic = 0;
+constexpr int kKeyOptTer = 3;
+constexpr int kKeyOptAwy = 4;
+constexpr int kKeyOptNexrad = 6;
+constexpr int kKeyOptLegend = 9;
+constexpr int kKeyOptBack = 10;
+
+// MAP - Weather Radar page root bar (WT MFDWeatherRadarRootMenu).
+constexpr int kKeyRdrMode = 3;
+constexpr int kKeyRdrHorizon = 5;
+constexpr int kKeyRdrVertical = 6;
+constexpr int kKeyRdrGain = 8;
+constexpr int kKeyRdrBrg = 10;
+// Mode submenu (WT MFDWeatherRadarModeMenu).
+constexpr int kKeyRdrStandby = 2;
+constexpr int kKeyRdrWeather = 4;
+constexpr int kKeyRdrGround = 5;
+constexpr int kKeyRdrModeBack = 10;
+
+// MAP - Traffic Map page root bar (WT MFDTrafficMapRootMenu).
+constexpr int kKeyTfcAdsb = 2;
+constexpr int kKeyTfcStby = 4;
+constexpr int kKeyTfcOper = 5;
+constexpr int kKeyTfcTest = 6;
+constexpr int kKeyTfcMotion = 9;
+constexpr int kKeyTfcAltMode = 10;
+
+// NRST - Nearest Airports page extras (WT MFDNearestAirportRootMenu).
+constexpr int kKeyNrstApt = 4;
+constexpr int kKeyNrstRnwy = 5;
+constexpr int kKeyNrstFreq = 6;
+constexpr int kKeyNrstApr = 7;
+// NRST - Nearest VOR page extras (WT MFDNearestVorRootMenu).
+constexpr int kKeyNrstVor = 4;
+constexpr int kKeyNrstVorFreq = 5;
+
+// AUX - System Setup page (WT MFDSystemSetupRootMenu).
+constexpr int kKeySetup1 = 5;
+constexpr int kKeySetup2 = 6;
+constexpr int kKeyDefaults = 9;
 
 // AUX - SIMBRIEF page extras on the root bar (free cells beside Checklist), and
 // the Pilot ID digit-entry bar (0-9 / BKSP / Back, XPDR-code style).
@@ -82,6 +99,16 @@ const char* awyLabel(AirwayDisplay a) {
       break;
   }
   return "AWY Off";
+}
+
+// Shared root-bar cells from MFDNavMapRootMenu + MFDRootMenu (trainer default).
+void applyNavMapRootLabels(std::array<std::string, 12>& labels,
+                           MapDetail detail) {
+  labels[kKeyEngine] = "Engine";
+  labels[kKeyMapOpt] = "Map Opt";
+  labels[kKeyDetail] = mapDetailLabel(detail);
+  labels[kKeyCharts] = "Charts";
+  labels[kKeyChecklist] = "Checklist";
 }
 
 // First page of each group, in MfdPage enum order. Keep in sync with the page
@@ -140,9 +167,9 @@ MfdController::MfdController() {
   setToggle(MapSetting::IntOn, true);
   setToggle(MapSetting::NdbOn, true);
   setToggle(MapSetting::VorOn, true);
-  setRange(MapSetting::LargeAirportRange, 1000.0f);
-  setRange(MapSetting::MediumAirportRange, 100.0f);
-  setRange(MapSetting::SmallAirportRange, 25.0f);
+  setRange(MapSetting::LargeAirportRange, kAirportMaxRangeNm);
+  setRange(MapSetting::MediumAirportRange, kMediumAirportMaxRangeNm);
+  setRange(MapSetting::SmallAirportRange, kSmallAirportMaxRangeNm);
   setRange(MapSetting::IntRange, 25.0f);
   setRange(MapSetting::NdbRange, 25.0f);
   setRange(MapSetting::VorRange, 150.0f);
@@ -183,17 +210,23 @@ void MfdController::rebuildLabels() {
     labels_[kKeyEntryBack] = "Back";
     return;
   }
+  if (menu_ == Menu::Engine) {
+    labels_[kKeyEngEngine] = "Engine";
+    labels_[kKeyEngLean] = "Lean";
+    labels_[kKeyEngSystem] = "System";
+    labels_[kKeyEngBack] = "Back";
+    return;
+  }
   if (menu_ == Menu::MapOpt) {
     labels_[kKeyOptTraffic] = "Traffic";
     labels_[kKeyOptTer] = terLabel(terrain_);
     labels_[kKeyOptAwy] = awyLabel(airways_);
     labels_[kKeyOptNexrad] = "NEXRAD";
+    labels_[kKeyOptLegend] = "Legend";
     labels_[kKeyOptBack] = "Back";
     return;
   }
   if (menu_ == Menu::RadarMode) {
-    // Mode submenu, verbatim from the Pilot's Guide (Mode -> Standby / Weather
-    // / Ground).
     labels_[kKeyRdrStandby] = "Standby";
     labels_[kKeyRdrWeather] = "Weather";
     labels_[kKeyRdrGround] = "Ground";
@@ -201,33 +234,65 @@ void MfdController::rebuildLabels() {
     return;
   }
   if (page() == MfdPage::WeatherRadar) {
+    labels_[kKeyEngine] = "Engine";
     labels_[kKeyRdrMode] = "Mode";
     labels_[kKeyRdrHorizon] = "Horizon";
     labels_[kKeyRdrVertical] = "Vertical";
     labels_[kKeyRdrGain] = "Gain";
-    // The fifth cell is the bearing line on the horizontal scan and the tilt
-    // line on the vertical scan (Figures 6-72 / 6-74).
     labels_[kKeyRdrBrg] =
         radarScan_ == RadarScan::Vertical ? "Tilt" : "BRG";
-    labels_[kKeyRdrFeatures] = "Features";
-    labels_[kKeyRangeDown] = "RNG-";
-    labels_[kKeyRangeUp] = "RNG+";
     return;
   }
-  labels_[kKeyMap] = "Map";
-  labels_[kKeyWaypoint] = "WPT";
-  labels_[kKeyAux] = "AUX";
-  labels_[kKeyNearest] = "NRST";
-  labels_[kKeyOrient] = "TRK";
-  labels_[kKeyMapOpt] = "Map Opt";
-  labels_[kKeyDetail] = mapDetailLabel(detail_);
-  labels_[kKeyChecklist] = "Checklist";
-  labels_[kKeyRangeDown] = "RNG-";
-  labels_[kKeyRangeUp] = "RNG+";
+  if (page() == MfdPage::TrafficMap) {
+    labels_[kKeyEngine] = "Engine";
+    labels_[kKeyTfcAdsb] = "ADS-B";
+    labels_[kKeyTfcStby] = "TAS STBY";
+    labels_[kKeyTfcOper] = "TAS OPER";
+    labels_[kKeyTfcTest] = "Test";
+    labels_[kKeyTfcMotion] = "Motion";
+    labels_[kKeyTfcAltMode] = "ALT Mode";
+    return;
+  }
+  if (page() == MfdPage::SystemSetup) {
+    labels_[kKeyEngine] = "Engine";
+    labels_[kKeySetup1] = "Setup 1";
+    labels_[kKeySetup2] = "Setup 2";
+    labels_[kKeyDefaults] = "Defaults";
+    labels_[kKeyChecklist] = "Checklist";
+    return;
+  }
+  if (page() == MfdPage::NearestAirports) {
+    applyNavMapRootLabels(labels_, detail_);
+    labels_[kKeyNrstApt] = "APT";
+    labels_[kKeyNrstRnwy] = "RNWY";
+    labels_[kKeyNrstFreq] = "FREQ";
+    labels_[kKeyNrstApr] = "APR";
+    labels_[kKeyDetail] = "LD APR";
+    return;
+  }
+  if (page() == MfdPage::NearestVor) {
+    applyNavMapRootLabels(labels_, detail_);
+    labels_[kKeyNrstVor] = "VOR";
+    labels_[kKeyNrstVorFreq] = "FREQ";
+    labels_[kKeyDetail].clear();
+    return;
+  }
   if (page() == MfdPage::SimBrief) {
+    applyNavMapRootLabels(labels_, detail_);
+    labels_[kKeyDetail].clear();
+    labels_[kKeyCharts].clear();
     labels_[kKeySimbriefId] = "ID";
     labels_[kKeySimbriefFetch] = "FETCH";
+    return;
   }
+  if (pageGroup_ == MfdPageGroup::FlightPlan) {
+    labels_[kKeyEngine] = "Engine";
+    labels_[kKeyMapOpt] = "Map Opt";
+    labels_[kKeyCharts] = "Charts";
+    labels_[kKeyChecklist] = "Checklist";
+    return;
+  }
+  applyNavMapRootLabels(labels_, detail_);
 }
 
 float MfdController::rangeNm() const { return mapRangeNmAt(rangeIndex_); }
@@ -359,9 +424,41 @@ void MfdController::update(double dtSeconds, const FlightData& data) {
   }
 }
 
+bool MfdController::keyEnabled(int i) const {
+  if (labels_[i].empty()) return false;
+  if (menu_ == Menu::Engine) {
+    return i == kKeyEngEngine || i == kKeyEngBack;
+  }
+  if (menu_ == Menu::RadarMode && i == kKeyRdrGround) {
+    return false;
+  }
+  if (menu_ == Menu::Root || menu_ == Menu::MapOpt) {
+    if (i == kKeyCharts) return false;
+    if (i == kKeyChecklist) return checklistCount() > 0;
+    if (page() == MfdPage::TrafficMap) {
+      return false;  // TAS / ADS-B controls not modeled yet.
+    }
+    if (page() == MfdPage::SystemSetup &&
+        (i == kKeySetup1 || i == kKeySetup2)) {
+      return false;
+    }
+    if (page() == MfdPage::NearestAirports && i == kKeyDetail) {
+      return false;  // LD APR (replaces Detail on this page).
+    }
+    if (page() == MfdPage::SimBrief && i == kKeySimbriefFetch) {
+      return !simbriefPilotId_.empty() &&
+             simbriefState_.status != SimBriefStatus::Fetching;
+    }
+  }
+  return true;
+}
+
 bool MfdController::keyActive(int i) const {
   // Digit-entry cells are momentary; no radio/toggle highlight applies.
   if (simbriefIdEntry_) return false;
+  if (menu_ == Menu::Engine) {
+    return i == kKeyEngEngine;
+  }
   if (menu_ == Menu::MapOpt) {
     switch (i) {
       case kKeyOptTraffic:
@@ -372,6 +469,8 @@ bool MfdController::keyActive(int i) const {
         return airways_ != AirwayDisplay::Off;
       case kKeyOptNexrad:
         return showWeather_;
+      case kKeyOptLegend:
+        return mapSettingOn(MapSetting::TopoScaleOn);
       default:
         return false;
     }
@@ -398,25 +497,16 @@ bool MfdController::keyActive(int i) const {
         return !radarGainCalibrated_;  // lit while in manual gain
       case kKeyRdrBrg:
         return radarScan_ != RadarScan::Vertical && radarBearingLineOn_;
-      case kKeyRdrFeatures:
-        return radarAct_;
       default:
         return false;
     }
   }
+  if (page() == MfdPage::TrafficMap && i == kKeyTfcAdsb) {
+    return showTraffic_;
+  }
   switch (i) {
-    case kKeyMap:
-      return pageGroup_ == MfdPageGroup::Map;
-    case kKeyWaypoint:
-      return pageGroup_ == MfdPageGroup::Waypoint;
-    case kKeyAux:
-      return pageGroup_ == MfdPageGroup::Aux;
-    case kKeyNearest:
-      return pageGroup_ == MfdPageGroup::Nearest;
     case kKeyChecklist:
       return pageGroup_ == MfdPageGroup::Checklist;
-    case kKeyOrient:
-      return mapOrientation_ == MapOrientation::TrackUp;
     default:
       return false;
   }
@@ -617,11 +707,18 @@ void MfdController::clrDefaultMap() {
 
 bool MfdController::pressKey(int key) {
   if (key < 0 || key >= kSoftkeyCount || labels_[key].empty()) return false;
+  if (!keyEnabled(key)) return false;
 
   press_[key] = 1.0f;  // trigger the press-flash animation
 
   if (simbriefIdEntry_) {
     simbriefEntryKey(key);
+    rebuildLabels();
+    return true;
+  }
+
+  if (menu_ == Menu::Engine) {
+    if (key == kKeyEngBack) menu_ = Menu::Root;
     rebuildLabels();
     return true;
   }
@@ -632,13 +729,11 @@ bool MfdController::pressKey(int key) {
         showTraffic_ = !showTraffic_;
         break;
       case kKeyOptTer:
-        // TER cycles Off -> Topo -> REL -> Off (Pilot's Guide).
         terrain_ = terrain_ == TerrainDisplay::Off   ? TerrainDisplay::Topo
                    : terrain_ == TerrainDisplay::Topo ? TerrainDisplay::Rel
                                                        : TerrainDisplay::Off;
         break;
       case kKeyOptAwy:
-        // AWY cycles Off -> On (all) -> LO -> HI -> Off (Pilot's Guide).
         airways_ = airways_ == AirwayDisplay::Off   ? AirwayDisplay::All
                    : airways_ == AirwayDisplay::All ? AirwayDisplay::Low
                    : airways_ == AirwayDisplay::Low ? AirwayDisplay::High
@@ -646,6 +741,10 @@ bool MfdController::pressKey(int key) {
         break;
       case kKeyOptNexrad:
         showWeather_ = !showWeather_;
+        break;
+      case kKeyOptLegend:
+        msToggle_[static_cast<std::size_t>(MapSetting::TopoScaleOn)] =
+            !msToggle_[static_cast<std::size_t>(MapSetting::TopoScaleOn)];
         break;
       case kKeyOptBack:
         menu_ = Menu::Root;
@@ -681,6 +780,41 @@ bool MfdController::pressKey(int key) {
     return true;
   }
 
+  if (key == kKeyEngine) {
+    menu_ = Menu::Engine;
+    rebuildLabels();
+    return true;
+  }
+  if (key == kKeyMapOpt) {
+    menu_ = Menu::MapOpt;
+    rebuildLabels();
+    return true;
+  }
+  if (key == kKeyChecklist) {
+    selectGroup(MfdPageGroup::Checklist);
+    rebuildLabels();
+    return true;
+  }
+  if (key == kKeyDetail) {
+    detail_ = nextMapDetail(detail_);
+    rebuildLabels();
+    return true;
+  }
+  if (key == kKeySimbriefId) {
+    simbriefPendingId_.clear();
+    simbriefIdEntry_ = true;
+    rebuildLabels();
+    return true;
+  }
+  if (key == kKeySimbriefFetch) {
+    if (!simbriefPilotId_.empty() &&
+        simbriefState_.status != SimBriefStatus::Fetching) {
+      simbriefFetchRequested_ = true;
+    }
+    rebuildLabels();
+    return true;
+  }
+
   if (page() == MfdPage::WeatherRadar) {
     switch (key) {
       case kKeyRdrMode:
@@ -699,21 +833,10 @@ bool MfdController::pressKey(int key) {
         radarGainManual_ = radarGainCalibrated_ ? 0.0f : 0.4f;
         break;
       case kKeyRdrBrg:
-        // Horizontal scan: toggle the bearing line. Vertical scan: the cell is
-        // Tilt; tilt is trimmed with the FMS knob (radarBezelKey).
         if (radarScan_ != RadarScan::Vertical) {
           radarBearingLineOn_ = !radarBearingLineOn_;
           if (!radarBearingLineOn_) radarBearingDeg_ = 0.0f;
         }
-        break;
-      case kKeyRdrFeatures:
-        radarAct_ = !radarAct_;  // Altitude Compensated Tilt on/off
-        break;
-      case kKeyRangeDown:
-        rangeIndex_ = std::max(0, rangeIndex_ - 1);
-        break;
-      case kKeyRangeUp:
-        rangeIndex_ = std::min(kMapRangeLadderCount - 1, rangeIndex_ + 1);
         break;
       default:
         return false;
@@ -722,60 +845,7 @@ bool MfdController::pressKey(int key) {
     return true;
   }
 
-  switch (key) {
-    case kKeyMap:
-      selectGroup(MfdPageGroup::Map);
-      break;
-    case kKeyWaypoint:
-      selectGroup(MfdPageGroup::Waypoint);
-      break;
-    case kKeyAux:
-      selectGroup(MfdPageGroup::Aux);
-      break;
-    case kKeyNearest:
-      selectGroup(MfdPageGroup::Nearest);
-      break;
-    case kKeyChecklist:
-      // Selecting the group enters it; pressing again steps to the next
-      // checklist (selectGroup -> stepPage -> stepChecklist).
-      selectGroup(MfdPageGroup::Checklist);
-      break;
-    case kKeyOrient:
-      mapOrientation_ = (mapOrientation_ == MapOrientation::NorthUp)
-                            ? MapOrientation::TrackUp
-                            : MapOrientation::NorthUp;
-      break;
-    case kKeyMapOpt:
-      menu_ = Menu::MapOpt;
-      rebuildLabels();
-      break;
-    case kKeyDetail:
-      detail_ = nextMapDetail(detail_);
-      rebuildLabels();
-      break;
-    case kKeySimbriefId:
-      // Only labeled on the AUX - SIMBRIEF page. A fresh entry starts empty
-      // (dashes), like the XPDR Code entry.
-      simbriefPendingId_.clear();
-      simbriefIdEntry_ = true;
-      break;
-    case kKeySimbriefFetch:
-      if (!simbriefPilotId_.empty() &&
-          simbriefState_.status != SimBriefStatus::Fetching) {
-        simbriefFetchRequested_ = true;
-      }
-      break;
-    case kKeyRangeDown:
-      rangeIndex_ = std::max(0, rangeIndex_ - 1);
-      break;
-    case kKeyRangeUp:
-      rangeIndex_ = std::min(kMapRangeLadderCount - 1, rangeIndex_ + 1);
-      break;
-    default:
-      return false;
-  }
-  rebuildLabels();  // the page (and so the ID/FETCH keys) may have changed
-  return true;
+  return false;
 }
 
 void MfdController::simbriefEntryKey(int key) {

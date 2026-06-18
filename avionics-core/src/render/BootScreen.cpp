@@ -5,7 +5,6 @@
 
 #include "avionics/Color.h"
 #include "avionics/render/PrimaryFlightDisplay.h"
-#include "render/mfd/MfdStyle.h"
 #include "render/pfd/PfdInternal.h"
 
 namespace avionics {
@@ -21,8 +20,6 @@ Color withAlpha(Color c, float a) {
 
 constexpr float kLogoWordmarkSize = 0.14f;
 constexpr float kLogoTriangleHeight = 0.055f;
-
-constexpr float kBottomBarFrac = 34.0f / 768.0f;
 
 constexpr const char* kAirframeType = "Cessna 172S";
 constexpr const char* kSystemVersion = "2026.1";
@@ -160,39 +157,6 @@ void drawGarminG1000Brand(Renderer& r, float cx, float topY, float h,
   r.fillPolygon(tri, 3, withAlpha(colors::kGarminLogoBlue, alpha));
 }
 
-void drawMfdBootSoftkeys(Renderer& r, float w, float h, float barH,
-                         const MfdController& ui, float alpha) {
-  const float top = h - barH;
-  r.fillRect(0.0f, top, w, barH, withAlpha(colors::kSoftkeyBackground, alpha));
-
-  const float cellW = w / static_cast<float>(MfdController::kSoftkeyCount);
-  const float cy = top + barH * 0.5f;
-  const float size = mfd::mfdFontPx(17.0f, h);
-  const float insetX = cellW * 0.055f;
-  const float insetY = barH * 0.13f;
-  for (int i = 0; i < MfdController::kSoftkeyCount; ++i) {
-    const float bx = static_cast<float>(i) * cellW + insetX;
-    const float by = top + insetY;
-    const float bw = cellW - 2.0f * insetX;
-    const float bh = barH - 2.0f * insetY;
-
-    const bool highlightEnt = (i == MfdController::kSoftkeyCount - 1);
-    if (highlightEnt) {
-      r.fillRect(bx, by, bw, bh,
-                 withAlpha(colors::kSoftkeySelected, alpha * 0.85f));
-    }
-    const Point frame[5] = {
-        {bx, by}, {bx + bw, by}, {bx + bw, by + bh}, {bx, by + bh}, {bx, by}};
-    r.strokePolyline(frame, 5, 1.0f, withAlpha(colors::kPanelSeparator, alpha));
-
-    if (!ui.label(i).empty()) {
-      r.fillText(bx + bw * 0.5f, cy, ui.label(i), size, TextAlign::Center,
-                 highlightEnt ? withAlpha(colors::kBlack, alpha)
-                              : withAlpha(colors::kWhite, alpha));
-    }
-  }
-}
-
 void renderLogo(Renderer& r, float alpha, int widthPx, int heightPx) {
   const float w = static_cast<float>(widthPx);
   const float h = static_cast<float>(heightPx);
@@ -238,15 +202,14 @@ void renderPfdPowerUp(Renderer& r, const FlightData& flightData,
   r.fillRect(L.insetMapX, L.insetMapY, L.insetMapW, L.insetMapH, colors::kBlack);
 }
 
-void renderMfdPowerUp(Renderer& r, const MfdController& mfdUi,
+void renderMfdPowerUp(Renderer& r, const MfdController& /*mfdUi*/,
                       const NavDatabaseInfo& navDatabase, bool awaitingAck,
                       float alpha, int widthPx, int heightPx) {
   if (alpha <= 0.0f) return;
 
   const float w = static_cast<float>(widthPx);
   const float h = static_cast<float>(heightPx);
-  const float barH = h * kBottomBarFrac;
-  const float bodyH = h - barH;
+  const float bodyH = h;
 
   r.fillRect(0.0f, 0.0f, w, h, colors::kBlack);
 
@@ -318,8 +281,8 @@ void renderMfdPowerUp(Renderer& r, const MfdController& mfdUi,
                "Press 'ENT' or rightmost softkey to continue", promptSize,
                TextAlign::Right, withAlpha(colors::kWhite, alpha));
   }
-
-  drawMfdBootSoftkeys(r, w, h, barH, mfdUi, alpha);
+  // No on-screen softkey label bar during power-up (Figure 1-8): the page uses
+  // the full GDU height; ENT / the rightmost physical key still dismisses it.
 }
 
 }  // namespace

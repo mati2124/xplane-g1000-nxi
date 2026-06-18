@@ -10,7 +10,7 @@ namespace avionics::mfd {
 
 // MAP group.
 void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
-                 const MfdController& ui, float x, float y, float w, float h,
+                 MfdController& ui, float x, float y, float w, float h,
                  float displayH);
 // Dedicated Traffic Map: ownship-centered range rings with traffic symbols and
 // no topography, the NXi traffic display (Pilot's Guide, Hazard Avoidance).

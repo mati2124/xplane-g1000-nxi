@@ -61,6 +61,8 @@ constexpr float kMapGeoLabelScale = 1.10f;
 // ownship icon is drawn noticeably larger than the nav-feature symbols so the
 // aircraft stands out from the airports/navaids it overflies.
 constexpr float kOwnshipSymbolWt = 15.0f;
+// Map Pointer cursor (Garmin MapPointerLayer / --map-pointer-size: 25px).
+constexpr float kMapPointerSizeWt = 25.0f;
 
 // Margin (px) added around the viewport when clipping per-pixel symbology, so
 // teeth/dashes near the edge are not cut early.
@@ -194,6 +196,21 @@ inline bool polylineIntersectsClip(const Point* pts, int count,
       return true;
     }
   }
+  if (count >= 3) {
+    const Point& a = pts[count - 1];
+    const Point& b = pts[0];
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len >= 0.001f) {
+      float lo = 0.0f, hi = 0.0f;
+      if (segmentVisibleSpan(a.x, a.y, dx / len, dy / len, len, clip.minX,
+                             clip.minY, clip.maxX, clip.maxY, margin, lo,
+                             hi)) {
+        return true;
+      }
+    }
+  }
   return false;
 }
 
@@ -244,9 +261,8 @@ float drawChromeLabel(Renderer& r, float x, float y, const char* text,
 
 // Land data: lakes filled, rivers/roads/borders stroked, with per-class range
 // declutter. Drawn right above the map background so everything overlays it.
-// When a topo/rel terrain raster is showing at close range, skip only the
-// high-vertex landmass detail so the DEM shoreline stays visible; coarse
-// silhouettes and island fills still paint black under the terrain.
+// Chart land/ocean fills draw beneath the topo raster; the raster composites
+// over them with transparent pixels where DEM data is not yet available.
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
                   float rangeNm, bool skipLandMassFill = false);
 
@@ -357,6 +373,11 @@ void drawWindVector(Renderer& r, const FlightData& flight,
 // North indicator below the orientation label (Fig 5-26).
 void drawNorthArrow(Renderer& r, float cx, float cy, float size,
                     float rotation);
+
+// Map Pointer cursor (Garmin MapPointerLayer default SVG): white arrow with a
+// black outline, hot spot at the tip, flashing inverted ~10% of each second.
+void drawMapPointer(Renderer& r, float hotX, float hotY, float displayH,
+                    bool flashInverted);
 
 // Range readout on the outer range ring / lower-right corner (Fig 5-2).
 void drawRangeLabel(Renderer& r, float x, float y, float rangeNm,

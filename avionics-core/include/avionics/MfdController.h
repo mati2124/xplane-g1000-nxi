@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,10 +20,11 @@ namespace avionics {
 
 // Persisted-preferences view of this controller (avionics/PersistentState.h).
 struct MfdPersistentState;
+class DataSource;
 
 // The MFD page groups (G1000 Pilot's Guide for Cessna Nav III, Section 1.4).
 // MAP/WPT/AUX/NRST and Checklist are selected from the bottom softkey bar
-// (standing in for the large FMS knob); the FPL group is entered with the FPL
+// (Checklist) or the large FMS knob (page groups); the FPL group is entered with the FPL
 // bezel key, as on the real unit. Each checklist in the loaded file is a page
 // within the Checklist group (stepped like any other group's pages).
 enum class MfdPageGroup { Map, Waypoint, Aux, Nearest, FlightPlan, Checklist };
@@ -213,6 +215,11 @@ class MfdController {
   // ~1 Hz blink phase (true for the first half of each second) used to pulse
   // highlight-select cursor fields (WT .highlight-select @keyframes pulse).
   bool blinkOn() const { return blinkOn_; }
+  // Map Pointer flash (Garmin map-pointer-flash): inverted colors for the last
+  // ~10% of each one-second cycle.
+  bool mapPointerFlashInverted() const {
+    return std::fmod(blinkSeconds_, 1.0) >= 0.9;
+  }
 
   // Apply a press of physical softkey `key` (0..kSoftkeyCount-1, the hardware
   // keys below the display; the on-screen bar is labels only, like the real
@@ -281,13 +288,24 @@ class MfdController {
 
   // Navigation Map pointer / pan mode (Pilot's Guide, Map Panning): push the
   // RANGE joystick on the MAP page to place a pan cursor; moving the joystick
-  // then pans the map center. While active, the navigation map centers on the
-  // pointer rather than ownship. ENT on a highlighted waypoint opens its
-  // Waypoint Information page; Direct-To opens on the waypoint under the
-  // pointer.
+  // slides the cursor across the map. The map stays put until the cursor
+  // reaches the inner edge of the view, then the map scrolls to keep it on
+  // screen. ENT on a highlighted waypoint opens its Waypoint Information page;
+  // Direct-To opens on the waypoint under the pointer.
   bool mapPointerActive() const { return mapPointerActive_; }
   double mapPointerLat() const { return mapPointerLat_; }
   double mapPointerLon() const { return mapPointerLon_; }
+  // Map view center while the pointer is active (may differ from the pointer
+  // geo until the cursor reaches the edge of its free-move zone).
+  double mapPanViewCenterLat() const { return mapPanViewCenterLat_; }
+  double mapPanViewCenterLon() const { return mapPanViewCenterLon_; }
+  // Called each frame from the MAP page so edge-scroll can use the live
+  // viewport geometry and orientation.
+  void setMapViewport(float x, float y, float w, float h, float displayH);
+  void mapPointerSyncScroll(const FlightData& flight);
+  // Push the panned map view center (not the pointer geo) into the data
+  // source so land vectors and nav features load for what is on screen.
+  void applyMapPanToDataSource(DataSource& source, const FlightData& flight);
   // The map feature under the pan pointer (within a small, range-scaled snap
   // radius), or nullptr. The page highlights it and fills the Map Pointer
   // information box with its ident, like the real unit selecting a waypoint as
@@ -530,6 +548,8 @@ class MfdController {
   float pressLevel(int i) const { return press_[i]; }
   // All kSoftkeyCount press levels, for the shell's physical softkey row.
   const float* pressLevels() const { return press_.data(); }
+  // False for greyed options (Charts, unavailable Engine pages, etc.).
+  bool keyEnabled(int i) const;
   // True while the cell's page group is the selected one (radio highlight).
   bool keyActive(int i) const;
 
@@ -549,9 +569,9 @@ class MfdController {
   friend void applyMfdState(MfdController&, const MfdPersistentState&);
 
   // The MFD softkey bar is a small menu stack like the PFD's: the root bar
-  // can open the Map Opt submenu (Traffic / TER / AWY), which carries a Back
-  // key (NXi Pilot's Guide, MFD softkey map).
-  enum class Menu { Root, MapOpt, RadarMode };
+  // can open the Engine or Map Opt submenus, which carry a Back key (NXi
+  // trainer screenshots / WT MFDNavMapRootMenu).
+  enum class Menu { Root, Engine, MapOpt, RadarMode };
 
   // Refresh the visible cell labels for the current menu, including the
   // state-carrying labels (TER / AWY / Detail show their selection).
@@ -640,6 +660,7 @@ class MfdController {
   void wptResetInteraction();
   void nrstResetInteraction();
   void mapResetPointer();
+  void mapPointerScrollTowardPointer();
   void wptCommitEntry();
 
   MfdPageGroup pageGroup_ = MfdPageGroup::Map;
@@ -683,6 +704,14 @@ class MfdController {
   bool mapPointerActive_ = false;
   double mapPointerLat_ = 0.0;
   double mapPointerLon_ = 0.0;
+  double mapPanViewCenterLat_ = 0.0;
+  double mapPanViewCenterLon_ = 0.0;
+  bool mapViewportValid_ = false;
+  float mapViewportX_ = 0.0f;
+  float mapViewportY_ = 0.0f;
+  float mapViewportW_ = 0.0f;
+  float mapViewportH_ = 0.0f;
+  float mapViewportDisplayH_ = 0.0f;
 
   // WPT ident search state.
   FmsWaypointEntry wptEntry_;

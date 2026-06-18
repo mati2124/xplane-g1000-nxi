@@ -63,6 +63,7 @@ void MfdController::mapSettingsEdit(int dir) {
     for (int i = 0; i < 3; ++i) {
       if (kCycle[i] == mapOrientation_) {
         mapOrientation_ = kCycle[((i + step) % 3 + 3) % 3];
+        mapResetPointer();
         return;
       }
     }

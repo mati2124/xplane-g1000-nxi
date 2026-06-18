@@ -29,6 +29,20 @@ inline double lonDeltaDeg(double lonDeg, double centerLonDeg) {
   return d;
 }
 
+// Wrap an angle into (-180, 180] (Garmin GeoPoint::set / MathUtils.normalizeAngleDeg).
+inline double wrapLonDeg(double lonDeg) {
+  while (lonDeg <= -180.0) lonDeg += 360.0;
+  while (lonDeg > 180.0) lonDeg -= 360.0;
+  return lonDeg;
+}
+
+// Mercator Y at the chartable pole limit (see mercatorYRad).
+inline double mercatorPoleYRad() {
+  constexpr double kMaxLat = 89.5;
+  const double latRad = kMaxLat * kDegToRad;
+  return std::asinh(std::tan(latRad));
+}
+
 // Mercator Y in radians (Garmin MercatorProjection::projectRaw). Use the full
 // formula to ~89.5°; clamping earlier (±85°) stacked polar vertices and drew a
 // visible horizontal seam when the view reached high latitudes at wide range.
@@ -73,5 +87,39 @@ inline void mercatorToScreen(double eastRad, double northRad, float cx, float cy
 bool latLonToLocalPx(double lat, double lon, double centerLat, double centerLon,
                      float cx, float cy, float pixelsPerNm, float rotationDeg,
                      float& outX, float& outY);
+
+// Inverse of mercatorToScreen for a map-center scroll delta in pixels (used
+// when the pan pointer reaches the edge of its free-move zone).
+inline void screenDeltaToMercatorRad(float dx, float dy, float mercatorPxPerRad,
+                                     double cosR, double sinR, double& eastRad,
+                                     double& northRad) {
+  const double mapEast =
+      static_cast<double>(dx) / static_cast<double>(mercatorPxPerRad);
+  const double mapNorth =
+      -static_cast<double>(dy) / static_cast<double>(mercatorPxPerRad);
+  eastRad = mapEast * cosR + mapNorth * sinR;
+  northRad = -mapEast * sinR + mapNorth * cosR;
+}
+
+// Shift a Mercator view center by east/north radians. When the offset crosses a
+// pole, reflect through the pole and flip longitude so panning continues on the
+// far side of the Earth instead of stalling at ±89.5°.
+inline void offsetMercatorCenter(double centerLat, double centerLon,
+                                 double eastRad, double northRad,
+                                 double& outLat, double& outLon) {
+  const double yMax = mercatorPoleYRad();
+  double y = mercatorYRad(centerLat) + northRad;
+  double lonDeg = centerLon + eastRad / kDegToRad;
+  while (y > yMax) {
+    y = 2.0 * yMax - y;
+    lonDeg += 180.0;
+  }
+  while (y < -yMax) {
+    y = -2.0 * yMax - y;
+    lonDeg += 180.0;
+  }
+  outLat = mercatorLatDegFromY(y);
+  outLon = wrapLonDeg(lonDeg);
+}
 
 }  // namespace avionics::map

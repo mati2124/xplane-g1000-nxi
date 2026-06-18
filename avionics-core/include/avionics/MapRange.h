@@ -24,6 +24,17 @@ inline constexpr int kMapRangeDefaultIndex = 5;
 // map (Map Setup "Traffic Symbols" / "Traffic Labels" ranges).
 inline constexpr float kTrafficMapRangeDefaultNm = 15.0f;
 
+// Default max map range (NM) for airport symbols on the navigation map (Map
+// Setup "Large Airport" / "Medium Airport" ranges). Airports declutter once the
+// map opens past this step on the real NXi.
+inline constexpr float kAirportMaxRangeNm = 100.0f;
+inline constexpr float kMediumAirportMaxRangeNm = 50.0f;
+inline constexpr float kSmallAirportMaxRangeNm = 25.0f;
+// At 50 NM and wider the NXi keeps only the most significant airports on chart
+// (longest runway / towered), not every field that passes the size-class gate.
+inline constexpr float kAirportImportanceBudgetMinNm = 50.0f;
+inline constexpr int kAirportImportanceBudget = 15;
+
 // Top of the shared range ladder (1000 NM on the NXi).
 inline constexpr float kMapRangeMaxNm =
     kMapRangeLadderNm[kMapRangeLadderCount - 1];
@@ -32,6 +43,22 @@ inline constexpr float kMapRangeMaxNm =
 // coastlines and country borders reach the edges of a wide view (the US–Mexico
 // border reaches ~118°W).
 inline constexpr float kLandQueryRangeNm = kMapRangeMaxNm * 1.15f;
+
+// GSHHG regional lon-band land carries peninsula-scale shore geometry from the
+// closest ladder step through mid range. Below ~15 NM the detail spatial index
+// layers local shore rings on top; continental silhouettes stay out of the query.
+inline constexpr float kRegionalLandMinRangeNm = kMapRangeLadderNm[0];
+inline constexpr float kRegionalLandMaxRangeNm = 120.0f;
+// Continental silhouettes are omitted from close-range queries; regional lon-bands
+// resume above this range (see LandDataStore and MapLandLayer).
+inline constexpr float kRegionalSilhouetteSuppressMaxNm = 15.0f;
+// GSHHG regional lon-band rings span at least ~20°; use this to separate them
+// from local high-point-count shore rings in fill draw order.
+inline constexpr float kRegionalLonBandMinGeoSpanDeg = 40.0f;
+
+// State/province borders and labels stay on the chart through this range; past
+// it only nation outlines and the largest region names remain (NXi declutter).
+inline constexpr float kStateBorderMaxRangeNm = 400.0f;
 
 // Embedded WPT Airport Information map range: tight enough to show the
 // SafeTaxi-style runway + taxiway pavement diagram.
@@ -63,6 +90,13 @@ inline float animateMapRange(float current, float target, double dtSeconds) {
   const float a =
       1.0f - std::exp(-static_cast<float>(dtSeconds) / kMapZoomTimeConstantSec);
   return std::exp(logCur + (logTgt - logCur) * a);
+}
+
+// True once the animated range has reached the selected ladder step (same
+// ~0.4% log tolerance as animateMapRange uses to snap to target).
+inline bool mapRangeZoomSettled(float displayRangeNm, float rangeNm) {
+  if (displayRangeNm <= 0.0f || rangeNm <= 0.0f) return true;
+  return std::fabs(std::log(displayRangeNm) - std::log(rangeNm)) < 0.004f;
 }
 
 // Format a map range for the on-screen range readout, matching the G1000 NXi:

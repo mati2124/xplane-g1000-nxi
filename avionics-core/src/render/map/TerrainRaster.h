@@ -1,5 +1,6 @@
 #pragma once
 
+#include "avionics/MapRange.h"
 #include "avionics/Renderer.h"
 
 namespace avionics {
@@ -23,15 +24,20 @@ enum class TerrainRasterMode { Absolute, Relative };
 // (PFD inset, MFD MAP page, embedded airport windows) gets its own raster
 // without the callers managing lifetimes. Returns false while no raster is
 // ready for this view yet (caller should paint its plain background).
-// Above this map range the DSF tile cache cannot cover the raster footprint
-// (~2.4x range); skip terrain shading and let the plain background + land
-// overlay define the wide view instead of half-loaded procedural noise.
-inline constexpr float kTerrainMaxRangeNm = 75.0f;
+// Matches the NXi map ladder top step; Map Setup "Terrain Data" range can
+// declutter below this via MapViewStyle::terrainMaxRangeNm.
+inline constexpr float kTerrainMaxRangeNm = kMapRangeMaxNm;
+// Below this range the topo raster samples full-resolution DSF DEM; above it
+// each 1° tile contributes one max-elevation value (continental zoom).
+inline constexpr float kFullDetailTerrainMaxNm = 200.0f;
+// Wider MFD map aspect: farthest on-screen corner from center at max range.
+inline constexpr float kTerrainCornerRangeFactor = 3.5f;
 
 bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
                        TerrainRasterMode mode, float ownAltFt,
                        double viewCenterLat, double viewCenterLon, float cx,
                        float cy, float pixelsPerNm, float rotationDeg,
-                       float rangeNm);
+                       float rangeNm, float displayRangeNm,
+                       float viewHalfExtentNm, float terrainMaxRangeNm);
 
 }  // namespace avionics::map

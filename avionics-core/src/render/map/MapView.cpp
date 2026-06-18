@@ -60,6 +60,10 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
       std::max(0.5f, config.displayRangeNm > 0.0f ? config.displayRangeNm
                                                   : rangeNm);
   const float pixelsPerNm = mapRadiusPx / scaleRangeNm;
+  const float viewHalfExtentNm =
+      std::sqrt((config.w * 0.5f) * (config.w * 0.5f) +
+                (config.h * 0.5f) * (config.h * 0.5f)) /
+      pixelsPerNm;
   const float rotation = orientationDeg(config.orientation, flight);
   const float labelSize = mapview::fontPx(config.style.labelFontWt, displayH);
 
@@ -71,44 +75,10 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
 
-  // NXi navy ocean base whenever land styling is active. Terrain and land fills
-  // paint on top; this guarantees water shows at close range when terrain is
-  // off, still building, or does not cover the full viewport.
+  // NXi navy ocean base whenever land styling is active.
   if (config.style.showLand && map.positionValid &&
       (config.style.showChrome || config.style.showLand)) {
     r.fillRect(config.x, config.y, config.w, config.h, mapview::kMapOceanFill);
-  }
-
-  // Terrain background (topo or relative), drawn over the ocean base.
-  bool terrainDrawn = false;
-  if (config.style.terrain != TerrainDisplay::Off && map.terrain != nullptr &&
-      map.positionValid) {
-    const map::TerrainRasterMode mode =
-        config.style.terrain == TerrainDisplay::Rel
-            ? map::TerrainRasterMode::Relative
-            : map::TerrainRasterMode::Absolute;
-    terrainDrawn = map::drawTerrainRaster(
-        r, *map.terrain, mode, flight.altitudeValid ? flight.altitudeFt : 0.0f,
-        viewCenterLat, viewCenterLon, cx, cy, pixelsPerNm, rotation, rangeNm);
-  }
-
-  // Dim fallback when land styling is off and no terrain raster is shown.
-  if (!terrainDrawn && !config.style.showLand) {
-    if (config.style.showChrome) {
-      r.fillRect(config.x, config.y, config.w, config.h,
-                 Color{0.0f, 0.0f, 0.0f, 0.82f});
-    }
-  }
-
-  if (config.style.showChrome) {
-    r.strokeLine(config.x, config.y, config.x + config.w, config.y, 2.0f,
-                 colors::kTapeTopBorder);
-    r.strokeLine(config.x, config.y + config.h, config.x + config.w,
-                 config.y + config.h, 2.0f, colors::kTapeTopBorder);
-    r.strokeLine(config.x, config.y, config.x, config.y + config.h, 2.0f,
-                 colors::kTapeTopBorder);
-    r.strokeLine(config.x + config.w, config.y, config.x + config.w,
-                 config.y + config.h, 2.0f, colors::kTapeTopBorder);
   }
 
   if (!map.positionValid) {
@@ -138,16 +108,47 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   proj.maxY = config.y + config.h;
   proj.init();
 
-  // Land data sits directly on the background (under everything, including
-  // the range rings); lakes/rivers are skipped over the terrain raster's
-  // water-colored TOPO base only when terrain is off-screen -- they overlay
-  // consistently either way.
+  // Chart land/ocean under the topo layer. Where the terrain raster is still
+  // loading (transparent pixels) or omits open ocean, the base chart shows
+  // through like the real NXi instead of procedural tan over the Gulf.
   if (config.style.showLand &&
       (!map.landLines.empty() || !map.cities.empty())) {
     mapview::drawLandData(r, map, proj, rangeNm, false);
     if (config.style.showLabels) {
       mapview::drawCityDots(r, map, proj, rangeNm, symSize);
     }
+  }
+
+  // Terrain background (topo or relative), composited over the chart base.
+  bool terrainDrawn = false;
+  if (config.style.terrain != TerrainDisplay::Off && map.terrain != nullptr) {
+    const map::TerrainRasterMode mode =
+        config.style.terrain == TerrainDisplay::Rel
+            ? map::TerrainRasterMode::Relative
+            : map::TerrainRasterMode::Absolute;
+    terrainDrawn = map::drawTerrainRaster(
+        r, *map.terrain, mode, flight.altitudeValid ? flight.altitudeFt : 0.0f,
+        viewCenterLat, viewCenterLon, cx, cy, pixelsPerNm, rotation, rangeNm,
+        scaleRangeNm, viewHalfExtentNm, config.style.terrainMaxRangeNm);
+  }
+
+  // Dim fallback when land styling is off and no terrain raster is shown.
+  if (!terrainDrawn && !config.style.showLand) {
+    if (config.style.showChrome) {
+      r.fillRect(config.x, config.y, config.w, config.h,
+                 Color{0.0f, 0.0f, 0.0f, 0.82f});
+    }
+  }
+
+  if (config.style.showChrome) {
+    r.strokeLine(config.x, config.y, config.x + config.w, config.y, 2.0f,
+                 colors::kTapeTopBorder);
+    r.strokeLine(config.x, config.y + config.h, config.x + config.w,
+                 config.y + config.h, 2.0f, colors::kTapeTopBorder);
+    r.strokeLine(config.x, config.y, config.x, config.y + config.h, 2.0f,
+                 colors::kTapeTopBorder);
+    r.strokeLine(config.x + config.w, config.y, config.x + config.w,
+                 config.y + config.h, 2.0f, colors::kTapeTopBorder);
   }
 
   // Map precipitation overlay: prefer the datalink NEXRAD source (real ground

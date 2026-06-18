@@ -51,7 +51,7 @@ float pointerRotationDeg(MapOrientation orientation, const FlightData& d) {
 }  // namespace
 
 void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
-                 const MfdController& ui, float x, float y, float w, float h,
+                 MfdController& ui, float x, float y, float w, float h,
                  float displayH) {
   MapViewConfig config;
   config.x = x;
@@ -92,6 +92,7 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
       ui.mapSettingRangeNm(MapSetting::MediumAirportRange);
   config.style.smallAirportRangeNm =
       ui.mapSettingRangeNm(MapSetting::SmallAirportRange);
+  config.style.terrainMaxRangeNm = ui.mapSettingRangeNm(MapSetting::TerrainRange);
   config.style.labelFontWt = 18.0f;
   applyMapDetail(config.style, ui.mapDetail());
   const MapFeature* pointerFeature = ui.mapPointerActive() ? ui.mapPointerFeature()
@@ -114,32 +115,45 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
   }
   config.selectedObstacle = selectedObstacle;
   if (ui.mapPointerActive()) {
+    ui.setMapViewport(x, y, w, h, displayH);
+    ui.mapPointerSyncScroll(d);
     config.hasCenterOverride = true;
-    config.centerLat = ui.mapPointerLat();
-    config.centerLon = ui.mapPointerLon();
+    config.centerLat = ui.mapPanViewCenterLat();
+    config.centerLon = ui.mapPanViewCenterLon();
   }
   MapView::render(r, map, d, config, displayH);
 
   // Map Panning (G1000 NXi Pilot's Guide, Map Pointer): when pointer mode is
-  // active the map centers on the pointer, a cyan crosshair marks the pointer
-  // position, the feature under it is highlighted, and an information box shows
-  // the bearing/distance from present position and the pointer's coordinates.
+  // active a flashing arrow cursor marks the pointer position on the map (the
+  // view stays put until the cursor reaches the inner edge, then scrolls), the
+  // feature under it is highlighted, and an information box shows the
+  // bearing/distance from present position and the pointer's coordinates.
   if (ui.mapPointerActive()) {
     const float cx = x + w * 0.5f;
     const float cy = y + h * 0.5f;
+    const double viewLat = ui.mapPanViewCenterLat();
+    const double viewLon = ui.mapPanViewCenterLon();
     const double ptLat = ui.mapPointerLat();
     const double ptLon = ui.mapPointerLon();
     const MapFeature* sel = selectedObstacle != nullptr ? nullptr : pointerFeature;
+    const float mapRadiusPx = mapview::mapRangeSpanPx(config);
+    const float scaleRangeNm =
+        std::max(0.5f, ui.displayRangeNm() > 0.0f ? ui.displayRangeNm()
+                                                  : ui.rangeNm());
+    const float pixelsPerNm = mapRadiusPx / scaleRangeNm;
+    const float rotation = pointerRotationDeg(ui.mapOrientation(), d);
+    float ptrX = cx;
+    float ptrY = cy;
+    if (map.positionValid) {
+      map::latLonToLocalPx(ptLat, ptLon, viewLat, viewLon, cx, cy, pixelsPerNm,
+                           rotation, ptrX, ptrY);
+    }
 
     // Highlight the selected feature with a cyan ring at its projected
-    // position (it sits at/near the crosshair since the map centers on the
-    // pointer).
+    // position (near the pointer tip when the pointer is over it).
     if (sel != nullptr && map.positionValid) {
-      const float mapRadiusPx = mapview::mapRangeSpanPx(config);
-      const float pixelsPerNm = mapRadiusPx / std::max(0.5f, ui.rangeNm());
-      const float rotation = pointerRotationDeg(ui.mapOrientation(), d);
       float fx = 0.0f, fy = 0.0f;
-      map::latLonToLocalPx(sel->lat, sel->lon, ptLat, ptLon, cx, cy,
+      map::latLonToLocalPx(sel->lat, sel->lon, viewLat, viewLon, cx, cy,
                            pixelsPerNm, rotation, fx, fy);
       strokeCircle(r, fx, fy, std::min(w, h) * 0.024f, 2.0f, colors::kCyan);
     }
@@ -149,18 +163,13 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
       const float obstacleSize =
           std::max(11.0f, mapview::fontPx(mapview::kObstacleSymbolWt, displayH));
       const float labelSize = mapview::fontPx(config.style.labelFontWt, displayH);
-      mapview::drawObstacleSelectedTag(r, cx, cy, obstacleSize,
+      mapview::drawObstacleSelectedTag(r, ptrX, ptrY, obstacleSize,
                                        selectedObstacle->mslFt,
                                        selectedObstacle->aglFt, labelSize, obC);
     }
 
-    const float arm = std::min(w, h) * 0.028f;
-    const float gap = arm * 0.45f;
-    r.strokeLine(cx - arm, cy, cx - gap, cy, 2.0f, colors::kCyan);
-    r.strokeLine(cx + gap, cy, cx + arm, cy, 2.0f, colors::kCyan);
-    r.strokeLine(cx, cy - arm, cx, cy - gap, 2.0f, colors::kCyan);
-    r.strokeLine(cx, cy + gap, cx, cy + arm, 2.0f, colors::kCyan);
-    r.fillCircle(cx, cy, 3.0f, colors::kCyan);
+    mapview::drawMapPointer(r, ptrX, ptrY, displayH,
+                            ui.mapPointerFlashInverted());
 
     // Information box, top-center (clear of the range and orientation labels).
     if (map.positionValid) {

@@ -91,9 +91,12 @@ struct MapViewStyle {
   bool showLargeAirports = true;
   bool showMediumAirports = true;
   bool showSmallAirports = true;
-  float largeAirportRangeNm = 1000.0f;
-  float mediumAirportRangeNm = 100.0f;
-  float smallAirportRangeNm = 25.0f;
+  float largeAirportRangeNm = kAirportMaxRangeNm;
+  float mediumAirportRangeNm = kMediumAirportMaxRangeNm;
+  float smallAirportRangeNm = kSmallAirportMaxRangeNm;
+  // Max map range (NM) for TER Topo/Rel shading (Map Setup "Terrain Data"
+  // range). Declutters when zoomed out past this step on the real NXi.
+  float terrainMaxRangeNm = kMapRangeMaxNm;
   float labelFontWt = 14.0f;
 };
 

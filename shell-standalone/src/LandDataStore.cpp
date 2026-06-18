@@ -23,9 +23,7 @@ constexpr float kNearLandRangeNm = 160.0f;
 // Coast polylines are kept in the asset for tooling but never drawn — the NXi
 // shoreline is the landmass fill edge against navy ocean.
 constexpr float kDetailLandMaxRangeNm = 50.0f;
-// High-res lon-band land slices from the lowest ladder step through mid range.
-constexpr float kRegionalLandMinRangeNm = kMapRangeLadderNm[0];
-constexpr float kRegionalLandMaxRangeNm = 120.0f;
+// Regional lon-band slices: see kRegionalLandMinRangeNm in MapRange.h.
 constexpr float kChartLakeMinRangeNm = 500.0f;
 // At 1000 NM only Great-Lakes-scale water bodies are visible (not every
 // northern reservoir that would project into a Mercator wedge).
@@ -34,7 +32,6 @@ constexpr float kWideChartLakeMinSpanDeg = 2.0f;
 // (the US–Mexico border reaches ~117°W; 1.35× still clipped the western
 // segment when centered over Florida at 1000 NM).
 constexpr float kWideLandOverlapScale = 1.85f;
-constexpr float kStateBorderQueryMaxRangeNm = 200.0f;
 
 // Lines that remain meaningful across a continental view and so are always
 // collected out to the full query range.
@@ -219,7 +216,7 @@ void LandDataStore::load() {
       constexpr float kSilhouetteLandSpanDeg = 30.0f;
       constexpr float kIslandLandMaxSpanDeg = 28.0f;
       constexpr float kRegionalLandMinSpanDeg = 20.0f;
-      constexpr float kMaxSilhouetteSpanDeg = 180.0f;
+      constexpr float kMaxSilhouetteSpanDeg = 360.0f;
       constexpr std::size_t kSilhouetteLandMaxPts = 8000;
       for (std::size_t i = 0; i < lines_.size(); ++i) {
         const LandClass c = lines_[i].landClass;
@@ -283,6 +280,8 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
   if (!loaded() || maxCount == 0) return result;
 
   const double cosLat = std::max(0.05, std::cos(lat * kDegToRad));
+  const float landOverlapScale =
+      rangeNm >= 500.0f ? 2.05f : kWideLandOverlapScale;
 
   // Landmass fills must win the budget: they define the black-land / blue-ocean
   // base and are stored after borders in the asset, so a wide-class scan that
@@ -291,8 +290,10 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
 
   auto overlaps = [&](const Bounds& b, float queryRangeNm,
                       float marginScale) {
+    const float latMarginScale =
+        queryRangeNm >= 500.0f ? marginScale * 2.5f : marginScale;
     const float latSpan =
-        static_cast<float>((queryRangeNm / kNmPerDeg) * marginScale);
+        static_cast<float>((queryRangeNm / kNmPerDeg) * latMarginScale);
     const float dLat = latSpan;
     // Mercator stretches north/south; the top of a north-up chart sits at a
     // higher latitude than an equirectangular range circle would suggest, so
@@ -355,18 +356,23 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
     }
     if (viewInsideBounds(b)) return true;
     if (centroidWithinRange(b, queryRangeNm, marginScale)) return true;
-    // Mercator panning can place the pointer over water while a continental
-    // landmass still fills much of the chart (Mexico visible while centered
-    // off Ecuador). Use center-latitude lon reach — not the polar-stretched
-    // overlaps() box — so Eurasia does not pass when centered over Hudson.
+    const float latSpanTight =
+        static_cast<float>((queryRangeNm / kNmPerDeg) * marginScale);
+    const float dLonTight = static_cast<float>(
+        (queryRangeNm / (kNmPerDeg * cosLat)) * marginScale);
+    const bool tightOverlap =
+        !(lat + latSpanTight < b.minLat || lat - latSpanTight > b.maxLat ||
+          lon + dLonTight < b.minLon || lon - dLonTight > b.maxLon);
+    if (queryRangeNm >= 500.0f) {
+      return span >= kSilhouetteLandSpanDeg && tightOverlap;
+    }
+    if (span >= kSilhouetteLandSpanDeg &&
+        overlaps(b, queryRangeNm, marginScale)) {
+      return true;
+    }
     constexpr float kContinentalLandSpanDeg = 40.0f;
     if (span < kContinentalLandSpanDeg) return false;
-    const float latSpan =
-        static_cast<float>((queryRangeNm / kNmPerDeg) * marginScale);
-    if (lat + latSpan < b.minLat || lat - latSpan > b.maxLat) return false;
-    const float dLon = static_cast<float>(
-        (queryRangeNm / (kNmPerDeg * cosLat)) * marginScale);
-    return !(lon + dLon < b.minLon || lon - dLon > b.maxLon);
+    return tightOverlap;
   };
 
   constexpr std::size_t kLakeWideBudget = 800;
@@ -374,9 +380,8 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
 
   auto landMassBudgetFor = [](float queryRangeNm, bool closeDetail) -> std::size_t {
     if (closeDetail) {
-      if (queryRangeNm <= 2.5f) return 140;
-      if (queryRangeNm <= 5.0f) return 120;
-      if (queryRangeNm <= 15.0f) return 100;
+      if (queryRangeNm <= 5.0f) return 240;
+      if (queryRangeNm <= 15.0f) return 200;
       return 60;
     }
     return 0;
@@ -399,7 +404,7 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
   const bool closeDetailQuery = rangeNm <= kDetailLandMaxRangeNm;
 
   auto islandBudgetFor = [](float queryRangeNm) -> std::size_t {
-    if (queryRangeNm >= 500.0f) return 450;
+    if (queryRangeNm >= 500.0f) return 120;
     if (queryRangeNm >= 150.0f) return 320;
     if (queryRangeNm >= 50.0f) return 220;
     // Regional lon-band fills carry the peninsula at 25–120 NM; below 25 NM
@@ -418,11 +423,25 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
     return 0.012f;
   };
 
+  auto isHemisphereSilhouette = [](const Bounds& b) {
+    const float latSpan = b.maxLat - b.minLat;
+    const float lonSpan = b.maxLon - b.minLon;
+    // True continent rings (Americas, Africa, Eurasia, Australia). GSHHG also
+    // ships ~10° lon-band slices (~10° lon × ~60° lat) that chord-fill as
+    // Mercator wedges at 500+ NM — latSpan alone must not admit those.
+    if (lonSpan >= 70.0f) return true;
+    if (latSpan >= 55.0f && lonSpan >= 35.0f) return true;
+    return latSpan >= 45.0f && lonSpan >= 35.0f;
+  };
+
   auto considerLand = [&](std::size_t i) {
-    if (!overlaps(lineBounds_[i], rangeNm, kWideLandOverlapScale)) return;
+    if (!overlaps(lineBounds_[i], rangeNm, landOverlapScale)) return;
     const Bounds& b = lineBounds_[i];
     const float span = (b.maxLat - b.minLat) + (b.maxLon - b.minLon);
-    if (!landMassRelevant(b, span, rangeNm, kWideLandOverlapScale)) {
+    const std::size_t npts = lines_[i].points.size();
+    // GSHHG ships 4-point bbox rings that chord-fill an entire island extent.
+    if (closeDetailQuery && npts <= 4 && span > 0.2f && span < 1.0f) return;
+    if (!landMassRelevant(b, span, rangeNm, landOverlapScale)) {
       return;
     }
     const double clat = (b.minLat + b.maxLat) * 0.5;
@@ -431,13 +450,19 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
     const double dlon = (clon - lon) * cosLat;
     LandCand cand{
         i, span, static_cast<float>(dlat * dlat + dlon * dlon)};
-    const std::size_t npts = lines_[i].points.size();
     const bool isSilhouette =
         span >= kSilhouetteLandSpanDeg && npts <= kSilhouetteLandMaxPts;
     const bool isIslandLowRes =
         span <= kIslandLandMaxSpanDeg && npts <= kSilhouetteLandMaxPts;
     if (isSilhouette) {
-      continentalCands.push_back(cand);
+      if (continentalLandQuery && !isHemisphereSilhouette(b)) return;
+      if (closeDetailQuery) {
+        // Mid-span lon-band slices are not true continent silhouettes; treat them
+        // as detail so they layer under local shore rings instead of wedging.
+        detailCands.push_back(cand);
+      } else {
+        continentalCands.push_back(cand);
+      }
     } else if (isIslandLowRes) {
       if (span >= minIslandSpanFor(rangeNm)) {
         islandCands.push_back(cand);
@@ -448,10 +473,10 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
   };
 
   auto considerRegional = [&](std::size_t i) {
-    if (!overlaps(lineBounds_[i], rangeNm, kWideLandOverlapScale)) return;
+    if (!overlaps(lineBounds_[i], rangeNm, landOverlapScale)) return;
     const Bounds& b = lineBounds_[i];
     const float span = (b.maxLat - b.minLat) + (b.maxLon - b.minLon);
-    if (!landMassRelevant(b, span, rangeNm, kWideLandOverlapScale)) {
+    if (!landMassRelevant(b, span, rangeNm, landOverlapScale)) {
       return;
     }
     const double clat = (b.minLat + b.maxLat) * 0.5;
@@ -466,12 +491,9 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
     if (!closeDetailQuery) {
       considerLand(i);
     } else if (viewInsideBounds(lineBounds_[i])) {
-      // Skip the coarse continental silhouette whenever regional lon-bands
-      // are active; they layer over the silhouette at draw time when needed.
-      const bool regionalActive =
-          rangeNm >= kRegionalLandMinRangeNm &&
-          rangeNm <= kRegionalLandMaxRangeNm;
-      if (!(regionalActive && rangeNm <= 15.0f)) {
+      // Below mid range rely on regional lon-bands plus the detail spatial index;
+      // the clipped continental silhouette still chord-fills as Mercator wedges.
+      if (rangeNm > kRegionalSilhouetteSuppressMaxNm) {
         considerLand(i);
       }
     }
@@ -482,6 +504,15 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
                         considerLand);
     forEachSpatialIndex(lat, lon, rangeNm, 1.2f, islandCellIdx_, spatialScratch,
                         considerLand);
+  } else if (continentalLandQuery) {
+    for (std::size_t i : islandLandLowResIdx_) {
+      if (!overlaps(lineBounds_[i], rangeNm, landOverlapScale)) continue;
+      const Bounds& b = lineBounds_[i];
+      if (!viewInsideBounds(b) && !centroidWithinRange(b, rangeNm, 1.0f)) {
+        continue;
+      }
+      considerLand(i);
+    }
   } else {
     for (std::size_t i : islandLandLowResIdx_) considerLand(i);
   }
@@ -559,7 +590,7 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
     std::size_t lakeCount = 0;
     for (std::size_t i = 0; i < lines_.size(); ++i) {
       if (lines_[i].landClass != LandClass::Lake) continue;
-      if (!overlaps(lineBounds_[i], rangeNm, kWideLandOverlapScale)) continue;
+      if (!overlaps(lineBounds_[i], rangeNm, landOverlapScale)) continue;
       if (rangeNm >= kMapRangeMaxNm) {
         const Bounds& b = lineBounds_[i];
         const float span = (b.maxLat - b.minLat) + (b.maxLon - b.minLon);
@@ -582,7 +613,7 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
   borderCands.reserve(512);
   for (std::size_t i = 0; i < lines_.size(); ++i) {
     if (lines_[i].landClass != LandClass::Border) continue;
-    if (!overlaps(lineBounds_[i], rangeNm, kWideLandOverlapScale)) continue;
+    if (!overlaps(lineBounds_[i], rangeNm, landOverlapScale)) continue;
     const Bounds& b = lineBounds_[i];
     const double clat = (b.minLat + b.maxLat) * 0.5;
     const double clon = (b.minLon + b.maxLon) * 0.5;
@@ -617,8 +648,8 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
   for (std::size_t i = 0; i < lines_.size(); ++i) {
     const LandClass c = lines_[i].landClass;
     if (c != LandClass::StateBorder) continue;
-    if (rangeNm > kStateBorderQueryMaxRangeNm) continue;
-    if (!overlaps(lineBounds_[i], rangeNm, kWideLandOverlapScale)) continue;
+    if (rangeNm > kStateBorderMaxRangeNm) continue;
+    if (!overlaps(lineBounds_[i], rangeNm, landOverlapScale)) continue;
     result.push_back(lines_[i]);
     if (result.size() >= maxCount) return result;
   }
@@ -661,7 +692,7 @@ std::vector<MapLandCity> LandDataStore::nearbyCities(
       case LandLabelKind::Region:
         if (label.rank >= 10) return 2000.0f;
         if (label.rank >= 8) return kLandQueryRangeNm;
-        if (label.rank >= 6) return 200.0f;
+        if (label.rank >= 5) return kStateBorderMaxRangeNm;
         return 100.0f;
       case LandLabelKind::City:
         break;
@@ -687,7 +718,7 @@ std::vector<MapLandCity> LandDataStore::nearbyCities(
       if (city.labelKind == LandLabelKind::City && city.rank < 8) continue;
       if (city.labelKind == LandLabelKind::Hydro && city.rank < 6) continue;
       if (city.labelKind == LandLabelKind::Region && city.rank < 8) continue;
-    } else if (rangeNm > 200.0f) {
+    } else if (rangeNm > kStateBorderMaxRangeNm) {
       if (city.labelKind == LandLabelKind::Region && city.rank < 6) continue;
     }
     candidates.push_back(city);

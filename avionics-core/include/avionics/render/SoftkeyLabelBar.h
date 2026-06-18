@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
 #include "avionics/Color.h"
@@ -32,10 +33,14 @@ inline void drawSoftkeyBarBackground(Renderer& r, float w, float top,
 
 // Draws one softkey cap and its label. The cell spans [x, x + cellW] of the
 // bar at `top` with height `barH`. `level` (0..1) is the selected/press
-// highlight; otherwise the label is drawn in `labelColor`.
+// highlight; otherwise the label is drawn in `labelColor`. When `valueSuffix`
+// is non-empty the main label is left-aligned and the suffix is right-aligned
+// in `valueColor` (WT SoftKey.css: --value-color cyan).
 inline void drawSoftkeyCell(Renderer& r, float x, float top, float cellW,
                             float barH, const std::string& label, float level,
-                            const Color& labelColor, float fontPx) {
+                            const Color& labelColor, float fontPx,
+                            const std::string& valueSuffix = {},
+                            const Color& valueColor = colors::kCyan) {
   const float gap = std::max(1.0f, cellW * 0.012f);  // ~1px groove between caps
   const float topMargin = std::max(1.0f, barH * 0.03f);
   const float bx = x + gap;
@@ -60,12 +65,39 @@ inline void drawSoftkeyCell(Renderer& r, float x, float top, float cellW,
   r.strokeLine(bx + radius, by + 0.5f, bx + bw - radius, by + 0.5f, 1.0f,
                colors::kSoftkeyCapHighlight);
 
-  if (!label.empty()) {
-    const Color c = level > 0.5f ? colors::kBlack : labelColor;
-    // The real GDU renders softkey labels in a bold weight.
-    r.fillText(x + cellW * 0.5f, labelCy, label, fontPx, TextAlign::Center, c,
-               FontFace::RobotoBold);
+  if (label.empty() && valueSuffix.empty()) return;
+
+  const bool pressed = level > 0.5f;
+  const Color mainColor = pressed ? colors::kBlack : labelColor;
+  const Color suffixColor = pressed ? colors::kBlack : valueColor;
+  const float pad = std::max(3.0f, cellW * 0.04f);  // WT softkey-tab margin ~4px
+
+  if (!valueSuffix.empty()) {
+    if (!label.empty()) {
+      r.fillText(x + gap + pad, labelCy, label, fontPx, TextAlign::Left,
+                 mainColor, FontFace::RobotoBold);
+    }
+    r.fillText(x + cellW - gap - pad, labelCy, valueSuffix, fontPx,
+               TextAlign::Right, suffixColor, FontFace::RobotoBold);
+  } else {
+    r.fillText(x + cellW * 0.5f, labelCy, label, fontPx, TextAlign::Center,
+               mainColor, FontFace::RobotoBold);
   }
+}
+
+// Splits a state-carrying softkey label ("Detail All", "TER Topo", ...) into
+// the fixed function name and the cyan state suffix shown on the real unit.
+inline bool splitStateSoftkeyLabel(const std::string& label,
+                                   std::string& mainOut,
+                                   std::string& valueOut) {
+  static constexpr const char* kPrefixes[] = {"Detail ", "TER ", "AWY "};
+  for (const char* prefix : kPrefixes) {
+    if (label.rfind(prefix, 0) != 0) continue;
+    mainOut.assign(prefix, prefix + std::strlen(prefix) - 1);
+    valueOut = label.substr(std::strlen(prefix));
+    return true;
+  }
+  return false;
 }
 
 }  // namespace avionics::render

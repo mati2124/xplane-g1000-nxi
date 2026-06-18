@@ -428,6 +428,58 @@ std::unique_ptr<DemTile> loadTileFromDsf(const std::vector<std::uint8_t>& dsf) {
   return tile;
 }
 
+double maxElevationMeters(const DemLayer& layer) {
+  const std::uint32_t w = layer.width;
+  const std::uint32_t h = layer.height;
+  if (w == 0 || h == 0) return 0.0;
+  double maxV = -1.0e30;
+  for (std::uint32_t row = 0; row < h; ++row) {
+    for (std::uint32_t col = 0; col < w; ++col) {
+      maxV = std::max(maxV, samplePixel(layer, row, col));
+    }
+  }
+  return maxV;
+}
+
+void buildCoarseGrid(const DemTile& dem, float* out, int gridSize) {
+  const std::uint32_t w = dem.elevation.width;
+  const std::uint32_t h = dem.elevation.height;
+  if (w == 0 || h == 0 || gridSize <= 0) return;
+
+  for (int gy = 0; gy < gridSize; ++gy) {
+    const std::uint32_t row0 =
+        static_cast<std::uint32_t>((gy * static_cast<int>(h)) / gridSize);
+    const std::uint32_t row1 =
+        static_cast<std::uint32_t>(((gy + 1) * static_cast<int>(h)) / gridSize);
+    const std::uint32_t rEnd = std::max(row0 + 1, row1);
+    for (int gx = 0; gx < gridSize; ++gx) {
+      const std::uint32_t col0 =
+          static_cast<std::uint32_t>((gx * static_cast<int>(w)) / gridSize);
+      const std::uint32_t col1 =
+          static_cast<std::uint32_t>(((gx + 1) * static_cast<int>(w)) / gridSize);
+      const std::uint32_t cEnd = std::max(col0 + 1, col1);
+      double maxM = -1.0e30;
+      for (std::uint32_t row = row0; row < rEnd && row < h; ++row) {
+        for (std::uint32_t col = col0; col < cEnd && col < w; ++col) {
+          maxM = std::max(maxM, samplePixel(dem.elevation, row, col));
+        }
+      }
+      out[static_cast<std::size_t>(gy) * static_cast<std::size_t>(gridSize) +
+          static_cast<std::size_t>(gx)] =
+          static_cast<float>(maxM * kMetersToFeet);
+    }
+  }
+}
+
+void tileBoundsDeg(int southLat, int lonIndex, double lon, double& south,
+                   double& north, double& west, double& east) {
+  south = static_cast<double>(southLat);
+  north = south + 1.0;
+  west = (lon < 0.0) ? -static_cast<double>(lonIndex)
+                       : static_cast<double>(lonIndex);
+  east = west + 1.0;
+}
+
 std::string formatTileFile(int southLat, int lonIndex) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%+d-%03d.dsf", southLat, lonIndex);
@@ -438,6 +490,15 @@ std::string formatTileFolder(int latB, int lonB) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%+03d-%03d", latB, lonB);
   return buf;
+}
+
+double representativeLonForTile(int lonIndex, double lonHint) {
+  const int idxFromHint =
+      (lonHint < 0.0) ? static_cast<int>(std::ceil(-lonHint - 1e-9))
+                      : static_cast<int>(std::floor(lonHint));
+  if (idxFromHint == lonIndex) return lonHint;
+  return (lonHint < 0.0) ? (-static_cast<double>(lonIndex) + 0.5)
+                         : (static_cast<double>(lonIndex) + 0.5);
 }
 
 }  // namespace
@@ -456,27 +517,39 @@ DsfTerrainStore::DsfTerrainStore(std::string earthNavDir)
     : earthNavDir_(std::move(earthNavDir)) {
   cache_.reserve(kMaxCachedTiles);
   if (!earthNavDir_.empty()) {
-    worker_ = std::thread([this] { workerMain(); });
+    for (std::thread& worker : workers_) {
+      worker = std::thread([this] { workerMain(); });
+    }
   }
 }
 
 DsfTerrainStore::~DsfTerrainStore() {
-  if (worker_.joinable()) {
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      stop_ = true;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stop_ = true;
+  }
+  cv_.notify_all();
+  for (std::thread& worker : workers_) {
+    if (worker.joinable()) {
+      worker.join();
     }
-    cv_.notify_all();
-    worker_.join();
   }
   for (TileCacheEntry* e : cache_) delete e;
+}
+
+std::uint64_t DsfTerrainStore::tileKey(int southLat, int lonIndex) {
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(southLat + 128))
+          << 32) |
+         static_cast<std::uint32_t>(lonIndex);
 }
 
 std::string DsfTerrainStore::tilePath(int southLat, int lonIndex, double lat,
                                       double lon) const {
   if (earthNavDir_.empty()) return {};
+  const double repLat = static_cast<double>(southLat) + 0.5;
+  const double repLon = representativeLonForTile(lonIndex, lon);
   const std::string folder =
-      joinPath(earthNavDir_, formatTileFolder(latBucket(lat), lonBucket(lon)));
+      joinPath(earthNavDir_, formatTileFolder(latBucket(repLat), lonBucket(repLon)));
   return joinPath(folder, formatTileFile(southLat, lonIndex));
 }
 
@@ -487,9 +560,7 @@ void DsfTerrainStore::workerMain() {
       std::unique_lock<std::mutex> lock(mu_);
       cv_.wait(lock, [this] { return stop_ || !pending_.empty(); });
       if (stop_) return;
-      // The job stays in pending_ during the load so the render thread does
-      // not re-enqueue it; it is removed once the result lands.
-      job = pending_.front();
+      popPendingLoadLocked(job);
     }
 
     std::unique_ptr<::avionics::DemTile> loaded;
@@ -500,35 +571,114 @@ void DsfTerrainStore::workerMain() {
       if (!bytes.empty()) loaded = loadTileFromDsf(bytes);
     }
 
+    if (!loaded) {
+      std::lock_guard<std::mutex> lock(mu_);
+      misses_.insert(tileKey(job.southLat, job.lonIndex));
+      revision_.fetch_add(1, std::memory_order_relaxed);
+      cv_.notify_all();
+      continue;
+    }
+
+    const std::uint64_t key = tileKey(job.southLat, job.lonIndex);
+    std::uint8_t existingGrid = 0;
+    bool hasFull = false;
+    bool wantFull = false;
     {
       std::lock_guard<std::mutex> lock(mu_);
-      for (std::size_t i = 0; i < pending_.size(); ++i) {
-        if (pending_[i].southLat == job.southLat &&
-            pending_[i].lonIndex == job.lonIndex) {
-          pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(i));
-          break;
-        }
+      if (const auto it = summaries_.find(key); it != summaries_.end()) {
+        existingGrid = it->second.gridSize;
       }
-      if (loaded) {
-        auto* slot = new TileCacheEntry{};
-        slot->southLat = job.southLat;
-        slot->lonIndex = job.lonIndex;
-        slot->lastHit = std::chrono::steady_clock::now();
-        slot->dem = std::move(*loaded);
-        if (cache_.size() >= static_cast<std::size_t>(kMaxCachedTiles)) {
-          delete cache_.back();
-          cache_.pop_back();
-        }
-        cache_.insert(cache_.begin(), slot);
-        revision_.fetch_add(1, std::memory_order_relaxed);
-      } else {
-        if (misses_.size() >= static_cast<std::size_t>(kMaxMissEntries)) {
-          misses_.erase(misses_.begin());
-        }
-        misses_.push_back({job.southLat, job.lonIndex});
+      hasFull =
+          findResidentTileLocked(job.southLat, job.lonIndex,
+                                 std::chrono::steady_clock::now()) != nullptr;
+      wantFull =
+          !coarseSample_ || tileInDetailZoneLocked(job.southLat, job.lonIndex);
+    }
+
+    auto publishSummary = [&](std::uint8_t gridSize) {
+      CoarseSummary summary;
+      summary.gridSize = gridSize;
+      buildCoarseGrid(*loaded, summary.elevFt, gridSize);
+      std::lock_guard<std::mutex> lock(mu_);
+      summaries_[key] = summary;
+      revision_.fetch_add(1, std::memory_order_relaxed);
+      cv_.notify_all();
+    };
+
+    if (existingGrid < kQuickGridSize) {
+      publishSummary(kQuickGridSize);
+    }
+    if (existingGrid < kCoarseGridSize) {
+      publishSummary(kCoarseGridSize);
+    }
+    if (wantFull && !hasFull) {
+      std::lock_guard<std::mutex> lock(mu_);
+      auto* slot = new TileCacheEntry{};
+      slot->southLat = job.southLat;
+      slot->lonIndex = job.lonIndex;
+      slot->lastHit = std::chrono::steady_clock::now();
+      slot->dem = std::move(*loaded);
+      if (cache_.size() >= maxCacheTilesLocked()) {
+        delete cache_.back();
+        cache_.pop_back();
       }
+      cache_.insert(cache_.begin(), slot);
+      revision_.fetch_add(1, std::memory_order_relaxed);
+      cv_.notify_all();
     }
   }
+}
+
+const DsfTerrainStore::CoarseSummary* DsfTerrainStore::findSummaryLocked(
+    int southLat, int lonIndex) const {
+  const auto it = summaries_.find(tileKey(southLat, lonIndex));
+  if (it == summaries_.end()) return nullptr;
+  return &it->second;
+}
+
+float DsfTerrainStore::sampleCoarseGridLocked(const CoarseSummary& summary,
+                                              int southLat, int lonIndex,
+                                              double lat, double lon) const {
+  double south = 0.0;
+  double north = 0.0;
+  double west = 0.0;
+  double east = 0.0;
+  tileBoundsDeg(southLat, lonIndex, lon, south, north, west, east);
+  const int n = std::max(2, static_cast<int>(summary.gridSize));
+  const double colF =
+      (lon - west) / (east - west) * static_cast<double>(n - 1);
+  const double rowF =
+      (lat - south) / (north - south) * static_cast<double>(n - 1);
+  const int c0 = static_cast<int>(std::floor(colF));
+  const int r0 = static_cast<int>(std::floor(rowF));
+  const int c1 = std::min(c0 + 1, n - 1);
+  const int r1 = std::min(r0 + 1, n - 1);
+  const double fc = colF - static_cast<double>(c0);
+  const double fr = rowF - static_cast<double>(r0);
+  const auto at = [&](int r, int c) -> float {
+    return summary.elevFt[static_cast<std::size_t>(r) * static_cast<std::size_t>(n) +
+                          static_cast<std::size_t>(c)];
+  };
+  const float v00 = at(r0, c0);
+  const float v10 = at(r0, c1);
+  const float v01 = at(r1, c0);
+  const float v11 = at(r1, c1);
+  const float v0 = v00 * static_cast<float>(1.0 - fc) + v10 * static_cast<float>(fc);
+  const float v1 = v01 * static_cast<float>(1.0 - fc) + v11 * static_cast<float>(fc);
+  return v0 * static_cast<float>(1.0 - fr) + v1 * static_cast<float>(fr);
+}
+
+float DsfTerrainStore::sampleElevationLocked(
+    int southLat, int lonIndex, double lat, double lon,
+    std::chrono::steady_clock::time_point now) const {
+  if (TileCacheEntry* tile = findResidentTileLocked(southLat, lonIndex, now)) {
+    return static_cast<float>(tile->dem.elevationMeters(lat, lon) *
+                              kMetersToFeet);
+  }
+  if (const CoarseSummary* summary = findSummaryLocked(southLat, lonIndex)) {
+    return sampleCoarseGridLocked(*summary, southLat, lonIndex, lat, lon);
+  }
+  return tileAbsentElevationFt();
 }
 
 DsfTerrainStore::TileCacheEntry* DsfTerrainStore::findResidentTileLocked(
@@ -553,26 +703,182 @@ DsfTerrainStore::TileCacheEntry* DsfTerrainStore::findResidentTileLocked(
 void DsfTerrainStore::queueTileLocked(
     int southLat, int lonIndex, double lat, double lon,
     std::chrono::steady_clock::time_point now) const {
-  // Known-absent tile (ocean / not installed): don't touch the filesystem
-  // again for it.
-  for (const std::pair<int, int>& m : misses_) {
-    if (m.first == southLat && m.second == lonIndex) return;
+  queueTileLocked(southLat, lonIndex, lat, lon, now, false);
+}
+
+bool DsfTerrainStore::tileMissedLocked(int southLat, int lonIndex) const {
+  return misses_.count(tileKey(southLat, lonIndex)) != 0;
+}
+
+bool DsfTerrainStore::tileInDetailZoneLocked(int southLat,
+                                             int lonIndex) const {
+  if (detailHalfNm_ <= 0.0f) return !coarseSample_;
+  const double tileLat = static_cast<double>(southLat) + 0.5;
+  const double tileLon =
+      representativeLonForTile(lonIndex, viewCenterLon_);
+  const double dN = (tileLat - viewCenterLat_) * 60.0;
+  const double nmLon =
+      60.0 * std::cos(viewCenterLat_ * 3.14159265358979323846 / 180.0);
+  const double dE = (tileLon - viewCenterLon_) * nmLon;
+  return (dN * dN + dE * dE) <=
+         static_cast<double>(detailHalfNm_) * static_cast<double>(detailHalfNm_);
+}
+
+bool DsfTerrainStore::popPendingLoadLocked(PendingLoad& out) {
+  if (pending_.empty()) return false;
+  std::size_t best = 0;
+  double bestScore = 1.0e30;
+  for (std::size_t i = 0; i < pending_.size(); ++i) {
+    const PendingLoad& p = pending_[i];
+    const double tileLat = static_cast<double>(p.southLat) + 0.5;
+    const double tileLon =
+        representativeLonForTile(p.lonIndex, viewCenterLon_);
+    const double dN = (tileLat - viewCenterLat_) * 60.0;
+    const double nmLon =
+        60.0 * std::cos(viewCenterLat_ * 3.14159265358979323846 / 180.0);
+    const double dE = (tileLon - viewCenterLon_) * nmLon;
+    const double score = dN * dN + dE * dE;
+    if (score < bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  out = pending_[best];
+  pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(best));
+  return true;
+}
+
+bool DsfTerrainStore::tileReadyLocked(
+    int southLat, int lonIndex,
+    std::chrono::steady_clock::time_point now) const {
+  if (findResidentTileLocked(southLat, lonIndex, now) != nullptr ||
+      tileMissedLocked(southLat, lonIndex)) {
+    return true;
+  }
+  if (findSummaryLocked(southLat, lonIndex) == nullptr) return false;
+  if (!coarseSample_ || !tileInDetailZoneLocked(southLat, lonIndex)) {
+    return true;
+  }
+  return false;
+}
+
+void DsfTerrainStore::queueTileLocked(
+    int southLat, int lonIndex, double lat, double lon,
+    std::chrono::steady_clock::time_point now, bool force) const {
+  const std::uint64_t key = tileKey(southLat, lonIndex);
+  if (force) {
+    misses_.erase(key);
+  } else if (tileMissedLocked(southLat, lonIndex)) {
+    return;
   }
 
-  // With the cache full of tiles that were all hit within the last frame or
-  // two, the visible footprint is bigger than the cache. Evicting would just
-  // thrash (reload the same tiles every frame), so leave the working set
-  // resident and let out-of-cache areas keep the procedural fallback.
-  const bool cacheSaturated =
-      cache_.size() >= static_cast<std::size_t>(kMaxCachedTiles) &&
-      now - cache_.back()->lastHit < std::chrono::milliseconds(250);
-  if (cacheSaturated || pending_.size() >= kMaxPendingLoads) return;
+  if (!force && !bulkSample_) {
+    // With the cache full of tiles that were all hit within the last frame or
+    // two, the visible footprint is bigger than the cache. Evicting would just
+    // thrash (reload the same tiles every frame), so leave the working set
+    // resident and let out-of-cache areas read as sea level until their tile
+    // arrives (see tileAbsentElevationFt).
+    const bool cacheSaturated =
+        cache_.size() >= maxCacheTilesLocked() &&
+        now - cache_.back()->lastHit < std::chrono::milliseconds(250);
+    if (cacheSaturated || pending_.size() >= maxPendingLoadsLocked()) return;
+  }
 
   for (const PendingLoad& p : pending_) {
     if (p.southLat == southLat && p.lonIndex == lonIndex) return;
   }
+  if (!force) {
+    if (findResidentTileLocked(southLat, lonIndex, now) != nullptr) return;
+    if (findSummaryLocked(southLat, lonIndex) != nullptr) {
+      const bool needsFull =
+          coarseSample_ && tileInDetailZoneLocked(southLat, lonIndex);
+      if (!needsFull) return;
+    }
+  }
   pending_.push_back({southLat, lonIndex, lat, lon});
-  cv_.notify_one();
+  cv_.notify_all();
+}
+
+void DsfTerrainStore::ensureCoverage(double minLat, double maxLat, double minLon,
+                                     double maxLon,
+                                     bool waitForTiles) const {
+  if (earthNavDir_.empty()) return;
+
+  const double loLat = std::min(minLat, maxLat);
+  const double hiLat = std::max(minLat, maxLat);
+  const double loLon = std::min(minLon, maxLon);
+  const double hiLon = std::max(minLon, maxLon);
+  const int latSouthMin = floorLatSouth(loLat);
+  const int latSouthMax = floorLatSouth(hiLat);
+  // tileLonIndex increases westward in the western hemisphere, so min/max lon
+  // do not map to ascending index order without an explicit swap.
+  const int lonIdxMin =
+      std::min(tileLonIndex(loLon), tileLonIndex(hiLon));
+  const int lonIdxMax =
+      std::max(tileLonIndex(loLon), tileLonIndex(hiLon));
+  const double probeLat = (loLat + hiLat) * 0.5;
+  const double probeLon = (loLon + hiLon) * 0.5;
+
+  std::unique_lock<std::mutex> lock(mu_);
+  const int tileCount =
+      (latSouthMax - latSouthMin + 1) * (lonIdxMax - lonIdxMin + 1);
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      (waitForTiles && tileCount > kMaxBlockingEnsureTiles
+           ? std::chrono::seconds(180)
+           : std::chrono::seconds(30));
+
+  auto queueOutstanding = [&](std::chrono::steady_clock::time_point now) {
+    for (int south = latSouthMin; south <= latSouthMax; ++south) {
+      for (int lonIdx = lonIdxMin; lonIdx <= lonIdxMax; ++lonIdx) {
+        if (tileReadyLocked(south, lonIdx, now)) continue;
+        const double repLat = static_cast<double>(south) + 0.5;
+        const double repLon = representativeLonForTile(lonIdx, probeLon);
+        queueTileLocked(south, lonIdx, repLat, repLon, now, true);
+      }
+    }
+  };
+
+  if (tileCount > kMaxBlockingEnsureTiles && !waitForTiles) {
+    queueOutstanding(std::chrono::steady_clock::now());
+    return;
+  }
+
+  for (;;) {
+    const auto now = std::chrono::steady_clock::now();
+    queueOutstanding(now);
+
+    bool ready = true;
+    for (int south = latSouthMin; south <= latSouthMax && ready; ++south) {
+      for (int lonIdx = lonIdxMin; lonIdx <= lonIdxMax; ++lonIdx) {
+        if (!tileReadyLocked(south, lonIdx, now)) {
+          ready = false;
+          break;
+        }
+      }
+    }
+    if (ready && pending_.empty()) return;
+    if (now >= deadline) return;
+    cv_.wait_for(lock, std::chrono::milliseconds(50));
+  }
+}
+
+void DsfTerrainStore::setBulkTerrainSample(bool enabled) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  bulkSample_ = enabled;
+}
+
+void DsfTerrainStore::setCoarseTerrainSample(bool enabled) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  coarseSample_ = enabled;
+}
+
+void DsfTerrainStore::setTerrainViewCenter(double lat, double lon,
+                                           float detailHalfNm) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  viewCenterLat_ = lat;
+  viewCenterLon_ = lon;
+  detailHalfNm_ = detailHalfNm;
 }
 
 float DsfTerrainStore::elevationFt(double lat, double lon) const {
@@ -583,11 +889,11 @@ float DsfTerrainStore::elevationFt(double lat, double lon) const {
 
   std::lock_guard<std::mutex> lock(mu_);
   const auto now = std::chrono::steady_clock::now();
-  if (TileCacheEntry* e = findResidentTileLocked(south, lonIdx, now)) {
-    return static_cast<float>(e->dem.elevationMeters(lat, lon) * kMetersToFeet);
-  }
-  queueTileLocked(south, lonIdx, lat, lon, now);
-  return fallback_.elevationFt(lat, lon);
+  const float elev = sampleElevationLocked(south, lonIdx, lat, lon, now);
+  if (!std::isnan(elev)) return elev;
+  if (tileMissedLocked(south, lonIdx)) return tileAbsentElevationFt();
+  queueTileLocked(south, lonIdx, lat, lon, now, bulkSample_ || coarseSample_);
+  return tileAbsentElevationFt();
 }
 
 void DsfTerrainStore::elevationFtRow(double lat, double lonStart,
@@ -611,19 +917,30 @@ void DsfTerrainStore::elevationFtRow(double lat, double lonStart,
   const int south = floorLatSouth(lat);
 
   int resolvedLonIdx = INT_MIN;
-  TileCacheEntry* tile = nullptr;  // nullptr => serve from fallback
   for (int i = 0; i < count; ++i) {
     const double lon = lonStart + lonStep * static_cast<double>(i);
     const int lonIdx = tileLonIndex(lon);
+    const float elev = sampleElevationLocked(south, lonIdx, lat, lon, now);
+    if (!std::isnan(elev)) {
+      out[i] = elev;
+      if (coarseSample_ && tileInDetailZoneLocked(south, lonIdx) &&
+          findResidentTileLocked(south, lonIdx, now) == nullptr &&
+          lonIdx != resolvedLonIdx) {
+        resolvedLonIdx = lonIdx;
+        queueTileLocked(south, lonIdx, lat, lon, now, true);
+      }
+      continue;
+    }
+    if (tileMissedLocked(south, lonIdx)) {
+      out[i] = tileAbsentElevationFt();
+      continue;
+    }
     if (lonIdx != resolvedLonIdx) {
       resolvedLonIdx = lonIdx;
-      tile = findResidentTileLocked(south, lonIdx, now);
-      if (tile == nullptr) queueTileLocked(south, lonIdx, lat, lon, now);
+      queueTileLocked(south, lonIdx, lat, lon, now,
+                      bulkSample_ || coarseSample_);
     }
-    out[i] = tile != nullptr
-                 ? static_cast<float>(tile->dem.elevationMeters(lat, lon) *
-                                      kMetersToFeet)
-                 : fallback_.elevationFt(lat, lon);
+    out[i] = tileAbsentElevationFt();
   }
 }
 

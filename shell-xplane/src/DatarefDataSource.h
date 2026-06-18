@@ -14,6 +14,7 @@
 
 #include "DsfTerrainStore.h"
 #include "DatarefWeatherRadar.h"
+#include "LandDataStore.h"
 #include "ObstacleStore.h"
 #include "XPLMDataAccess.h"
 #include "avionics/AptDatParser.h"
@@ -22,6 +23,7 @@
 #include "avionics/Eis.h"
 #include "avionics/EisLegacy.h"
 #include "avionics/MapData.h"
+#include "avionics/MapRange.h"
 #include "avionics/NexradWeatherRadar.h"
 #include "avionics/Radio.h"
 
@@ -68,6 +70,7 @@ class DatarefDataSource : public DataSource {
   bool weatherRadarEquipped() const { return weather_.equipped(); }
 
   void setMapPanCenter(bool active, double lat, double lon) override;
+  void setChartRangeNm(float rangeNm) override;
 
   // NAV/COM bezel tuning written straight back to the sim's radio datarefs so
   // the stock radios follow the glass. tuneRadioStandby sets the standby
@@ -129,9 +132,12 @@ class DatarefDataSource : public DataSource {
     std::vector<MapTaxiwayLabel> taxiwayLabels;
     std::vector<MapAirspace> airspaces;
     std::vector<MapObstacle> obstacles;
+    std::vector<MapLandLine> landLines;
+    std::vector<MapLandCity> cities;
     bool aptGeometryIncluded = false;  // runways/taxiways/labels were scanned
     bool airspaceIncluded = false;
     bool obstaclesIncluded = false;
+    bool landIncluded = false;
   };
   void startMapQueryWorker();
   void stopMapQueryWorker();
@@ -204,7 +210,15 @@ class DatarefDataSource : public DataSource {
   bool mapQueryReqApt_ = false;
   bool mapQueryReqAirspace_ = false;
   bool mapQueryReqObstacles_ = false;
+  bool mapQueryReqLand_ = false;
+  float mapQueryLandRangeNm_ = 0.0f;
   MapQueryResult mapQueryResult_;  // worker output, guarded by mapQueryMu_
+
+  // Bundled Natural Earth coastlines/borders/cities (land_data.bin). Loaded on
+  // a background thread; the map-query worker reads it once loaded().
+  std::unique_ptr<LandDataStore> landData_;
+  float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
+  bool landEverLoaded_ = false;
 
   XPLMDataRef airspeed_ = nullptr;
   XPLMDataRef altitude_ = nullptr;

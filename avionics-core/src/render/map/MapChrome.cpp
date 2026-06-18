@@ -31,6 +31,38 @@ void drawNorthArrow(Renderer& r, float cx, float cy, float size,
   r.restore();
 }
 
+void drawMapPointer(Renderer& r, float hotX, float hotY, float displayH,
+                    bool flashInverted) {
+  // Working Title MapPointerLayer default SVG (viewBox 0 0 100 100).
+  static constexpr float kHotSpotX = 4.54f;
+  static constexpr float kHotSpotY = 4.54f;
+  static constexpr float kPolyX[] = {78.93f, 49.48f, 41.18f, 4.54f,
+                                     84.57f, 66.01f, 95.46f, 78.93f};
+  static constexpr float kPolyY[] = {95.46f, 66.01f, 84.57f, 4.54f,
+                                     41.18f, 49.48f, 78.93f, 95.46f};
+  constexpr int kPointCount = 8;
+
+  const float size = fontPx(kMapPointerSizeWt, displayH);
+  const float scale = size / 100.0f;
+  Point pts[kPointCount];
+  for (int i = 0; i < kPointCount; ++i) {
+    pts[i].x = hotX + (kPolyX[i] - kHotSpotX) * scale;
+    pts[i].y = hotY + (kPolyY[i] - kHotSpotY) * scale;
+  }
+
+  const Color fill = flashInverted ? colors::kBlack : colors::kWhite;
+  const Color stroke = flashInverted ? colors::kWhite : colors::kBlack;
+  const float strokeW = std::max(1.0f, 4.0f * scale);
+
+  r.fillPolygon(pts, kPointCount, fill);
+  Point outline[kPointCount + 1];
+  for (int i = 0; i < kPointCount; ++i) {
+    outline[i] = pts[i];
+  }
+  outline[kPointCount] = pts[0];
+  r.strokePolyline(outline, kPointCount + 1, strokeW, stroke);
+}
+
 void drawRangeLabel(Renderer& r, float x, float y, float rangeNm,
                     float labelSize, bool centerOnPoint) {
   // Cyan value with the smaller unit suffix on a chrome plate, centered on the

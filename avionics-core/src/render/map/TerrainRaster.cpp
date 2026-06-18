@@ -5,14 +5,17 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 #include "avionics/Color.h"
+#include "avionics/MapRange.h"
 #include "avionics/Terrain.h"
 #include "render/map/MapProjection.h"
+#include "render/map/MapViewInternal.h"
 
 namespace avionics::map {
 namespace {
@@ -23,9 +26,19 @@ namespace {
 constexpr int kRasterSize = 512;
 
 // Raster half-width as a multiple of the map range. The viewport's rotated
-// corner reaches ~1.9x range on the full-screen MFD map, so 2.4x leaves drift
-// margin before any un-rastered edge could scroll into view.
+// corner reaches ~1.9x range on a square map, but the MFD MAP window is wider
+// than tall so east/west edges need more; drawTerrainRaster also expands the
+// footprint to viewHalfExtentNm when that exceeds this factor.
 constexpr float kCoverageRangeFactor = 2.4f;
+constexpr float kMfdMapCornerFactor = kTerrainCornerRangeFactor;
+
+// Small margin beyond the farthest visible map corner so drift between rebuilds
+// does not expose an un-rastered strip at the viewport edge.
+constexpr float kViewExtentMargin = 1.06f;
+
+// halfNm tolerance when comparing snapshots so a smooth zoom animation does not
+// cancel an in-flight async build every frame.
+constexpr float kHalfNmGeometryTolerance = 0.08f;
 
 // Rebuild once the view center drifts this fraction of the range from the
 // raster center.
@@ -37,9 +50,10 @@ constexpr float kRecenterDriftFactor = 0.30f;
 // data-driven refresh so a burst of streaming tiles doesn't recolor and
 // re-upload the whole raster every few frames -- which lands a 512x512
 // hillshade plus a texture upload on a live frame as a visible hitch in shells
-// that render every frame (the standalone). ~3 s at 60 fps; terrain detail
+// that render every frame (the standalone). ~1 s at 60 fps; terrain detail
 // still fills in a few seconds after the tiles load.
-constexpr int kRevisionRebuildIntervalFrames = 180;
+constexpr int kRevisionRebuildIntervalFrames = 60;
+constexpr int kCoarseRevisionRebuildIntervalFrames = 6;
 
 // DEM rows sampled per frame during an incremental rebuild. Kept small enough
 // that a live-every-frame shell (the standalone) stays near 60 fps while a
@@ -47,6 +61,7 @@ constexpr int kRevisionRebuildIntervalFrames = 180;
 // build then spreads over ~11 frames. The plugin only hits this on its full-
 // render frames (every Nth), so the wider spread is fine there too.
 constexpr int kRowsPerFrame = 48;
+constexpr int kCoarseRowsPerFrame = 128;
 
 constexpr float kFeetPerNm = 6076.12f;
 
@@ -58,21 +73,18 @@ constexpr float kRelYellowBelowFt = 1000.0f;
 // continuously while climbing.
 constexpr float kRelAltBucketFt = 100.0f;
 
-// Topographic color ramp (ft MSL -> color). Elevation breakpoints and RGB
-// values sampled from the Garmin G1000 NXi Pilot's Guide TOPO SCALE legend
-// (Fig 5-14, PDF p. 144). The real unit turns tan by ~500 ft and burnt-orange
-// by ~3000 ft; green is confined to near sea level. Water is a muted teal
-// (not bright cyan). Shoreline is a sharp step from water (<=0 ft) to land
-// (>0 ft).
+// Topographic color ramp (ft MSL -> color). Lowland green and the water/land
+// step match the Garmin PC Trainer capture MFD Terrain Colors.bmp; higher
+// breakpoints follow the NXi TOPO SCALE (Pilot's Guide Fig 5-14). Water at or
+// below MSL uses the same navy as the navigation-map ocean base so topo does not
+// tint the Gulf with a separate teal ramp.
 struct TerrainStop {
   float ft;
   Color color;
 };
 
 constexpr TerrainStop kTerrainStops[] = {
-    {-2000.0f, {0.110f, 0.365f, 0.439f, 1.0f}},  // deep water (28,93,112)
-    {0.0f, {0.286f, 0.604f, 0.573f, 1.0f}},      // shoreline water (73,154,146)
-    {1.0f, {0.373f, 0.427f, 0.290f, 1.0f}},      // lowland green (95,109,74)
+    {1.0f, {0.282f, 0.471f, 0.282f, 1.0f}},      // lowland green (72,120,72)
     {500.0f, {0.698f, 0.624f, 0.420f, 1.0f}},    // tan (178,159,107)
     {2000.0f, {0.753f, 0.553f, 0.357f, 1.0f}},   // clay (192,141,91)
     {3000.0f, {0.612f, 0.396f, 0.196f, 1.0f}},   // burnt orange (156,101,50)
@@ -108,6 +120,9 @@ struct Snapshot {
   TerrainRasterMode mode = TerrainRasterMode::Absolute;
   int relAltBucket = 0;
   unsigned sourceRevision = 0;
+  bool coarseSample = false;
+  float detailHalfNm = 0.0f;
+  float builtRangeNm = 0.0f;
 
   // Geometry-only match (ignores sourceRevision): two snapshots that cover the
   // same ground at the same scale/mode, even if newer DEM tiles have since
@@ -116,8 +131,10 @@ struct Snapshot {
   // each time would mean it never finishes and the map resamples the whole
   // raster on every redraw.
   bool sameGeometry(const Snapshot& o) const {
-    return halfNm == o.halfNm && mode == o.mode &&
-           relAltBucket == o.relAltBucket;
+    const float halfTol =
+        std::max(1.0f, halfNm * kHalfNmGeometryTolerance);
+    return std::abs(halfNm - o.halfNm) <= halfTol && mode == o.mode &&
+           relAltBucket == o.relAltBucket && coarseSample == o.coarseSample;
   }
 
   float driftNm(const Snapshot& o) const {
@@ -148,7 +165,28 @@ struct ViewRaster {
   // Draw calls since the last completed build, used to rate-limit rebuilds that
   // are driven only by newer DEM data (see kRevisionRebuildIntervalFrames).
   int framesSinceBuild = 0;
+
+  // Completed async/sync build held until zoom animation settles so the
+  // on-screen texture is not swapped mid-zoom.
+  bool stagingValid = false;
+  Snapshot stagingFront;
+  std::vector<unsigned char> stagingRgba;
 };
+
+void applyStagingToFront(ViewRaster& v, Renderer& r) {
+  if (!v.stagingValid || v.stagingRgba.empty()) return;
+  if (v.imageId < 0) {
+    v.imageId = r.createImageRGBA(kRasterSize, kRasterSize, v.stagingRgba.data());
+  } else {
+    r.updateImageRGBA(v.imageId, v.stagingRgba.data());
+  }
+  v.front = v.stagingFront;
+  v.frontValid = v.imageId >= 0;
+  v.building = false;
+  v.framesSinceBuild = 0;
+  v.stagingValid = false;
+  v.stagingRgba.clear();
+}
 
 constexpr std::size_t kMaxViewRasters = 8;
 
@@ -192,8 +230,23 @@ ViewRaster& viewFor(Renderer& r, float cx, float cy) {
 // latitude is fixed and longitude steps uniformly, so the per-cell lon is
 // lonStart + lonStep*j; handing the whole row to elevationFtRow lets the DSF
 // store resolve (and lock) the tile once per row instead of once per pixel.
+void prefetchTerrain(const TerrainSource& terrain, const Snapshot& s) {
+  const double nmLon = nmPerDegLon(s.centerLat);
+  const double minLat = s.centerLat - s.halfNm / kNmPerDegLat;
+  const double maxLat = s.centerLat + s.halfNm / kNmPerDegLat;
+  const double minLon = s.centerLon - s.halfNm / nmLon;
+  const double maxLon = s.centerLon + s.halfNm / nmLon;
+  terrain.ensureCoverage(minLat, maxLat, minLon, maxLon);
+}
+
 void sampleRows(ViewRaster& v, const TerrainSource& terrain, int rows) {
   const Snapshot& s = v.target;
+  if (v.rowsDone == 0) {
+    terrain.setBulkTerrainSample(true);
+    terrain.setCoarseTerrainSample(s.coarseSample);
+    terrain.setTerrainViewCenter(s.centerLat, s.centerLon, s.detailHalfNm);
+    prefetchTerrain(terrain, s);
+  }
   const float stepNm = 2.0f * s.halfNm / kRasterSize;
   const double nmLon = nmPerDegLon(s.centerLat);
   const double lonStart =
@@ -207,6 +260,10 @@ void sampleRows(ViewRaster& v, const TerrainSource& terrain, int rows) {
     terrain.elevationFtRow(lat, lonStart, lonStep, kRasterSize, out);
   }
   v.rowsDone = endRow;
+  if (v.rowsDone >= kRasterSize) {
+    terrain.setBulkTerrainSample(false);
+    terrain.setCoarseTerrainSample(false);
+  }
 }
 
 void writePixel(unsigned char* px, const Color& c) {
@@ -246,6 +303,11 @@ void colorize(ViewRaster& v) {
     for (int j = 0; j < kRasterSize; ++j, px += 4) {
       const float e = row[j];
 
+      if (std::isnan(e)) {
+        writePixel(px, Color{0.0f, 0.0f, 0.0f, 0.0f});
+        continue;
+      }
+
       if (s.mode == TerrainRasterMode::Relative) {
         const float rel = e - ownAltFt;
         if (rel >= -kRelRedBelowFt) {
@@ -258,8 +320,13 @@ void colorize(ViewRaster& v) {
         continue;
       }
 
+      if (e <= 0.0f) {
+        writePixel(px, mapview::kMapOceanFill);
+        continue;
+      }
+
       Color c = terrainColor(e);
-      if (e > 0.5f) {
+      if (e > 0.5f && !s.coarseSample) {
         const int jW = std::max(j - 1, 0);
         const int jE = std::min(j + 1, kRasterSize - 1);
         const float dzdx = kSlopeGain * (row[jE] - row[jW]) / (2.0f * cellFt);
@@ -351,7 +418,8 @@ struct AsyncTerrainWorker {
             break;
           }
         }
-        sampleRows(scratch, *ter, kRowsPerFrame);
+        sampleRows(scratch, *ter,
+                   snap.coarseSample ? kCoarseRowsPerFrame : kRowsPerFrame);
       }
 
       if (!cancelled) {
@@ -397,16 +465,14 @@ struct AsyncTerrainWorker {
     cv.notify_one();
   }
 
-  bool tryConsume(Renderer& r, int kx, int ky, ViewRaster& v) {
+  bool tryConsume(Renderer& r, int kx, int ky, Snapshot& outSnap,
+                  std::vector<unsigned char>& outRgba) {
     std::lock_guard<std::mutex> lock(mu);
     if (phase != Phase::Done || renderer != &r || keyX != kx || keyY != ky) {
       return false;
     }
-    v.elevFt = std::move(elevFt);
-    v.rgba = std::move(rgba);
-    v.target = target;
-    v.front = target;
-    v.rowsDone = kRasterSize;
+    outSnap = target;
+    outRgba = std::move(rgba);
     phase = Phase::Idle;
     return true;
   }
@@ -421,34 +487,70 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
                        TerrainRasterMode mode, float ownAltFt,
                        double viewCenterLat, double viewCenterLon, float cx,
                        float cy, float pixelsPerNm, float rotationDeg,
-                       float rangeNm) {
-  if (rangeNm > kTerrainMaxRangeNm) return false;
+                       float rangeNm, float displayRangeNm,
+                       float viewHalfExtentNm, float terrainMaxRangeNm) {
+  if (rangeNm > terrainMaxRangeNm) return false;
 
   ViewRaster& v = viewFor(r, cx, cy);
 
+  const float zoomSettled = mapRangeZoomSettled(displayRangeNm, rangeNm);
+  const float minDrawHalfNm = viewHalfExtentNm * 1.01f;
+  const bool rangeStepChanged =
+      v.frontValid && v.front.builtRangeNm > 0.5f &&
+      std::abs(rangeNm - v.front.builtRangeNm) > 0.5f;
+
   if (g_asyncBuilds) {
-    if (g_async.tryConsume(r, v.keyX, v.keyY, v)) {
-      if (v.imageId < 0) {
-        v.imageId = r.createImageRGBA(kRasterSize, kRasterSize, v.rgba.data());
-      } else {
-        r.updateImageRGBA(v.imageId, v.rgba.data());
-      }
-      v.frontValid = v.imageId >= 0;
+    Snapshot completedSnap;
+    std::vector<unsigned char> completedRgba;
+    if (g_async.tryConsume(r, v.keyX, v.keyY, completedSnap, completedRgba)) {
+      v.stagingFront = completedSnap;
+      v.stagingRgba = std::move(completedRgba);
+      v.stagingValid = true;
       v.building = false;
-      v.framesSinceBuild = 0;
+      if (zoomSettled) {
+        applyStagingToFront(v, r);
+      }
     }
   }
+
+  if (zoomSettled && v.stagingValid) {
+    applyStagingToFront(v, r);
+  }
+
+  // Ladder range jumps immediately on RNG+/− while displayRangeNm eases. Size
+  // the rebuild footprint from the target step so halfNm does not drift every
+  // animation frame (which was canceling the async worker and flickering).
+  const float viewHalfAtLadder =
+      viewHalfExtentNm *
+      (rangeNm / std::max(0.5f, displayRangeNm));
 
   Snapshot desired;
   desired.centerLat = viewCenterLat;
   desired.centerLon = viewCenterLon;
-  desired.halfNm = rangeNm * kCoverageRangeFactor;
+  desired.halfNm =
+      std::max(rangeNm * kCoverageRangeFactor,
+               std::max(viewHalfAtLadder * kViewExtentMargin,
+                        rangeNm * kMfdMapCornerFactor));
   desired.mode = mode;
   desired.relAltBucket =
       mode == TerrainRasterMode::Relative
           ? static_cast<int>(std::lround(ownAltFt / kRelAltBucketFt))
           : 0;
+  desired.coarseSample = rangeNm > kFullDetailTerrainMaxNm;
+  desired.detailHalfNm =
+      desired.coarseSample ? rangeNm * 0.25f : desired.halfNm;
+  desired.builtRangeNm = rangeNm;
   desired.sourceRevision = terrain.revision();
+
+  if (v.stagingValid &&
+      std::abs(v.stagingFront.builtRangeNm - rangeNm) > 0.5f) {
+    v.stagingValid = false;
+    v.stagingRgba.clear();
+  }
+
+  const int revisionRebuildInterval =
+      desired.coarseSample ? kCoarseRevisionRebuildIntervalFrames
+                           : kRevisionRebuildIntervalFrames;
 
   ++v.framesSinceBuild;
 
@@ -460,15 +562,30 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   const bool geometryFresh = v.frontValid && v.front.sameGeometry(desired) &&
                              v.front.driftNm(desired) <= driftLimitNm;
   const bool revisionFresh = v.front.sourceRevision == desired.sourceRevision;
-  const bool needRebuild =
+  bool needRebuild =
       !geometryFresh ||
       (!revisionFresh &&
-       v.framesSinceBuild >= kRevisionRebuildIntervalFrames);
+       v.framesSinceBuild >= revisionRebuildInterval);
+  if (!zoomSettled) {
+    const bool modeChange =
+        v.frontValid && (v.front.mode != desired.mode ||
+                         v.front.relAltBucket != desired.relAltBucket);
+    needRebuild = modeChange || (!v.frontValid && !v.building);
+  }
 
   const bool asyncBusy =
       g_asyncBuilds && g_async.busyFor(r, v.keyX, v.keyY);
 
-  if (needRebuild) {
+  // Pre-build the target-range raster in the background while the zoom eases,
+  // but only swap it to the screen once the animation has settled.
+  const bool stagingReadyForTarget =
+      v.stagingValid &&
+      std::abs(v.stagingFront.builtRangeNm - rangeNm) <= 0.5f;
+  const bool speculativeZoomBuild =
+      !zoomSettled && rangeStepChanged && !v.building && !asyncBusy &&
+      !stagingReadyForTarget;
+
+  if (needRebuild || speculativeZoomBuild) {
     // Start a new build when idle, or restart mid-build only when zoom/mode/range
     // changes. Position drift while a build is in flight must NOT reset
     // rowsDone -- on a live-every-frame shell the view center moves every frame
@@ -486,7 +603,7 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
       if (g_asyncBuilds) {
         g_async.submit(terrain, r, v.keyX, v.keyY, desired);
       }
-    } else if (!v.target.sameGeometry(desired)) {
+    } else if (zoomSettled && !v.target.sameGeometry(desired)) {
       v.target = desired;
       v.rowsDone = 0;
       if (g_asyncBuilds) {
@@ -497,22 +614,23 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
 
   if (v.building && !g_asyncBuilds) {
     // Plugin path: spread rebuild work across full-render frames.
-    sampleRows(v, terrain, kRowsPerFrame);
+    sampleRows(v, terrain,
+               v.target.coarseSample ? kCoarseRowsPerFrame : kRowsPerFrame);
     if (v.rowsDone >= kRasterSize) {
       colorize(v);
-      if (v.imageId < 0) {
-        v.imageId = r.createImageRGBA(kRasterSize, kRasterSize, v.rgba.data());
-      } else {
-        r.updateImageRGBA(v.imageId, v.rgba.data());
-      }
-      v.front = v.target;
-      v.frontValid = v.imageId >= 0;
+      v.stagingFront = v.target;
+      v.stagingRgba = v.rgba;
+      v.stagingValid = true;
       v.building = false;
-      v.framesSinceBuild = 0;
+      v.rowsDone = 0;
+      if (zoomSettled) {
+        applyStagingToFront(v, r);
+      }
     }
   }
 
   if (!v.frontValid || v.imageId < 0) return false;
+  if (zoomSettled && v.front.halfNm < minDrawHalfNm) return false;
 
   // The raster is north-up around its own snapshot center: rotate into the map
   // orientation and offset by the snapshot-vs-view center displacement so the
@@ -526,6 +644,9 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
                     viewCenterLon, eastRad, northRad);
   const float dxPx = static_cast<float>(eastRad * mercatorPxPerRad);
   const float dyPx = -static_cast<float>(northRad * mercatorPxPerRad);
+  // Scale with displayRangeNm only -- the cached texture's geographic halfNm is
+  // fixed until zoom settles; pixelsPerNm already tracks the log-space zoom
+  // easing used by chart land and symbology.
   const float halfPx = v.front.halfNm * pixelsPerNm;
 
   r.save();

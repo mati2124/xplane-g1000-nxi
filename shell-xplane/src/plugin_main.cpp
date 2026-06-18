@@ -461,11 +461,11 @@ int DrawDevice(AvionicsDevice& dev) {
     // Hide the dedicated Weather Radar page on airframes with no radar fit; the
     // NEXRAD map overlay is independent and stays available.
     ui.setWeatherRadarAvailable(g_dataSource->weatherRadarEquipped());
+    // Keep the moving-map feature/airspace/land queries centered on the panned
+    // map view while panning so the on-screen area loads data, not just around
+    // ownship or the pointer geo alone.
     g_dataSource->syncWeatherRadar(ui);
-    // Keep the moving-map feature/airspace queries centered on the Map Pointer
-    // while panning so the panned-to area loads data, not just around ownship.
-    g_dataSource->setMapPanCenter(ui.mapPointerActive(), ui.mapPointerLat(),
-                                  ui.mapPointerLon());
+    ui.applyMapPanToDataSource(*g_dataSource, g_dataSource->snapshot());
   }
 
   if (!dev.engine) {

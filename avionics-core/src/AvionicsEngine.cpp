@@ -207,10 +207,9 @@ void AvionicsEngine::update(double dtSeconds) {
   mfd_.update(dtSeconds, dataSource_->snapshot());
 
   // Nearby-data queries (land vectors, airspaces, nav features) must center on
-  // the Map Pointer before the source refresh so panning matches the view in
-  // the same frame (screenshot settle and the last update before render).
-  dataSource_->setMapPanCenter(mfd_.mapPointerActive(), mfd_.mapPointerLat(),
-                               mfd_.mapPointerLon());
+  // the panned map view before the source refresh so land and symbols match
+  // what MapView draws (pointer geo can lag the view center until edge-scroll).
+  mfd_.applyMapPanToDataSource(*dataSource_, dataSource_->snapshot());
   dataSource_->setChartRangeNm(mfd_.rangeNm());
   if (drivesDataSource_) dataSource_->update(dtSeconds);
 

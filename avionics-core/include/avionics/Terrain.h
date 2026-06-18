@@ -29,6 +29,36 @@ class TerrainSource {
   // Monotonic counter bumped whenever better data becomes available (e.g. a
   // DEM tile finishes loading), so cached terrain rasters know to resample.
   virtual unsigned revision() const { return 0; }
+
+  // Optional hook for backends that load data asynchronously (DSF tiles). The
+  // terrain raster calls this before sampling so wide views do not half-fill
+  // with transparent pixels while tiles stream in.
+  virtual void ensureCoverage(double minLat, double maxLat, double minLon,
+                              double maxLon,
+                              bool waitForTiles = false) const {
+    (void)minLat;
+    (void)maxLat;
+    (void)minLon;
+    (void)maxLon;
+    (void)waitForTiles;
+  }
+
+  // While true, DSF backends force-queue every tile touched by a raster rebuild
+  // instead of throttling when the cache is full (continental zoom).
+  virtual void setBulkTerrainSample(bool enabled) const { (void)enabled; }
+
+  // Continental map range: prefer coarse grid summaries; full DEM is retained for
+  // tiles near the view center when detailHalfNm is set.
+  virtual void setCoarseTerrainSample(bool enabled) const { (void)enabled; }
+
+  // Focus for progressive refinement: DSF workers prioritize and upgrade tiles
+  // near this point to full DEM in the background.
+  virtual void setTerrainViewCenter(double lat, double lon,
+                                    float detailHalfNm) const {
+    (void)lat;
+    (void)lon;
+    (void)detailHalfNm;
+  }
 };
 
 // Deterministic procedural terrain for the mock feed (and offline rendering):
