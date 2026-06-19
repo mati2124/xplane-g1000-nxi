@@ -33,6 +33,7 @@ struct PfdPersistentState {
   WindOption windOption = WindOption::Option2;
   std::array<bool, kDisplayToggleCount> toggles{};
   int insetRangeIndex = kMapRangeDefaultIndex;
+  int insetRangeSavedVersion = 0;
 };
 
 // Durable MFD navigation-map display options and range.
@@ -44,6 +45,7 @@ struct MfdPersistentState {
   MapDetail detail = MapDetail::All;
   MapOrientation orientation = MapOrientation::NorthUp;
   int rangeIndex = kMapRangeDefaultIndex;
+  int rangeSavedVersion = 0;
 };
 
 // The full persisted avionics display state (both screens).

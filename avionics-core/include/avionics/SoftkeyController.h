@@ -263,6 +263,9 @@ class SoftkeyController {
   const float* pressLevels() const { return press_.data(); }
   // True while the cell's associated window/mode is the active one.
   bool keyActive(int i) const;
+  // False for options not yet modeled (e.g. SVT); the bar greys them out and
+  // pressKey() ignores them.
+  bool keyEnabled(int i) const;
 
   // PFD pop-up windows (Alerts / References / Nearest). activeWindow() is the
   // one currently selected; windowAnim() is each window's linear open progress
@@ -575,8 +578,14 @@ class SoftkeyController {
   // percentage is replacing the selected radio's standby frequency. The renderer
   // queries radioVolumeUnit()/radioVolumePct() for the value to draw.
   bool radioVolumeShown(RadioBand band) const;
+  bool radioVolumeAnnunciationActive() const {
+    return radioVolumeShownSeconds_ > 0.0;
+  }
+  double radioVolumeSecondsLeft() const { return radioVolumeShownSeconds_; }
   RadioUnit radioVolumeUnit() const { return radioVolumeUnit_; }
   int radioVolumePct() const { return radioVolumePct_; }
+  // Copy the transient VOL percentage readout to the other GDU's radio bar.
+  void mirrorRadioVolumeAnnunciation(const SoftkeyController& src);
 
   // Dedicated HDG knob (left bezel) and CRS/BARO knob (right bezel). These step
   // the selected-heading bug, selected course, and altimeter barometric setting
@@ -935,5 +944,8 @@ class SoftkeyController {
   // lists are rebuilt.
   void updateAlertSoftkey();
 };
+
+// Keep the transient VOL readout in sync on both GDUs.
+void syncRadioVolumeAnnunciation(SoftkeyController& a, SoftkeyController& b);
 
 }  // namespace avionics

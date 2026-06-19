@@ -383,8 +383,8 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   failCom1_ = XPLMFindDataRef(datarefs::kFailCom1);
   failCom2_ = XPLMFindDataRef(datarefs::kFailCom2);
   failTransponder_ = XPLMFindDataRef(datarefs::kFailTransponder);
-  acfRelativePath_ = XPLMFindDataRef("sim/aircraft/view/acf_relative_path");
-  acfIcao_ = XPLMFindDataRef("sim/aircraft/view/acf_ICAO");
+  acfRelativePath_ = XPLMFindDataRef(datarefs::kAcfRelativePath);
+  acfIcao_ = XPLMFindDataRef(datarefs::kAcfIcao);
 
   rebuildEisBindings();
 
@@ -421,13 +421,17 @@ void DatarefDataSource::updateAircraftProfile() {
 
   std::string icao;
   if (acfIcao_ != nullptr) {
-    // acf_ICAO is a fixed 40-byte string field, NUL-padded.
+    // acf_ICAO is a fixed 40-byte string field, NUL- or space-padded.
     char buf[64] = {};
     const int n =
         XPLMGetDatab(acfIcao_, buf, 0, static_cast<int>(sizeof(buf)) - 1);
     if (n > 0) {
       buf[n] = '\0';
       icao = buf;
+      while (!icao.empty() &&
+             std::isspace(static_cast<unsigned char>(icao.back()))) {
+        icao.pop_back();
+      }
     }
   }
 
@@ -441,6 +445,7 @@ void DatarefDataSource::updateAircraftProfile() {
   // Swap the EIS engine page and the checklists to the new aircraft's profile.
   if (eisSource_ != nullptr) {
     eisSource_->setAircraftIdentity(icao, acfPath);
+    eisWasReady_ = false;
   }
   if (checklistSource_ != nullptr) {
     checklistSource_->setAircraftIdentity(icao, acfPath);
@@ -544,10 +549,12 @@ void DatarefDataSource::update(double dtSeconds) {
   updateAircraftProfile();
   if (eisSource_ != nullptr) {
     eisSource_->refreshIfChanged();
-    if (eisSource_->ready() &&
-        eisBindings_.size() != eisSource_->layout().bindings.size()) {
+    const bool ready = eisSource_->ready();
+    if (ready && (!eisWasReady_ ||
+                  eisBindings_.size() != eisSource_->layout().bindings.size())) {
       rebuildEisBindings();
     }
+    eisWasReady_ = ready;
   }
   if (checklistSource_ != nullptr) {
     checklistSource_->refreshIfChanged();
@@ -653,6 +660,7 @@ void DatarefDataSource::update(double dtSeconds) {
 
   updateMap(dtSeconds);
   weather_.update(dtSeconds);
+  syncDisplayBackup(data_, dtSeconds);
 }
 
 void DatarefDataSource::syncWeatherRadar(const MfdController& ui) {
@@ -865,6 +873,7 @@ bool DatarefDataSource::submitMapQuery(double lat, double lon) {
       obstacles_ != nullptr && obstacles_->loaded();
   mapQueryReqLand_ = landData_ != nullptr && landData_->loaded();
   mapQueryLandRangeNm_ = chartRangeNm_;
+  mapQueryLandViewHalfExtentNm_ = mapViewHalfExtentNm_;
   mapQueryPhase_ = MapQueryPhase::Running;
   mapQueryCv_.notify_one();
   return true;
@@ -935,6 +944,7 @@ void DatarefDataSource::mapQueryWorkerMain() {
     bool wantObstacles = false;
     bool wantLand = false;
     float landRangeNm = 0.0f;
+    float landViewHalfExtentNm = 0.0f;
     const ObstacleStore* obstacles = nullptr;
     const LandDataStore* land = nullptr;
     {
@@ -950,6 +960,7 @@ void DatarefDataSource::mapQueryWorkerMain() {
       wantObstacles = mapQueryReqObstacles_;
       wantLand = mapQueryReqLand_;
       landRangeNm = mapQueryLandRangeNm_;
+      landViewHalfExtentNm = mapQueryLandViewHalfExtentNm_;
       obstacles = obstacles_;
       land = landData_.get();
     }
@@ -982,7 +993,8 @@ void DatarefDataSource::mapQueryWorkerMain() {
     }
     if (wantLand && land != nullptr) {
       res.landLines =
-          land->nearbyLines(lat, lon, landRangeNm, kMaxMapLandLines);
+          land->nearbyLines(lat, lon, landRangeNm, kMaxMapLandLines,
+                            landViewHalfExtentNm);
       res.cities = land->nearbyCities(lat, lon, landRangeNm, kMaxMapCities);
       res.landIncluded = true;
     }
@@ -1009,6 +1021,13 @@ void DatarefDataSource::setMapPanCenter(bool active, double lat, double lon) {
 void DatarefDataSource::setChartRangeNm(float rangeNm) {
   if (chartRangeNm_ != rangeNm) {
     chartRangeNm_ = rangeNm;
+    mapPanDirty_ = true;
+  }
+}
+
+void DatarefDataSource::setMapViewHalfExtentNm(float halfExtentNm) {
+  if (mapViewHalfExtentNm_ != halfExtentNm) {
+    mapViewHalfExtentNm_ = halfExtentNm;
     mapPanDirty_ = true;
   }
 }

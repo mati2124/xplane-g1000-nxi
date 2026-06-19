@@ -9,12 +9,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #if defined(_WIN32)
-#include <process.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #endif
 
 namespace avionics {
@@ -101,21 +106,110 @@ std::vector<std::uint8_t> readFileBytes(const std::string& path) {
   return out;
 }
 
+#if defined(_WIN32)
+std::wstring utf8ToWide(const std::string& s) {
+  if (s.empty()) return {};
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+                                    static_cast<int>(s.size()), nullptr, 0);
+  if (n <= 0) return {};
+  std::wstring w(static_cast<std::size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                      w.data(), n);
+  return w;
+}
+
+// Launch tar.exe directly (not via cmd.exe / _popen) so GUI apps do not flash
+// console windows and paths with spaces (e.g. C:\X-Plane 12\...) stay intact.
+std::vector<std::uint8_t> runHiddenProcessCaptureStdout(
+    const std::wstring& exe, const std::wstring& args) {
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE readPipe = nullptr;
+  HANDLE writePipe = nullptr;
+  if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) return {};
+  SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+  HANDLE nul =
+      CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING,
+                  FILE_ATTRIBUTE_NORMAL, nullptr);
+
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  si.hStdOutput = writePipe;
+  si.hStdError = nul != INVALID_HANDLE_VALUE ? nul : writePipe;
+
+  std::wstring cmd = L"\"" + exe + L"\" " + args;
+  std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+  cmdBuf.push_back(L'\0');
+
+  PROCESS_INFORMATION pi{};
+  const BOOL ok = CreateProcessW(exe.c_str(), cmdBuf.data(), nullptr, nullptr,
+                                 TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                                 &pi);
+  CloseHandle(writePipe);
+  if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+  if (!ok) {
+    CloseHandle(readPipe);
+    return {};
+  }
+
+  std::vector<std::uint8_t> out;
+  std::array<std::uint8_t, 65536> buf{};
+  for (;;) {
+    DWORD n = 0;
+    if (!ReadFile(readPipe, buf.data(), static_cast<DWORD>(buf.size()), &n,
+                  nullptr)) {
+      break;
+    }
+    if (n == 0) break;
+    const auto prev = out.size();
+    out.resize(prev + n);
+    std::memcpy(out.data() + prev, buf.data(), n);
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exitCode = 1;
+  GetExitCodeProcess(pi.hProcess, &exitCode);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  CloseHandle(readPipe);
+
+  if (exitCode != 0) return {};
+  return out;
+}
+#endif
+
 std::vector<std::uint8_t> decompress7zToStdout(const std::string& path) {
+#if defined(_WIN32)
+  static std::mutex decompressMu;
+  std::lock_guard<std::mutex> lock(decompressMu);
+
+  const char* systemRoot = std::getenv("SystemRoot");
+  if (systemRoot == nullptr) return {};
+  const std::wstring tar =
+      utf8ToWide(std::string(systemRoot) + "\\System32\\tar.exe");
+  const std::wstring args = L"-xOf \"" + utf8ToWide(path) + L"\"";
+  const std::vector<std::uint8_t> out =
+      runHiddenProcessCaptureStdout(tar, args);
+  if (out.size() >= 12 && std::memcmp(out.data(), kDsfMagic, 8) == 0) {
+    return out;
+  }
+  return {};
+#else
   const char* tools[] = {"bsdtar", "tar"};
   for (const char* tool : tools) {
-    std::string cmd;
-#if defined(_WIN32)
-    cmd = std::string(tool) + " -xOf \"" + path + "\"";
-    FILE* pipe = _popen(cmd.c_str(), "rb");
-#else
-    cmd = std::string("/usr/bin/") + tool + " -xOf '" + path + "' 2>/dev/null";
+    std::string cmd =
+        std::string("/usr/bin/") + tool + " -xOf '" + path + "' 2>/dev/null";
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) {
       cmd = std::string(tool) + " -xOf '" + path + "' 2>/dev/null";
       pipe = popen(cmd.c_str(), "r");
     }
-#endif
     if (!pipe) continue;
 
     std::vector<std::uint8_t> out;
@@ -126,16 +220,13 @@ std::vector<std::uint8_t> decompress7zToStdout(const std::string& path) {
       out.resize(prev + n);
       std::memcpy(out.data() + prev, buf.data(), n);
     }
-#if defined(_WIN32)
-    _pclose(pipe);
-#else
     pclose(pipe);
-#endif
     if (out.size() >= 12 && std::memcmp(out.data(), kDsfMagic, 8) == 0) {
       return out;
     }
   }
   return {};
+#endif
 }
 
 std::vector<std::uint8_t> loadDsfBytes(const std::string& path) {

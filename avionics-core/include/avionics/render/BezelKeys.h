@@ -90,6 +90,10 @@ enum class BezelKey {
   HdgCw,
   HdgPush,
 
+  // Red DISPLAY BACKUP key on the GMA audio panel (drawn on the lower left
+  // bezel in the standalone shell). Toggles manual reversionary mode.
+  DisplayBackup,
+
   Count,
 };
 inline constexpr int kBezelKeyCount = static_cast<int>(BezelKey::Count);

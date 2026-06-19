@@ -85,6 +85,83 @@ void drawVspeedBugs(Renderer& r, float tapeX, float tapeW, float stripTop,
   r.restore();
 }
 
+// Selected Airspeed box (above the tape) and cyan tape bug while FLC is active
+// (G1000 NXi Pilot's Guide, Airspeed Indicator / Flight Level Change Mode).
+void drawSelectedAirspeed(Renderer& r, float tapeX, float tapeW, float tapeTop,
+                          float stripTop, float stripH, float cy,
+                          float displayH, float airspeedKts, float selectedKts) {
+  const float boxH = stripTop - tapeTop;
+  const float boxW = tapeW;
+  const float boxX = tapeX;
+  const float boxY = tapeTop;
+  const bool selected = selectedKts > kAsiSelectedEpsilonKt;
+
+  // Only the top-left (outer) corner is rounded, mirroring the selected-
+  // altitude box on the opposite tape column.
+  const float cornerR = fontPx(kTapeCornerRadiusWt, displayH);
+  const std::vector<Point> boxPoly = {{boxX, boxY},
+                                      {boxX + boxW, boxY},
+                                      {boxX + boxW, boxY + boxH},
+                                      {boxX, boxY + boxH}};
+  const std::vector<float> boxRadii = {cornerR, 0.0f, 0.0f, 0.0f};
+  std::vector<Point> boxShape = roundPolygonCorners(boxPoly, boxRadii);
+  r.fillPolygon(boxShape.data(), static_cast<int>(boxShape.size()),
+                colors::kReadoutBox);
+  boxShape.push_back(boxShape.front());
+  r.strokePolyline(boxShape.data(), static_cast<int>(boxShape.size()), 1.5f,
+                   colors::kTapeTopBorder);
+
+  // Small airspeed-bug glyph at the right of the box (inner edge, toward the
+  // attitude window), notch facing the readout.
+  const float glyphH = boxH * 0.5f;
+  const float glyphW = glyphH * 0.5f;
+  const float glyphX = boxX + boxW * 0.94f - glyphW;
+  const float glyphTop = boxY + (boxH - glyphH) * 0.5f;
+  const auto gp = [&](float nx, float ny) {
+    return Point{glyphX + nx * glyphW, glyphTop + ny * glyphH};
+  };
+  const Point boxBug[8] = {gp(0.0f, 0.0f),    gp(0.0f, 0.25f),
+                           gp(0.5f, 0.4375f), gp(0.5f, 0.5625f),
+                           gp(0.0f, 0.75f),   gp(0.0f, 1.0f),
+                           gp(1.0f, 1.0f),    gp(1.0f, 0.0f)};
+  r.fillPolygon(boxBug, 8, colors::kCyan);
+
+  const float leftX = boxX + boxW * 0.08f;
+  const float midY = boxY + boxH * 0.5f;
+  const float textSize = fontPx(wt::kSelectedAlt, displayH);
+  if (selected) {
+    r.fillText(leftX, midY, formatInt(selectedKts), textSize, TextAlign::Left,
+               colors::kCyan);
+  } else {
+    r.fillText(leftX, midY, std::string(kSelectedAltDashes), textSize,
+               TextAlign::Left, colors::kCyan);
+  }
+
+  if (!selected) {
+    return;
+  }
+
+  // Cyan bug on the inner (right) edge of the scrolling tape, pointing at the
+  // selected speed on the scale (mirror of the selected-altitude tape bug).
+  const float ppu = stripH / kAirspeedViewableKnots;
+  float bugY = cy - (selectedKts - airspeedKts) * ppu;
+  bugY = std::max(stripTop, std::min(stripTop + stripH, bugY));
+  const float bw = tapeW * 0.16f;
+  const float bh = displayH * 0.020f;
+  const float innerX = tapeX + tapeW;
+  const float bx = innerX - bw;
+
+  r.save();
+  r.clip(tapeX, stripTop, tapeW, stripH);
+  const Point bug[5] = {{bx, bugY - bh},
+                        {innerX, bugY - bh},
+                        {innerX - bw * 0.5f, bugY},
+                        {innerX, bugY + bh},
+                        {bx, bugY + bh}};
+  r.fillPolygon(bug, 5, colors::kCyan);
+  r.restore();
+}
+
 // Airspeed pointer box with a right-pointing notch and a rolling ones digit
 // (the last digit scrolls like a drum), matching the real G1000 NXi.
 void drawAirspeedReadout(Renderer& r, float x, float y, float w, float h,
@@ -263,8 +340,8 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   // semibold face to match the heavier weight of the real G1000 NXi.
   const FontScope airspeedFont(r, FontFace::DejaVuSemiBold);
 
-  // The NXi airspeed tape has a 10 px rounded top-left corner (no top reference-
-  // speed box is shown here, so the tape itself carries the round).
+  // The NXi airspeed tape has a 10 px rounded top-left corner when FLC is off;
+  // when FLC is active the selected-airspeed box above the tape carries it.
   drawVerticalTape(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
                    d.airspeedKts, kAirspeedViewableKnots, kAirspeedMajorKnots,
                    kAirspeedMinorKnots, kAirspeedMinKnots, false,
@@ -298,19 +375,16 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
       (!overVne && trendOverVne) ? colors::kBandYellow : colors::kWhite;
   drawAirspeedReadout(r, readoutX, readoutY, readoutW, readoutH,
                       d.airspeedKts, readoutSize, boxColor, textColor, L.s);
+  if (d.selectedAirspeedValid) {
+    drawSelectedAirspeed(r, L.asiX, L.asiW, L.asiTop, L.stripTop, L.stripH,
+                         L.attCy, h, d.airspeedKts, d.selectedAirspeedKts);
+  }
 
-  // Mach readout: shown just below the IAS pointer box when the Mach number
-  // reaches 0.40, matching the G1000 NXi (suppressed in the normal piston
-  // envelope). Speed of sound is from OAT (a = 38.97*sqrt(T_K) kt).
+  // When Mach is high enough, the bottom tape-width box shows Mach instead of
+  // TAS (G1000 NXi TBM / high-speed installs). Speed of sound from OAT.
   const float soundKts = 38.967854f * std::sqrt(d.oatCelsius + 273.15f);
   const float mach = soundKts > 1.0f ? d.tasKts / soundKts : 0.0f;
-  if (mach >= 0.40f) {
-    char mbuf[16];
-    std::snprintf(mbuf, sizeof(mbuf), "M %.3f", mach);
-    const float machSize = fontPx(wt::kInfoValue, h);
-    r.fillText(L.asiX + L.asiW * 0.5f, readoutY + readoutH + machSize,
-               std::string(mbuf), machSize, TextAlign::Center, colors::kWhite);
-  }
+  const bool showMach = mach >= kMachDisplayThreshold;
 
   // Ground speed and true airspeed sit in two black boxes flush with the bottom
   // of the airspeed instrument. The TAS box is exactly the tape width and its
@@ -326,16 +400,21 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
   const float padX = labelSize * 0.5f;
   const float boxGap = labelSize * 0.45f;
 
-  auto runWidth = [&](const char* label, const std::string& value) {
-    return r.measureTextWidth(label, labelSize) + gap +
-           r.measureTextWidth(value, valueSize) + gap * 0.5f +
-           r.measureTextWidth("KT", labelSize);
+  auto runWidth = [&](const char* label, const std::string& value,
+                      const char* unitSuffix) {
+    float w = r.measureTextWidth(label, labelSize) + gap +
+              r.measureTextWidth(value, valueSize) + gap * 0.5f;
+    if (unitSuffix != nullptr && unitSuffix[0] != '\0') {
+      w += r.measureTextWidth(unitSuffix, labelSize);
+    }
+    return w;
   };
   // Corner radii order matches the rectangle vertices below: top-left,
   // top-right, bottom-right, bottom-left.
   auto drawSpeedBox = [&](float boxX, float boxW,
                           const std::vector<float>& radii, float scale,
-                          const char* label, const std::string& value) {
+                          const char* label, const std::string& value,
+                          const char* unitSuffix) {
     const std::vector<Point> rect = {{boxX, boxY},
                                      {boxX + boxW, boxY},
                                      {boxX + boxW, boxY + boxH},
@@ -350,41 +429,53 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
     const float lSize = labelSize * scale;
     const float vSize = valueSize * scale;
     const float g = gap * scale;
-    float tx = boxX + boxW * 0.5f - runWidth(label, value) * scale * 0.5f;
+    float tx = boxX + boxW * 0.5f -
+               runWidth(label, value, unitSuffix) * scale * 0.5f;
     tx = putText(r, tx, boxCy, label, lSize, colors::kLabelText, g / lSize);
     tx = putText(r, tx, boxCy, value, vSize, colors::kWhite,
-                 (g * 0.5f) / vSize);
-    putText(r, tx, boxCy, "KT", lSize, colors::kLabelText);
+                 unitSuffix != nullptr && unitSuffix[0] != '\0'
+                     ? (g * 0.5f) / vSize
+                     : 0.0f);
+    if (unitSuffix != nullptr && unitSuffix[0] != '\0') {
+      putText(r, tx, boxCy, unitSuffix, lSize, colors::kLabelText);
+    }
   };
 
-  const std::string tasValue = formatInt(d.tasKts);
+  std::string tasBoxValue;
+  const char* tasBoxLabel = "TAS";
+  const char* tasBoxUnit = "KT";
+  if (showMach) {
+    tasBoxLabel = "M";
+    tasBoxUnit = nullptr;
+    char mbuf[8];
+    // NXi Mach format: "M .477" (leading zero omitted after the decimal).
+    std::snprintf(mbuf, sizeof(mbuf), ".%03d",
+                  static_cast<int>(std::lround(mach * 1000.0f)));
+    tasBoxValue = mbuf;
+  } else {
+    tasBoxValue = formatInt(d.tasKts);
+  }
+
   const std::string gsValue = formatInt(d.groundSpeedKts);
   const float tasX = L.asiX;
   const float tasW = L.asiW;  // exactly the tape width
-  // The TAS box is locked to the tape width, so its content may need to shrink
-  // to fit. Size the scale against the widest possible value (three digits)
-  // rather than the live value, so the GS/TAS font size stays constant with
-  // speed. The same scale is used for the GS box so both read at one size.
-  float maxDigitW = 0.0f;
-  for (char c = '0'; c <= '9'; ++c) {
-    maxDigitW = std::max(
-        maxDigitW, r.measureTextWidth(std::string(1, c), valueSize));
-  }
-  const float tasRunMax = r.measureTextWidth("TAS", labelSize) + gap +
-                          maxDigitW * 3.0f + gap * 0.5f +
-                          r.measureTextWidth("KT", labelSize);
+  // The TAS/Mach box is locked to the tape width, so its content may need to
+  // shrink to fit. Size the scale against the widest possible layout so the
+  // GS/TAS font size stays constant with speed.
+  const float tasRunMax =
+      std::max(runWidth("TAS", "999", "KT"), runWidth("M", ".999", nullptr));
   const float tasAvail = tasW - padX * 2.0f;
   const float speedScale =
       (tasRunMax > tasAvail && tasRunMax > 0.0f) ? tasAvail / tasRunMax : 1.0f;
-  const float gsW = runWidth("GS", gsValue) * speedScale + padX * 2.0f;
+  const float gsW = runWidth("GS", gsValue, "KT") * speedScale + padX * 2.0f;
   const float gsX = tasX - boxGap - gsW;
   const float cornerR = kTapeCornerRadiusWt * L.s;
   // GS is a free-floating box, so round all four corners like the rest of the
   // readouts; the TAS box only rounds its bottom-left to mirror the tape.
   drawSpeedBox(gsX, gsW, {cornerR, cornerR, cornerR, cornerR}, speedScale, "GS",
-               gsValue);
-  drawSpeedBox(tasX, tasW, {0.0f, 0.0f, 0.0f, cornerR}, speedScale, "TAS",
-               tasValue);
+               gsValue, "KT");
+  drawSpeedBox(tasX, tasW, {0.0f, 0.0f, 0.0f, cornerR}, speedScale,
+               tasBoxLabel, tasBoxValue, tasBoxUnit);
 }
 
 }  // namespace avionics::pfd

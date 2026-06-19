@@ -73,6 +73,11 @@ enum class RadioAction : std::uint8_t {
   NavOuterDown,
   NavInnerUp,
   NavInnerDown,
+  ComVolUp,
+  ComVolDown,
+  NavVolUp,
+  NavVolDown,
+  NavVolPush,
 };
 
 struct Event {

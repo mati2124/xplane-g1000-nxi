@@ -1,5 +1,7 @@
 #pragma once
 
+#include "avionics/MapRange.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -60,7 +62,7 @@ inline double mercatorLatDegFromY(double mercatorY) {
 // Pixels per Mercator radian so `rangeNm` along a meridian spans `mapRadiusPx`.
 inline float mercatorPixelsPerRad(float mapRadiusPx, float rangeNm) {
   const double mercatorRangeRad =
-      static_cast<double>(std::max(0.5f, rangeNm)) / kNmPerEarthRad;
+      static_cast<double>(std::max(kMapRangeMinNm, rangeNm)) / kNmPerEarthRad;
   return mapRadiusPx / static_cast<float>(mercatorRangeRad);
 }
 

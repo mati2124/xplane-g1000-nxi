@@ -522,7 +522,7 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   // animation frame (which was canceling the async worker and flickering).
   const float viewHalfAtLadder =
       viewHalfExtentNm *
-      (rangeNm / std::max(0.5f, displayRangeNm));
+      (rangeNm / std::max(kMapRangeMinNm, displayRangeNm));
 
   Snapshot desired;
   desired.centerLat = viewCenterLat;

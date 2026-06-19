@@ -84,13 +84,15 @@ Layout computeLayout(float w, float h) {
   // The deviation column sits flush against the altimeter tape's left edge (real
   // NXi): its right edge touches the tape with no gap.
   L.vdiX = L.altX - L.vdiW;
-  // Marker-beacon annunciation just above the deviation scale, left of the
-  // altimeter (Pilot's Guide, Marker Beacon Annunciations). Right edge aligned
-  // to the tape so the whole left column shares one edge.
+  // Marker-beacon annunciation left of the Selected Altitude box (Pilot's Guide
+  // Fig. 2-43), vertically centered on that box. The VDI source label sits in
+  // the clear band below it; right edge aligned to the tape so the left column
+  // shares one edge.
   L.markerW = X(34.0f);
   L.markerH = Y(34.0f);
   L.markerX = L.altX - L.markerW;
-  L.markerY = L.stripTop;
+  const float selAltBoxH = L.stripTop - L.altTop;
+  L.markerY = L.altTop + (selAltBoxH - L.markerH) * 0.5f;
 
   // CAS annunciation window. Per the G1000 Pilot's Guide (Fig. A-1) it sits to
   // the right of the VSI tape, with a fixed top at ~44% of display height (just

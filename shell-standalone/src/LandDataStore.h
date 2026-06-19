@@ -38,7 +38,8 @@ class LandDataStore {
   // Lines whose bounding box overlaps the query box around (lat, lon), and
   // cities inside it, capped at maxCount. Empty until loaded().
   std::vector<MapLandLine> nearbyLines(double lat, double lon, float rangeNm,
-                                       std::size_t maxCount) const;
+                                       std::size_t maxCount,
+                                       float viewHalfExtentNm = 0.0f) const;
   std::vector<MapLandCity> nearbyCities(double lat, double lon, float rangeNm,
                                         std::size_t maxCount) const;
 

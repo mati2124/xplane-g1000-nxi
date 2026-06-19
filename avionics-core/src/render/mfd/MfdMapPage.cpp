@@ -138,7 +138,7 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
     const MapFeature* sel = selectedObstacle != nullptr ? nullptr : pointerFeature;
     const float mapRadiusPx = mapview::mapRangeSpanPx(config);
     const float scaleRangeNm =
-        std::max(0.5f, ui.displayRangeNm() > 0.0f ? ui.displayRangeNm()
+        std::max(kMapRangeMinNm, ui.displayRangeNm() > 0.0f ? ui.displayRangeNm()
                                                   : ui.rangeNm());
     const float pixelsPerNm = mapRadiusPx / scaleRangeNm;
     const float rotation = pointerRotationDeg(ui.mapOrientation(), d);

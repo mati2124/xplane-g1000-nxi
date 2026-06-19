@@ -61,8 +61,10 @@ class NavFeatureSource {
   }
   virtual std::vector<MapLandLine> nearbyLandLines(double lat, double lon,
                                                    float rangeNm,
-                                                   std::size_t maxCount) const {
-    (void)lat, (void)lon, (void)rangeNm, (void)maxCount;
+                                                   std::size_t maxCount,
+                                                   float viewHalfExtentNm =
+                                                       0.0f) const {
+    (void)lat, (void)lon, (void)rangeNm, (void)maxCount, (void)viewHalfExtentNm;
     return {};
   }
   virtual std::vector<MapLandCity> nearbyCities(double lat, double lon,

@@ -51,13 +51,13 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // A per-view range override lets the MFD MAP page zoom independently of the
   // PFD inset while reading the same MapData.
   const float rangeNm =
-      std::max(0.5f, config.rangeNm > 0.0f ? config.rangeNm : map.rangeNm);
+      std::max(kMapRangeMinNm, config.rangeNm > 0.0f ? config.rangeNm : map.rangeNm);
   // The on-screen scale follows the animated zoom value (when supplied) so the
   // map glides between ladder steps, while `rangeNm` -- the selected step --
   // still drives the readout, range rings, and symbol declutter so those don't
   // flicker through intermediate values during the zoom.
   const float scaleRangeNm =
-      std::max(0.5f, config.displayRangeNm > 0.0f ? config.displayRangeNm
+      std::max(kMapRangeMinNm, config.displayRangeNm > 0.0f ? config.displayRangeNm
                                                   : rangeNm);
   const float pixelsPerNm = mapRadiusPx / scaleRangeNm;
   const float viewHalfExtentNm =
@@ -113,7 +113,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // through like the real NXi instead of procedural tan over the Gulf.
   if (config.style.showLand &&
       (!map.landLines.empty() || !map.cities.empty())) {
-    mapview::drawLandData(r, map, proj, rangeNm, false);
+    mapview::drawLandData(r, map, proj, rangeNm, false, viewHalfExtentNm);
     if (config.style.showLabels) {
       mapview::drawCityDots(r, map, proj, rangeNm, symSize);
     }

@@ -18,16 +18,30 @@ constexpr float kTaxiwayDiagramMaxRangeNm = 5.0f;
 constexpr float kAirportLabelMaxRangeNm = 2.5f;
 
 constexpr Color kRunwayFill{0.75f, 0.75f, 0.78f, 1.0f};
+// Dashed black runway centerline, shown at close range like the real unit.
+constexpr Color kRunwayCenterline{0.0f, 0.0f, 0.0f, 1.0f};
 // Taxiway/apron pavement: a darker gray so the lighter runway quads drawn on
 // top stay distinct (Garmin SafeTaxi shows taxiways darker than runways).
 constexpr Color kTaxiwayFill{0.40f, 0.40f, 0.43f, 1.0f};
+// SafeTaxi taxiway identifiers: a black box with white text, like the real
+// G1000.
+constexpr Color kTaxiwaySign{0.0f, 0.0f, 0.0f, 1.0f};
+// Runway-end designators: a white box with a thin black border and black text,
+// placed off the approach end of the runway (not on the pavement).
+constexpr Color kRunwayLabelFill{1.0f, 1.0f, 1.0f, 1.0f};
+constexpr Color kRunwayLabelBorder{0.0f, 0.0f, 0.0f, 1.0f};
 // Cap on pavement-polygon vertices projected per frame, a safety valve against
 // a pathological mega-polygon.
 constexpr int kMaxPavementVerts = 512;
+// NVG_ALIGN_MIDDLE centers on the font's ascender/descender line, so a numeric
+// or all-caps glyph (no descender ink) rides ~0.10 em high; add this fraction
+// of the font size to the centered baseline to center the glyph INK in a box.
+constexpr float kCapInkCenterNudge = 0.10f;
 
-// Paints a runway-end designator near its threshold, rotated to read along the
-// runway centerline (flipped so it never appears upside down), like the painted
-// numbers on the SafeTaxi diagram.
+// Paints a runway-end designator in a bordered white box just off the approach
+// end of the runway (beyond the threshold, not on the pavement), rotated to
+// read along the runway centerline (flipped so it never appears upside down),
+// like the real-unit SafeTaxi diagram.
 void drawRunwayNumber(Renderer& r, float ex, float ey, float dirX, float dirY,
                       const std::string& id, float labelSize) {
   if (id.empty()) return;
@@ -35,18 +49,25 @@ void drawRunwayNumber(Renderer& r, float ex, float ey, float dirX, float dirY,
   if (len < 1.0f) return;
   const float ux = dirX / len;
   const float uy = dirY / len;
-  // Inset the label from the threshold toward the runway center.
-  const float inset = labelSize * 1.2f;
-  const float tx = ex + ux * inset;
-  const float ty = ey + uy * inset;
+  const float fontPx = labelSize * 0.8f;
+  // Offset the box away from the threshold (opposite the runway body) so it
+  // sits on the approach end rather than on the pavement.
+  const float halfW = r.measureTextWidth(id, fontPx) * 0.5f + 2.0f;
+  const float halfH = fontPx * 0.5f + 1.5f;
+  const float offset = halfW + labelSize * 0.4f;
+  const float tx = ex - ux * offset;
+  const float ty = ey - uy * offset;
   float angle = std::atan2(uy, ux) * 180.0f / 3.14159265358979323846f;
   if (angle > 90.0f) angle -= 180.0f;
   if (angle < -90.0f) angle += 180.0f;
   r.save();
   r.translate(tx, ty);
   r.rotateDegrees(angle);
-  r.fillText(0.0f, 0.0f, id, labelSize * 0.95f, TextAlign::Center,
-             colors::kWhite);
+  r.fillRect(-halfW, -halfH, halfW * 2.0f, halfH * 2.0f, kRunwayLabelFill);
+  r.strokeRoundedRect(-halfW, -halfH, halfW * 2.0f, halfH * 2.0f, 0.0f, 1.0f,
+                      kRunwayLabelBorder);
+  r.fillText(0.0f, fontPx * kCapInkCenterNudge, id, fontPx, TextAlign::Center,
+             colors::kBlack, FontFace::DejaVuSemiBold);
   r.restore();
 }
 
@@ -79,13 +100,11 @@ void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
   if (rangeNm > kRunwayDiagramMaxRangeNm) return;
   constexpr float kMetersPerNm = 1852.0f;
   const bool showNumbers = rangeNm <= kAirportLabelMaxRangeNm;
+  const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
   for (const MapRunway& rwy : map.runways) {
     float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
     proj.toPx(rwy.a.lat, rwy.a.lon, ax, ay);
     proj.toPx(rwy.b.lat, rwy.b.lon, bx, by);
-    if (!proj.onScreen(ax, ay, 200.0f) && !proj.onScreen(bx, by, 200.0f)) {
-      continue;
-    }
     const float dx = bx - ax;
     const float dy = by - ay;
     const float len = std::sqrt(dx * dx + dy * dy);
@@ -100,7 +119,24 @@ void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
                            {bx + px, by + py},
                            {bx - px, by - py},
                            {ax - px, ay - py}};
+    // Cull by quad-vs-viewport intersection, not threshold containment: a long
+    // runway at close zoom (e.g. the crossing runway at 1000 ft range) has both
+    // thresholds far off-screen while its body still crosses the visible area.
+    if (!polylineIntersectsClip(quad, 4, clip, kSymbologyClipMarginPx)) {
+      continue;
+    }
     r.fillPolygon(quad, 4, kRunwayFill);
+    // Dashed centerline, inset from each threshold so it reads like the painted
+    // runway centerline (only at close range, with the numbers).
+    if (showNumbers && len > labelSize * 4.0f) {
+      const float ux = dx / len;
+      const float uy = dy / len;
+      const float inset = std::min(len * 0.25f, halfW * 3.0f);
+      const Point line[2] = {{ax + ux * inset, ay + uy * inset},
+                             {bx - ux * inset, by - uy * inset}};
+      strokeDashedPolyline(r, line, 2, std::max(1.0f, halfW * 0.18f),
+                           kRunwayCenterline, &clip);
+    }
     // Only label runways long enough on screen to hold their numbers.
     if (showNumbers && len > labelSize * 4.0f) {
       drawRunwayNumber(r, ax, ay, dx, dy, rwy.idA, labelSize);
@@ -112,18 +148,22 @@ void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
 void drawTaxiwayLabels(Renderer& r, const MapData& map, const Proj& proj,
                        float rangeNm, float labelSize) {
   if (rangeNm > kAirportLabelMaxRangeNm) return;
-  const float fontPx = labelSize * 0.85f;
+  const float fontPx = labelSize * 0.72f;
   for (const MapTaxiwayLabel& label : map.taxiwayLabels) {
     if (label.text.empty()) continue;
     float x = 0.0f, y = 0.0f;
     proj.toPx(label.pos.lat, label.pos.lon, x, y);
     if (!proj.onScreen(x, y, 0.0f)) continue;
-    const float halfW = r.measureTextWidth(label.text, fontPx) * 0.5f + 2.5f;
+    // Black box with white text, matching the real-unit SafeTaxi labels.
+    const float halfW = r.measureTextWidth(label.text, fontPx) * 0.5f + 2.0f;
     const float halfH = fontPx * 0.5f + 1.5f;
-    r.fillRect(x - halfW, y - halfH, halfW * 2.0f, halfH * 2.0f,
-               Color{0.0f, 0.0f, 0.0f, 0.72f});
-    r.fillText(x, y - fontPx * 0.5f, label.text, fontPx, TextAlign::Center,
-               colors::kWhite);
+    r.fillRoundedRect(x - halfW, y - halfH, halfW * 2.0f, halfH * 2.0f,
+                      halfH * 0.3f, kTaxiwaySign);
+    // fillText centers on the ascender/descender line; nudge the ink down so
+    // the (no-descender) letters sit centered in the placard.
+    r.fillText(x, y + fontPx * kCapInkCenterNudge, label.text, fontPx,
+               TextAlign::Center, colors::kWhite,
+               FontFace::DejaVuSemiBold);
   }
 }
 

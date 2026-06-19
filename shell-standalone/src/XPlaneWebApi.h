@@ -10,8 +10,9 @@ namespace avionics {
 
 // Minimal client for X-Plane's local Web API (REST), used only to read the
 // string datarefs that the float-only RREF UDP protocol cannot carry: the
-// active GPS destination identifier (navigation status box) and the decoded
-// NAV1/2 station idents shown beside the active frequencies on the PFD.
+// active GPS destination identifier (navigation status box), the decoded
+// NAV1/2 station idents shown beside the active frequencies on the PFD, and
+// the loaded aircraft's ICAO type code + .acf path (to swap EIS/checklists).
 //
 // Why this exists alongside the UDP link: X-Plane streams telemetry to the
 // standalone shell over UDP RREF, but an RREF record is a fixed (int index,
@@ -44,6 +45,11 @@ class XPlaneWebApi {
   std::string nav1Ident() const;
   std::string nav2Ident() const;
 
+  // Loaded-aircraft identity from sim/aircraft/view/acf_ICAO and
+  // acf_relative_path, or empty when the Web API is unreachable.
+  std::string aircraftIcao() const;
+  std::string aircraftAcfRelativePath() const;
+
  private:
   void run();  // background polling loop
 
@@ -54,6 +60,8 @@ class XPlaneWebApi {
   std::string destinationId_;
   std::string nav1Ident_;
   std::string nav2Ident_;
+  std::string aircraftIcao_;
+  std::string aircraftAcfRelativePath_;
 
   std::atomic<bool> stop_{false};
   std::thread thread_;

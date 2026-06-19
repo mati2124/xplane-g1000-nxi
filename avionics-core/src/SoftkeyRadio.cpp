@@ -230,6 +230,27 @@ bool SoftkeyController::radioVolumeShown(RadioBand band) const {
   return radioVolumeShownSeconds_ > 0.0 && radioVolumeBand_ == band;
 }
 
+void SoftkeyController::mirrorRadioVolumeAnnunciation(
+    const SoftkeyController& src) {
+  radioVolumeShownSeconds_ = src.radioVolumeShownSeconds_;
+  radioVolumeBand_ = src.radioVolumeBand_;
+  radioVolumeUnit_ = src.radioVolumeUnit_;
+  radioVolumePct_ = src.radioVolumePct_;
+}
+
+void syncRadioVolumeAnnunciation(SoftkeyController& a, SoftkeyController& b) {
+  if (a.radioVolumeAnnunciationActive() && b.radioVolumeAnnunciationActive()) {
+    if (a.radioVolumeSecondsLeft() >= b.radioVolumeSecondsLeft())
+      b.mirrorRadioVolumeAnnunciation(a);
+    else
+      a.mirrorRadioVolumeAnnunciation(b);
+  } else if (a.radioVolumeAnnunciationActive()) {
+    b.mirrorRadioVolumeAnnunciation(a);
+  } else if (b.radioVolumeAnnunciationActive()) {
+    a.mirrorRadioVolumeAnnunciation(b);
+  }
+}
+
 bool SoftkeyController::radioBezelKey(BezelKey key, const FlightData& d) {
   if (!canUseRadioBezel()) return false;
 

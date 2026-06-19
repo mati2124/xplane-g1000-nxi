@@ -5,6 +5,17 @@
 
 namespace avionics {
 
+// Standard ISA barometric pressure (29.92 in Hg / 1013 hPa). When the current
+// setting matches this value the PFD BARO box displays "STD BARO" (G1000 Pilot's
+// Guide, Standard Barometric Setting).
+inline constexpr float kBaroStandardInHg = 29.92f;
+inline constexpr float kBaroStandardEpsilonInHg = 0.005f;
+
+inline bool isBaroStandard(float baroInHg) {
+  const float delta = baroInHg - kBaroStandardInHg;
+  return delta <= kBaroStandardEpsilonInHg && delta >= -kBaroStandardEpsilonInHg;
+}
+
 // Active navigation source annunciated on the HSI / CDI.
 enum class CdiSource { Gps, Nav1, Nav2 };
 
@@ -87,6 +98,12 @@ struct FlightData {
   bool masterPowerOn = true;
   bool avionicsPowerOn = true;
 
+  // Manual display-backup (reversionary) mode from the audio panel's red
+  // DISPLAY BACKUP button. When true the PFD adds the EIS strip and the MFD
+  // presents PFD instruments (automatic reversionary from a dark MFD also sets
+  // this false and uses avionicsPowerOn instead).
+  bool displayBackupActive = false;
+
   // Crew Alerting System (CAS) conditions, sourced from X-Plane's annunciators.
   // Each is true while its annunciator is lit; SoftkeyController turns the set
   // into the warning/caution text shown in the PFD Alerts window.
@@ -166,6 +183,11 @@ struct FlightData {
   // current altimeter barometric setting.
   float selectedAltitudeFt = 6000.0f;
   float selectedHeadingDeg = 45.0f;
+  // Autopilot FLC target airspeed (kt). Shown beside FLC on the FMA and as a
+  // cyan bug on the airspeed tape while speed-by-pitch is the active vertical
+  // mode (G1000 NXi Pilot's Guide, AFCS / Airspeed Indicator).
+  bool selectedAirspeedValid = false;
+  float selectedAirspeedKts = 0.0f;
   float baroSettingInHg = 29.92f;
 
   // Baro Transition Alert: while set, the BARO setting box flashes to prompt

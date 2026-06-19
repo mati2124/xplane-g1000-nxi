@@ -51,10 +51,21 @@ std::string normalizeRunwayId(const std::string& raw) {
   return raw;
 }
 
+// Paved surfaces shown on the taxiway diagram: classic asphalt/concrete (1/2),
+// XP12 appearance variants (20-38 asphalt, 50-57 concrete), and transparent
+// hard (15). Grass/dirt/gravel ramps are skipped so the close-range diagram
+// stays a clean SafeTaxi-style hard-surface outline.
+bool isHardSurface(long surface) {
+  if (surface == 1 || surface == 2 || surface == 15) return true;
+  if (surface >= 20 && surface <= 38) return true;
+  if (surface >= 50 && surface <= 57) return true;
+  return false;
+}
+
 // apt.dat surface code -> G1000 surface vocabulary. X-Plane 12 added the
-// 20-38 block for asphalt/concrete appearance variants, all hard surface.
+// 20-38 block for asphalt and 50-57 for concrete appearance variants.
 RunwaySurface surfaceFromCode(long code) {
-  if (code == 1 || code == 2 || (code >= 20 && code <= 38)) {
+  if (isHardSurface(code)) {
     return RunwaySurface::Hard;
   }
   switch (code) {
@@ -143,11 +154,6 @@ bool parseRunwayRow(const char* p, MapRunway& out, AirportRunwayInfo& info) {
   info.lighted = std::strtol(edgeLightsTok.c_str(), nullptr, 10) > 0;
   return true;
 }
-
-// Paved surfaces shown on the taxiway diagram: asphalt (1) and concrete (2).
-// Grass/dirt/gravel ramps are skipped so the close-range diagram stays a clean
-// SafeTaxi-style hard-surface outline.
-bool isHardSurface(long surface) { return surface == 1 || surface == 2; }
 
 // Surface code from a row-110 pavement header ("110 <surface> <smoothness>
 // <orientation> ...").

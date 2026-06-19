@@ -635,6 +635,33 @@ void ApplyRadioBridgeAction(avionics::AvionicsEngine& engine,
     case avionics::cmdbridge::RadioAction::NavInnerDown:
       engine.tuneNavRadio(-1, /*coarse=*/false);
       break;
+    case avionics::cmdbridge::RadioAction::ComVolUp:
+      engine.pressBezelKey(avionics::BezelKey::ComVolCw);
+      break;
+    case avionics::cmdbridge::RadioAction::ComVolDown:
+      engine.pressBezelKey(avionics::BezelKey::ComVolCcw);
+      break;
+    case avionics::cmdbridge::RadioAction::NavVolUp:
+      engine.pressBezelKey(avionics::BezelKey::NavVolCw);
+      break;
+    case avionics::cmdbridge::RadioAction::NavVolDown:
+      engine.pressBezelKey(avionics::BezelKey::NavVolCcw);
+      break;
+    case avionics::cmdbridge::RadioAction::NavVolPush:
+      engine.pressBezelKey(avionics::BezelKey::NavVolPush);
+      break;
+  }
+}
+
+// Toggles manual display-backup mode once and flashes the left-bezel key on
+// both GDU windows (shared DataSource; either engine may drive the toggle).
+void ToggleDisplayBackup(AppState& app) {
+  avionics::AvionicsEngine* engine =
+      app.pfdEngine != nullptr ? app.pfdEngine : app.mfdEngine;
+  if (engine != nullptr) {
+    engine->toggleDisplayBackup();
+  } else if (app.activeSource != nullptr) {
+    app.activeSource->toggleDisplayBackup();
   }
 }
 
@@ -681,6 +708,8 @@ void ApplyBridgeEvents(AppState& app,
     if (ev.phase == avionics::cmdbridge::Phase::Begin) {
       if (key == avionics::BezelKey::Ent && AwaitingBootAck(app)) {
         AcknowledgeBoot(app);
+      } else if (key == avionics::BezelKey::DisplayBackup) {
+        ToggleDisplayBackup(app);
       } else if (key != avionics::BezelKey::Count) {
         engine->pressBezelKey(key);
       }
@@ -999,8 +1028,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.skipBoot();
     engine.update(seconds);
     engine.pressSoftkey(3);  // "PFD Opt" -> open submenu
-    engine.pressSoftkey(1);  // "SVT" toggle on
-    engine.pressSoftkey(2);  // "Wind" toggle on
+    engine.pressSoftkey(3);  // "DME" toggle on
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "tmrref") == 0) {
@@ -1560,12 +1588,12 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.update(seconds);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "reversionary") == 0) {
-    // Display-backup (reversionary) mode: the avionics master is off so the MFD
-    // is dark, and the PFD adds the EIS engine strip down its left edge with the
-    // inset map relocated to the bottom-right (Pilot's Guide Fig. 1-5).
-    dataSource.setAvionicsPowerOn(false);
+    // Display-backup (reversionary) mode: manual backup active with avionics on
+    // so both GDUs stay lit (PFD adds the EIS strip; MFD shows PFD instruments).
     engine.skipBoot();
     engine.update(seconds);
+    dataSource.toggleDisplayBackup();
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else {
     engine.skipBoot();
@@ -1627,6 +1655,11 @@ void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
   if (key == GLFW_KEY_D && (mods & GLFW_MOD_CONTROL) != 0 &&
       (mods & GLFW_MOD_SHIFT) != 0) {
     ToggleDemoSource(*app);
+    return;
+  }
+  // Shift+B toggles manual display-backup (reversionary) mode (audio panel key).
+  if (key == GLFW_KEY_B && (mods & GLFW_MOD_SHIFT) != 0) {
+    ToggleDisplayBackup(*app);
     return;
   }
   // View toggles (persisted). No on-screen menu: these are the standalone's
@@ -2763,6 +2796,10 @@ int main(int argc, char** argv) {
   }
   app.pfdEngine = pfdEngine;
   app.mfdEngine = mfdEngine;
+  if (pfdEngine != nullptr && mfdEngine != nullptr) {
+    pfdEngine->setSoftkeyPeer(mfdEngine);
+    mfdEngine->setSoftkeyPeer(pfdEngine);
+  }
   app.pfdWindow = pfdWindow;
   app.mfdWindow = mfdWindow;
   // Hover cursors for the bezel: left-right over the rotatable rings, hand over
@@ -2779,7 +2816,7 @@ int main(int argc, char** argv) {
   // restored on the next launch.
   std::fprintf(stderr,
                "Shortcuts: B = bezel, T = title bar, P = always-on-top, "
-               "F = full screen, Ctrl+Shift+D = demo feed, Esc = quit.\n");
+               "F = full screen, Shift+B = display backup, Ctrl+Shift+D = demo feed, Esc = quit.\n");
 
   // Bring up the initial data source. With the Debug menu enabled the last-used
   // feed, demo flight state, and demo power switches are restored from settings
@@ -2973,6 +3010,7 @@ int main(int argc, char** argv) {
               ? app.activeSource
               : static_cast<avionics::DataSource*>(&xplane);
       mapUi.applyMapPanToDataSource(*mapSource, mapSource->snapshot());
+      mapSource->setMapViewHalfExtentNm(mapUi.mapViewHalfExtentNm());
       mapSource->setChartRangeNm(mapUi.rangeNm());
     }
 

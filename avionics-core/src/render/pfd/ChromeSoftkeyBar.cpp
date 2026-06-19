@@ -23,7 +23,8 @@ void drawSoftkeyBar(Renderer& r, float w, float h, const Layout& L,
     const float level =
         std::max(ui.pressLevel(i), ui.keyActive(i) ? 1.0f : 0.0f);
 
-    Color labelColor = colors::kWhite;
+    Color labelColor =
+        ui.keyEnabled(i) ? colors::kWhite : colors::kTitleGray;
     // The Alerts cell relabels and flashes by severity when alerts are
     // unacknowledged (warning red, caution amber, message advisory white).
     if (ui.softkeyFlashing(i)) {

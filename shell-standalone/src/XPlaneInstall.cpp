@@ -1,6 +1,7 @@
 #include "XPlaneInstall.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 
 namespace avionics {
@@ -27,8 +28,8 @@ bool fileExists(const std::string& path) {
 }
 
 bool dirExists(const std::string& path) {
-  std::ifstream f(join(path, "."));
-  return f.good();
+  std::error_code ec;
+  return std::filesystem::is_directory(path, ec);
 }
 
 std::string installListDir() {

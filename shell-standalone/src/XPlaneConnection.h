@@ -48,8 +48,8 @@ class XPlaneConnection : public SimulatorConnection {
                    AirspaceStore& airspace, AirwayStore& airways,
                    AptDatStore& aptData, LandDataStore& landData,
                    FmsPlanStore& fmsPlan, const TerrainSource* terrain = nullptr,
-                   const ChecklistSource* checklists = nullptr,
-                   const EisSource* eis = nullptr,
+                   ChecklistSource* checklists = nullptr,
+                   EisSource* eis = nullptr,
                    const ObstacleStore* obstacles = nullptr,
                    std::uint16_t bridgePort = fpbridge::kDefaultPort,
                    bool fmsWriteEnabled = true);
@@ -107,6 +107,7 @@ class XPlaneConnection : public SimulatorConnection {
 
   void setMapPanCenter(bool active, double lat, double lon) override;
   void setChartRangeNm(float rangeNm) override;
+  void setMapViewHalfExtentNm(float halfExtentNm) override;
 
   // Pilot commands from the PFD bezel / softkeys (UDP DREF writes).
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
@@ -126,6 +127,7 @@ class XPlaneConnection : public SimulatorConnection {
   void drainSocket();
   void rebuildEisSubscriptions();
   void subscribeEisBindings(int frequencyHz);
+  void updateAircraftProfile();
 
   // Refresh the moving-map snapshot (ownship position + nearby features). The
   // feature list is range-filtered from the nav database on a throttled timer,
@@ -150,7 +152,9 @@ class XPlaneConnection : public SimulatorConnection {
   FlightData data_;
   FlightData target_;
   bool primed_ = false;  // false until the first data snaps data_ to target_
-  float prevAirspeedKts_ = 0.0f;  // for deriving the airspeed trend vector
+  float prevTargetAirspeedKts_ = 0.0f;  // last IAS target from RREF packets
+  double lastAirspeedTargetSeconds_ = 0.0;  // elapsed time at that packet
+  float lastInstTrendKts_ = 0.0f;  // 6 s projection from latest packet delta
 
   // Continuous zulu (UTC) seconds-since-midnight. zuluTargetSec_ is the latest
   // value from X-Plane; zuluDisplaySec_ free-runs locally and is eased toward it
@@ -208,8 +212,8 @@ class XPlaneConnection : public SimulatorConnection {
   bool routeOverrideSet_ = false;      // override active (even when empty)
   MapLeg directTo_;                    // display-only Direct-To target
   bool directToActive_ = false;
-  const ChecklistSource* checklists_ = nullptr;
-  const EisSource* eisSource_ = nullptr;
+  ChecklistSource* checklists_ = nullptr;
+  EisSource* eisSource_ = nullptr;
   static inline const ChecklistData emptyChecklists_{};
   static inline const EisLayout emptyEis_{};
 
@@ -223,6 +227,9 @@ class XPlaneConnection : public SimulatorConnection {
   };
   std::vector<RuntimeEisBinding> eisBindings_;
   std::size_t eisLayoutBindingCount_ = 0;
+  bool eisWasReady_ = false;
+  std::string lastAircraftIcao_;
+  std::string lastAircraftAcfPath_;
 
   double sinceMapRebuildSeconds_ = 0.0;
 
@@ -235,6 +242,7 @@ class XPlaneConnection : public SimulatorConnection {
   double mapPanLon_ = 0.0;
   bool mapPanDirty_ = false;
   float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
+  float mapViewHalfExtentNm_ = 0.0f;
 
   std::string host_;
   std::uint16_t port_;

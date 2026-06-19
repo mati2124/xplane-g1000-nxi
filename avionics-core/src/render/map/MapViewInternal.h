@@ -264,7 +264,8 @@ float drawChromeLabel(Renderer& r, float x, float y, const char* text,
 // Chart land/ocean fills draw beneath the topo raster; the raster composites
 // over them with transparent pixels where DEM data is not yet available.
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm, bool skipLandMassFill = false);
+                  float rangeNm, bool skipLandMassFill = false,
+                  float viewHalfExtentNm = 0.0f);
 
 // Populated places: a dot plus name, decluttered by city rank vs. range.
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,

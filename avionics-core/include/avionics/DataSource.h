@@ -4,6 +4,7 @@
 
 #include "avionics/Checklist.h"
 #include "avionics/ConnectionState.h"
+#include "avionics/DisplayBackup.h"
 #include "avionics/Eis.h"
 #include "avionics/FlightData.h"
 #include "avionics/MapData.h"
@@ -57,6 +58,10 @@ class DataSource {
   // selection (continental silhouettes vs high-res detail) and geographic overlap.
   virtual void setChartRangeNm(float /*rangeNm*/) {}
 
+  // Corner reach of the MFD map viewport in NM (half the diagonal). Land queries
+  // use this so GSHHG lon-band overlap matches what MapView draws above ~100 NM.
+  virtual void setMapViewHalfExtentNm(float /*halfExtentNm*/) {}
+
   // Health of this source. Sources that are always available (the mock feed,
   // the in-process dataref reader) keep the default; network-backed sources
   // override it so the display can show the boot / connection-lost screens.
@@ -71,7 +76,21 @@ class DataSource {
   // keypress.
   virtual bool requiresPowerUpAcknowledge() const { return true; }
 
+  // Manual display-backup (reversionary) mode from the audio panel's red
+  // DISPLAY BACKUP button. Shared by both GDU engines when they read the same
+  // DataSource.
+  void toggleDisplayBackup() { displayBackup_.toggle(); }
+
+ protected:
+  // Call from update() to advance the exit-delay timer and publish the flag on
+  // `data`.
+  void syncDisplayBackup(FlightData& data, double dtSeconds) {
+    displayBackup_.update(dtSeconds);
+    data.displayBackupActive = displayBackup_.active();
+  }
+
  private:
+  DisplayBackupState displayBackup_;
   static inline const MapData emptyMap_{};
   static inline const ChecklistData emptyChecklist_{};
   static inline const EisLayout emptyEis_{};

@@ -71,6 +71,7 @@ class DatarefDataSource : public DataSource {
 
   void setMapPanCenter(bool active, double lat, double lon) override;
   void setChartRangeNm(float rangeNm) override;
+  void setMapViewHalfExtentNm(float halfExtentNm) override;
 
   // NAV/COM bezel tuning written straight back to the sim's radio datarefs so
   // the stock radios follow the glass. tuneRadioStandby sets the standby
@@ -183,6 +184,8 @@ class DatarefDataSource : public DataSource {
   double mapPanLat_ = 0.0;
   double mapPanLon_ = 0.0;
   bool mapPanDirty_ = false;
+  float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
+  float mapViewHalfExtentNm_ = 0.0f;
 
   std::vector<MapAirspace> airspaceCache_;
   std::atomic<bool> airspaceLoaded_{false};
@@ -212,12 +215,12 @@ class DatarefDataSource : public DataSource {
   bool mapQueryReqObstacles_ = false;
   bool mapQueryReqLand_ = false;
   float mapQueryLandRangeNm_ = 0.0f;
+  float mapQueryLandViewHalfExtentNm_ = 0.0f;
   MapQueryResult mapQueryResult_;  // worker output, guarded by mapQueryMu_
 
   // Bundled Natural Earth coastlines/borders/cities (land_data.bin). Loaded on
   // a background thread; the map-query worker reads it once loaded().
   std::unique_ptr<LandDataStore> landData_;
-  float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
   bool landEverLoaded_ = false;
 
   XPLMDataRef airspeed_ = nullptr;
@@ -318,6 +321,7 @@ class DatarefDataSource : public DataSource {
   static inline const ChecklistData emptyChecklists_{};
   std::string lastAircraftAcfPath_;
   std::string lastAircraftIcao_;
+  bool eisWasReady_ = false;
   XPLMDataRef acfRelativePath_ = nullptr;
   XPLMDataRef acfIcao_ = nullptr;
 };

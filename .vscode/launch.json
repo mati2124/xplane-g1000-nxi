@@ -9,7 +9,10 @@
       "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
-      "preLaunchTask": "Build standalone"
+      "preLaunchTask": "Build standalone",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
       "type": "lldb",
@@ -19,7 +22,10 @@
       "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
-      "preLaunchTask": "Build standalone"
+      "preLaunchTask": "Build standalone",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
       "type": "lldb",
@@ -29,7 +35,10 @@
       "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
-      "preLaunchTask": "Build standalone"
+      "preLaunchTask": "Build standalone",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
       "type": "lldb",
@@ -39,47 +48,194 @@
       "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
       "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
-      "preLaunchTask": "Build standalone"
+      "preLaunchTask": "Build standalone",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug PFD (demo, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug MFD (demo, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug PFD (X-Plane, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug MFD (X-Plane, Windows)",
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }],
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
       "preLaunchTask": "Build standalone"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug PFD + MFD (demo)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--demo", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug PFD + MFD (X-Plane)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo PFD (demo)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo MFD (demo)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo PFD (X-Plane)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo MFD (X-Plane)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo PFD (demo, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe",
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo MFD (demo, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe",
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo PFD (X-Plane, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe",
+      "args": ["--no-mfd", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo MFD (X-Plane, Windows)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe",
+      "args": ["--no-pfd", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo PFD + MFD (demo)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--demo", "--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "RelWithDebInfo PFD + MFD (X-Plane)",
+      "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--debug-menu"],
+      "cwd": "${workspaceFolder}",
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "preLaunchTask": "Build standalone (RelWithDebInfo)",
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      }
     },
     {
       "type": "lldb",
@@ -89,7 +245,10 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
       "type": "lldb",
@@ -99,7 +258,10 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
       "type": "lldb",
@@ -109,7 +271,10 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
       "type": "lldb",
@@ -119,85 +284,51 @@
       "program": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" },
+      "windows": {
+        "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      }
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug PFD (demo, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug MFD (demo, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug PFD (X-Plane, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-mfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     },
     {
-      "type": "cppvsdbg",
+      "type": "lldb",
       "request": "launch",
       "name": "Debug MFD (X-Plane, Windows, compound)",
       "presentation": { "hidden": true },
       "program": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe",
       "args": ["--no-pfd", "--debug-menu"],
       "cwd": "${workspaceFolder}",
-      "environment": [{ "name": "AVIONICS_SKIP_UPDATE_CHECK", "value": "1" }]
+      "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
     }
   ],
-  "compounds": [
-    {
-      "name": "Debug PFD + MFD (demo)",
-      "configurations": [
-        "Debug PFD (demo, compound)",
-        "Debug MFD (demo, compound)"
-      ],
-      "preLaunchTask": "Build standalone",
-      "stopAll": true
-    },
-    {
-      "name": "Debug PFD + MFD (X-Plane)",
-      "configurations": [
-        "Debug PFD (X-Plane, compound)",
-        "Debug MFD (X-Plane, compound)"
-      ],
-      "preLaunchTask": "Build standalone",
-      "stopAll": true
-    },
-    {
-      "name": "Debug PFD + MFD (demo, Windows)",
-      "configurations": [
-        "Debug PFD (demo, Windows, compound)",
-        "Debug MFD (demo, Windows, compound)"
-      ],
-      "preLaunchTask": "Build standalone",
-      "stopAll": true
-    },
-    {
-      "name": "Debug PFD + MFD (X-Plane, Windows)",
-      "configurations": [
-        "Debug PFD (X-Plane, Windows, compound)",
-        "Debug MFD (X-Plane, Windows, compound)"
-      ],
-      "preLaunchTask": "Build standalone",
-      "stopAll": true
-    }
-  ]
+  "compounds": []
 }

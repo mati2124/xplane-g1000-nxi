@@ -452,6 +452,12 @@ void WireNavMapData(avionics::AvionicsEngine& engine) {
   engine.mfdController().setNavFeatureSource(g_navMapData.get());
 }
 
+void WireSoftkeyPeers() {
+  if (!g_pfd.engine || !g_mfd.engine) return;
+  g_pfd.engine->setSoftkeyPeer(g_mfd.engine.get());
+  g_mfd.engine->setSoftkeyPeer(g_pfd.engine.get());
+}
+
 int DrawDevice(AvionicsDevice& dev) {
   InvalidateAvionicsCacheIfMapGeometryChanged();
   if (!g_dataSource || dev.rendererFailed) return 1;
@@ -494,6 +500,7 @@ int DrawDevice(AvionicsDevice& dev) {
       avionics::applyMfdState(dev.engine->mfdController(), g_avionicsState.mfd);
     }
     WireNavMapData(*dev.engine);
+    WireSoftkeyPeers();
     dev.lastRenderElapsed = XPLMGetElapsedTime();
   }
 
@@ -725,6 +732,12 @@ const RadioCommand kRadioCommands[] = {
     {"nav_outer_down", RadioAction::NavOuterDown, "NAV outer knob down (MHz)"},
     {"nav_inner_up", RadioAction::NavInnerUp, "NAV inner knob up (kHz)"},
     {"nav_inner_down", RadioAction::NavInnerDown, "NAV inner knob down (kHz)"},
+    // COM/NAV audio volume (X-Plane g1000nN_cvol_* / nvol_*).
+    {"cvol_up", RadioAction::ComVolUp, "COM volume up"},
+    {"cvol_dn", RadioAction::ComVolDown, "COM volume down"},
+    {"nvol_up", RadioAction::NavVolUp, "NAV volume up"},
+    {"nvol_dn", RadioAction::NavVolDown, "NAV volume down"},
+    {"nvol", RadioAction::NavVolPush, "NAV ident toggle (VOL/ID push)"},
 };
 
 struct RadioCommandBinding {
@@ -1023,6 +1036,21 @@ void ApplyRadioAction(RadioAction action) {
     case RadioAction::NavInnerDown:
       e.tuneNavRadio(-1, /*coarse=*/false);
       break;
+    case RadioAction::ComVolUp:
+      e.pressBezelKey(avionics::BezelKey::ComVolCw);
+      break;
+    case RadioAction::ComVolDown:
+      e.pressBezelKey(avionics::BezelKey::ComVolCcw);
+      break;
+    case RadioAction::NavVolUp:
+      e.pressBezelKey(avionics::BezelKey::NavVolCw);
+      break;
+    case RadioAction::NavVolDown:
+      e.pressBezelKey(avionics::BezelKey::NavVolCcw);
+      break;
+    case RadioAction::NavVolPush:
+      e.pressBezelKey(avionics::BezelKey::NavVolPush);
+      break;
   }
   ApplyQueuedRadioCommands();
 }
@@ -1042,6 +1070,94 @@ int RadioCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
     applied = true;
   }
   return (forwarded || applied) ? 0 : 1;
+}
+
+// Forwards the audio-panel DISPLAY BACKUP press to the networked standalone shell.
+bool ForwardDisplayBackupEvent() {
+  if (!g_commandBridge) return false;
+  avionics::cmdbridge::Event ev;
+  ev.device = avionics::cmdbridge::Device::Pfd;
+  ev.phase = avionics::cmdbridge::Phase::Begin;
+  ev.kind = avionics::cmdbridge::Kind::Bezel;
+  ev.value = static_cast<std::int32_t>(avionics::BezelKey::DisplayBackup);
+  return g_commandBridge->sendEvent(ev);
+}
+
+void ApplyDisplayBackup() {
+  if (g_dataSource == nullptr) return;
+  // Toggle once on the shared source so both GDUs see it; flash any live engines
+  // for bezel feedback. Do not route through pressBezelKey here — that path
+  // requires displayPowered() and can no-op when bus datarefs lag.
+  g_dataSource->toggleDisplayBackup();
+  auto flash = [](avionics::AvionicsEngine* engine) {
+    if (engine == nullptr) return;
+    engine->softkeyController().flashBezelKey(avionics::BezelKey::DisplayBackup);
+    engine->mfdController().flashBezelKey(avionics::BezelKey::DisplayBackup);
+  };
+  flash(g_pfd.engine.get());
+  flash(g_mfd.engine.get());
+}
+
+// GMA audio-panel red DISPLAY BACKUP key (sim/GPS/G1000_display_reversion).
+int DisplayBackupCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
+                                void* /*ref*/) {
+  if (phase != xplm_CommandBegin) return 1;
+  const bool forwarded = ForwardDisplayBackupEvent();
+  if (g_dataSource != nullptr) ApplyDisplayBackup();
+  XPLMDebugString("G1000 NXi: DISPLAY BACKUP command received\n");
+  return (forwarded || g_dataSource != nullptr) ? 0 : 1;
+}
+
+std::vector<XPLMCommandRef> g_displayBackupCommands;
+XPLMCommandRef g_displayBackupCustomCmd = nullptr;
+
+// Forward; defined with g_customStrings below.
+const char* StoreStr(const std::string& s);
+
+void RegisterDisplayBackupCommands() {
+  g_displayBackupCommands.clear();
+  if (XPLMCommandRef stock =
+          XPLMFindCommand("sim/GPS/G1000_display_reversion")) {
+    g_displayBackupCommands.push_back(stock);
+  } else {
+    XPLMDebugString(
+        "G1000 NXi: sim/GPS/G1000_display_reversion not found; bind "
+        "xplane_avionics/display_backup in Keyboard/Joystick settings\n");
+  }
+  if (g_displayBackupCustomCmd == nullptr) {
+    g_displayBackupCustomCmd = XPLMCreateCommand(
+        StoreStr(std::string(kCmdPrefix) + "/display_backup"),
+        StoreStr("G1000 NXi: Display Backup (reversionary mode)"));
+  }
+  if (g_displayBackupCustomCmd != nullptr) {
+    g_displayBackupCommands.push_back(g_displayBackupCustomCmd);
+  }
+  for (XPLMCommandRef cmd : g_displayBackupCommands) {
+    XPLMRegisterCommandHandler(cmd, &DisplayBackupCommandHandler, /*before=*/1,
+                               nullptr);
+  }
+}
+
+// The stock command is always present in X-Plane 12, but re-check after an
+// aircraft load in case registration was missed on an earlier pass.
+void RefreshDisplayBackupStockCommand() {
+  if (XPLMCommandRef stock =
+          XPLMFindCommand("sim/GPS/G1000_display_reversion")) {
+    for (XPLMCommandRef cmd : g_displayBackupCommands) {
+      if (cmd == stock) return;
+    }
+    g_displayBackupCommands.push_back(stock);
+    XPLMRegisterCommandHandler(stock, &DisplayBackupCommandHandler,
+                               /*before=*/1, nullptr);
+  }
+}
+
+void UnregisterDisplayBackupCommands() {
+  for (XPLMCommandRef cmd : g_displayBackupCommands) {
+    XPLMUnregisterCommandHandler(cmd, &DisplayBackupCommandHandler,
+                                 /*before=*/1, nullptr);
+  }
+  g_displayBackupCommands.clear();
 }
 
 // Forwards a single bezel-key press for a device to the networked standalone
@@ -1311,6 +1427,7 @@ void RegisterG1000Commands() {
   for (RadioCommandBinding& b : g_radioBindings) {
     XPLMRegisterCommandHandler(b.cmd, &RadioCommandHandler, /*before=*/1, &b);
   }
+  RegisterDisplayBackupCommands();
 }
 
 void UnregisterG1000Commands() {
@@ -1326,6 +1443,7 @@ void UnregisterG1000Commands() {
     XPLMUnregisterCommandHandler(b.cmd, &RadioCommandHandler, /*before=*/1, &b);
   }
   g_radioBindings.clear();
+  UnregisterDisplayBackupCommands();
 }
 
 void EnableGlassTakeover();
@@ -1596,4 +1714,7 @@ PLUGIN_API void XPluginDisable(void) {
   if (g_commandBridge) g_commandBridge->stop();
   if (g_flightPlanBridge) g_flightPlanBridge->stop();
 }
-PLUGIN_API void XPluginReceiveMessage(XPLMPluginID, int, void*) {}
+PLUGIN_API void XPluginReceiveMessage(XPLMPluginID /*from*/, int msg,
+                                      void* /*param*/) {
+  if (msg == XPLM_MSG_PLANE_LOADED) RefreshDisplayBackupStockCommand();
+}

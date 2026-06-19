@@ -15,6 +15,7 @@ add_library(avionics-core STATIC
   src/PersistentState.cpp
   src/Radio.cpp
   src/ComDecode.cpp
+  src/DisplayBackup.cpp
   src/NavDatabase.cpp
   src/SoftkeyController.cpp
   src/SoftkeyDirectTo.cpp

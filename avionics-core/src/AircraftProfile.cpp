@@ -22,6 +22,20 @@ bool contains(const std::string& haystack, const char* needle) {
   return haystack.find(needle) != std::string::npos;
 }
 
+std::string trim(const std::string& s) {
+  std::size_t start = 0;
+  while (start < s.size() &&
+         std::isspace(static_cast<unsigned char>(s[start]))) {
+    ++start;
+  }
+  std::size_t end = s.size();
+  while (end > start &&
+         std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+    --end;
+  }
+  return s.substr(start, end - start);
+}
+
 // Reduce an aircraft type code to a safe filename stem: lowercase alphanumerics
 // only. Drops spaces, slashes, and anything that could escape the assets folder
 // so a malformed acf_ICAO can never resolve outside assets/eis|checklists.
@@ -47,7 +61,7 @@ AircraftProfile sf50Profile() {
 AircraftProfile resolveAircraftProfile(const std::string& icaoType,
                                        const std::string& acfRelativePath) {
   // 1. ICAO type code is authoritative when present.
-  const std::string icao = toUpper(icaoType);
+  const std::string icao = toUpper(trim(icaoType));
   if (icao == "SF50") return sf50Profile();
   if (icao == "C172" || icao == "C72R" || icao == "C172SP") return c172Profile();
 

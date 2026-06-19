@@ -122,6 +122,14 @@ void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float instrumentBott
                 colors::kReadoutBox);
   if (flashOff) return;  // blink-off half of the Baro Transition Alert cycle
 
+  const float numSize = fontPx(wt::kBaro, displayH);
+  const float midY = boxY + boxH * 0.5f + numSize * kCapInkCenterNudge;
+  if (isBaroStandard(baroInHg)) {
+    r.fillText(tapeX + tapeW * 0.5f, midY, "STD BARO", numSize,
+               TextAlign::Center, colors::kCyan);
+    return;
+  }
+
   char buf[16];
   const char* unit;
   if (hpa) {
@@ -132,13 +140,11 @@ void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float instrumentBott
     std::snprintf(buf, sizeof(buf), "%.2f", baroInHg);
     unit = "IN";
   }
-  const float numSize = fontPx(wt::kBaro, displayH);
   const float unitSize = numSize * 0.72f;
   const float gap = numSize * 0.06f;
   const float numW = r.measureTextWidth(buf, numSize);
   const float unitW = r.measureTextWidth(unit, unitSize);
   const float startX = tapeX + tapeW * 0.5f - (numW + gap + unitW) * 0.5f;
-  const float midY = boxY + boxH * 0.5f + numSize * kCapInkCenterNudge;
   r.fillText(startX, midY, std::string(buf), numSize, TextAlign::Left,
              colors::kCyan);
   r.fillText(startX + numW + gap, midY, unit, unitSize, TextAlign::Left,

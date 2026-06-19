@@ -133,8 +133,9 @@ class ShellNavMapData : public NavFeatureSource {
   }
 
   std::vector<MapLandLine> nearbyLandLines(double lat, double lon, float rangeNm,
-                                           std::size_t maxCount) const override {
-    return landData_.nearbyLines(lat, lon, rangeNm, maxCount);
+                                           std::size_t maxCount,
+                                           float viewHalfExtentNm = 0.0f) const override {
+    return landData_.nearbyLines(lat, lon, rangeNm, maxCount, viewHalfExtentNm);
   }
 
   std::vector<MapLandCity> nearbyCities(double lat, double lon, float rangeNm,

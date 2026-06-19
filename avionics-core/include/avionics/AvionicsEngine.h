@@ -84,6 +84,10 @@ class AvionicsEngine {
   const float* softkeyPressLevels() const;
 
   // ---- window bezel keys (drawn by the standalone shell around the screen) ----
+  // Toggle manual display-backup (reversionary) mode from the audio panel's red
+  // DISPLAY BACKUP key. Works once boot is complete and this GDU is powered;
+  // does not require a live sim link (unlike most bezel keys).
+  bool toggleDisplayBackup();
   // Apply a hardware bezel key press to whichever page is active (the range
   // rocker zooms that page's map). Ignored unless the live page is up.
   void pressBezelKey(BezelKey key);
@@ -114,6 +118,10 @@ class AvionicsEngine {
   // integrations that live outside the core (e.g. the SimBrief OFP fetch on
   // the AUX - SIMBRIEF page: seed the Pilot ID, consume FETCH requests, and
   // publish the fetch status back for rendering).
+  // When two GDU engines share one data source, mirror the transient VOL
+  // readout so both displays show the same annunciation.
+  void setSoftkeyPeer(AvionicsEngine* peer) { softkeyPeer_ = peer; }
+
   MfdController& mfdController() { return mfd_; }
   SoftkeyController& softkeyController() { return softkeys_; }
 
@@ -123,6 +131,7 @@ class AvionicsEngine {
   // (both GDUs carry the same knobs). Returns true when `key` was one of those
   // controls and was handled.
   bool handleBezelKnob(BezelKey key);
+  void syncSoftkeyPeerRadioVolume();
 
   // Whether this GDU's bus is powered, per the real-world power tree: the PFD
   // needs the battery/master bus; the MFD additionally needs the avionics
@@ -131,8 +140,13 @@ class AvionicsEngine {
 
   // True when this is the PFD and the MFD is dark (master on, avionics off):
   // the PFD enters display-backup (reversionary) mode and adds the EIS strip,
-  // mirroring the real G1000 (Pilot's Guide Fig. 1-5).
+  // mirroring the real G1000 (Pilot's Guide Fig. 1-5). Manual display backup
+  // (the audio panel button) forces the same layout even when the MFD is lit.
   bool pfdReversionary() const;
+
+  // True when this is the MFD and manual display backup is active: the MFD
+  // presents PFD instruments as a substitute display (Pilot's Guide).
+  bool mfdReversionary() const;
 
   // True once the animated power-up has run and (for sources that require it)
   // the power-up page has been acknowledged with ENT, independent of link
@@ -159,6 +173,7 @@ class AvionicsEngine {
   // instead of replaying the boot animation.
   bool wasPowered_ = false;
   bool powerInitialized_ = false;
+  AvionicsEngine* softkeyPeer_ = nullptr;
   SoftkeyController softkeys_;
   MfdController mfd_;
 };

@@ -23,7 +23,6 @@ constexpr float kRailroadMaxRangeNm = 30.0f;
 // GSHHG crude silhouettes (South America, North America, …) span well over
 // 40°; at 500+ NM clip them to the visible chart before chord tessellation.
 constexpr float kCoarseSilhouetteMaxGeoSpanDeg = 40.0f;
-constexpr float kContinentalSilhouetteMinGeoSpanDeg = 50.0f;
 constexpr std::size_t kSilhouetteLandMaxPts = 8000;
 // City label tiers by Natural Earth rank (higher rank = larger city).
 constexpr float kCityLargeMaxRangeNm = 150.0f;
@@ -142,7 +141,7 @@ constexpr float kChartBorderClipMarginPx = 80.0f;
 
 void visibleGeoBounds(const Proj& proj, float rangeNm, float marginPx,
                       double& latMin, double& latMax, double& lonMin,
-                      double& lonMax) {
+                      double& lonMax, float viewHalfExtentNm = 0.0f) {
   const float x0 = proj.minX - marginPx;
   const float x1 = proj.maxX + marginPx;
   const float y0 = proj.minY - marginPx;
@@ -193,6 +192,28 @@ void visibleGeoBounds(const Proj& proj, float rangeNm, float marginPx,
         (static_cast<double>(rangeNm) / (map::kNmPerDegLat * cosEdge)) * 2.5;
     lonMinDelta = -halfLon;
     lonMaxDelta = halfLon;
+  }
+  // Mercator corner sampling can underestimate east/west reach on wide charts;
+  // never clip land fills tighter than the viewport span in longitude.
+  const double minHalfLonDeg =
+      static_cast<double>(proj.maxX - proj.cx) / pxPer / map::kDegToRad;
+  if (lonMaxDelta - lonMinDelta < minHalfLonDeg * 2.05) {
+    lonMinDelta = std::min(lonMinDelta, -minHalfLonDeg * 1.05);
+    lonMaxDelta = std::max(lonMaxDelta, minHalfLonDeg * 1.05);
+  }
+  if (viewHalfExtentNm > 0.0f) {
+    const double cosEdge =
+        std::max(0.05, std::cos(proj.centerLat * map::kDegToRad));
+    const double halfLon =
+        (static_cast<double>(viewHalfExtentNm) /
+         (map::kNmPerDegLat * cosEdge)) *
+        1.10;
+    const double halfLat =
+        static_cast<double>(viewHalfExtentNm) / map::kNmPerDegLat * 1.10;
+    lonMinDelta = std::min(lonMinDelta, -halfLon);
+    lonMaxDelta = std::max(lonMaxDelta, halfLon);
+    latMin = std::min(latMin, proj.centerLat - halfLat);
+    latMax = std::max(latMax, proj.centerLat + halfLat);
   }
   lonMin = proj.centerLon + lonMinDelta;
   lonMax = proj.centerLon + lonMaxDelta;
@@ -382,8 +403,15 @@ void drawContinentalChartOutline(Renderer& r, const MapLandLine& line,
   }
 }
 
+double chartPeninsulaMaxSegNm(float rangeNm, float pixelsPerNm) {
+  const double pxNm = std::max(0.01, static_cast<double>(pixelsPerNm));
+  const double shorePx = rangeNm <= 5.0f ? 1.0 : 2.0;
+  return shorePx / pxNm;
+}
+
 bool projectGeoLine(std::vector<GeoPoint> work, const MapLandLine& line,
-                    const Proj& proj, float rangeNm, std::vector<Point>& pts) {
+                    const Proj& proj, float rangeNm, std::vector<Point>& pts,
+                    double maxSegNmOverride = -1.0) {
   pts.clear();
   if (work.size() < 2) return false;
 
@@ -394,7 +422,10 @@ bool projectGeoLine(std::vector<GeoPoint> work, const MapLandLine& line,
   static thread_local std::vector<GeoPoint> geoPts;
   geoPts.clear();
   geoPts.push_back(work[0]);
-  const double maxSegNm = maxGeoSegNmFor(line, rangeNm, proj.pixelsPerNm);
+  const double maxSegNm =
+      maxSegNmOverride > 0.0
+          ? maxSegNmOverride
+          : maxGeoSegNmFor(line, rangeNm, proj.pixelsPerNm);
   for (size_t i = 1; i < work.size(); ++i) {
     const GeoPoint& target = work[i];
     while (true) {
@@ -445,6 +476,57 @@ float landLineGeoSpan(const MapLandLine& line) {
   return static_cast<float>((maxLat - minLat) + (maxLon - minLon));
 }
 
+void midRangeGeoClipBox(const Proj& proj, float rangeNm, float viewHalfExtentNm,
+                        double& latMin, double& latMax, double& lonMin,
+                        double& lonMax) {
+  const double reachNm =
+      std::max(static_cast<double>(rangeNm) * kMapViewportReachFactor,
+               static_cast<double>(viewHalfExtentNm));
+  const double halfLat = reachNm / map::kNmPerDegLat * 1.10;
+  const double cosEdge =
+      std::max(0.05, std::cos(proj.centerLat * map::kDegToRad));
+  const double halfLon = reachNm / (map::kNmPerDegLat * cosEdge) * 1.10;
+  latMin = proj.centerLat - halfLat;
+  latMax = proj.centerLat + halfLat;
+  lonMin = proj.centerLon - halfLon;
+  lonMax = proj.centerLon + halfLon;
+}
+
+// "Fill base" rings define the solid black land area against the navy ocean:
+// either the coarse GSHHG L1 continent silhouette (span >= 50, few points) or
+// any high-resolution continental/lon-band ring (> 8000 points). These are
+// geo-clipped to the viewport and filled first at every range; local island
+// and shore rings (small and simple) layer on top through the normal path.
+bool isLandFillBase(const MapLandLine& line, float geoSpan) {
+  if (line.landClass != LandClass::LandMass) return false;
+  return geoSpan >= kContinentalSilhouetteMinGeoSpanDeg ||
+         line.points.size() > kSilhouetteLandMaxPts;
+}
+
+// Geo-clips a large landmass ring to a range-based box around the view center
+// and projects it for a solid fill. The range-based box reliably covers the
+// viewport at every zoom, unlike inverse-Mercator corner sampling which can
+// collapse to an empty box and drop the fill entirely.
+bool projectMidRangeContinentalFill(const MapLandLine& line, const Proj& proj,
+                                    float rangeNm, float viewHalfExtentNm,
+                                    std::vector<Point>& pts) {
+  static thread_local std::vector<GeoPoint> work;
+  static thread_local std::vector<GeoPoint> clipped;
+  work.assign(line.points.begin(), line.points.end());
+  if (work.size() < 3) return false;
+
+  double latMin = 0.0, latMax = 0.0, lonMin = 0.0, lonMax = 0.0;
+  midRangeGeoClipBox(proj, rangeNm, viewHalfExtentNm, latMin, latMax, lonMin,
+                     lonMax);
+  clipGeoPolygonToBox(work, latMin, latMax, lonMin, lonMax, clipped);
+  if (clipped.size() < 3) return false;
+  return projectGeoLine(std::move(clipped), line, proj, rangeNm, pts,
+                        chartPeninsulaMaxSegNm(rangeNm, proj.pixelsPerNm));
+}
+
+// GSHHG regional lon-band / continent rings that carry the peninsula chart
+// above close range. Local island rings stay on the normal fill path.
+
 bool projectFillLine(const MapLandLine& line, const Proj& proj, float rangeNm,
                      std::vector<Point>& pts) {
   static thread_local std::vector<GeoPoint> work;
@@ -453,7 +535,7 @@ bool projectFillLine(const MapLandLine& line, const Proj& proj, float rangeNm,
   const bool coarseSilhouetteFill =
       line.landClass == LandClass::LandMass &&
       line.points.size() <= kSilhouetteLandMaxPts &&
-      rangeNm > kDetailLandMaxRangeNm &&
+      rangeNm <= kDetailLandMaxRangeNm &&
       geoSpan <= kCoarseSilhouetteMaxGeoSpanDeg;
   // Geo-clip every wide landmass (including continental silhouettes) to the
   // visible chart before Mercator chord tessellation; an unclipped Americas
@@ -495,6 +577,19 @@ double screenRingSignedArea(const std::vector<Point>& pts) {
             static_cast<double>(pts[j].y - pts[i].y);
   }
   return area * 0.5;
+}
+
+void drawChartPeninsulaFillBlack(Renderer& r, const std::vector<Point>& pts,
+                                 const ClipBounds& clip, float rangeNm) {
+  (void)clip;
+  static thread_local std::vector<Point> fillPts;
+  decimateClosedPolygon(pts, maxLandFillVertsFor(rangeNm), fillPts);
+  if (fillPts.size() < 3) return;
+  if (screenRingSignedArea(fillPts) < 0.0) {
+    std::reverse(fillPts.begin(), fillPts.end());
+  }
+  r.fillPolygon(fillPts.data(), static_cast<int>(fillPts.size()),
+                kMapLandFill);
 }
 
 // Mercator chord fills on coarse GSHHG rings project as diagonal triangles that
@@ -658,7 +753,10 @@ void drawLandMassFillFromScreenPts(Renderer& r, const std::vector<Point>& pts,
   const float fillH = maxY - minY;
   // Mercator lon-band slices project as tall wedges over the ocean; local
   // barrier islands (Pine Island @ 10 NM) are also tall/narrow and must pass.
-  if (rangeNm <= 120.0f && geoSpanDeg < kContinentalSilhouetteMinGeoSpanDeg &&
+  // Only apply through 120 NM — above that, regional lon-bands are the chart
+  // fill and must not be rejected (150 NM needs several adjacent bands).
+  if (rangeNm <= kRegionalLandMaxRangeNm &&
+      geoSpanDeg < kContinentalSilhouetteMinGeoSpanDeg &&
       fillH > viewH * 0.35f && fillW < viewW * 0.28f &&
       (sourceNpts > kSilhouetteLandMaxPts || geoSpanDeg >= 18.0f)) {
     return;
@@ -692,13 +790,8 @@ void drawLandMassFillFromScreenPts(Renderer& r, const std::vector<Point>& pts,
   }
   const double minFillDensity =
       rangeNm <= 5.0f ? 0.10 : rangeNm <= 15.0f ? 0.12 : 0.22;
-  if (rangeNm <= 120.0f && bboxArea > 1.0 && fillH > viewH * 0.45f &&
-      fillArea / bboxArea < minFillDensity) {
-    return;
-  }
-  if (rangeNm >= kContinentalChartRangeNm &&
-      geoSpanDeg < kContinentalSilhouetteMinGeoSpanDeg &&
-      fillW >= viewW * 0.2f && fillH > viewH * 0.65f && fillW < viewW * 0.55f) {
+  if (rangeNm <= kRegionalLandMaxRangeNm && bboxArea > 1.0 &&
+      fillH > viewH * 0.45f && fillArea / bboxArea < minFillDensity) {
     return;
   }
   const float fillCx = (minX + maxX) * 0.5f;
@@ -798,9 +891,51 @@ bool shouldDrawLine(const MapLandLine& line, float rangeNm) {
 }  // namespace
 
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm, bool skipLandMassFill) {
+                  float rangeNm, bool skipLandMassFill, float viewHalfExtentNm) {
   const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
   std::vector<Point> pts;
+
+  // Solid black land base: every large/high-res GSHHG ring (continent
+  // silhouette or high-resolution lon-band) is geo-clipped to the viewport with
+  // a reliable range-based box and filled first, at every range. Local island
+  // and shore rings layer on top through the normal path below. Below the
+  // detail-range threshold only high-resolution rings fill, so the coarse
+  // continent silhouette never paints black over near-shore water.
+  if (!skipLandMassFill) {
+    static thread_local std::vector<std::size_t> baseIdx;
+    baseIdx.clear();
+    baseIdx.reserve(map.landLines.size());
+    for (std::size_t i = 0; i < map.landLines.size(); ++i) {
+      const MapLandLine& line = map.landLines[i];
+      if (line.points.size() < 3) continue;
+      const float geoSpan = landLineGeoSpan(line);
+      if (!isLandFillBase(line, geoSpan)) continue;
+      // Close range: the coarse continent silhouette is too imprecise; only the
+      // high-resolution rings (lon-band detail) define the shoreline.
+      if (rangeNm <= kDetailLandMaxRangeNm &&
+          line.points.size() <= kSilhouetteLandMaxPts) {
+        continue;
+      }
+      baseIdx.push_back(i);
+    }
+    // Coarsest first (largest span), so finer high-res rings fill on top.
+    std::sort(baseIdx.begin(), baseIdx.end(), [&](std::size_t a, std::size_t b) {
+      return landLineGeoSpan(map.landLines[a]) >
+             landLineGeoSpan(map.landLines[b]);
+    });
+    for (std::size_t i : baseIdx) {
+      const MapLandLine& line = map.landLines[i];
+      if (!projectMidRangeContinentalFill(line, proj, rangeNm, viewHalfExtentNm,
+                                          pts)) {
+        continue;
+      }
+      if (!polylineIntersectsClip(pts.data(), static_cast<int>(pts.size()), clip,
+                                  kChartBorderClipMarginPx)) {
+        continue;
+      }
+      drawChartPeninsulaFillBlack(r, pts, clip, rangeNm);
+    }
+  }
 
   // Continent fills first so lakes and detail lines layer on top. Draw large
   // continental rings before regional/island rings so local fills stay on top.
@@ -835,7 +970,7 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
         if (ga != gb) return ga > gb;
         return pa < pb;
       }
-      if (rangeNm <= 120.0f) {
+      if (rangeNm <= 250.0f) {
         // Continental silhouette under regional lon-bands under local shore rings.
         auto fillTier = [](std::size_t npts, float geoSpan) {
           if (geoSpan >= kContinentalSilhouetteMinGeoSpanDeg &&
@@ -866,6 +1001,13 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
       const MapLandLine& line = map.landLines[i];
       if (skipLandMassFill) continue;
       const float geoSpan = landLineGeoSpan(line);
+      // Base-fill rings are handled by the solid land-base pass above (unless
+      // they were excluded there as the coarse close-range silhouette).
+      if (isLandFillBase(line, geoSpan) &&
+          !(rangeNm <= kDetailLandMaxRangeNm &&
+            line.points.size() <= kSilhouetteLandMaxPts)) {
+        continue;
+      }
       if (rangeNm <= kRegionalSilhouetteSuppressMaxNm &&
           line.points.size() <= 4 && geoSpan > 0.2f && geoSpan < 1.0f) {
         continue;

@@ -14,19 +14,68 @@
         }
       },
       "windows": {
-        "detail": "Requires VCPKG_ROOT (bootstrap vcpkg, then: vcpkg install curl:x64-windows). Uses the Visual Studio generator.",
+        "type": "process",
+        "detail": "Requires vcpkg at C:/vcpkg (curl:x64-windows-static). Uses the Visual Studio generator.",
+        "command": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": {
+            "VCPKG_ROOT": "C:/vcpkg"
+          }
+        },
         "args": [
           "-S",
           ".",
           "-B",
           "build-standalone",
-          "-DCMAKE_TOOLCHAIN_FILE=${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+          "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+          "-DVCPKG_TARGET_TRIPLET=x64-windows-static"
+        ]
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Configure standalone (RelWithDebInfo)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S",
+        ".",
+        "-B",
+        "build-standalone",
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "osx": {
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+        }
+      },
+      "windows": {
+        "type": "process",
+        "command": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": {
+            "VCPKG_ROOT": "C:/vcpkg"
+          }
+        },
+        "args": [
+          "-S",
+          ".",
+          "-B",
+          "build-standalone",
+          "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+          "-DVCPKG_TARGET_TRIPLET=x64-windows-static",
+          "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
         ]
       },
       "problemMatcher": []
     },
     {
       "label": "Build standalone",
+      "detail": "Debug build (unoptimized; use for breakpoints). On Windows uses --config Debug.",
       "type": "shell",
       "command": "cmake",
       "args": [
@@ -44,6 +93,11 @@
         }
       },
       "windows": {
+        "type": "process",
+        "command": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+        "options": {
+          "cwd": "${workspaceFolder}"
+        },
         "args": [
           "--build",
           "build-standalone",
@@ -57,15 +111,99 @@
       },
       "group": "build",
       "dependsOn": ["Configure standalone"],
-      "problemMatcher": ["$gcc"]
+      "problemMatcher": []
+    },
+    {
+      "label": "Build standalone (Release)",
+      "detail": "Release build (optimized; matches the installed app).",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build-standalone",
+        "--target",
+        "avionics-standalone",
+        "-j8"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "osx": {
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+        }
+      },
+      "windows": {
+        "type": "process",
+        "command": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+        "options": {
+          "cwd": "${workspaceFolder}"
+        },
+        "args": [
+          "--build",
+          "build-standalone",
+          "--target",
+          "avionics-standalone",
+          "--config",
+          "Release",
+          "-j8"
+        ],
+        "problemMatcher": ["$msCompile"]
+      },
+      "group": "build",
+      "dependsOn": ["Configure standalone"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Build standalone (RelWithDebInfo)",
+      "detail": "Optimized build with debug symbols (fast runtime, still debuggable).",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build-standalone",
+        "--target",
+        "avionics-standalone",
+        "-j8"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "osx": {
+        "dependsOn": ["Configure standalone (RelWithDebInfo)"],
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": { "PATH": "${env:HOME}/Library/Python/3.9/bin:${env:PATH}" }
+        }
+      },
+      "windows": {
+        "type": "process",
+        "command": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+        "options": {
+          "cwd": "${workspaceFolder}"
+        },
+        "args": [
+          "--build",
+          "build-standalone",
+          "--target",
+          "avionics-standalone",
+          "--config",
+          "RelWithDebInfo",
+          "-j8"
+        ],
+        "problemMatcher": ["$msCompile"]
+      },
+      "group": "build",
+      "dependsOn": ["Configure standalone (RelWithDebInfo)"],
+      "problemMatcher": []
     },
     {
       "label": "Run PFD (demo)",
-      "detail": "Build, then launch the PFD window only, booting into the demo feed (Debug menu enabled).",
+      "detail": "Debug build, then launch the PFD window only (demo feed, Debug menu). Slow; use the Release task for normal dev.",
       "type": "shell",
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--demo", "--debug-menu"],
-      "options": { "cwd": "${workspaceFolder}" },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
       "windows": {
         "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
       },
@@ -82,11 +220,14 @@
     },
     {
       "label": "Run MFD (demo)",
-      "detail": "Build, then launch the MFD window only, booting into the demo feed (Debug menu enabled).",
+      "detail": "Debug build, then launch the MFD window only (demo feed, Debug menu). Slow; use the Release task for normal dev.",
       "type": "shell",
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--demo", "--debug-menu"],
-      "options": { "cwd": "${workspaceFolder}" },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
       "windows": {
         "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
       },
@@ -103,18 +244,38 @@
     },
     {
       "label": "Run PFD + MFD (demo)",
-      "detail": "Build, then launch both display tasks together in demo mode.",
-      "dependsOn": ["Run PFD (demo)", "Run MFD (demo)"],
-      "dependsOrder": "parallel",
+      "detail": "Debug build, then launch both displays (demo feed). Slow; use the Release task for normal dev.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--demo", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
       "problemMatcher": []
     },
     {
       "label": "Run PFD (X-Plane)",
-      "detail": "Build, then launch the PFD window only against the live X-Plane feed (Debug menu enabled).",
+      "detail": "Debug build, then launch the PFD window only (live X-Plane feed). Slow; use the Release task for normal dev.",
       "type": "shell",
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-mfd", "--debug-menu"],
-      "options": { "cwd": "${workspaceFolder}" },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
       "windows": {
         "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
       },
@@ -131,11 +292,14 @@
     },
     {
       "label": "Run MFD (X-Plane)",
-      "detail": "Build, then launch the MFD window only against the live X-Plane feed (Debug menu enabled).",
+      "detail": "Debug build, then launch the MFD window only (live X-Plane feed). Slow; use the Release task for normal dev.",
       "type": "shell",
       "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
       "args": ["--no-pfd", "--debug-menu"],
-      "options": { "cwd": "${workspaceFolder}" },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
       "windows": {
         "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
       },
@@ -152,9 +316,314 @@
     },
     {
       "label": "Run PFD + MFD (X-Plane)",
-      "detail": "Build, then launch both display tasks together against the live X-Plane feed.",
-      "dependsOn": ["Run PFD (X-Plane)", "Run MFD (X-Plane)"],
-      "dependsOrder": "parallel",
+      "detail": "Debug build, then launch both displays (live X-Plane feed). Slow; use the Release task for normal dev.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Debug/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD (demo, Release)",
+      "detail": "Release build, then launch the PFD window only (demo feed). Matches installed-app performance.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Release/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (Release)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run MFD (demo, Release)",
+      "detail": "Release build, then launch the MFD window only (demo feed). Matches installed-app performance.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Release/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (Release)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD + MFD (demo, Release)",
+      "detail": "Release build, then launch both displays (demo feed). Matches installed-app performance.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--demo", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Release/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (Release)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD (X-Plane, Release)",
+      "detail": "Release build, then launch the PFD window only (live X-Plane feed). Matches installed-app performance.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Release/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (Release)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run MFD (X-Plane, Release)",
+      "detail": "Release build, then launch the MFD window only (live X-Plane feed). Matches installed-app performance.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Release/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (Release)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD + MFD (X-Plane, Release)",
+      "detail": "Release build, then launch both displays (live X-Plane feed). Matches installed-app performance.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/Release/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (Release)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD (demo, RelWithDebInfo)",
+      "detail": "RelWithDebInfo build, then launch the PFD window only (demo feed). Fast and still debuggable.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--demo", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (RelWithDebInfo)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run MFD (demo, RelWithDebInfo)",
+      "detail": "RelWithDebInfo build, then launch the MFD window only (demo feed). Fast and still debuggable.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--demo", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (RelWithDebInfo)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD + MFD (demo, RelWithDebInfo)",
+      "detail": "RelWithDebInfo build, then launch both displays (demo feed). Fast and still debuggable.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--demo", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (RelWithDebInfo)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-demo",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD (X-Plane, RelWithDebInfo)",
+      "detail": "RelWithDebInfo build, then launch the PFD window only (live X-Plane feed). Fast and still debuggable.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-mfd", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (RelWithDebInfo)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run MFD (X-Plane, RelWithDebInfo)",
+      "detail": "RelWithDebInfo build, then launch the MFD window only (live X-Plane feed). Fast and still debuggable.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--no-pfd", "--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (RelWithDebInfo)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run PFD + MFD (X-Plane, RelWithDebInfo)",
+      "detail": "RelWithDebInfo build, then launch both displays (live X-Plane feed). Fast and still debuggable.",
+      "type": "shell",
+      "command": "${workspaceFolder}/build-standalone/shell-standalone/avionics-standalone",
+      "args": ["--debug-menu"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "AVIONICS_SKIP_UPDATE_CHECK": "1" }
+      },
+      "windows": {
+        "command": "${workspaceFolder}/build-standalone/shell-standalone/RelWithDebInfo/avionics-standalone.exe"
+      },
+      "dependsOn": ["Build standalone (RelWithDebInfo)"],
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "avionics-xplane",
+        "clear": true
+      },
       "problemMatcher": []
     }
   ]

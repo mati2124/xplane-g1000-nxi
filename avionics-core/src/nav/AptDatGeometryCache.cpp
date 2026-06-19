@@ -11,7 +11,8 @@ namespace {
 constexpr char kMagic[4] = {'A', 'P', 'T', 'G'};
 // v2 adds runway-end designators and the taxiway-label cells.
 // v3 adds airport facility name/city and per-airport runway info.
-constexpr std::uint32_t kVersion = 3;
+// v4 accepts XP12 asphalt/concrete appearance surface codes (20-57) for taxiways.
+constexpr std::uint32_t kVersion = 4;
 
 bool aptDatIdentity(const std::string& aptDatPath, std::int64_t& sizeOut,
                     std::int64_t& mtimeOut) {

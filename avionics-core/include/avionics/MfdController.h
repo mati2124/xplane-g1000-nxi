@@ -256,6 +256,10 @@ class MfdController {
   // steps (Working Title G1000 NXi smooth zoom) rather than snapping.
   float displayRangeNm() const { return displayRangeNm_; }
 
+  // Half the map viewport diagonal in NM (corner reach from the view center).
+  // Used by land-data queries so GSHHG lon-band overlap matches MapView.
+  float mapViewHalfExtentNm() const;
+
   // Navigation Map display options, set from the Map Opt softkey submenu and
   // the Detail (declutter) softkey, mirroring the NXi MFD softkey map.
   TerrainDisplay terrainDisplay() const { return terrain_; }
@@ -557,6 +561,7 @@ class MfdController {
   // Apply a press of a hardware bezel key: flashes the key and, for the range
   // rocker, steps the MFD map range.
   void pressBezelKey(BezelKey key);
+  void flashBezelKey(BezelKey key);
   const float* bezelPressLevels() const { return bezelPress_.data(); }
   // CLR (DFLT MAP) held: abandon any in-progress entry or submenu and display
   // the Navigation Map page immediately (Pilot's Guide: "press and hold CLR

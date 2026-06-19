@@ -90,12 +90,12 @@ ClusterLayout layoutCluster(float x, float y, float w, float h) {
 }
 
 // Top/height of each stacked slot in the left bezel strip (NAV + HDG). The
-// lower portion of the real left bezel holds the AFCS mode keys, which this
-// suite does not model, so it is left as plain face.
+// lower portion carries the red DISPLAY BACKUP key (GMA audio panel).
 struct LeftLayout {
   float volRowTop, volRowH;
   float navTop, navH;
   float hdgTop, hdgH;
+  float backupTop, backupH;
 };
 
 LeftLayout layoutLeft(float x, float y, float w, float h) {
@@ -112,6 +112,9 @@ LeftLayout layoutLeft(float x, float y, float w, float h) {
   top += cl.navH + gap;
   cl.hdgTop = top;
   cl.hdgH = h * kBaroKnobFrac;
+  top += cl.hdgH + gap;
+  cl.backupTop = top;
+  cl.backupH = std::max(h * 0.10f, y + h * (1.0f - kPadTopFrac) - top);
   return cl;
 }
 
@@ -184,6 +187,35 @@ Cell transferCellIn(float x, float w, float top, float slotH, bool leftSide) {
   const float cx = leftSide ? x + w * 0.70f - cw * 0.5f : x + w * 0.30f - cw * 0.5f;
   const float cy = top + slotH * 0.34f;
   return {cx, cy, cw, ch};
+}
+
+Cell backupCell(float x, float w, const LeftLayout& cl) {
+  const float padX = w * kPadXFrac;
+  const float keyW = w - 2.0f * padX;
+  const float keyH = cl.backupH * 0.82f;
+  return {x + padX, cl.backupTop + (cl.backupH - keyH) * 0.5f, keyW, keyH};
+}
+
+// Red GMA audio-panel DISPLAY BACKUP key (Pilot's Guide Fig. 1-7).
+void drawDisplayBackupKey(Renderer& r, const Cell& c, float displayH,
+                          float press) {
+  const float lit = std::min(1.0f, press + 0.35f);
+  const Color faceTop{0.78f + 0.12f * lit, 0.08f + 0.06f * lit,
+                      0.08f + 0.06f * lit, 1.0f};
+  const Color faceBottom{0.48f + 0.10f * lit, 0.02f + 0.04f * lit,
+                         0.02f + 0.04f * lit, 1.0f};
+  r.fillRectVerticalGradient(c.x, c.y, c.w, c.h, c.y, c.y + c.h, faceTop,
+                             faceBottom);
+  r.strokeRoundedRect(c.x, c.y, c.w, c.h, c.h * 0.12f, 1.5f,
+                      Color{0.18f, 0.02f, 0.02f, 1.0f});
+
+  const float size = std::min(fontPx(kCaptionWt, displayH), c.w * 0.16f);
+  const float lineGap = size * 0.95f;
+  const float cy = c.y + c.h * 0.52f;
+  r.fillText(c.x + c.w * 0.5f, cy - lineGap * 0.5f, "DISPLAY", size,
+             TextAlign::Center, colors::kWhite);
+  r.fillText(c.x + c.w * 0.5f, cy + lineGap * 0.5f, "BACKUP", size,
+             TextAlign::Center, colors::kWhite);
 }
 
 const char* keyLabel(BezelKey key) {
@@ -614,6 +646,10 @@ void BezelKeyPanel::renderLeft(Renderer& r, float x, float y, float w, float h,
   drawSingleKnob(r, knobInSlot(x, w, cluster.hdgTop, cluster.hdgH), displayH,
                  "HDG", "PUSH HDG SYNC", pressLevels, BezelKey::HdgCcw,
                  BezelKey::HdgCw, BezelKey::HdgPush);
+
+  const Cell backup = backupCell(x, w, cluster);
+  drawDisplayBackupKey(r, backup, displayH,
+                       pressLevel(pressLevels, BezelKey::DisplayBackup));
 }
 
 BezelKey BezelKeyPanel::hitTest(float xPx, float yPx, float x, float y, float w,
@@ -697,6 +733,10 @@ BezelKey BezelKeyPanel::hitTestLeft(float xPx, float yPx, float x, float y,
   if (inCell(transferCellIn(x, w, cluster.volRowTop, cluster.volRowH, true),
              xPx, yPx)) {
     return BezelKey::NavTransfer;
+  }
+
+  if (inCell(backupCell(x, w, cluster), xPx, yPx)) {
+    return BezelKey::DisplayBackup;
   }
 
   return BezelKey::Count;

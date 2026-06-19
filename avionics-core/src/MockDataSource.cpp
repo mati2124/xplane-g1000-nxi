@@ -427,6 +427,7 @@ void MockDataSource::update(double dtSeconds) {
 
   publishMapBackground(dtSeconds);
   if (reversionaryAlertsDemo_) applyReversionaryAlertsDemo(data_);
+  syncDisplayBackup(data_, dtSeconds);
 }
 
 void MockDataSource::updateOnGround(double dtSeconds) {
@@ -521,6 +522,7 @@ void MockDataSource::updateOnGround(double dtSeconds) {
 
   refreshFeatures(dtSeconds);
   publishMapBackground(dtSeconds);
+  syncDisplayBackup(data_, dtSeconds);
 }
 
 void MockDataSource::publishEisChannels() {
@@ -830,6 +832,13 @@ void MockDataSource::setChartRangeNm(float rangeNm) {
   }
 }
 
+void MockDataSource::setMapViewHalfExtentNm(float halfExtentNm) {
+  if (mapViewHalfExtentNm_ != halfExtentNm) {
+    mapViewHalfExtentNm_ = halfExtentNm;
+    mapPanDirty_ = true;
+  }
+}
+
 void MockDataSource::refreshFeatures(double dt) {
   if (navFeatures_ == nullptr) return;  // demo nav data already seeded
 
@@ -865,7 +874,8 @@ void MockDataSource::refreshFeatures(double dt) {
   map_.taxiways =
       navFeatures_->nearbyTaxiways(lat, lon, kTaxiwayQueryRangeNm, kMaxTaxiways);
   map_.landLines =
-      navFeatures_->nearbyLandLines(lat, lon, map_.rangeNm, kMaxLandLines);
+      navFeatures_->nearbyLandLines(lat, lon, map_.rangeNm, kMaxLandLines,
+                                      mapViewHalfExtentNm_);
   map_.cities =
       navFeatures_->nearbyCities(lat, lon, map_.rangeNm, kMaxCities);
   map_.obstacles = navFeatures_->nearbyObstacles(lat, lon, kObstacleQueryRangeNm,

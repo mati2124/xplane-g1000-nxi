@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "avionics/render/BezelKeys.h"
+#include "render/map/MapViewInternal.h"
 
 namespace avionics {
 namespace {
@@ -297,6 +298,24 @@ void MfdController::rebuildLabels() {
 
 float MfdController::rangeNm() const { return mapRangeNmAt(rangeIndex_); }
 
+float MfdController::mapViewHalfExtentNm() const {
+  if (!mapViewportValid_ || mapViewportW_ <= 0.0f || mapViewportH_ <= 0.0f) {
+    return 0.0f;
+  }
+  MapViewConfig cfg{};
+  cfg.w = mapViewportW_;
+  cfg.h = mapViewportH_;
+  cfg.orientation = mapOrientation_;
+  const float mapRadiusPx = mapview::mapRangeSpanPx(cfg);
+  const float scaleRangeNm =
+      std::max(kMapRangeMinNm, displayRangeNm_ > 0.0f ? displayRangeNm_ : rangeNm());
+  if (mapRadiusPx <= 0.0f || scaleRangeNm <= 0.0f) return 0.0f;
+  const float pixelsPerNm = mapRadiusPx / scaleRangeNm;
+  const float halfW = mapViewportW_ * 0.5f;
+  const float halfH = mapViewportH_ * 0.5f;
+  return std::sqrt(halfW * halfW + halfH * halfH) / pixelsPerNm;
+}
+
 int MfdController::pageCount(MfdPageGroup group) const {
   int count = kGroupPageCount[static_cast<int>(group)];
   // The Weather Radar page is the last page in the MAP group; drop it when the
@@ -429,10 +448,16 @@ bool MfdController::keyEnabled(int i) const {
   if (menu_ == Menu::Engine) {
     return i == kKeyEngEngine || i == kKeyEngBack;
   }
+  if (menu_ == Menu::MapOpt) {
+    return true;
+  }
   if (menu_ == Menu::RadarMode && i == kKeyRdrGround) {
     return false;
   }
-  if (menu_ == Menu::Root || menu_ == Menu::MapOpt) {
+  if (simbriefIdEntry_) {
+    return true;
+  }
+  if (menu_ == Menu::Root) {
     if (i == kKeyCharts) return false;
     if (i == kKeyChecklist) return checklistCount() > 0;
     if (page() == MfdPage::TrafficMap) {
@@ -510,6 +535,11 @@ bool MfdController::keyActive(int i) const {
     default:
       return false;
   }
+}
+
+void MfdController::flashBezelKey(BezelKey key) {
+  const int i = static_cast<int>(key);
+  if (i >= 0 && i < kBezelKeyCount) bezelPress_[i] = 1.0f;
 }
 
 void MfdController::pressBezelKey(BezelKey key) {

@@ -413,22 +413,40 @@ std::string XPlaneWebApi::nav2Ident() const {
   return nav2Ident_;
 }
 
+std::string XPlaneWebApi::aircraftIcao() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return aircraftIcao_;
+}
+
+std::string XPlaneWebApi::aircraftAcfRelativePath() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return aircraftAcfRelativePath_;
+}
+
 void XPlaneWebApi::run() {
   long long gpsNavId = -1;
   long long nav1NavId = -1;
   long long nav1DmeId = -1;
   long long nav2NavId = -1;
   long long nav2DmeId = -1;
+  long long acfIcaoId = -1;
+  long long acfPathId = -1;
   while (!stop_.load()) {
     std::string gps;
     std::string nav1;
     std::string nav2;
+    std::string icao;
+    std::string acfPath;
     const bool gpsOk =
         pollStringDataref(host_, port_, datarefs::kGpsNavId, gpsNavId, gps);
     nav1 = readNavStationIdent(host_, port_, datarefs::kNav1NavId,
                                datarefs::kNav1DmeId, nav1NavId, nav1DmeId);
     nav2 = readNavStationIdent(host_, port_, datarefs::kNav2NavId,
                                datarefs::kNav2DmeId, nav2NavId, nav2DmeId);
+    const bool icaoOk =
+        pollStringDataref(host_, port_, datarefs::kAcfIcao, acfIcaoId, icao);
+    const bool acfPathOk = pollStringDataref(
+        host_, port_, datarefs::kAcfRelativePath, acfPathId, acfPath);
 
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -439,6 +457,16 @@ void XPlaneWebApi::run() {
       }
       nav1Ident_ = std::move(nav1);
       nav2Ident_ = std::move(nav2);
+      if (icaoOk) {
+        aircraftIcao_ = std::move(icao);
+      } else {
+        aircraftIcao_.clear();
+      }
+      if (acfPathOk) {
+        aircraftAcfRelativePath_ = std::move(acfPath);
+      } else {
+        aircraftAcfRelativePath_.clear();
+      }
     }
 
     for (int waited = 0; waited < kPollIntervalMs && !stop_.load();

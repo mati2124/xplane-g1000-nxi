@@ -12,6 +12,7 @@ constexpr const char* kKeyPfdMapDetail = "av.pfd.mapDetail";
 constexpr const char* kKeyPfdWind = "av.pfd.wind";
 constexpr const char* kKeyPfdToggles = "av.pfd.toggles";
 constexpr const char* kKeyPfdInsetRange = "av.pfd.insetRange";
+constexpr const char* kKeyPfdInsetRangeVer = "av.pfd.insetRangeVer";
 constexpr const char* kKeyMfdTerrain = "av.mfd.terrain";
 constexpr const char* kKeyMfdAirways = "av.mfd.airways";
 constexpr const char* kKeyMfdTraffic = "av.mfd.traffic";
@@ -19,6 +20,7 @@ constexpr const char* kKeyMfdWeather = "av.mfd.weather";
 constexpr const char* kKeyMfdDetail = "av.mfd.detail";
 constexpr const char* kKeyMfdOrient = "av.mfd.orient";
 constexpr const char* kKeyMfdRange = "av.mfd.range";
+constexpr const char* kKeyMfdRangeVer = "av.mfd.rangeVer";
 
 // Number of distinct values for each persisted enum, used to reject
 // out-of-range values from a hand-edited or stale file before casting back.
@@ -129,7 +131,9 @@ void applyPfdState(SoftkeyController& controller, const PfdPersistentState& s) {
   controller.mapDetail_ = s.mapDetail;
   controller.windOption_ = s.windOption;
   controller.toggles_ = s.toggles;
-  controller.insetRangeIndex_ = clampRangeIndex(s.insetRangeIndex);
+  controller.insetRangeIndex_ =
+      migrateMapRangeIndex(clampRangeIndex(s.insetRangeIndex),
+                           s.insetRangeSavedVersion);
   // Start the zoom animator at the restored range so it doesn't glide from the
   // power-on default on the first frame.
   controller.insetDisplayRangeNm_ = mapRangeNmAt(controller.insetRangeIndex_);
@@ -143,7 +147,8 @@ void applyMfdState(MfdController& controller, const MfdPersistentState& s) {
   controller.showWeather_ = s.showWeather;
   controller.detail_ = s.detail;
   controller.mapOrientation_ = s.orientation;
-  controller.rangeIndex_ = clampRangeIndex(s.rangeIndex);
+  controller.rangeIndex_ =
+      migrateMapRangeIndex(clampRangeIndex(s.rangeIndex), s.rangeSavedVersion);
   // Start the zoom animator at the restored range so it doesn't glide from the
   // power-on default on the first frame.
   controller.displayRangeNm_ = mapRangeNmAt(controller.rangeIndex_);
@@ -162,6 +167,7 @@ void appendStateLines(const AvionicsPersistentState& state, std::string& out) {
   append(kKeyPfdWind, static_cast<int>(state.pfd.windOption));
   append(kKeyPfdToggles, togglesToMask(state.pfd.toggles));
   append(kKeyPfdInsetRange, state.pfd.insetRangeIndex);
+  append(kKeyPfdInsetRangeVer, kMapRangeLadderVersion);
   append(kKeyMfdTerrain, static_cast<int>(state.mfd.terrain));
   append(kKeyMfdAirways, static_cast<int>(state.mfd.airways));
   append(kKeyMfdTraffic, state.mfd.showTraffic ? 1 : 0);
@@ -169,6 +175,7 @@ void appendStateLines(const AvionicsPersistentState& state, std::string& out) {
   append(kKeyMfdDetail, static_cast<int>(state.mfd.detail));
   append(kKeyMfdOrient, static_cast<int>(state.mfd.orientation));
   append(kKeyMfdRange, state.mfd.rangeIndex);
+  append(kKeyMfdRangeVer, kMapRangeLadderVersion);
 }
 
 bool applyStateLine(const std::string& key, const std::string& value,
@@ -184,6 +191,8 @@ bool applyStateLine(const std::string& key, const std::string& value,
     if (parseInt(value, mask)) maskToToggles(mask, state.pfd.toggles);
   } else if (key == kKeyPfdInsetRange) {
     parseRangeIndex(value, state.pfd.insetRangeIndex);
+  } else if (key == kKeyPfdInsetRangeVer) {
+    parseInt(value, state.pfd.insetRangeSavedVersion);
   } else if (key == kKeyMfdTerrain) {
     parseEnum(value, kTerrainCount, state.mfd.terrain);
   } else if (key == kKeyMfdAirways) {
@@ -198,6 +207,8 @@ bool applyStateLine(const std::string& key, const std::string& value,
     parseEnum(value, kOrientationCount, state.mfd.orientation);
   } else if (key == kKeyMfdRange) {
     parseRangeIndex(value, state.mfd.rangeIndex);
+  } else if (key == kKeyMfdRangeVer) {
+    parseInt(value, state.mfd.rangeSavedVersion);
   } else {
     return false;
   }

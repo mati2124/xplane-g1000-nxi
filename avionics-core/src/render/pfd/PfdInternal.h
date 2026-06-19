@@ -98,7 +98,7 @@ struct Layout {
   float hsiMapCx, hsiMapCy, hsiMapRadius;
 
   // Vertical deviation indicator (glideslope/glidepath/VNAV) scale just left of
-  // the altimeter, and the marker-beacon annunciation box above it.
+  // the altimeter, and the marker-beacon annunciation left of Selected Altitude.
   float vdiX, vdiW;
   float markerX, markerY, markerW, markerH;
 
@@ -263,6 +263,9 @@ constexpr float kVfeKt = 85.0f;
 constexpr float kVs1Kt = 48.0f;
 constexpr float kVnoKt = 129.0f;
 constexpr float kVneKt = 163.0f;
+// Mach replaces TAS in the bottom readout box at or above this value (TBM 900
+// uses 0.30; suppressed in the normal C172 envelope).
+constexpr float kMachDisplayThreshold = 0.40f;
 
 // V-speed reference table, indexed by avionics::VspeedRef (the References
 // window row order). bugLabel is the letter on the tape bug; windowLabel is
@@ -278,6 +281,7 @@ extern const int kVSpeedRefCount;
 // An autopilot selected altitude at/near 0 ft is treated as "unset": the
 // selected-altitude box shows dashes and no bug is drawn on the tape.
 constexpr float kAltSelectedEpsilonFt = 1.0f;
+constexpr float kAsiSelectedEpsilonKt = 1.0f;
 constexpr const char* kSelectedAltDashes = "-----";
 
 // Altimeter tape. The viewable window spans +/-400 ft from the centered

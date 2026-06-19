@@ -68,6 +68,12 @@ inline constexpr const char* kSelectedAltitudeFt =
     "sim/cockpit/autopilot/altitude";
 inline constexpr const char* kSelectedHeadingDegMag =
     "sim/cockpit/autopilot/heading_mag";
+// Autopilot airspeed hold target (FLC / speed-by-pitch). Knots or Mach depending
+// on airspeed_is_mach; piston aircraft use indicated airspeed in knots.
+inline constexpr const char* kSelectedAirspeedKts =
+    "sim/cockpit2/autopilot/airspeed_dial_kts_mach";
+inline constexpr const char* kSelectedVerticalSpeedFpm =
+    "sim/cockpit2/autopilot/vvi_dial_fpm";
 inline constexpr const char* kBaroSettingInHg =
     "sim/cockpit/misc/barometer_setting";
 
@@ -274,6 +280,12 @@ inline constexpr const char* kBatteryAmpsMain =
     "sim/cockpit2/electrical/battery_amps[0]";
 inline constexpr const char* kBatteryAmpsStandby =
     "sim/cockpit2/electrical/battery_amps[1]";
+
+// Loaded-aircraft identity (byte[] string datarefs). Used to swap the per-
+// airframe EIS layout and checklist set when the user changes aircraft.
+inline constexpr const char* kAcfIcao = "sim/aircraft/view/acf_ICAO";
+inline constexpr const char* kAcfRelativePath =
+    "sim/aircraft/view/acf_relative_path";
 
 // GDU power switches, used to gate the PFD/MFD power-up (real-world G1000
 // behavior: master lights the PFD, avionics master lights the MFD). Both are

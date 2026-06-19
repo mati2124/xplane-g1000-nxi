@@ -135,7 +135,7 @@ void MfdController::mapPointerSyncScroll(const FlightData& flight) {
   const float cy = mapViewportY_ + mapViewportH_ * 0.5f;
   const float mapRadiusPx = mapview::mapRangeSpanPx(config);
   const float scaleRangeNm =
-      std::max(0.5f, displayRangeNm() > 0.0f ? displayRangeNm() : rangeNm());
+      std::max(kMapRangeMinNm, displayRangeNm() > 0.0f ? displayRangeNm() : rangeNm());
   const float pixelsPerNm = mapRadiusPx / scaleRangeNm;
   const float rotation = mapRotationDeg(mapOrientation_, flight);
   const double rot = static_cast<double>(rotation) * map::kDegToRad;

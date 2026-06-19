@@ -406,6 +406,13 @@ void SoftkeyController::toggleWindow(PfdWindow w) {
   if (window_ == PfdWindow::Setup) setupCursor_ = PfdSetupField::PfdMode;
 }
 
+bool SoftkeyController::keyEnabled(int i) const {
+  if (i < 0 || i >= kSoftkeyCount) return false;
+  const SoftkeyAction action = menuDefs(currentMenu())[i].action;
+  if (action == SoftkeyAction::OpenSvt) return false;
+  return action != SoftkeyAction::None;
+}
+
 bool SoftkeyController::keyActive(int i) const {
   if (i < 0 || i >= kSoftkeyCount) return false;
   const SoftkeyAction action = menuDefs(currentMenu())[i].action;
@@ -571,8 +578,9 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
 bool SoftkeyController::pressKey(int key) {
   if (key < 0 || key >= kSoftkeyCount) return false;
 
+  if (!keyEnabled(key)) return false;
+
   const SoftkeyAction action = menuDefs(currentMenu())[key].action;
-  if (action == SoftkeyAction::None) return false;
 
   press_[key] = 1.0f;  // trigger the press-flash animation
 
@@ -679,8 +687,7 @@ bool SoftkeyController::pressKey(int key) {
       toggles_[static_cast<int>(DisplayToggle::BaroHpa)] = true;
       break;
     case SoftkeyAction::StdBaro:
-      // The NXi STD Baro key sets standard pressure; the actual setting is owned
-      // by the sim feed, so here it is press-flash only.
+      setBaroStandard();
       break;
     case SoftkeyAction::DetailCycle:
       mapDetail_ = nextMapDetail(mapDetail_);

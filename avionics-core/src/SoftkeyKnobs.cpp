@@ -17,7 +17,6 @@ namespace {
 constexpr float kBaroStepInHg = 0.01f;
 constexpr float kBaroMinInHg = 27.50f;
 constexpr float kBaroMaxInHg = 31.50f;
-constexpr float kBaroStandardInHg = 29.92f;
 
 float wrapHeadingDeg(float deg) {
   deg = std::fmod(deg, 360.0f);

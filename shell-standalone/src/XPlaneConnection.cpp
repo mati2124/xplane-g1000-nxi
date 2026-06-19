@@ -58,6 +58,11 @@ enum XpdrMode {
 // received value over this many seconds removes the visible stepping without
 // adding much lag.
 constexpr double kSmoothingTimeConstantSeconds = 0.06;
+// The airspeed trend vector is a 6-second projection of IAS rate. It is
+// derived from packet-to-packet sim values (not the per-frame display easing)
+// and low-pass filtered with a longer time constant so takeoff acceleration
+// reads smoothly instead of jittering on UDP / pitot noise.
+constexpr double kAirspeedTrendTimeConstantSeconds = 0.75;
 
 // Zulu clock (sim/time/zulu_time_sec) handling. The displayed clock free-runs at
 // real time between packets and is eased toward the sim's value with this time
@@ -129,6 +134,10 @@ const DatarefBinding kBindings[] = {
      Smooth::Snap},
     {datarefs::kSelectedHeadingDegMag, 1.0f, &FlightData::selectedHeadingDeg,
      Smooth::Snap},
+    {datarefs::kSelectedAirspeedKts, 1.0f, &FlightData::selectedAirspeedKts,
+     Smooth::Snap},
+    {datarefs::kSelectedVerticalSpeedFpm, 1.0f,
+     &FlightData::selectedVerticalSpeedFpm, Smooth::Snap},
     {datarefs::kBaroSettingInHg, 1.0f, &FlightData::baroSettingInHg,
      Smooth::Snap},
 
@@ -576,8 +585,8 @@ XPlaneConnection::XPlaneConnection(std::string host, std::uint16_t port,
                                    AptDatStore& aptData, LandDataStore& landData,
                                    FmsPlanStore& fmsPlan,
                                    const TerrainSource* terrain,
-                                   const ChecklistSource* checklists,
-                                   const EisSource* eis,
+                                   ChecklistSource* checklists,
+                                   EisSource* eis,
                                    const ObstacleStore* obstacles,
                                    std::uint16_t bridgePort,
                                    bool fmsWriteEnabled)
@@ -807,17 +816,52 @@ void XPlaneConnection::drainSocket() {
   }
 }
 
+void XPlaneConnection::updateAircraftProfile() {
+  const std::string icao = webApi_.aircraftIcao();
+  const std::string acfPath = webApi_.aircraftAcfRelativePath();
+  if (icao.empty() && acfPath.empty()) return;
+  if (icao == lastAircraftIcao_ && acfPath == lastAircraftAcfPath_) return;
+  lastAircraftIcao_ = icao;
+  lastAircraftAcfPath_ = acfPath;
+
+  if (eisSource_ != nullptr) {
+    eisSource_->setAircraftIdentity(icao, acfPath);
+    eisWasReady_ = false;
+  }
+  if (checklists_ != nullptr) {
+    checklists_->setAircraftIdentity(icao, acfPath);
+  }
+}
+
 void XPlaneConnection::update(double dtSeconds) {
   elapsedSeconds_ += dtSeconds;
   sinceResubscribeSeconds_ += dtSeconds;
 
-  if (eisSource_ != nullptr && eisSource_->ready() &&
-      eisSource_->layout().bindings.size() != eisLayoutBindingCount_) {
-    rebuildEisSubscriptions();
-    sendSubscriptions(kSubscribeFrequencyHz);
+  updateAircraftProfile();
+  if (eisSource_ != nullptr) {
+    eisSource_->refreshIfChanged();
+    const bool ready = eisSource_->ready();
+    if (ready && (!eisWasReady_ ||
+                  eisSource_->layout().bindings.size() != eisLayoutBindingCount_)) {
+      rebuildEisSubscriptions();
+      sendSubscriptions(kSubscribeFrequencyHz);
+    }
+    eisWasReady_ = ready;
   }
 
   drainSocket();
+
+  // Airspeed trend: measure rate when a new IAS packet arrives (~20 Hz), then
+  // ease the displayed trend toward that rate each render frame.
+  if (target_.airspeedKts != prevTargetAirspeedKts_) {
+    const double packetDt = elapsedSeconds_ - lastAirspeedTargetSeconds_;
+    if (packetDt > 1e-4) {
+      lastInstTrendKts_ = (target_.airspeedKts - prevTargetAirspeedKts_) /
+                          static_cast<float>(packetDt) * 6.0f;
+    }
+    prevTargetAirspeedKts_ = target_.airspeedKts;
+    lastAirspeedTargetSeconds_ = elapsedSeconds_;
+  }
 
   const ConnectionState state = connectionState();
 
@@ -826,7 +870,9 @@ void XPlaneConnection::update(double dtSeconds) {
       // First fresh data after (re)connecting: jump straight to it so the
       // gauges don't visibly ease in from their defaults / last-known values.
       data_ = target_;
-      prevAirspeedKts_ = data_.airspeedKts;
+      prevTargetAirspeedKts_ = target_.airspeedKts;
+      lastAirspeedTargetSeconds_ = elapsedSeconds_;
+      lastInstTrendKts_ = 0.0f;
       data_.airspeedTrendKts = 0.0f;
       data_.altitudeTrendFt = data_.verticalSpeedFpm * (6.0f / 60.0f);
       for (const RuntimeEisBinding& b : eisBindings_) {
@@ -859,14 +905,14 @@ void XPlaneConnection::update(double dtSeconds) {
       copyDiscreteFields(data_, target_);
 
       // Trend vectors (6-second projection). Altitude tracks the VSI; airspeed
-      // is the filtered rate of change of the smoothed IAS.
+      // eases toward the packet-derived rate computed above.
       data_.altitudeTrendFt = data_.verticalSpeedFpm * (6.0f / 60.0f);
       if (dtSeconds > 1e-4) {
-        const float instTrend = (data_.airspeedKts - prevAirspeedKts_) /
-                                static_cast<float>(dtSeconds) * 6.0f;
-        data_.airspeedTrendKts += (instTrend - data_.airspeedTrendKts) * alpha;
+        const float trendAlpha = static_cast<float>(
+            1.0 - std::exp(-dtSeconds / kAirspeedTrendTimeConstantSeconds));
+        data_.airspeedTrendKts +=
+            (lastInstTrendKts_ - data_.airspeedTrendKts) * trendAlpha;
       }
-      prevAirspeedKts_ = data_.airspeedKts;
 
       for (RuntimeEisBinding& b : eisBindings_) {
         const float converted = b.target * b.scale + b.offset;
@@ -892,6 +938,7 @@ void XPlaneConnection::update(double dtSeconds) {
     data_.utcDayOfYear = target_.utcDayOfYear;
     updateZuluClock(dtSeconds);
     updateMap(dtSeconds);
+    syncDisplayBackup(data_, dtSeconds);
   } else {
     // Link down: re-prime on the next reconnect, and periodically re-subscribe
     // so we recover if X-Plane was started after us (or restarted).
@@ -1010,7 +1057,8 @@ void XPlaneConnection::updateMap(double dtSeconds) {
     }
     if (landData_.loaded()) {
       map_.landLines = landData_.nearbyLines(queryLat, queryLon,
-                                             chartRangeNm_, kMaxMapLandLines);
+                                             chartRangeNm_, kMaxMapLandLines,
+                                             mapViewHalfExtentNm_);
       map_.cities = landData_.nearbyCities(queryLat, queryLon, chartRangeNm_,
                                            kMaxMapCities);
     }
@@ -1060,6 +1108,8 @@ void XPlaneConnection::updateFmaModes() {
     data_.fmaVerticalApproachArmed.clear();
     data_.fmaVerticalValue = 0;
     data_.fmaVerticalUnits.clear();
+    data_.selectedAirspeedValid = false;
+    data_.selectedVsValid = false;
     return;
   }
 
@@ -1092,8 +1142,8 @@ void XPlaneConnection::updateFmaModes() {
   data_.fmaLateralActive = latActive;
   data_.fmaLateralArmed = latArmed;
 
-  // Vertical: the captured mode is green; only altitude hold carries the cyan
-  // reference value (the preselected/captured altitude).
+  // Vertical: the captured mode is green; altitude hold and FLC carry a cyan
+  // reference value (preselected altitude or target airspeed).
   std::string vertActive;
   int vertValue = 0;
   std::string vertUnits;
@@ -1107,6 +1157,8 @@ void XPlaneConnection::updateFmaModes() {
     vertActive = "VPTH";
   } else if (mode(kApSpeed) == kApModeActive) {
     vertActive = "FLC";
+    vertValue = static_cast<int>(std::lround(data_.selectedAirspeedKts));
+    vertUnits = "KT";
   } else if (mode(kApVerticalSpeed) == kApModeActive) {
     vertActive = "VS";
     vertValue = static_cast<int>(std::lround(data_.selectedVerticalSpeedFpm));
@@ -1117,6 +1169,9 @@ void XPlaneConnection::updateFmaModes() {
   data_.fmaVerticalActive = vertActive;
   data_.fmaVerticalValue = vertValue;
   data_.fmaVerticalUnits = vertUnits;
+  data_.selectedAirspeedValid =
+      mode(kApSpeed) == kApModeActive && data_.selectedAirspeedKts > 0.5f;
+  data_.selectedVsValid = mode(kApVerticalSpeed) == kApModeActive;
 
   // Vertical armed: ALTS (altitude preselect) whenever altitude capture is
   // armed; an armed glideslope occupies the rightmost approach-armed slot.
@@ -1244,6 +1299,13 @@ void XPlaneConnection::setMapPanCenter(bool active, double lat, double lon) {
 void XPlaneConnection::setChartRangeNm(float rangeNm) {
   if (chartRangeNm_ != rangeNm) {
     chartRangeNm_ = rangeNm;
+    mapPanDirty_ = true;
+  }
+}
+
+void XPlaneConnection::setMapViewHalfExtentNm(float halfExtentNm) {
+  if (mapViewHalfExtentNm_ != halfExtentNm) {
+    mapViewHalfExtentNm_ = halfExtentNm;
     mapPanDirty_ = true;
   }
 }

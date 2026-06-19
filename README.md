@@ -260,6 +260,12 @@ plugin intercepts GDU commands whenever it is enabled, even when the in-sim
 glass takeover is turned off in the Plugins menu — so you can run **standalone
 only** for the displays and still drive them from the cockpit.
 
+#### SPAD.neXt + Stream Deck
+
+Ready-made SPAD.neXt profiles for Elgato Stream Deck live under [`spad/`](spad/).
+They send the same `xplane_avionics/*` commands as the keyboard/joystick bindings
+above. See [`spad/README.md`](spad/README.md) for install steps.
+
 ## Per-aircraft checklists & engine display (EIS)
 
 Neither the MFD **Checklist** page group nor the **EIS** engine strip is

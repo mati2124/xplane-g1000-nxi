@@ -210,6 +210,7 @@ void AvionicsEngine::update(double dtSeconds) {
   // the panned map view before the source refresh so land and symbols match
   // what MapView draws (pointer geo can lag the view center until edge-scroll).
   mfd_.applyMapPanToDataSource(*dataSource_, dataSource_->snapshot());
+  dataSource_->setMapViewHalfExtentNm(mfd_.mapViewHalfExtentNm());
   dataSource_->setChartRangeNm(mfd_.rangeNm());
   if (drivesDataSource_) dataSource_->update(dtSeconds);
 
@@ -221,6 +222,12 @@ void AvionicsEngine::update(double dtSeconds) {
   // seeds the Direct-To window's default waypoint.
   mfd_.syncFlightPlan(dataSource_->mapSnapshot(),
                       dataSource_->snapshot().fmaToWpt);
+  syncSoftkeyPeerRadioVolume();
+}
+
+void AvionicsEngine::syncSoftkeyPeerRadioVolume() {
+  if (!softkeyPeer_) return;
+  syncRadioVolumeAnnunciation(softkeys_, softkeyPeer_->softkeys_);
 }
 
 bool AvionicsEngine::bootComplete() const {
@@ -254,7 +261,13 @@ bool AvionicsEngine::displayPowered() const {
 bool AvionicsEngine::pfdReversionary() const {
   const FlightData& d = dataSource_->snapshot();
   return page_ == DisplayPage::PrimaryFlightDisplay && d.masterPowerOn &&
-         !d.avionicsPowerOn;
+         (d.displayBackupActive || !d.avionicsPowerOn);
+}
+
+bool AvionicsEngine::mfdReversionary() const {
+  const FlightData& d = dataSource_->snapshot();
+  return page_ == DisplayPage::MultiFunctionDisplay && d.masterPowerOn &&
+         d.avionicsPowerOn && d.displayBackupActive;
 }
 
 bool AvionicsEngine::isLivePageUp() const {
@@ -279,6 +292,15 @@ const float* AvionicsEngine::softkeyPressLevels() const {
                                                     : softkeys_.pressLevels();
 }
 
+bool AvionicsEngine::toggleDisplayBackup() {
+  if (awaitingPowerUpAck()) return false;
+  if (!displayPowered() || !bootComplete()) return false;
+  dataSource_->toggleDisplayBackup();
+  softkeys_.flashBezelKey(BezelKey::DisplayBackup);
+  mfd_.flashBezelKey(BezelKey::DisplayBackup);
+  return true;
+}
+
 void AvionicsEngine::pressBezelKey(BezelKey key) {
   // While the power-up page waits for acknowledgement, ENT brings up the live
   // pages; every other bezel key is inert (as on the real unit).
@@ -286,10 +308,19 @@ void AvionicsEngine::pressBezelKey(BezelKey key) {
     if (key == BezelKey::Ent) acknowledgePowerUp();
     return;
   }
+  // The audio panel DISPLAY BACKUP key is system-wide (both GDUs reversionary).
+  if (key == BezelKey::DisplayBackup) {
+    toggleDisplayBackup();
+    return;
+  }
+  if (!displayPowered() || !bootComplete()) return;
+  // NAV/COM/CRS/BARO/HDG/VOL knobs work as soon as the display is booted; FMS
+  // keys and softkeys still need a live data link.
+  if (handleBezelKnob(key)) {
+    syncSoftkeyPeerRadioVolume();
+    return;
+  }
   if (!isLivePageUp()) return;
-  // The dedicated NAV/COM/CRS/BARO/HDG knobs work on either page (both GDUs
-  // carry them), so handle them before the page-specific routing.
-  if (handleBezelKnob(key)) return;
   // NAV/COM tuning uses the FMS knob on the PFD bezel only (the MFD uses the
   // same knob for page navigation, map pointer, and FPL editing).
   if (page_ == DisplayPage::PrimaryFlightDisplay &&
@@ -511,10 +542,17 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
                                    pfdReversionary(), widthPx, heightPx);
       break;
     case DisplayPage::MultiFunctionDisplay:
-      MultiFunctionDisplay::render(renderer_, data, dataSource_->mapSnapshot(),
-                                   dataSource_->checklistSnapshot(),
-                                   dataSource_->eisLayoutSnapshot(), mfd_,
-                                   softkeys_, widthPx, heightPx);
+      if (mfdReversionary()) {
+        PrimaryFlightDisplay::render(
+            renderer_, data, dataSource_->mapSnapshot(), softkeys_,
+            dataSource_->eisLayoutSnapshot(), /*reversionary=*/false, widthPx,
+            heightPx);
+      } else {
+        MultiFunctionDisplay::render(renderer_, data, dataSource_->mapSnapshot(),
+                                     dataSource_->checklistSnapshot(),
+                                     dataSource_->eisLayoutSnapshot(), mfd_,
+                                     softkeys_, widthPx, heightPx);
+      }
       break;
   }
 

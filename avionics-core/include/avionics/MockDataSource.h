@@ -47,6 +47,7 @@ class MockDataSource : public DataSource {
 
   void setMapPanCenter(bool active, double lat, double lon) override;
   void setChartRangeNm(float rangeNm) override;
+  void setMapViewHalfExtentNm(float halfExtentNm) override;
 
   // Fly along this route (needs >= 2 waypoints), looping back to the start.
   // Replaces the built-in demo route. Safe to call at runtime (e.g. once a
@@ -184,6 +185,7 @@ class MockDataSource : public DataSource {
   double mapPanLat_ = 0.0;
   double mapPanLon_ = 0.0;
   bool mapPanDirty_ = false;
+  float mapViewHalfExtentNm_ = 0.0f;
 
   static inline const ChecklistData emptyChecklists_{};
   static inline const EisLayout emptyEis_{};
