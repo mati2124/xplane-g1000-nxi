@@ -861,6 +861,8 @@ struct CommandBinding {
   bool holdFired = false;
 };
 
+bool GduFmsKeyBlockedByPfd(const CommandBinding& b);
+
 // Stable storage: refcons point into this, so it must not reallocate after the
 // handlers are registered (filled once, then left alone until Disable).
 std::vector<CommandBinding> g_commandBindings;
