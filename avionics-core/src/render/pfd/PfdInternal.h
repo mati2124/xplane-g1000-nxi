@@ -63,6 +63,9 @@ constexpr float kWtPopoutRightMarginPx = 0.0f;
 // PFD Page Menu list viewport inside the shell (WT .pfd-pagemenu-listcontainer).
 constexpr float kWtPageMenuListHeightPx = 72.0f;
 constexpr float kWtPageMenuRowHeightPx = 24.0f;
+// PFD Procedures top-level menu (WT PFDProc): six fixed rows at 29 px pitch.
+constexpr float kWtProcMenuRowHeightPx = 29.0f;
+constexpr float kWtProcMenuListTopPadFrac = 0.25f;  // fraction of kInfoValue
 
 inline void popoutPanelSize(float w, float h, float& outW, float& outH) {
   outW = w * (kWtPopoutWidthPx / kWtCanvasWidth);
@@ -105,6 +108,9 @@ struct Layout {
   // PFD inset map (lower-left over the attitude window). The MFD MAP page will
   // reuse MapView with a full-screen rect instead of these layout constants.
   float insetMapX, insetMapY, insetMapW, insetMapH;
+  // Display-backup mode always shows the inset in the bottom-right using
+  // kReversionaryInsetMap* canvas coordinates (not the compressed PFD scale).
+  bool reversionaryInsetMap = false;
 };
 
 Layout computeLayout(float w, float h);
@@ -139,6 +145,14 @@ constexpr float kInsetMapLeftPx = 0.0f;
 constexpr float kInsetMapTopPx = 482.0f;
 constexpr float kInsetMapWidthPx = 242.0f;
 constexpr float kInsetMapHeightPx = 229.0f;
+
+// PFD reversionary inset map (Garmin trainer screenshot @ 1024x768, display
+// backup with the EIS strip on the left). Bottom-right viewport, flush to the
+// right edge; bottom chrome still at y=711 like the normal inset layout.
+constexpr float kReversionaryInsetMapLeftPx = 718.0f;
+constexpr float kReversionaryInsetMapTopPx = 490.0f;
+constexpr float kReversionaryInsetMapWidthPx = 306.0f;   // 1024 - 718
+constexpr float kReversionaryInsetMapHeightPx = 221.0f;  // 711 - 490
 
 // HSI turn-rate tick lengths (same trainer screenshot, tick ring radius 153).
 constexpr float kTrainerTurnRateStdTickPx = 15.0f;

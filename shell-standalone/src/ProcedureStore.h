@@ -13,10 +13,11 @@ namespace avionics {
 // Loads X-Plane CIFP terminal procedure files (Resources/default data/CIFP or
 // Custom Data/CIFP). Each airport is parsed on first access and cached.
 class NavDataStore;
+class AptDatStore;
 
 class ProcedureStore {
  public:
-  explicit ProcedureStore(const NavDataStore& navData);
+  ProcedureStore(const NavDataStore& navData, const AptDatStore* aptData = nullptr);
 
   const std::string& sourceDir() const { return sourceDir_; }
 
@@ -33,6 +34,7 @@ class ProcedureStore {
   const CifpAirportProcedures& loadAirport(const std::string& icao) const;
 
   const NavDataStore& navData_;
+  const AptDatStore* aptData_ = nullptr;
   std::string sourceDir_;
   mutable std::mutex mutex_;
   mutable std::unordered_map<std::string, CifpAirportProcedures> cache_;

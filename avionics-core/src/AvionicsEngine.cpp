@@ -184,12 +184,10 @@ void AvionicsEngine::update(double dtSeconds) {
   if (!powerInitialized_) {
     powerInitialized_ = true;
   } else if (powered && !wasPowered_) {
-    // The GDU bus just came alive: replay the Garmin power-up self-test so the
-    // screen visibly boots, like a real unit does when its display is switched
-    // on. The power-up page is auto-acknowledged (no in-sim ENT prompt): once
-    // the timed animation finishes the live page comes up on its own.
+    // The GDU bus just came alive: replay the power-up self-test so the screen
+    // visibly boots, like a real unit does when its display is switched on.
     bootElapsedSeconds_ = 0.0;
-    powerUpAcknowledged_ = true;
+    powerUpAcknowledged_ = false;
   }
   wasPowered_ = powered;
 
@@ -214,6 +212,11 @@ void AvionicsEngine::update(double dtSeconds) {
   dataSource_->setChartRangeNm(mfd_.rangeNm());
   if (drivesDataSource_) dataSource_->update(dtSeconds);
 
+  // Flight-plan sync uses mapSnapshot(); pump the source first so a route
+  // override applied before this frame's update is visible (softkeys_.update
+  // above may have seen a stale plan).
+  softkeys_.syncFlightPlanFromMap(dataSource_->mapSnapshot());
+
   // Keep the MFD's checklist navigation in step with the loaded file (the data
   // is owned by the source; the controller only holds the interactive state).
   mfd_.syncChecklist(dataSource_->checklistSnapshot());
@@ -230,20 +233,30 @@ void AvionicsEngine::syncSoftkeyPeerRadioVolume() {
   syncRadioVolumeAnnunciation(softkeys_, softkeyPeer_->softkeys_);
 }
 
+double AvionicsEngine::bootGateSeconds() const {
+  return page_ == DisplayPage::MultiFunctionDisplay ? kBootPowerUpFadeSeconds
+                                                    : kBootDurationSeconds;
+}
+
 bool AvionicsEngine::bootComplete() const {
   // The animated power-up must have run, and any source that requires an ENT
   // acknowledgement of the power-up page must have received it.
-  if (bootElapsedSeconds_ < kBootDurationSeconds) return false;
+  if (bootElapsedSeconds_ < bootGateSeconds()) return false;
   return powerUpAcknowledged_ || !dataSource_->requiresPowerUpAcknowledge();
 }
 
 bool AvionicsEngine::awaitingPowerUpAck() const {
-  return bootElapsedSeconds_ >= kBootDurationSeconds && !powerUpAcknowledged_ &&
+  return bootElapsedSeconds_ >= bootGateSeconds() && !powerUpAcknowledged_ &&
          dataSource_->requiresPowerUpAcknowledge();
 }
 
 void AvionicsEngine::acknowledgePowerUp() {
-  if (awaitingPowerUpAck()) powerUpAcknowledged_ = true;
+  if (powerUpAcknowledged_) return;
+  if (!dataSource_->requiresPowerUpAcknowledge()) {
+    powerUpAcknowledged_ = true;
+    return;
+  }
+  if (bootElapsedSeconds_ >= bootGateSeconds()) powerUpAcknowledged_ = true;
 }
 
 bool AvionicsEngine::displayPowered() const {
@@ -276,6 +289,10 @@ bool AvionicsEngine::isLivePageUp() const {
 }
 
 void AvionicsEngine::pressSoftkey(int index) {
+  if (awaitingPowerUpAck()) {
+    if (index == kSoftkeyCount - 1) acknowledgePowerUp();
+    return;
+  }
   if (!isLivePageUp()) return;
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:
@@ -336,6 +353,14 @@ void AvionicsEngine::pressBezelKey(BezelKey key) {
       mfd_.pressBezelKey(key);
       break;
   }
+}
+
+bool AvionicsEngine::applyGcuEntryKey(char ch) {
+  if (!isLivePageUp()) return false;
+  if (page_ == DisplayPage::PrimaryFlightDisplay) {
+    return softkeys_.applyGcuEntryKey(ch);
+  }
+  return mfd_.applyGcuEntryKey(ch);
 }
 
 bool AvionicsEngine::handleBezelKnob(BezelKey key) {
@@ -485,27 +510,36 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
   }
 
   if (!bootComplete()) {
-    // Phase 1: the Garmin logo fades up from black over kBootLogoFadeSeconds,
-    // then holds. Phase 2: the MFD Power-up Page or PFD initialization view
-    // fades in over kBootPowerUpFadeSeconds; once the timer elapses, live
-    // sources show the ENT acknowledgement prompt on the MFD.
-    const BootScreen::Phase phase = bootElapsedSeconds_ < kBootLogoSeconds
-                                        ? BootScreen::Phase::Logo
-                                        : BootScreen::Phase::PowerUp;
+    // PFD: Garmin logo fades up, then the initialization view cross-fades in.
+    // MFD: the power-up page (combined logo + hero bitmap) fades in directly;
+    // once the fade completes, live sources show the ENT acknowledgement prompt.
+    BootScreen::Phase phase = BootScreen::Phase::PowerUp;
     float phaseAlpha = 0.0f;
-    if (phase == BootScreen::Phase::Logo) {
-      const float t = static_cast<float>(bootElapsedSeconds_ /
-                                          kBootLogoFadeSeconds);
-      phaseAlpha = bootEaseInOut(t);
-    } else {
-      const double fadeStart = kBootLogoSeconds;
-      const double fadeEnd = kBootLogoSeconds + kBootPowerUpFadeSeconds;
-      if (bootElapsedSeconds_ < fadeEnd) {
+    if (page_ == DisplayPage::MultiFunctionDisplay) {
+      if (bootElapsedSeconds_ < kBootPowerUpFadeSeconds) {
         const float t = static_cast<float>(
-            (bootElapsedSeconds_ - fadeStart) / kBootPowerUpFadeSeconds);
+            bootElapsedSeconds_ / kBootPowerUpFadeSeconds);
         phaseAlpha = bootEaseInOut(t);
       } else {
         phaseAlpha = 1.0f;
+      }
+    } else {
+      phase = bootElapsedSeconds_ < kBootLogoSeconds ? BootScreen::Phase::Logo
+                                                    : BootScreen::Phase::PowerUp;
+      if (phase == BootScreen::Phase::Logo) {
+        const float t = static_cast<float>(bootElapsedSeconds_ /
+                                            kBootLogoFadeSeconds);
+        phaseAlpha = bootEaseInOut(t);
+      } else {
+        const double fadeStart = kBootLogoSeconds;
+        const double fadeEnd = kBootLogoSeconds + kBootPowerUpFadeSeconds;
+        if (bootElapsedSeconds_ < fadeEnd) {
+          const float t = static_cast<float>(
+              (bootElapsedSeconds_ - fadeStart) / kBootPowerUpFadeSeconds);
+          phaseAlpha = bootEaseInOut(t);
+        } else {
+          phaseAlpha = 1.0f;
+        }
       }
     }
     const BootScreen::Target target =
@@ -514,7 +548,10 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
     BootScreen::render(renderer_, target, phase, dataSource_->snapshot(),
                        dataSource_->mapSnapshot(), softkeys_, mfd_,
                        dataSource_->mapSnapshot().navDatabase,
-                       awaitingPowerUpAck(), phaseAlpha, widthPx, heightPx);
+                       awaitingPowerUpAck(), dataSource_->aircraftIcaoType(),
+                       dataSource_->aircraftAcfRelativePath(),
+                       dataSource_->checklistSourcePath(), phaseAlpha,
+                       widthPx, heightPx);
     renderer_.endFrame();
     return;
   }

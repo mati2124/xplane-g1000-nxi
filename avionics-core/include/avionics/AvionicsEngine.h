@@ -95,6 +95,8 @@ class AvionicsEngine {
   // function: on the MFD it acts as CLR (DFLT MAP) and displays the Navigation
   // Map page (the shell fires this after kClrDefaultMapHoldSeconds).
   void holdBezelKey(BezelKey key);
+  // GCU 478 alphanumeric keypad during active waypoint-ident entry.
+  bool applyGcuEntryKey(char ch);
 
   // ---- dedicated NAV/COM tuning knobs ----
   // The real GDU has separate COM and NAV knobs (each with a 1/2 toggle, an
@@ -152,6 +154,10 @@ class AvionicsEngine {
   // the power-up page has been acknowledged with ENT, independent of link
   // health.
   bool bootComplete() const;
+
+  // Seconds of animated boot before ENT acknowledgement is accepted. The MFD
+  // shows only the power-up page (2s fade); the PFD runs logo + power-up (5s).
+  double bootGateSeconds() const;
 
   // True once the boot self-test has finished and the source is connected, i.e.
   // the interactive live page is actually on screen.

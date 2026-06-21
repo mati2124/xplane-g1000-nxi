@@ -340,7 +340,15 @@ class SoftkeyController {
   // The displayed/edited legs (working copy, mirroring the map feed plus any
   // pending pilot edits).
   const std::vector<MapLeg>& flightPlanLegs() const { return fplLegs_; }
+  // True once the destination slot has a committed waypoint (origin+dest with no
+  // enroute, or a three-or-more-leg route). Distinguishes [origin, enroute] from
+  // [origin, destination] when both have two legs.
+  bool flightPlanDestinationFilled() const { return fplDestinationFilled_; }
   const std::string& activeWaypointId() const { return activeWaypoint_; }
+  // True while GPS Direct-To is engaged (present-position nav to the active TO).
+  bool mapDirectToActive() const {
+    return mapData_ != nullptr && mapData_->directToActive;
+  }
   // FMS cursor row (also the scroll anchor). Equals flightPlanLegs().size() when
   // it sits on the blank append slot below the last waypoint.
   int flightPlanCursor() const { return fplCursorRow_; }
@@ -357,6 +365,9 @@ class SoftkeyController {
   bool flightPlanEntryNotFound() const { return fplEntry_.notFound; }
   bool flightPlanEntryHasMatch() const { return fplEntry_.hasMatch; }
   const MapFeature& flightPlanEntryMatch() const { return fplEntry_.match; }
+  bool flightPlanEntryHasGeo() const;
+  float flightPlanEntryBearingDeg() const;
+  float flightPlanEntryDistanceNm() const;
 
   // Modal confirmation prompt shown over the window (CLR removes a waypoint,
   // MENU deletes the whole plan).
@@ -368,6 +379,9 @@ class SoftkeyController {
   // Latch for the shell: true once after an edit, copying out the edited legs so
   // the shell programs them into the FMS (mirrors consumeDirectToRequest).
   bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
+  // Re-sync after the data-source pump when the map snapshot was stale earlier
+  // in the frame (route override from consumeFlightPlanEdit).
+  void syncFlightPlanFromMap(const MapData& map) { syncFlightPlanLegs(map); }
 
   // ---- Procedures window (PROC bezel key) ----
   // The Procedures window first shows the top-level menu; selecting a "Select
@@ -376,6 +390,17 @@ class SoftkeyController {
   // flight plan.
   enum class ProcStep { ProcedureList, TransitionList };
   enum class ProcMode { Menu, Select };
+  // Select Approach detail form fields (PFD PROC, Pilot's Guide 5.8).
+  enum class ProcApproachField {
+    Apr,
+    Trans,
+    Mins,
+    MinsAlt,  // MDA/DH altitude when Mins is BARO (ENT from Mins)
+    Id,
+    Load,
+    Activate,
+    Count
+  };
   // True while the selection sub-window is shown rather than the top-level menu.
   bool procSelectMode() const { return procMode_ == ProcMode::Select; }
   // Window title: "Procedures" for the menu, "Select Approach/Arrival/Departure"
@@ -392,10 +417,36 @@ class SoftkeyController {
   // names on the ProcedureList step, transitions on the TransitionList step),
   // the highlighted row, the step, and the procedure picked before transitions.
   std::string procAirportIcao() const;
+  ProcedureType procCategory() const { return procCategory_; }
   ProcStep procStep() const { return procStep_; }
   const std::string& procSelectedName() const { return procSelectedName_; }
   std::vector<std::string> procListItems() const;
   int procListSelected() const { return procSelected_; }
+  // Select Approach detail form: the inner approach/transition list popup and
+  // the highlighted field on the form behind it.
+  bool procSubListOpen() const { return procSubListOpen_; }
+  ProcApproachField procApproachField() const { return procApproachField_; }
+  std::string procAirportCityLine() const;
+  std::string procAirportNameLine() const;
+  MapFeature procAirportFeature() const;
+  std::string procApproachDisplayName(int index) const;
+  std::string procSelectedApproachDisplay() const;
+  std::string procSelectedTransitionDisplay() const;
+  float procPrimaryFreqMhz() const;
+  bool procPrimaryNavIsNdb() const;
+  bool procShowsPrimaryNavFreq() const;
+  std::string procPrimaryIdent() const;
+  bool procLoadArmed() const { return procLoadArmed_; }
+  bool procActivateArmed() const { return procActivateArmed_; }
+  // Loaded approach shown in the PFD Flight Plan body (PROC Load?).
+  bool flightPlanHasLoadedApproach() const { return fplApproachLegCount_ > 0; }
+  int flightPlanApproachLegStart() const { return fplApproachLegStart_; }
+  int flightPlanApproachLegCount() const { return fplApproachLegCount_; }
+  std::string flightPlanApproachAirportIcao() const;
+  std::string flightPlanApproachHeaderLabel() const;
+  std::string flightPlanApproachTransition() const {
+    return fplLoadedApproach_.transition;
+  }
   // NAV1-tune latch for the shell: true once after a procedure load, copying out
   // the loaded procedure (ILS approaches carry a frequency).
   bool consumeProcLoadRequest(MapProcedure& out);
@@ -415,6 +466,7 @@ class SoftkeyController {
   std::string directToIdent() const { return dtoEntry_.ident(); }
   int directToCursor() const { return dtoEntry_.pos; }
   int directToTypedCount() const { return dtoEntry_.typedCount(); }
+  bool directToSelectAll() const { return dtoEntry_.selectAll; }
   bool directToNotFound() const { return dtoEntry_.notFound; }
   bool directToHasMatch() const { return dtoEntry_.hasMatch; }
   const MapFeature& directToMatch() const { return dtoEntry_.match; }
@@ -548,6 +600,11 @@ class SoftkeyController {
   bool canUseRadioBezel() const {
     return window_ == PfdWindow::None && !dtoOpen_ && !pageMenuOpen_;
   }
+  // True while a PFD pop-up (Direct-To, Flight Plan, etc.) owns the GCU / FMS
+  // knob, ENT, and CLR instead of the MFD.
+  bool pfdClaimsFmsInput() const { return !canUseRadioBezel(); }
+  // GCU alphanumeric keypad (A-Z, 0-9, backspace) during waypoint entry.
+  bool applyGcuEntryKey(char ch);
   RadioUnit radioSelected() const { return radioSelected_; }
 
   // Dedicated NAV/COM tuning knobs (the real GDU has a COM knob and a NAV knob,
@@ -666,6 +723,13 @@ class SoftkeyController {
   bool flightPlanBezelKey(BezelKey key);
   void flightPlanCommitEntry();
   void flightPlanPublishEdit();
+  // Ident of the waypoint highlighted on the FPL window (empty when none).
+  std::string flightPlanSelectedLegIdent() const;
+  int flightPlanSelectedLegIndex() const;
+  // Replace the editable plan with a single Direct-To leg (clears approach
+  // metadata) and publish the edit to the data source.
+  void flightPlanApplyDirectTo(const MapLeg& target);
+  FmsWaypointEntry* activeWaypointEntry();
   void syncFlightPlanLegs(const MapData& map);
   // Procedures window (PROC bezel key): build the top-level menu on open, route
   // the FMS knob / ENT / CLR while it is open, move the menu cursor (skipping
@@ -793,6 +857,7 @@ class SoftkeyController {
   std::vector<MapLeg> fplLastPublished_;
   bool fplEditPending_ = false;
   bool fplCursorOn_ = false;
+  bool fplDestinationFilled_ = false;
   int fplCursorRow_ = 0;
   FmsWaypointEntry fplEntry_;
   FplConfirm fplConfirm_ = FplConfirm::None;
@@ -814,8 +879,28 @@ class SoftkeyController {
   ProcStep procStep_ = ProcStep::ProcedureList;
   int procSelected_ = 0;
   std::string procSelectedName_;
+  std::string procSelectedTransition_;
+  bool procSubListOpen_ = false;
+  ProcApproachField procApproachField_ = ProcApproachField::Apr;
+  bool procLoadArmed_ = false;
+  bool procActivateArmed_ = false;
   bool procLoadPending_ = false;
   MapProcedure procLoadTarget_{};
+  MapProcedure fplLoadedApproach_{};
+  int fplApproachLegStart_ = 0;
+  int fplApproachLegCount_ = 0;
+  MapProcedure procSelectedProcedure() const;
+  std::string formatApproachLabel(const MapProcedure& proc) const;
+  void procOpenApproachSelect();
+  void procPickApproach(const std::string& name);
+  void procCloseSubList();
+  void procBackToApproachList();
+  void procCycleApproachField(int dir);
+  void procCycleApproachMins(int dir);
+  void procAdjustApproachMinsAlt(int step);
+  void procFocusLoad();
+  void procOpenApproachList();
+  void procOpenTransitionList();
 
   // Direct-To window state. Latest map snapshot (for ident lookups / geographic
   // readouts) and the active flight-plan waypoint (the default destination) are
@@ -828,6 +913,10 @@ class SoftkeyController {
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;
   MapLeg dtoRequestTarget_;
+  // Direct-To from a highlighted FPL leg: keep the plan and fly direct to that
+  // fix (skip), rather than replacing the plan with a single leg.
+  bool dtoPreservePlan_ = false;
+  int dtoPreserveLegIndex_ = -1;
 
   // Page Menu (MENU on an open popout): option list for the active window.
   std::vector<PfdPageMenuItem> pageMenuItems_;

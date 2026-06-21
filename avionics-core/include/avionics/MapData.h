@@ -106,6 +106,9 @@ struct MapLeg {
   int altitudeConstraintFt = 0;
   AltConstraintType altitudeConstraint = AltConstraintType::None;
   bool altitudeDesignated = false;
+
+  // Loaded procedure role suffix (e.g. "iaf", "faf") for the FPL ident column.
+  std::string procedureRole;
 };
 
 // A bare geographic vertex, used for airspace boundary rings.
@@ -302,6 +305,7 @@ struct MapProcedure {
   std::string transition;   // e.g. RW12B, PDT, ERYKA
   std::string runway;       // derived runway label when transition is RWxx
   std::string approachKind; // ILS/RNAV/etc. letter from CIFP (approaches only)
+  std::string levelOfService; // LPV, LNAV, LNAV/VNAV from CIFP/PRDAT (approaches only)
   float frequencyMhz = 0.0f;  // merged from earth_nav when available
 };
 

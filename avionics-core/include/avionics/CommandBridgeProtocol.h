@@ -57,6 +57,7 @@ enum class Kind : std::uint8_t {
   Bezel = 1,
   BezelDiagonal = 2,
   Radio = 3,
+  GcuEntry = 4,  // GCU alphanumeric keypad character (value = ASCII code)
 };
 
 // NAV/COM knob actions. Ordinal values must stay stable across releases.

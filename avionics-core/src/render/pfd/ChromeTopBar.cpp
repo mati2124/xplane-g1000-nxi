@@ -10,6 +10,8 @@
 namespace avionics::pfd {
 namespace {
 
+constexpr char kDeg[] = "\xC2\xB0";  // UTF-8 degree sign
+
 // Bold cyan double-headed transfer arrow (<->): a thin shaft with a solid
 // filled triangle at each end (G1000 NXi NavCom box). Filled heads (rather than
 // open chevron strokes) give the clean, symmetric triangles of the real unit.
@@ -99,29 +101,7 @@ void drawFailedRadioRow(Renderer& r, float x, float rowCy, float cw, float rowH,
 // Garmin Direct-To icon (a "D" with a horizontal arrow piercing it) drawn to
 // the left of the active waypoint when a GPS Direct-To is active, matching the
 // look of the "D" bezel key. Returns the x just past the glyph.
-float drawDirectToIcon(Renderer& r, float x, float cy, float size,
-                       const Color& color) {
-  // The font has no bold weight, so the "D" is over-drawn at a small plus-
-  // shaped halo of offsets to fatten its stroke toward the Garmin glyph.
-  const float bold = std::max(1.0f, size * 0.03f);
-  const float off[5][2] = {{0, 0}, {-bold, 0}, {bold, 0}, {0, -bold}, {0, bold}};
-  for (const auto& o : off) {
-    r.fillText(x + o[0], cy + o[1], "D", size, TextAlign::Left, color);
-  }
-  // Capital text is middle-aligned, so the visual center of the "D" sits a touch
-  // above cy; pierce the arrow through there so it reads as centered on the D.
-  const float ay = cy - size * 0.035f;
-  const float dW = r.measureTextWidth("D", size);
-  const float shaftL = x + dW * 0.42f;          // pierce through the D's bowl
-  const float shaftR = x + dW + size * 0.26f;   // exit to the right of the D
-  const float head = size * 0.34f;              // chunky arrowhead (the "carrot")
-  r.strokeLine(shaftL, ay, shaftR, ay, std::max(2.5f, size * 0.13f), color);
-  const Point tri[3] = {{shaftR + head * 0.55f, ay},
-                        {shaftR - head * 0.30f, ay - head},
-                        {shaftR - head * 0.30f, ay + head}};
-  r.fillPolygon(tri, 3, color);
-  return shaftR + head * 0.7f;
-}
+// (Defined in ChromeShared.cpp.)
 
 // Magenta flight-plan leg arrow between the FROM and TO fields (WT FmaLegIcon).
 void drawFmaLegArrow(Renderer& r, float tipX, float cy, float size) {
@@ -161,9 +141,9 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
   const float cy = rowH * 0.60f;
   const float dataSize = fontPx(wt::kFmaArmed, h);
   const float smallSize = fontPx(wt::kFmaSmall, h);
-  // DIS/BRG labels read nearly as tall as their value on the real unit; only
-  // the NM unit suffix is subscript-small.
-  const float labelSize = dataSize * 0.85f;
+  // Grey DIS/BRG labels are smaller than their magenta values; only the NM
+  // unit suffix is subscript-small.
+  const float disBrgLabelSize = dataSize * 0.72f;
 
   // Row separator between the navigation and AFCS halves of the center panel.
   r.strokeLine(centerL, rowH, centerL + centerW, rowH, 2.0f,
@@ -225,7 +205,7 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
     disStr = buf;
   }
   float bx = dataL + centerW * 0.01f;
-  bx = putText(r, bx, cy, "DIS", labelSize, colors::kLabelText, 0.30f);
+  bx = putText(r, bx, cy, "DIS", disBrgLabelSize, colors::kLabelText, 0.30f);
   bx = putText(r, bx, cy, disStr, dataSize, colors::kMagenta, 0.18f);
   putText(r, bx, cy, "NM", smallSize, colors::kMagenta, 0.0f);
 
@@ -233,14 +213,17 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
   // BRG to opposite ends of the data field, with the bearing value hugging the
   // right edge and its grey label just to the left; magenta dashes when there
   // is no active leg.
-  const std::string brg =
-      (hasLeg ? formatHeading(d.fmaLegBearingDeg) : std::string("___")) +
-      "\u00b0";
+  const std::string brgVal =
+      hasLeg ? formatHeading(d.fmaLegBearingDeg) : std::string("___");
   const float rightX = centerL + centerW - centerW * 0.025f;
-  r.fillText(rightX, cy, brg, dataSize, TextAlign::Right, colors::kMagenta);
+  const float degW = r.measureTextWidth(kDeg, smallSize);
+  r.fillText(rightX, cy, kDeg, smallSize, TextAlign::Right, colors::kMagenta);
+  r.fillText(rightX - degW, cy, brgVal, dataSize, TextAlign::Right,
+             colors::kMagenta);
   const float brgLabelRight =
-      rightX - r.measureTextWidth(brg, dataSize) - labelSize * 0.30f;
-  r.fillText(brgLabelRight, cy, "BRG", labelSize, TextAlign::Right,
+      rightX - degW - r.measureTextWidth(brgVal, dataSize) -
+      disBrgLabelSize * 0.30f;
+  r.fillText(brgLabelRight, cy, "BRG", disBrgLabelSize, TextAlign::Right,
              colors::kLabelText);
 }
 

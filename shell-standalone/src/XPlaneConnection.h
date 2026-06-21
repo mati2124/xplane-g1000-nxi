@@ -66,6 +66,9 @@ class XPlaneConnection : public SimulatorConnection {
                ? checklists_->checklists()
                : emptyChecklists_;
   }
+  std::string checklistSourcePath() const override {
+    return checklists_ != nullptr ? checklists_->sourcePath() : std::string();
+  }
   const EisLayout& eisLayoutSnapshot() const override {
     return (eisSource_ != nullptr && eisSource_->ready()) ? eisSource_->layout()
                                                            : emptyEis_;
@@ -109,6 +112,11 @@ class XPlaneConnection : public SimulatorConnection {
   void setChartRangeNm(float rangeNm) override;
   void setMapViewHalfExtentNm(float halfExtentNm) override;
 
+  std::string aircraftIcaoType() const override { return lastAircraftIcao_; }
+  std::string aircraftAcfRelativePath() const override {
+    return lastAircraftAcfPath_;
+  }
+
   // Pilot commands from the PFD bezel / softkeys (UDP DREF writes).
   void tuneRadioStandby(RadioUnit unit, float standbyMhz);
   void transferRadio(RadioUnit unit);
@@ -146,6 +154,17 @@ class XPlaneConnection : public SimulatorConnection {
 
   // Glideslope, marker beacon, and DME fields from the nav radio indicators.
   void updateNavInstrumentation();
+
+  // Flight plan shown on the map/FPL (same precedence as updateMap).
+  std::vector<MapLeg> displayedFlightPlan() const;
+
+  // Drop the local Direct-To display override without reprogramming the FMS
+  // (X-Plane may already have sequenced past the DTO fix).
+  void releaseDirectToOverride();
+
+  // Keep directToActive_ in sync with X-Plane sequencing / local arrival.
+  void syncDirectToWithSimulator(const std::string& simDestination,
+                                 const std::vector<MapLeg>& plan);
 
   // data_ is the smoothed state returned by snapshot(); target_ holds the most
   // recent values decoded from packets, which data_ is eased toward each frame.

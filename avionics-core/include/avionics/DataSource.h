@@ -41,6 +41,10 @@ class DataSource {
     return emptyChecklist_;
   }
 
+  // Resolved path of the loaded checklist file, when the shell found and read
+  // one. Empty when no checklist file was located.
+  virtual std::string checklistSourcePath() const { return {}; }
+
   // Per-aircraft engine display layout (g1000_eis.txt beside the .acf).
   virtual const EisLayout& eisLayoutSnapshot() const { return emptyEis_; }
 
@@ -75,6 +79,10 @@ class DataSource {
   // override it to false so the boot sequence advances on its own without a
   // keypress.
   virtual bool requiresPowerUpAcknowledge() const { return true; }
+
+  // Loaded-aircraft identity for per-airframe assets (boot hero, EIS, checklists).
+  virtual std::string aircraftIcaoType() const { return {}; }
+  virtual std::string aircraftAcfRelativePath() const { return {}; }
 
   // Manual display-backup (reversionary) mode from the audio panel's red
   // DISPLAY BACKUP button. Shared by both GDU engines when they read the same

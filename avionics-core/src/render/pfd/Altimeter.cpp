@@ -20,6 +20,24 @@ void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
   // altitude bug is drawn on the tape (matching the G1000 NXi / X-Plane PFD).
   const bool selected = std::fabs(selectedFt) > kAltSelectedEpsilonFt;
 
+  // Tape bug is drawn before the Selected Altitude box so that when the
+  // selection is at the top of the visible range the carrot rides behind the
+  // box and only its left tip peeks out (NXi trainer reference).
+  if (selected) {
+    const float ppu = stripH / kAltitudeViewableFeet;
+    float bugY = cy - (selectedFt - altitudeFt) * ppu;
+    bugY = std::max(stripTop, std::min(stripTop + stripH, bugY));
+    const float bw = tapeW * 0.16f;
+    const float bh = displayH * 0.020f;
+    const float bx = tapeX;
+    const Point bug[5] = {{bx, bugY - bh},
+                          {bx + bw, bugY - bh},
+                          {bx + bw * 0.5f, bugY},
+                          {bx + bw, bugY + bh},
+                          {bx, bugY + bh}};
+    r.fillPolygon(bug, 5, colors::kCyan);
+  }
+
   // Altitude Alerting (Pilot's Guide Fig. 2-32): during a phase transition the
   // readout flashes -- black-on-cyan within 1000 ft, blinking cyan within 200
   // ft, blinking amber on a post-capture deviation.
@@ -77,25 +95,6 @@ void drawSelectedAltitude(Renderer& r, float tapeX, float tapeW, float tapeTop,
                  fontPx(wt::kSelectedAlt, displayH), TextAlign::Right, text);
     }
   }
-
-  if (!selected) {
-    return;
-  }
-
-  // The bug rides the tape, so it shares the tape's feet-per-pixel scale and
-  // pins at the ends of the scroll strip when the selection is off-scale.
-  const float ppu = stripH / kAltitudeViewableFeet;
-  float bugY = cy - (selectedFt - altitudeFt) * ppu;
-  bugY = std::max(stripTop, std::min(stripTop + stripH, bugY));
-  const float bw = tapeW * 0.16f;
-  const float bh = displayH * 0.020f;
-  const float bx = tapeX;
-  const Point bug[5] = {{bx, bugY - bh},
-                        {bx + bw, bugY - bh},
-                        {bx + bw * 0.5f, bugY},
-                        {bx + bw, bugY + bh},
-                        {bx, bugY + bh}};
-  r.fillPolygon(bug, 5, colors::kCyan);
 }
 
 void drawBaroSetting(Renderer& r, float tapeX, float tapeW, float instrumentBottom,

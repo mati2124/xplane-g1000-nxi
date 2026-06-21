@@ -35,7 +35,7 @@ class ChecklistStore : public ChecklistSource {
 
   bool ready() const override { return loaded_.load(std::memory_order_acquire); }
   const ChecklistData& checklists() const override { return checklists_; }
-  const std::string& sourcePath() const { return sourcePath_; }
+  std::string sourcePath() const override { return sourcePath_; }
 
   void setAircraftIdentity(const std::string& icaoType,
                            const std::string& acfRelativePath) override;

@@ -108,6 +108,7 @@ add_library(avionics-core STATIC
   src/render/pfd/ChromeReferencesWindow.cpp
   src/render/pfd/ChromeNearestWindow.cpp
   src/render/pfd/ChromeFlightPlanWindow.cpp
+  src/render/pfd/ChromeWaypointInformationWindow.cpp
   src/render/pfd/ChromeProcWindow.cpp
   src/render/pfd/ChromePfdSetupWindow.cpp
   src/render/pfd/ChromeDirectToWindow.cpp

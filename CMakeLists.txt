@@ -61,6 +61,8 @@ file(GLOB AVIONICS_EIS_FILES CONFIGURE_DEPENDS
   ${CMAKE_SOURCE_DIR}/avionics-core/assets/eis/*.eis)
 file(GLOB AVIONICS_CHECKLIST_FILES CONFIGURE_DEPENDS
   ${CMAKE_SOURCE_DIR}/avionics-core/assets/checklists/*.checklist)
+file(GLOB AVIONICS_BOOT_FILES CONFIGURE_DEPENDS
+  ${CMAKE_SOURCE_DIR}/avionics-core/assets/boot/*.png)
 # Generated map overlay (large, often gitignored); optional so the build/package
 # never fails when it has not been generated/committed.
 set(AVIONICS_LAND_FILE ${CMAKE_SOURCE_DIR}/shell-standalone/assets/land_data.bin)
@@ -84,6 +86,7 @@ function(avionics_install_shared_assets dest component)
   install(FILES ${AVIONICS_FONT_FILES_OPTIONAL} DESTINATION ${dest}/fonts COMPONENT ${component} OPTIONAL)
   install(FILES ${AVIONICS_EIS_FILES} DESTINATION ${dest}/eis COMPONENT ${component})
   install(FILES ${AVIONICS_CHECKLIST_FILES} DESTINATION ${dest}/checklists COMPONENT ${component})
+  install(FILES ${AVIONICS_BOOT_FILES} DESTINATION ${dest}/boot COMPONENT ${component})
 endfunction()
 
 add_subdirectory(avionics-core)

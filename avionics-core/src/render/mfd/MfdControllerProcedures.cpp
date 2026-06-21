@@ -9,6 +9,28 @@
 namespace avionics {
 namespace {
 
+bool isAirportIdent(const std::string& id) {
+  if (id.size() != 4) return false;
+  for (char c : id) {
+    if (c < 'A' || c > 'Z') return false;
+  }
+  return true;
+}
+
+std::string directToAirportIcao(const MapData* map) {
+  if (map == nullptr || !map->directToActive) return {};
+  return isAirportIdent(map->directTo.id) ? map->directTo.id : std::string();
+}
+
+std::string lastAirportInPlan(const std::vector<MapLeg>& legs) {
+  for (int i = static_cast<int>(legs.size()) - 1; i >= 0; --i) {
+    if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) {
+      return legs[static_cast<std::size_t>(i)].id;
+    }
+  }
+  return {};
+}
+
 void insertProcedureLegs(ProcedureType type, std::vector<MapLeg>& fplLegs,
                          const std::vector<MapLeg>& legs) {
   if (legs.empty()) return;
@@ -59,15 +81,23 @@ std::vector<MapProcedure> MfdController::proceduresFor(ProcedureType type) const
 
 std::string MfdController::procAirportIcao() const {
   if (procCategory_ == ProcedureType::Departure && !fplLegs_.empty() &&
-      fplLegs_.front().id.size() == 4) {
+      isAirportIdent(fplLegs_.front().id)) {
     return fplLegs_.front().id;
   }
-  for (int i = static_cast<int>(fplLegs_.size()) - 1; i >= 0; --i) {
-    if (fplLegs_[static_cast<std::size_t>(i)].id.size() == 4) {
-      return fplLegs_[static_cast<std::size_t>(i)].id;
-    }
+
+  std::string icao = lastAirportInPlan(fplLegs_);
+  if (!icao.empty()) return icao;
+
+  icao = directToAirportIcao(mapData_);
+  if (!icao.empty()) return icao;
+
+  if (mapData_ != nullptr) {
+    icao = lastAirportInPlan(mapData_->flightPlan);
+    if (!icao.empty()) return icao;
   }
-  return activeWaypoint_;
+
+  if (isAirportIdent(activeWaypoint_)) return activeWaypoint_;
+  return {};
 }
 
 bool MfdController::consumeProcLoadRequest(MapProcedure& out) {

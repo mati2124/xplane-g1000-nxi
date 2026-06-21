@@ -7,6 +7,7 @@
 
 #include "avionics/Datarefs.h"
 #include "avionics/MapRange.h"
+#include "avionics/NavMath.h"
 #include "avionics/Radio.h"
 
 #ifdef _WIN32
@@ -72,6 +73,15 @@ constexpr double kAirspeedTrendTimeConstantSeconds = 0.75;
 constexpr double kZuluClockTimeConstantSeconds = 0.5;
 constexpr double kZuluResyncThresholdSeconds = 3.0;
 constexpr double kSecondsPerDay = 86400.0;
+constexpr double kDirectToArrivalNm = 0.45;
+
+int legIndexInPlan(const std::vector<MapLeg>& plan, const std::string& id) {
+  if (id.empty()) return -1;
+  for (std::size_t i = 0; i < plan.size(); ++i) {
+    if (plan[i].id == id) return static_cast<int>(i);
+  }
+  return -1;
+}
 
 // RREF request wire format (little endian):
 //   "RREF\0" + int32 frequency + int32 index + char[400] dataref name.
@@ -929,9 +939,39 @@ void XPlaneConnection::update(double dtSeconds) {
     // Active destination identifier comes from the Web API (string dataref).
     // When unavailable it is empty, which clears the placeholder rather than
     // showing a stale demo waypoint. X-Plane exposes no FROM-waypoint string
-    // dataref, so the leg renders direct-to ("->KXXX").
-    data_.fmaToWpt = webApi_.destinationId();
+    // dataref, so the leg renders direct-to ("->KXXX") unless we infer FROM
+    // from the displayed flight plan.
+    const std::string simDest = webApi_.destinationId();
+    const std::vector<MapLeg> plan = displayedFlightPlan();
+    syncDirectToWithSimulator(simDest, plan);
+
+    data_.fmaToWpt = simDest;
     data_.fmaFromWpt.clear();
+
+    if (directToActive_ && !directTo_.id.empty()) {
+      data_.fmaToWpt = directTo_.id;
+      if (map_.positionValid) {
+        data_.fmaLegBearingDeg = static_cast<float>(
+            navBearingDeg(map_.ownshipLat, map_.ownshipLon, directTo_.lat,
+                          directTo_.lon));
+        data_.fmaLegDistanceNm = static_cast<float>(
+            navDistanceNm(map_.ownshipLat, map_.ownshipLon, directTo_.lat,
+                          directTo_.lon));
+      }
+    } else {
+      const int dtoIdx = legIndexInPlan(plan, directTo_.id);
+      if (!directTo_.id.empty() && dtoIdx >= 0 &&
+          dtoIdx + 1 < static_cast<int>(plan.size()) &&
+          (simDest.empty() || simDest == directTo_.id)) {
+        data_.fmaFromWpt = directTo_.id;
+        data_.fmaToWpt = plan[static_cast<std::size_t>(dtoIdx + 1)].id;
+      } else {
+        const int toIdx = legIndexInPlan(plan, data_.fmaToWpt);
+        if (toIdx > 0) {
+          data_.fmaFromWpt = plan[static_cast<std::size_t>(toIdx - 1)].id;
+        }
+      }
+    }
     data_.nav1Ident = webApi_.nav1Ident();
     data_.nav2Ident = webApi_.nav2Ident();
     // Sim date passes straight through (it only changes at midnight).
@@ -983,6 +1023,57 @@ void XPlaneConnection::updateZuluClock(double dtSeconds) {
   data_.utcHour = (total / 3600) % 24;
   data_.utcMinute = (total / 60) % 60;
   data_.utcSecond = total % 60;
+}
+
+std::vector<MapLeg> XPlaneConnection::displayedFlightPlan() const {
+  if (routeOverrideSet_) return routeOverride_;
+  bool bridgeAvailable = false;
+  std::vector<MapLeg> bridgePlan = fmsBridge_.flightPlan(bridgeAvailable);
+  if (bridgeAvailable && !bridgePlan.empty()) return bridgePlan;
+  fmsPlan_.refreshIfChanged();
+  if (fmsPlan_.loaded()) return fmsPlan_.flightPlan();
+  return {};
+}
+
+void XPlaneConnection::releaseDirectToOverride() {
+  directToActive_ = false;
+}
+
+void XPlaneConnection::syncDirectToWithSimulator(
+    const std::string& simDestination, const std::vector<MapLeg>& plan) {
+  if (!directToActive_ || directTo_.id.empty()) return;
+
+  const int dtoIdx = legIndexInPlan(plan, directTo_.id);
+  const int simIdx = legIndexInPlan(plan, simDestination);
+
+  if (!simDestination.empty() && simDestination != directTo_.id) {
+    if (dtoIdx >= 0 && simIdx > dtoIdx) {
+      releaseDirectToOverride();
+      return;
+    }
+    if (dtoIdx >= 0 && simIdx >= 0 && simIdx < dtoIdx) {
+      // Sim still names a leg before our Direct-To target; keep the override.
+      return;
+    }
+    if (dtoIdx < 0) {
+      // Direct-To was not a listed plan leg; trust the sim when it disagrees.
+      releaseDirectToOverride();
+      return;
+    }
+  }
+
+  if (dtoIdx < 0 || dtoIdx + 1 >= static_cast<int>(plan.size())) return;
+  if (!haveLat_ || !haveLon_) return;
+
+  const double distNm =
+      navDistanceNm(static_cast<double>(ownshipLatDeg_),
+                    static_cast<double>(ownshipLonDeg_), directTo_.lat,
+                    directTo_.lon);
+  if (distNm > kDirectToArrivalNm) return;
+
+  // Passed the Direct-To fix; resume sequencing through the remaining plan even
+  // if the gps_nav_id string has not caught up yet.
+  releaseDirectToOverride();
 }
 
 void XPlaneConnection::updateMap(double dtSeconds) {

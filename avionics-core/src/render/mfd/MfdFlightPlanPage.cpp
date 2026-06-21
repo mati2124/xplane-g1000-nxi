@@ -30,6 +30,24 @@ const char* fplFeatureTypeName(MapFeatureType type) {
   return "INTERSECTION";
 }
 
+std::string fplActiveToIdent(const FlightData& d, const MapData& map) {
+  if (map.directToActive && !map.directTo.id.empty()) return map.directTo.id;
+  return d.fmaToWpt;
+}
+
+void drawFplActiveIdentFlash(Renderer& r, float x, float cy,
+                             const std::string& ident, float size, bool blinkOn) {
+  const float tracking = size * 0.06f;
+  const float tw = r.measureTextWidth(ident.c_str(), size);
+  if (blinkOn) {
+    r.fillRect(x - tracking * 0.5f, cy - size * 0.62f, tw + tracking,
+               size * 1.24f, colors::kMagenta);
+    r.fillText(x, cy, ident, size, TextAlign::Left, colors::kBlack);
+  } else {
+    r.fillText(x, cy, ident, size, TextAlign::Left, colors::kMagenta);
+  }
+}
+
 // Draws the FMS identifier entry cells starting at startX, baseline cy: the
 // cursor cell as a pulsing highlight-select cell (WT InputComponent puts the
 // pulsing focus class on the selected character even while active), the
@@ -40,7 +58,7 @@ const char* fplFeatureTypeName(MapFeatureType type) {
 // (for placing the waypoint symbol).
 float drawIdentEntryCells(Renderer& r, float startX, float cy,
                           const std::string& ident, int cursor, int typedCount,
-                          bool blinkOn, float displayH) {
+                          bool selectAll, bool blinkOn, float displayH) {
   const float cellSize = mfdFontPx(kWtIdentLarge, displayH);
   // Advance by each glyph's actual width (the render font is proportional, so a
   // fixed-width cell would clip wide letters like 'W' into their neighbours),
@@ -48,17 +66,20 @@ float drawIdentEntryCells(Renderer& r, float startX, float cy,
   const float tracking = cellSize * 0.06f;
   float cx = startX;
   for (int i = 0; i < MfdController::kFplEntryMaxChars; ++i) {
-    const bool isCursor = i == cursor;
-    const bool cursorOn = isCursor && blinkOn;
     const char ch = i < static_cast<int>(ident.size()) ? ident[i] : '_';
+    const bool isBlank = ch == '_';
+    const bool highlightAll = selectAll && !isBlank;
+    const bool isCursor = !selectAll && i == cursor;
+    const bool cursorOn = isCursor && blinkOn;
     const char text[2] = {ch, '\0'};
     const float chW = r.measureTextWidth(text, cellSize);
-    if (cursorOn) {
+    if (highlightAll || cursorOn) {
       r.fillRect(cx - tracking * 0.5f, cy - cellSize * 0.62f, chW + tracking,
                  cellSize * 1.24f, colors::kCyan);
     }
-    const Color color = cursorOn ? colors::kBlack
+    const Color color = highlightAll || cursorOn ? colors::kBlack
                         : isCursor ? colors::kCyan  // blink-off half pulses cyan
+                        : isBlank  ? colors::kCyan
                         : i >= typedCount ? colors::kCyan  // spell-ahead fill
                                           : colors::kWhite;
     r.fillText(cx, cy, text, cellSize, TextAlign::Left, color);
@@ -150,7 +171,7 @@ void drawFplEntryWindow(Renderer& r, const MfdController& ui,
 
   const float cy = inner.y + rowH * 0.8f;
   drawIdentEntryCells(r, inner.x, cy, ui.fplEntryIdent(), ui.fplEntryCursor(),
-                      ui.fplEntryTypedCount(), ui.blinkOn(), displayH);
+                      ui.fplEntryTypedCount(), false, ui.blinkOn(), displayH);
   drawWaypointMatchInfo(r, inner, cy + rowH * 1.1f, rowH, ui.fplEntryNotFound(),
                         ui.fplEntryHasMatch(), ui.fplEntryMatch(), map,
                         displayH);
@@ -200,7 +221,8 @@ void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
     const float cy1 = ic.y + identSize * 0.62f;
     const float identEnd = drawIdentEntryCells(
         r, ic.x, cy1, ui.directToIdent(), ui.directToCursor(),
-        ui.directToTypedCount(), ui.blinkOn(), displayH);
+        ui.directToTypedCount(), ui.directToSelectAll(), ui.blinkOn(),
+        displayH);
     if (hasMatch) {
       drawWaypointIcon(r, identEnd + P(16.0f), cy1, P(22.0f), &wpt, wpt.type);
       r.fillText(ic.x + ic.w, cy1, wpt.region.empty() ? kDash : wpt.region,
@@ -419,6 +441,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
   // The controller's copy of the plan shows pending edits immediately (the
   // data sources echo them a frame later).
   const std::vector<MapLeg>& plan = ui.fplLegs();
+  const std::string activeToIdent = fplActiveToIdent(d, map);
 
   // Route preview map around ownship, wide enough to show the plan.
   float previewRangeNm = 25.0f;
@@ -450,8 +473,18 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
 
     const float headerSize = mfdFontPx(kWtRow, displayH);
     // Origin / destination header (cyan, dashes while the plan is empty).
-    const std::string orig = plan.empty() ? "_____" : plan.front().id;
-    const std::string dest = plan.size() < 2 ? "_____" : plan.back().id;
+    // During Direct-To the FMS stores only the target as a single leg; it is the
+    // destination, not the origin (Pilot's Guide Fig. 5-48).
+    std::string orig;
+    std::string dest;
+    if (map.directToActive && plan.size() <= 1) {
+      orig = "_____";
+      dest = !activeToIdent.empty() ? activeToIdent
+                                    : (plan.empty() ? "_____" : plan.front().id);
+    } else {
+      orig = plan.empty() ? "_____" : plan.front().id;
+      dest = plan.size() < 2 ? "_____" : plan.back().id;
+    }
     float fy = inner.y;
     r.fillText(inner.x + mfdFontPx(40.0f, displayH), fy + headerSize * 0.6f,
                orig + " / " + dest, headerSize, TextAlign::Left, colors::kCyan);
@@ -518,7 +551,8 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
       }
 
       const MapLeg& leg = plan[row];
-      const bool active = !d.fmaToWpt.empty() && leg.id == d.fmaToWpt;
+      const bool active =
+          !activeToIdent.empty() && leg.id == activeToIdent;
       // Active leg: the whole row magenta with the leg arrow ahead of the
       // ident (WT .active-wpt + FplActiveLegArrow).
       const Color rowColor = active ? colors::kMagenta : colors::kWhitesmoke;
@@ -538,21 +572,28 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
       // large knob steps between them); the small knob edits the highlighted
       // one (Pilot's Guide, Section 6 "Vertical Navigation").
       const bool identSel =
-          isCursor && ui.fplCursorCol() == MfdController::FplCursorCol::Ident;
+          isCursor && !active &&
+          ui.fplCursorCol() == MfdController::FplCursorCol::Ident;
       const bool altSel =
           isCursor && ui.fplCursorCol() == MfdController::FplCursorCol::Altitude;
-      if (identSel) {
+      if (active) {
+        drawFplActiveIdentFlash(r, fixX, cy, leg.id, rowSize, ui.blinkOn());
+      } else if (identSel) {
         drawCursorSelect(r, fixX, cy, leg.id, rowSize, TextAlign::Left,
                          ui.blinkOn());
       } else {
-        r.fillText(fixX, cy, leg.id, rowSize, TextAlign::Left,
-                   active ? colors::kMagenta : colors::kCyan);
+        r.fillText(fixX, cy, leg.id, rowSize, TextAlign::Left, colors::kCyan);
       }
       if (row > 0) {
         const MapLeg& prev = plan[row - 1];
-        const double dtk =
-            navBearingDeg(prev.lat, prev.lon, leg.lat, leg.lon);
-        const double dis = navDistanceNm(prev.lat, prev.lon, leg.lat, leg.lon);
+        const double dtk = active
+                               ? static_cast<double>(d.fmaLegBearingDeg)
+                               : navBearingDeg(prev.lat, prev.lon, leg.lat,
+                                               leg.lon);
+        const double dis = active
+                               ? static_cast<double>(d.fmaLegDistanceNm)
+                               : navDistanceNm(prev.lat, prev.lon, leg.lat,
+                                               leg.lon);
         std::snprintf(buf, sizeof(buf), "%03.0f", dtk);
         drawValueWithUnit(r, colDtkR, cy, buf, kDeg, rowSize, rowColor);
         std::snprintf(buf, sizeof(buf), "%.1f", dis);

@@ -36,6 +36,9 @@ class MockDataSource : public DataSource {
                ? checklists_->checklists()
                : emptyChecklists_;
   }
+  std::string checklistSourcePath() const override {
+    return checklists_ != nullptr ? checklists_->sourcePath() : std::string();
+  }
   const EisLayout& eisLayoutSnapshot() const override {
     return (eisSource_ != nullptr && eisSource_->ready()) ? eisSource_->layout()
                                                            : emptyEis_;
@@ -43,7 +46,10 @@ class MockDataSource : public DataSource {
 
   // The mock is a synthetic feed: bring the live pages up automatically rather
   // than gating bring-up / screenshots on an ENT keypress.
-  bool requiresPowerUpAcknowledge() const override { return false; }
+  bool requiresPowerUpAcknowledge() const override { return true; }
+
+  std::string aircraftIcaoType() const override { return "C172"; }
+  std::string aircraftAcfRelativePath() const override { return {}; }
 
   void setMapPanCenter(bool active, double lat, double lon) override;
   void setChartRangeNm(float rangeNm) override;

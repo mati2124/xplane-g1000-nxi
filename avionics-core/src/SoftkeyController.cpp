@@ -468,8 +468,8 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
   if (i < 0 || i >= kBezelKeyCount) return;
   bezelPress_[i] = 1.0f;  // trigger the press-flash animation
 
-  // The Direct-To window is modal over the FMS knob: opened by the Direct-To
-  // key, it owns the knob / ENT / CLR until it is closed or activated.
+  // The Direct-To window owns the FMS knob / ENT / CLR while it is open; FPL,
+  // PROC, and MENU dismiss it and navigate like the real unit.
   if (directToBezelKey(key)) return;
 
   // The Active Flight Plan window owns the FMS knob / ENT / CLR / MENU while it
@@ -477,7 +477,8 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
   // range rocker, the FPL toggle) fall through.
   if (window_ == PfdWindow::FlightPlan && flightPlanBezelKey(key)) return;
 
-  // The Procedures window owns the FMS knob / ENT / CLR while it is open.
+  // The Procedures window owns the FMS knob / ENT / CLR while it is open; FPL,
+  // PROC, and MENU fall through to navigate like the real unit.
   if (window_ == PfdWindow::Procedures && procBezelKey(key)) return;
 
   if (pageMenuOpen_ && pageMenuBezelKey(key)) return;

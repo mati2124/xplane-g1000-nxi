@@ -80,6 +80,9 @@ class ChecklistSource {
   // was found.
   virtual const ChecklistData& checklists() const = 0;
 
+  // Path of the checklist file that was loaded, or empty when none was found.
+  virtual std::string sourcePath() const { return {}; }
+
   // The loaded aircraft's ICAO type code (acf_ICAO) plus its .acf relative
   // path, so the store can swap to the per-aircraft checklist profile. No-op by
   // default for sources that load a fixed file.

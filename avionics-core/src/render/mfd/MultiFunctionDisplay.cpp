@@ -211,7 +211,7 @@ void drawNavComBar(Renderer& r, float w, float h, float barH,
 // trapezoid group tabs with the active tab "open" into the box. Appears on
 // any group/page change and auto-closes after a few seconds idle.
 void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
-                       const MfdController& ui, int checklistPageCount) {
+                       const MfdController& ui, const ChecklistData& checklist) {
   const float secs = ui.pageSelectSecondsLeft();
   if (secs <= 0.0f) return;
   const float alpha = std::min(1.0f, secs / 0.25f);  // quick fade-out
@@ -257,7 +257,7 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
       pageCount = 1;
       break;
     case MfdPageGroup::Checklist:
-      pageCount = std::max(1, checklistPageCount);
+      pageCount = std::max(1, checklist.totalChecklists());
       break;
   }
 
@@ -290,15 +290,22 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
         0, std::min(ui.pageIndex() - listRows / 2, pageCount - listRows));
   }
   float iy = by + pad;
-  char chkBuf[32];
+  const float textMaxW = boxW - pad * 2.8f;
   for (int i = firstRow; i < firstRow + listRows; ++i) {
     const float cy = iy + itemH * 0.5f;
+    std::string displayName;
     const char* name;
     if (pages != nullptr) {
       name = pages[i];
+    } else if (const Checklist* cl = checklist.at(i)) {
+      displayName = cl->title;
+      while (displayName.size() > 4 &&
+             r.measureTextWidth(displayName, itemSize) > textMaxW) {
+        displayName.pop_back();
+      }
+      name = displayName.c_str();
     } else {
-      std::snprintf(chkBuf, sizeof(chkBuf), "Checklist %d", i + 1);
-      name = chkBuf;
+      name = "Checklist";
     }
     const Color c = i == ui.pageIndex()
                         ? mfdAlpha(colors::kCyan, alpha)
@@ -580,7 +587,7 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
     mfd::drawMapSettingsWindow(r, ui, bodyX, bodyY, bodyW, bodyH, h);
     r.restore();
   }
-  drawPageIndicator(r, w, h, h - bottomBarH, ui, checklist.totalChecklists());
+  drawPageIndicator(r, w, h, h - bottomBarH, ui, checklist);
   drawNavComBar(r, w, h, topBarH, d, radios, title);
   drawSoftkeyBar(r, w, h, bottomBarH, ui);
 }

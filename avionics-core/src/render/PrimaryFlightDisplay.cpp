@@ -28,9 +28,15 @@ void PrimaryFlightDisplay::render(Renderer& r, const FlightData& d,
                       &L.hsiMapCx, &L.vdiX, &L.markerX, &L.casAnnunLeft}) {
       *px += eisW;
     }
-    // Inset map to the bottom-right (its normal bottom-left home is now the
-    // engine column).
-    L.insetMapX = w - L.insetMapW - L.insetMapX;
+    // Reversionary inset uses full-GDU trainer coordinates (bottom-right,
+    // wider and lower than the normal lower-left viewport).
+    const float fullSx = w / pfd::kWtCanvasWidth;
+    const float fullSy = h / pfd::kWtCanvasHeightPx;
+    L.reversionaryInsetMap = true;
+    L.insetMapX = pfd::kReversionaryInsetMapLeftPx * fullSx;
+    L.insetMapY = pfd::kReversionaryInsetMapTopPx * fullSy;
+    L.insetMapW = pfd::kReversionaryInsetMapWidthPx * fullSx;
+    L.insetMapH = pfd::kReversionaryInsetMapHeightPx * fullSy;
   }
 
   r.fillRect(0.0f, 0.0f, w, h, colors::kBlack);

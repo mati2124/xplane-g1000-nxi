@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cmath>
 #include <string>
 
 #include "render/pfd/ChromeInternal.h"
@@ -15,13 +16,14 @@ constexpr int kDtoAltDashCount = 5;
 
 // Trainer-measured row centers within the 310x220 popout (panel-top Y, px).
 // Pixel-scanned from PFD Direct To.bmp / Filled Out.bmp on the GARMIN unit.
-constexpr float kDtoIdentRowPx = 54.0f;
-constexpr float kDtoNameRowPx = 70.0f;
-constexpr float kDtoWptSepPx = 108.0f;
-constexpr float kDtoAltRowPx = 128.0f;
-constexpr float kDtoAltSepPx = 139.0f;
+constexpr float kDtoIdentRowPx = 50.0f;
+constexpr float kDtoNameToSepPx = 20.0f;
+constexpr float kDtoWptSepTightPx = 22.0f;  // ident-only (no facility name row)
+constexpr float kDtoRowGapPx = 7.0f;
+constexpr float kDtoAltBelowWptSepPx = 20.0f;
+constexpr float kDtoAltSepBelowWptSepPx = 31.0f;
 // Vertical spacing between BRG/DIS and CRS row centers in the location section.
-constexpr float kDtoLocRowStepPx = 29.0f;
+constexpr float kDtoLocRowStepPx = 27.0f;
 constexpr float kDtoMinBrgGapBelowAltSepPx = 8.0f;
 constexpr float kDtoButtonBottomPx = 8.0f;
 constexpr float kDtoLocBottomPadPx = 8.0f;
@@ -70,7 +72,7 @@ float drawTightDashRun(Renderer& r, float x, float dashCy, int count, float size
 
 float drawDtoIdentCells(Renderer& r, float startX, float dashCy,
                         const std::string& ident, int cursor, int typedCount,
-                        bool blinkOn, float size) {
+                        bool selectAll, bool blinkOn, float size) {
   const float tracking = size * 0.06f;
   const DashStyle ds = dashStyle(size);
   const float entryTextCy = textCyForDashBottom(r, dashCy, ds, size);
@@ -80,16 +82,17 @@ float drawDtoIdentCells(Renderer& r, float startX, float dashCy,
   const float plateH = dashCy + ds.height * 0.5f - plateTop + 1.0f;
   float cx = startX;
   for (int i = 0; i < FmsWaypointEntry::kMaxChars; ++i) {
-    const bool isCursor = i == cursor;
-    const bool cursorOn = isCursor && blinkOn;
     const char ch = i < static_cast<int>(ident.size()) ? ident[i] : '_';
     const bool isBlank = ch == '_';
+    const bool highlightAll = selectAll && !isBlank;
+    const bool isCursor = !selectAll && i == cursor;
+    const bool cursorOn = isCursor && blinkOn;
     if (isBlank) {
-      if (cursorOn) {
+      if (highlightAll || cursorOn) {
         r.fillRect(cx, plateTop, ds.advance, plateH, colors::kPopoutCyan);
       }
       const Color dashColor =
-          cursorOn          ? colors::kBlack
+          highlightAll || cursorOn ? colors::kBlack
           : isCursor        ? colors::kPopoutCyan
           : i >= typedCount ? colors::kPopoutCyan
                             : colors::kWhite;
@@ -99,11 +102,11 @@ float drawDtoIdentCells(Renderer& r, float startX, float dashCy,
     }
     const char text[2] = {ch, '\0'};
     const float chW = r.measureTextWidth(text, size);
-    if (cursorOn) {
+    if (highlightAll || cursorOn) {
       r.fillRect(cx - tracking * 0.5f, plateTop, chW + tracking, plateH,
                  colors::kPopoutCyan);
     }
-    const Color color = cursorOn          ? colors::kBlack
+    const Color color = highlightAll || cursorOn ? colors::kBlack
                         : isCursor        ? colors::kPopoutCyan
                         : i >= typedCount ? colors::kPopoutCyan
                                           : colors::kWhite;
@@ -137,6 +140,31 @@ float locationRowTop(Renderer& r, float dashCy, float labelSize) {
   return r.measureTextRect(0.0f, labelCy, "BRG", labelSize, TextAlign::Left).top;
 }
 
+// Place a second dash row below `aboveDashCy` without overlapping its text.
+float rowDashCyBelow(Renderer& r, float aboveDashCy, float aboveSize,
+                     float belowSize, float gapPx, float h) {
+  const DashStyle aboveDs = dashStyle(aboveSize);
+  const float aboveTextCy =
+      textCyForDashBottom(r, aboveDashCy, aboveDs, aboveSize);
+  const float aboveBottom =
+      r.measureTextRect(0.0f, aboveTextCy, "X", aboveSize, TextAlign::Left)
+          .bottom;
+  const float gap = fontPx(gapPx, h);
+  float belowDashCy = aboveDashCy + fontPx(16.0f, h);
+  const DashStyle belowDs = dashStyle(belowSize);
+  for (int i = 0; i < 6; ++i) {
+    const float belowTextCy =
+        textCyForDashBottom(r, belowDashCy, belowDs, belowSize);
+    const float belowTop =
+        r.measureTextRect(0.0f, belowTextCy, "X", belowSize, TextAlign::Left)
+            .top;
+    const float need = (aboveBottom + gap) - belowTop;
+    if (std::abs(need) < 0.25f) break;
+    belowDashCy += need;
+  }
+  return belowDashCy;
+}
+
 // Center the BRG/DIS and CRS rows as a block in the location section.
 void locationRowDashCys(Renderer& r, float altSepY, float locBottom, float h,
                         float labelSize, float readoutSize, float& brgDashCy,
@@ -167,6 +195,12 @@ void locationRowDashCys(Renderer& r, float altSepY, float locBottom, float h,
   if (shiftUp < 0.0f) {
     brgDashCy -= shiftUp;
     crsDashCy -= shiftUp;
+  }
+  const float crsBottom = crsRowBottom(crsDashCy);
+  if (crsBottom > locBottom) {
+    const float shift = crsBottom - locBottom;
+    brgDashCy -= shift;
+    crsDashCy -= shift;
   }
 }
 
@@ -203,10 +237,19 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
   const float innerW = right - left;
 
   const float identDashCy = f.top + fontPx(kDtoIdentRowPx, h);
-  const float nameDashCy = f.top + fontPx(kDtoNameRowPx, h);
-  const float wptSepY = f.top + fontPx(kDtoWptSepPx, h);
-  const float altDashCy = f.top + fontPx(kDtoAltRowPx, h);
-  const float altSepY = f.top + fontPx(kDtoAltSepPx, h);
+  const bool showNameRow =
+      hasMatch && !ui.directToNotFound() && !ui.directToMatch().name.empty();
+  const bool needsSecondRow =
+      showNameRow || !hasMatch || ui.directToNotFound();
+  const float nameDashCy =
+      needsSecondRow ? rowDashCyBelow(r, identDashCy, identSize, faceSize,
+                                      kDtoRowGapPx, h)
+                     : identDashCy;
+  const float wptSepY =
+      needsSecondRow ? nameDashCy + fontPx(kDtoNameToSepPx, h)
+                     : identDashCy + fontPx(kDtoWptSepTightPx, h);
+  const float altDashCy = wptSepY + fontPx(kDtoAltBelowWptSepPx, h);
+  const float altSepY = wptSepY + fontPx(kDtoAltSepBelowWptSepPx, h);
   const float buttonH = valueSize * 1.7f;
   const float buttonsCy =
       f.top + panelH - fontPx(kDtoButtonBottomPx, h) - buttonH * 0.5f;
@@ -246,7 +289,8 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
     } else {
       const int cursor = entryActive ? ui.directToCursor() : -1;
       identEnd = drawDtoIdentCells(r, ix, identDashCy, ui.directToIdent(), cursor,
-                                   ui.directToTypedCount(), blinkOn, identSize);
+                                   ui.directToTypedCount(),
+                                   ui.directToSelectAll(), blinkOn, identSize);
     }
     if (hasMatch) {
       const MapFeature& wpt = ui.directToMatch();

@@ -1,6 +1,32 @@
+#include <algorithm>
+
 #include "render/pfd/ChromeInternal.h"
 
 namespace avionics::pfd {
+
+float drawDirectToIcon(Renderer& r, float x, float cy, float size,
+                       const Color& color) {
+  // The font has no bold weight, so the "D" is over-drawn at a small plus-
+  // shaped halo of offsets to fatten its stroke toward the Garmin glyph.
+  const float bold = std::max(1.0f, size * 0.03f);
+  const float off[5][2] = {{0, 0}, {-bold, 0}, {bold, 0}, {0, -bold}, {0, bold}};
+  for (const auto& o : off) {
+    r.fillText(x + o[0], cy + o[1], "D", size, TextAlign::Left, color);
+  }
+  // Capital text is middle-aligned, so the visual center of the "D" sits a touch
+  // above cy; pierce the arrow through there so it reads as centered on the D.
+  const float ay = cy - size * 0.035f;
+  const float dW = r.measureTextWidth("D", size);
+  const float shaftL = x + dW * 0.42f;          // pierce through the D's bowl
+  const float shaftR = x + dW + size * 0.26f;   // exit to the right of the D
+  const float head = size * 0.34f;              // chunky arrowhead (the "carrot")
+  r.strokeLine(shaftL, ay, shaftR, ay, std::max(2.5f, size * 0.13f), color);
+  const Point tri[3] = {{shaftR + head * 0.55f, ay},
+                        {shaftR - head * 0.30f, ay - head},
+                        {shaftR - head * 0.30f, ay + head}};
+  r.fillPolygon(tri, 3, color);
+  return shaftR + head * 0.7f;
+}
 
 WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
                             float rawAnim, const char* title, float panelW,

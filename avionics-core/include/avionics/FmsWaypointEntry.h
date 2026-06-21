@@ -24,6 +24,9 @@ class FmsWaypointEntry {
   MapFeature match;
   bool hasMatch = false;
   bool notFound = false;
+  // Pre-filled field (Direct-To default waypoint): the whole ident is highlighted
+  // until the pilot moves a knob, which clears the field for fresh entry.
+  bool selectAll = false;
 
   // When true, a typed prefix that names a published airway (rather than a
   // waypoint) resolves to a match -- used by the FPL insert window, which can
@@ -46,13 +49,19 @@ class FmsWaypointEntry {
   // null (entry falls back to the nearby map features); map may be null.
   void open(const NavFeatureSource* nav, const MapData* map,
             const std::string& initial = "");
-  // Small knob: step the character under the cursor (blank starts at K).
+  // Small knob: step the character under the cursor (first blank cell starts at
+  // K; later blank cells start at A).
   void turnChar(const NavFeatureSource* nav, const MapData* map, int step);
   // Large knob: move the character cursor, adopting the auto-filled character
   // into the typed prefix when stepping right.
   void moveCursor(const NavFeatureSource* nav, const MapData* map, int step);
+  // GCU / keyboard: type a character at the cursor (A-Z, 0-9) and advance.
+  void typeChar(const NavFeatureSource* nav, const MapData* map, char ch);
+  // GCU / keyboard: delete the character before the cursor.
+  void backspaceChar(const NavFeatureSource* nav, const MapData* map);
 
  private:
+  void clearSelectedField();
   // Recompute the spell-ahead auto-fill + matched waypoint for the typed
   // prefix, from the nav database (or the nearby map features without one).
   void updateAutofill(const NavFeatureSource* nav, const MapData* map);

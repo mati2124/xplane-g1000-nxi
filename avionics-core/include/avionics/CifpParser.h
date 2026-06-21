@@ -2,6 +2,7 @@
 
 #include <istream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "avionics/MapData.h"
@@ -18,6 +19,12 @@ struct CifpLeg {
   std::string fixIdent;
   std::string pathTerminator;
   std::string approachKind;  // APPCH route-type column (I, R, ...)
+  std::string waypointDesc;  // APPCH col 9 (ARINC waypoint description / role)
+  std::string gpsFmsIndication;  // APPCH col 36 (ARINC 5.222)
+  std::string qualifier1;        // APPCH col 37
+  std::string qualifier2;        // APPCH col 38
+  float rnp = 0.0f;              // APPCH col 11
+  std::string levelOfService;    // LPV, LNAV, ... from PRDAT or heuristics
 };
 
 // Parsed terminal procedures for one airport.
@@ -25,6 +32,8 @@ struct CifpAirportProcedures {
   std::string icao;
   std::vector<CifpLeg> legs;
   std::vector<MapProcedure> catalog;
+  // Runway threshold positions from RWY records (e.g. RW05 at KFMY).
+  std::unordered_map<std::string, std::pair<double, double>> runways;
 };
 
 // Parses an airport CIFP file (one ICAO per file). Returns empty on failure.

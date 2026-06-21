@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <vector>
 
 namespace avionics {
@@ -25,6 +26,14 @@ char stepEntryChar(char c, int step) {
                      kEntryCharCount];
 }
 
+bool isValidEntryChar(char ch) {
+  ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  for (int i = 0; i < kEntryCharCount; ++i) {
+    if (kEntryChars[i] == ch) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 void FmsWaypointEntry::open(const NavFeatureSource* nav, const MapData* map,
@@ -36,10 +45,13 @@ void FmsWaypointEntry::open(const NavFeatureSource* nav, const MapData* map,
   match = MapFeature{};
   hasMatch = false;
   notFound = false;
+  selectAll = !initial.empty();
   if (!chars.empty()) {
     updateAutofill(nav, map);
-    pos = std::min(std::max(0, static_cast<int>(chars.size()) - 1),
-                   kMaxChars - 1);
+    if (!selectAll) {
+      pos = std::min(std::max(0, static_cast<int>(chars.size()) - 1),
+                     kMaxChars - 1);
+    }
   }
 }
 
@@ -106,14 +118,26 @@ void FmsWaypointEntry::updateAutofill(const NavFeatureSource* nav,
   hasMatch = true;
 }
 
+void FmsWaypointEntry::clearSelectedField() {
+  chars.clear();
+  autofill.clear();
+  match = MapFeature{};
+  hasMatch = false;
+  notFound = false;
+  pos = 0;
+  selectAll = false;
+}
+
 void FmsWaypointEntry::turnChar(const NavFeatureSource* nav, const MapData* map,
                                 int step) {
+  if (selectAll) clearSelectedField();
   const std::string shown = ident();
   const char base = pos < static_cast<int>(shown.size()) ? shown[pos] : '\0';
-  // A blank placeholder starts "in the middle at K"; a filled one steps from
-  // the displayed character (Pilot's Guide data-entry procedure).
-  const char next =
-      base == '\0' ? (step > 0 ? 'K' : 'J') : stepEntryChar(base, step);
+  // Only the first cell on a blank field starts "in the middle at K"; later
+  // cells start at A (Pilot's Guide data-entry procedure).
+  const char blankStart = (pos == 0 && chars.empty()) ? 'K' : 'A';
+  const char next = base == '\0' ? stepEntryChar(blankStart, step)
+                                   : stepEntryChar(base, step);
   if (static_cast<int>(chars.size()) <= pos) {
     chars.push_back(next);
   } else {
@@ -125,18 +149,63 @@ void FmsWaypointEntry::turnChar(const NavFeatureSource* nav, const MapData* map,
 
 void FmsWaypointEntry::moveCursor(const NavFeatureSource* nav,
                                   const MapData* map, int step) {
+  if (selectAll) clearSelectedField();
   if (step < 0) {
     pos = std::max(0, pos - 1);
     return;
   }
   if (pos + 1 >= kMaxChars) return;
+  ++pos;
   // Moving right adopts the character under the cursor into the typed prefix
   // (stepping through the auto-filled ident, like the real unit).
   if (static_cast<int>(chars.size()) <= pos) {
     const std::string shown = ident();
     chars.push_back(pos < static_cast<int>(shown.size()) ? shown[pos] : 'A');
   }
-  ++pos;
+  updateAutofill(nav, map);
+}
+
+void FmsWaypointEntry::typeChar(const NavFeatureSource* nav, const MapData* map,
+                                char ch) {
+  if (!active) return;
+  if (selectAll) clearSelectedField();
+  ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  if (!isValidEntryChar(ch) || pos >= kMaxChars) return;
+  if (static_cast<int>(chars.size()) <= pos) {
+    chars.push_back(ch);
+  } else {
+    chars[static_cast<std::size_t>(pos)] = ch;
+    chars.resize(static_cast<std::size_t>(pos + 1));
+  }
+  notFound = false;
+  if (pos + 1 < kMaxChars) ++pos;
+  updateAutofill(nav, map);
+}
+
+void FmsWaypointEntry::backspaceChar(const NavFeatureSource* nav,
+                                     const MapData* map) {
+  if (!active) return;
+  if (selectAll) {
+    clearSelectedField();
+    updateAutofill(nav, map);
+    return;
+  }
+  if (chars.empty()) {
+    pos = 0;
+    notFound = false;
+    updateAutofill(nav, map);
+    return;
+  }
+  if (pos > static_cast<int>(chars.size())) {
+    pos = static_cast<int>(chars.size());
+  }
+  if (pos > 0) {
+    --pos;
+    chars.resize(static_cast<std::size_t>(pos));
+  } else {
+    chars.clear();
+  }
+  notFound = false;
   updateAutofill(nav, map);
 }
 

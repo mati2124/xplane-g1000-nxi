@@ -573,8 +573,8 @@ void MfdController::pressBezelKey(BezelKey key) {
     return;
   }
 
-  // The Direct-To window is modal over any page: opened by the Direct-To key,
-  // it owns the FMS knob / ENT / CLR until it is closed or activated.
+  // The Direct-To window owns the FMS knob / ENT / CLR while it is open; FPL,
+  // PROC, and MENU dismiss it and navigate like the real unit.
   if (directToBezelKey(key)) {
     rebuildLabels();
     return;

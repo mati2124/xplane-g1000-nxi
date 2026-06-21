@@ -98,6 +98,35 @@ enum class BezelKey {
 };
 inline constexpr int kBezelKeyCount = static_cast<int>(BezelKey::Count);
 
+// FMS knob, ENT, and CLR on a GDU bezel. When a PFD pop-up (Direct-To, Flight
+// Plan, etc.) owns FMS input, these keys on the MFD GDU are inert.
+inline bool isGduFmsInputKey(BezelKey key) {
+  switch (key) {
+    case BezelKey::Ent:
+    case BezelKey::Clr:
+    case BezelKey::FmsPush:
+    case BezelKey::FmsOuterCw:
+    case BezelKey::FmsOuterCcw:
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// FPL / PROC / MENU switch pages on the real unit even when a pop-up is open.
+inline bool isPageNavigationBezelKey(BezelKey key) {
+  switch (key) {
+    case BezelKey::Fpl:
+    case BezelKey::Proc:
+    case BezelKey::Menu:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // The molded key caps drawn as a vertical column (everything above the RANGE
 // joystick widget).
 inline constexpr int kBezelButtonCount = static_cast<int>(BezelKey::RangeUp);

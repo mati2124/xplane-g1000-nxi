@@ -64,10 +64,12 @@ port with:
 ./build/shell-standalone/avionics-standalone --xplane-host 192.168.1.50 --xplane-port 49000
 ```
 
-The display shows a power-on **boot screen** for a few seconds, then the live
-PFD. Until X-Plane starts sending data (e.g. it isn't running yet), each
-instrument shows a large red **X** — the same failure annunciation real glass
-cockpits use when a display loses its data source.
+The display shows a power-on **boot screen** for a few seconds (Garmin logo
+splash, then the MFD power-up page with database review), then the live PFD.
+Until X-Plane starts sending data (e.g. it isn't running yet), each instrument
+shows a large red **X** — the same failure annunciation real glass cockpits use
+when a display loses its data source. See [MFD power-up screen (boot)](#mfd-power-up-screen-boot)
+for per-aircraft hero images.
 
 #### Running on a separate PC (nav data)
 
@@ -266,24 +268,71 @@ Ready-made SPAD.neXt profiles for Elgato Stream Deck live under [`spad/`](spad/)
 They send the same `xplane_avionics/*` commands as the keyboard/joystick bindings
 above. See [`spad/README.md`](spad/README.md) for install steps.
 
-## Per-aircraft checklists & engine display (EIS)
+## Per-aircraft assets (checklists, EIS, boot screen)
 
-Neither the MFD **Checklist** page group nor the **EIS** engine strip is
-hardcoded: both are plain-text files, so the displayed checklists and the engine
-gauges change with the aircraft without rebuilding the avionics. An aircraft
-author can ship them with the airframe, **or any user can add their own for any
-aircraft with no rebuild and no code change** by dropping an ICAO-keyed file into
-the plugin's assets folder (see the load-order lists below). Both files are
-line-oriented, ignore blank lines and `#` comments, and **hot-reload** — edit the
-file while the display is running and it re-parses on the next frame (the store
-watches the file's modification time), so you can iterate without a restart.
+The MFD **power-up page**, the **Checklist** page group, and the **EIS** engine
+strip are not hardcoded: checklists and EIS use plain-text files; the boot
+screen's center **hero image** and airframe label are driven by PNG assets and
+the detected aircraft profile. An aircraft author can ship files with the
+airframe, **or any user can add their own for any aircraft with no rebuild and
+no code change** by dropping ICAO-keyed files into the plugin's assets folder
+(see the load-order lists below). Checklist and EIS files are line-oriented,
+ignore blank lines and `#` comments, and **hot-reload** — edit the file while
+the display is running and it re-parses on the next frame (the store watches the
+file's modification time), so you can iterate without a restart. Boot hero
+images are picked up on the next power-up cycle (or when you change aircraft).
 
 The bundled samples double as the format reference:
 
 | Concern   | Sample file                          | Parser / keywords                          |
 | --------- | ------------------------------------ | ------------------------------------------ |
+| Boot panel | `avionics-core/assets/boot/c172.png` | `resolveBootHeroAsset()` / `typeKeyedBootHeroAsset()` |
 | Checklist | `shell-standalone/assets/checklists.txt` | `avionics-core/include/avionics/Checklist.h` |
 | EIS       | `avionics-core/assets/eis/c172s.eis`     | `avionics-core/include/avionics/Eis.h`       |
+
+### MFD power-up screen (boot)
+
+After the centered Garmin logo splash on both GDUs, the MFD shows the NXi
+**Power-up Page**: the shared G1000 NXi logo, a large airframe **hero image**
+on the left, a database currency list on the right (with per-row icons), the
+map/terrain disclaimer, and an **ENT** / right-softkey prompt to continue. The
+**Navigation Data** row reflects the loaded nav database (cycle / expiry); other
+rows show representative trainer-style values. Layout and chrome are shared
+across aircraft — only the hero art and the airframe label row change per type.
+
+**Shared asset** (same for every aircraft):
+
+- `assets/boot/g1000_nxi_logo.png` — top-left G1000 NXi wordmark on the power-up
+  page (and the logo splash uses vector drawing).
+
+**Where the hero image is loaded from** (first match wins):
+
+1. `g1000_boot.png` next to the loaded `.acf` (in-sim plugin only).
+2. `<acf_stem>_boot.png` next to the loaded `.acf` (in-sim plugin only).
+3. A **user-droppable, ICAO-keyed file** in the plugin's assets folder:
+   `Resources/plugins/xplane-avionics/assets/boot/<icao>.png`, where `<icao>` is
+   the aircraft's `acf_ICAO` type code lowercased (e.g. `c172`, `tbm9`). This
+   adds a custom boot graphic for **any** aircraft with no rebuild and no code
+   change.
+4. The bundled profile default: `boot/<profile-id>.png` (e.g. `boot/c172.png` for
+   the Cessna piston profile when ICAO is `C172`).
+
+The airframe name on the first database row (e.g. `Cessna 172S`) comes from the
+built-in profile for known types; otherwise it falls back to the ICAO string.
+
+Capture the boot page for development or regression checks:
+
+```bash
+./build/shell-standalone/avionics-standalone \
+  --screenshot boot.ppm --state boot --no-bezel
+```
+
+(`--state boot` renders the MFD power-up page at full opacity; `--state bootlogo`
+and `--state bootfade` capture mid-animation frames. Output is PPM; convert to
+PNG if needed.)
+
+Reference captures from the Garmin PC Trainer and this project live under
+`docs/screenshots/refs/` (e.g. `trainer-mfd-boot-172.png`).
 
 ### Checklists
 

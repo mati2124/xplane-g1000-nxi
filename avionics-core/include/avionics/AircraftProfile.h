@@ -23,6 +23,12 @@ struct AircraftProfile {
   // assets, with a beside-the-.acf override taking precedence in the stores).
   std::string eisAsset;
   std::string checklistAsset;
+  // MFD power-up left panel (PNG under assets/boot/). Empty when the profile
+  // has no bundled art; ICAO-keyed boot/<icao>.png is tried first via
+  // typeKeyedBootHeroAsset().
+  std::string bootHeroAsset;
+  // Marketing / type string on the MFD power-up database row (e.g. "Cessna 172S").
+  std::string bootAirframeName;
 };
 
 // Relative asset paths for the built-in profiles, also used as the dev-tree
@@ -32,6 +38,8 @@ inline constexpr const char* kEisDir = "eis";
 inline constexpr const char* kEisExt = ".eis";
 inline constexpr const char* kChecklistDir = "checklists";
 inline constexpr const char* kChecklistExt = ".checklist";
+inline constexpr const char* kBootDir = "boot";
+inline constexpr const char* kBootHeroExt = ".png";
 inline constexpr const char* kC172Eis = "eis/c172s.eis";
 inline constexpr const char* kC172Checklist = "checklists/c172.checklist";
 inline constexpr const char* kSf50Eis = "eis/sf50.eis";
@@ -47,6 +55,16 @@ inline constexpr const char* kSf50Checklist = "checklists/sf50.checklist";
 // has no usable characters, so callers can skip the lookup.
 std::string typeKeyedEisAsset(const std::string& icaoType);
 std::string typeKeyedChecklistAsset(const std::string& icaoType);
+
+// User-droppable MFD power-up panel image: assets/boot/<icao>.png (sanitized
+// lowercase alphanumerics from acf_ICAO, e.g. C172 -> boot/c172.png).
+std::string typeKeyedBootHeroAsset(const std::string& icaoType);
+
+// Resolve the first existing MFD boot hero PNG using the same precedence as
+// EIS/checklists: beside-the-.acf g1000_boot.png, ICAO-keyed assets/boot file,
+// then the bundled profile default.
+std::string resolveBootHeroAsset(const std::string& icaoType,
+                                 const std::string& acfRelativePath);
 
 // Resolve the profile for the loaded aircraft. `icaoType` is X-Plane's
 // sim/aircraft/view/acf_ICAO (may be empty); `acfRelativePath` is

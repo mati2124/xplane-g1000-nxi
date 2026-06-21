@@ -46,6 +46,11 @@ WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
                             float rawAnim, const char* title, float panelW,
                             float panelH);
 
+// Garmin Direct-To icon (a "D" with a horizontal arrow piercing it), matching
+// the bezel key and the PFD Navigation Status Box. Returns x just past the glyph.
+float drawDirectToIcon(Renderer& r, float x, float cy, float size,
+                       const Color& color);
+
 // One field of a pop-up window: text with an optional highlight-select cursor
 // (steady cyan plate / black text vs plain cyan text). Returns the x just past
 // the field. Shared by the Nearest and PFD Setup windows.
@@ -72,7 +77,9 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
 void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
                        const SoftkeyController& ui);
 void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
-                          const SoftkeyController& ui);
+                          const FlightData& d, const SoftkeyController& ui);
+void drawWaypointInformationWindow(Renderer& r, float w, float h, const Layout& L,
+                                   const SoftkeyController& ui);
 void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
                     const SoftkeyController& ui);
 void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,

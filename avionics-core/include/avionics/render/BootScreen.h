@@ -38,7 +38,10 @@ class BootScreen {
                      const FlightData& flightData, const MapData& map,
                      const SoftkeyController& pfdUi, const MfdController& mfdUi,
                      const NavDatabaseInfo& navDatabase, bool awaitingAck,
-                     float phaseAlpha, int widthPx, int heightPx);
+                     const std::string& aircraftIcaoType,
+                     const std::string& aircraftAcfRelativePath,
+                     const std::string& checklistSourcePath, float phaseAlpha,
+                     int widthPx, int heightPx);
 };
 
 }  // namespace avionics

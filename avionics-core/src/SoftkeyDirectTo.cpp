@@ -26,7 +26,18 @@ void SoftkeyController::directToOpen(const std::string& initial) {
 bool SoftkeyController::directToBezelKey(BezelKey key) {
   if (!dtoOpen_) {
     if (key != BezelKey::DirectTo) return false;
-    directToOpen();
+    dtoPreservePlan_ = false;
+    dtoPreserveLegIndex_ = -1;
+    std::string initial;
+    if (window_ == PfdWindow::FlightPlan) {
+      dtoPreserveLegIndex_ = flightPlanSelectedLegIndex();
+      dtoPreservePlan_ = dtoPreserveLegIndex_ >= 0;
+      initial = flightPlanSelectedLegIdent();
+    }
+    if (initial.empty() && !activeWaypoint_.empty()) {
+      initial = activeWaypoint_;
+    }
+    directToOpen(initial);
     return true;
   }
 
@@ -36,7 +47,19 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
     dtoOpen_ = false;
     dtoArmed_ = false;
     dtoEntry_.reset();
+    dtoPreservePlan_ = false;
+    dtoPreserveLegIndex_ = -1;
     return true;
+  }
+
+  // FPL / PROC / MENU dismiss Direct-To and navigate (real unit behavior).
+  if (isPageNavigationBezelKey(key)) {
+    dtoOpen_ = false;
+    dtoArmed_ = false;
+    dtoEntry_.reset();
+    dtoPreservePlan_ = false;
+    dtoPreserveLegIndex_ = -1;
+    return false;
   }
 
   // Armed: the Activate? prompt is highlighted; ENT engages the direct course.
@@ -46,6 +69,15 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
       dtoRequestTarget_.lon = dtoEntry_.match.lon;
       dtoRequestTarget_.id = dtoEntry_.match.id;
       dtoRequestPending_ = true;
+      if (dtoPreservePlan_) {
+        if (dtoPreserveLegIndex_ >= 0) {
+          fplCursorRow_ = dtoPreserveLegIndex_;
+        }
+      } else {
+        flightPlanApplyDirectTo(dtoRequestTarget_);
+      }
+      dtoPreservePlan_ = false;
+      dtoPreserveLegIndex_ = -1;
       dtoOpen_ = false;
       dtoArmed_ = false;
       dtoEntry_.reset();
@@ -59,30 +91,30 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
       // First ENT confirms the waypoint and arms Activate? (an unknown ident
       // keeps the window open so it can be corrected).
       if (dtoEntry_.chars.empty()) {
-        break;
-      } else if (dtoEntry_.hasMatch) {
+        return true;
+      }
+      if (dtoEntry_.hasMatch) {
         dtoEntry_.active = false;
         dtoArmed_ = true;
       } else {
         dtoEntry_.notFound = true;
       }
-      break;
+      return true;
     case BezelKey::FmsInnerCw:
       dtoEntry_.turnChar(navSource_, mapData_, +1);
-      break;
+      return true;
     case BezelKey::FmsInnerCcw:
       dtoEntry_.turnChar(navSource_, mapData_, -1);
-      break;
+      return true;
     case BezelKey::FmsOuterCw:
       dtoEntry_.moveCursor(navSource_, mapData_, +1);
-      break;
+      return true;
     case BezelKey::FmsOuterCcw:
       dtoEntry_.moveCursor(navSource_, mapData_, -1);
-      break;
+      return true;
     default:
-      break;
+      return false;
   }
-  return true;
 }
 
 bool SoftkeyController::directToHasGeo() const {

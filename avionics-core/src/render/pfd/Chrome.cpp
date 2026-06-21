@@ -16,7 +16,11 @@ void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
   drawAlertsWindow(r, w, h, L, ui);
   drawReferencesWindow(r, w, h, L, ui);
   drawNearestWindow(r, w, h, L, ui);
-  drawFlightPlanWindow(r, w, h, L, ui);
+  if (ui.flightPlanEntryActive()) {
+    drawWaypointInformationWindow(r, w, h, L, ui);
+  } else {
+    drawFlightPlanWindow(r, w, h, L, d, ui);
+  }
   drawProcWindow(r, w, h, L, ui);
   drawPfdSetupWindow(r, w, h, L, ui);
   // The Direct-To window (Direct-To bezel key) shares the lower-right region.

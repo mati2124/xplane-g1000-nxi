@@ -490,7 +490,11 @@ int DrawDevice(AvionicsDevice& dev) {
         *g_dataSource, *dev.renderer, kSourceLabel);
     dev.engine->setPage(dev.page);
     dev.engine->setDrivesDataSource(dev.drivesSource);
-    dev.engine->skipBoot();  // the sim is already running; no power-on self test
+    // PFD skips the logo self-test when the plugin loads mid-flight; the MFD
+    // always shows the power-up page until the pilot presses ENT.
+    if (dev.page == avionics::DisplayPage::PrimaryFlightDisplay) {
+      dev.engine->skipBoot();
+    }
     // Restore the durable display preferences saved on the last run so the
     // glass comes up the way the pilot left it (e.g. PFD inset map on/off).
     if (dev.page == avionics::DisplayPage::PrimaryFlightDisplay) {
@@ -753,12 +757,8 @@ std::vector<RadioCommandBinding> g_radioBindings;
 // which we intercept just like the GDU keys so a bound GCU (or a hardware
 // replica) works against our glass. The GCU is the FMS / map controller, so
 // its map, pan, cursor and FMS-menu keys are routed to the MFD engine; its
-// COM/NAV tuning and flip-flop go to the PFD engine's radio bar.
-//
-// Not wired (no engine equivalent): the alphanumeric keypad (A-Z/0-9/dot/minus/
-// space/backspace) has no direct character-entry path (FMS entry is by knob
-// scroll); the HDG/CRS/ALT reference knobs; and the XPDR knob (the transponder
-// is entered through softkeys, not a knob).
+// COM/NAV tuning and flip-flop go to the PFD engine's radio bar. The alphanumeric
+// keypad (A-Z/0-9/dot/backspace) types into the active waypoint-ident entry.
 
 // GCU keys that map straight onto an existing BezelKey on the MFD engine. These
 // reuse the same CommandBinding / G1000CommandHandler path as the GDU keys
@@ -832,6 +832,21 @@ struct GcuKnobBinding {
   XPLMCommandRef cmd;
 };
 std::vector<GcuKnobBinding> g_gcuKnobBindings;
+
+struct GcuBezelBinding {
+  avionics::BezelKey key = avionics::BezelKey::Count;
+  avionics::BezelKey key2 = avionics::BezelKey::Count;
+  XPLMCommandRef cmd = nullptr;
+  float holdStart = 0.0f;
+  bool holdFired = false;
+};
+std::vector<GcuBezelBinding> g_gcuBezelBindings;
+
+struct GcuKeypadBinding {
+  char ch = '\0';
+  XPLMCommandRef cmd = nullptr;
+};
+std::vector<GcuKeypadBinding> g_gcuKeypadBindings;
 
 // One intercepted command: which device engine it targets and what to press.
 struct CommandBinding {
@@ -942,6 +957,10 @@ int G1000CommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
   if (b == nullptr) return 1;
   const bool isClr =
       !b->isSoftkey && b->value == static_cast<int>(avionics::BezelKey::Clr);
+  if (GduFmsKeyBlockedByPfd(*b)) {
+    if (phase == xplm_CommandEnd && isClr) b->holdFired = false;
+    return 0;
+  }
   const bool hasEngine = b->dev->engine != nullptr;
   bool forwarded = false;
   bool applied = false;
@@ -1173,6 +1192,162 @@ bool ForwardBezelEvent(AvionicsDevice& dev, avionics::BezelKey key) {
   return g_commandBridge->sendEvent(ev);
 }
 
+// True when a PFD pop-up (Direct-To, Flight Plan, etc.) owns GCU FMS input.
+bool PfdClaimsGcuFms() {
+  if (!g_pfd.engine) return false;
+  return g_pfd.engine->softkeyController().pfdClaimsFmsInput();
+}
+
+// MFD GDU FMS keys are inert while a PFD pop-up owns FMS input (the GCU and
+// PFD GDU route there; suppress duplicate MFD GDU commands from the same press).
+// ENT on the MFD still acknowledges the power-up page even when a PFD pop-up
+// is open.
+bool GduFmsKeyBlockedByPfd(const CommandBinding& b) {
+  if (b.isSoftkey) return false;
+  if (b.dev == &g_pfd) return false;
+  const auto key = static_cast<avionics::BezelKey>(b.value);
+  if (key == avionics::BezelKey::Ent && g_mfd.engine != nullptr &&
+      g_mfd.engine->awaitingPowerUpAck()) {
+    return false;
+  }
+  if (!PfdClaimsGcuFms()) return false;
+  return avionics::isGduFmsInputKey(key);
+}
+
+AvionicsDevice* GcuFmsBezelDevice() {
+  return PfdClaimsGcuFms() ? &g_pfd : &g_mfd;
+}
+
+// Pick PFD vs MFD for a GCU bezel key (map/pan always MFD; Direct-To always PFD).
+AvionicsDevice* ResolveGcuBezelDevice(avionics::BezelKey key) {
+  switch (key) {
+    case avionics::BezelKey::RangeUp:
+    case avionics::BezelKey::RangeDown:
+    case avionics::BezelKey::PanPush:
+    case avionics::BezelKey::PanUp:
+    case avionics::BezelKey::PanDown:
+    case avionics::BezelKey::PanLeft:
+    case avionics::BezelKey::PanRight:
+      return &g_mfd;
+    case avionics::BezelKey::DirectTo:
+      return &g_pfd;
+    case avionics::BezelKey::Fpl:
+    case avionics::BezelKey::Proc:
+    case avionics::BezelKey::Menu:
+      return PfdClaimsGcuFms() ? &g_pfd : &g_mfd;
+    case avionics::BezelKey::Ent:
+      if (g_mfd.engine != nullptr && g_mfd.engine->awaitingPowerUpAck()) {
+        return &g_mfd;
+      }
+      return GcuFmsBezelDevice();
+    default:
+      return GcuFmsBezelDevice();
+  }
+}
+
+bool ForwardGcuBezelEvent(const GcuBezelBinding& b,
+                          avionics::cmdbridge::Phase phase) {
+  if (!g_commandBridge) return false;
+  AvionicsDevice* dev = ResolveGcuBezelDevice(b.key);
+  if (dev == nullptr || dev->engine == nullptr) return false;
+  avionics::cmdbridge::Event ev;
+  ev.device = (dev == &g_mfd) ? avionics::cmdbridge::Device::Mfd
+                              : avionics::cmdbridge::Device::Pfd;
+  ev.phase = phase;
+  if (b.key2 != avionics::BezelKey::Count) {
+    ev.kind = avionics::cmdbridge::Kind::BezelDiagonal;
+    ev.value = static_cast<std::int32_t>(b.key);
+    ev.value2 = static_cast<std::int32_t>(b.key2);
+  } else {
+    ev.kind = avionics::cmdbridge::Kind::Bezel;
+    ev.value = static_cast<std::int32_t>(b.key);
+  }
+  return g_commandBridge->sendEvent(ev);
+}
+
+int GcuBezelCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
+                           void* ref) {
+  auto* b = static_cast<GcuBezelBinding*>(ref);
+  if (b == nullptr) return 1;
+  AvionicsDevice* dev = ResolveGcuBezelDevice(b->key);
+  const bool isClr = b->key == avionics::BezelKey::Clr;
+  const bool hasEngine = dev != nullptr && dev->engine != nullptr;
+  bool forwarded = false;
+  bool applied = false;
+
+  if (phase == xplm_CommandBegin) {
+    forwarded = ForwardGcuBezelEvent(*b, avionics::cmdbridge::Phase::Begin);
+    if (hasEngine) {
+      dev->engine->pressBezelKey(b->key);
+      if (b->key2 != avionics::BezelKey::Count) {
+        dev->engine->pressBezelKey(b->key2);
+      }
+      if (isClr) {
+        b->holdStart = XPLMGetElapsedTime();
+        b->holdFired = false;
+      }
+      ApplyQueuedRadioCommands();
+      PersistStateIfChanged();
+      applied = true;
+    }
+  } else if (phase == xplm_CommandContinue) {
+    if (isClr && !b->holdFired && dev == &g_mfd &&
+        XPLMGetElapsedTime() - b->holdStart >=
+            static_cast<float>(avionics::kClrDefaultMapHoldSeconds)) {
+      forwarded =
+          ForwardGcuBezelEvent(*b, avionics::cmdbridge::Phase::Continue);
+      if (hasEngine) {
+        dev->engine->holdBezelKey(avionics::BezelKey::Clr);
+        b->holdFired = true;
+        PersistStateIfChanged();
+        applied = true;
+      }
+    }
+  } else if (phase == xplm_CommandEnd) {
+    if (isClr) {
+      forwarded = ForwardGcuBezelEvent(*b, avionics::cmdbridge::Phase::End);
+      b->holdFired = false;
+    }
+  }
+
+  return (forwarded || applied) ? 0 : 1;
+}
+
+bool ForwardGcuEntryEvent(AvionicsDevice& dev, char ch) {
+  if (!g_commandBridge) return false;
+  if (dev.engine == nullptr) return false;
+  avionics::cmdbridge::Event ev;
+  ev.device = (&dev == &g_mfd) ? avionics::cmdbridge::Device::Mfd
+                               : avionics::cmdbridge::Device::Pfd;
+  ev.phase = avionics::cmdbridge::Phase::Begin;
+  ev.kind = avionics::cmdbridge::Kind::GcuEntry;
+  ev.value = static_cast<std::int32_t>(static_cast<unsigned char>(ch));
+  return g_commandBridge->sendEvent(ev);
+}
+
+bool ApplyGcuEntryKey(char ch) {
+  if (PfdClaimsGcuFms() && g_pfd.engine &&
+      g_pfd.engine->applyGcuEntryKey(ch)) {
+    ForwardGcuEntryEvent(g_pfd, ch);
+    PersistStateIfChanged();
+    return true;
+  }
+  if (g_mfd.engine && g_mfd.engine->applyGcuEntryKey(ch)) {
+    ForwardGcuEntryEvent(g_mfd, ch);
+    PersistStateIfChanged();
+    return true;
+  }
+  return false;
+}
+
+int GcuKeypadCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
+                              void* ref) {
+  if (phase != xplm_CommandBegin) return 1;
+  auto* b = static_cast<GcuKeypadBinding*>(ref);
+  if (b == nullptr) return 1;
+  return ApplyGcuEntryKey(b->ch) ? 0 : 1;
+}
+
 // Routes one GCU dual-knob detent to the engine action chosen by the current
 // knob mode. Returns true if an engine consumed it (so we suppress the stock
 // G1000). The knob is inert in XPDR mode (no transponder tuning knob exists).
@@ -1183,14 +1358,15 @@ bool ApplyGcuKnobTurn(GcuKnobAction turn) {
       turn == GcuKnobAction::OuterUp || turn == GcuKnobAction::OuterDown;
   switch (g_gcuKnobMode) {
     case GcuKnobMode::Fms: {
-      if (!g_mfd.engine) return false;
+      AvionicsDevice* dev = GcuFmsBezelDevice();
+      if (!dev->engine) return false;
       const avionics::BezelKey key =
           outer ? (up ? avionics::BezelKey::FmsOuterCw
                       : avionics::BezelKey::FmsOuterCcw)
                 : (up ? avionics::BezelKey::FmsInnerCw
                       : avionics::BezelKey::FmsInnerCcw);
-      ForwardBezelEvent(g_mfd, key);
-      g_mfd.engine->pressBezelKey(key);
+      ForwardBezelEvent(*dev, key);
+      dev->engine->pressBezelKey(key);
       PersistStateIfChanged();
       return true;
     }
@@ -1372,20 +1548,22 @@ void CreateRadioCommands() {
 }
 
 // Collects the GCU 478 commands. X-Plane already defines the gcu478 command
-// set, so we only intercept (no parallel "created" commands). The map / FMS /
-// cursor keys reuse the CommandBinding path against the MFD engine; the shared
-// knob and its mode keys go to the dedicated GcuKnobCommandHandler. Fills both
-// binding lists; callers must finish collecting before registering handlers so
-// the refcon pointers stay valid.
+// set, so we only intercept (no parallel "created" commands). Map / pan keys
+// go to the MFD; Direct-To opens the PFD popout; FMS / ENT / CLR / cursor
+// follow whichever display currently owns FMS input (PFD pop-ups vs MFD).
 void CollectGcuCommands() {
   char name[96];
   for (const NamedKey& nk : kGcuNamedKeys) {
     std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%s", nk.suffix);
-    BindCommand(g_mfd, name, /*isSoftkey=*/false, static_cast<int>(nk.key));
+    XPLMCommandRef cmd = XPLMFindCommand(name);
+    if (cmd == nullptr) continue;
+    g_gcuBezelBindings.push_back({nk.key, avionics::BezelKey::Count, cmd});
   }
   for (const DiagonalKey& dk : kGcuDiagonalKeys) {
     std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%s", dk.suffix);
-    BindDiagonal(g_mfd, name, dk.a, dk.b);
+    XPLMCommandRef cmd = XPLMFindCommand(name);
+    if (cmd == nullptr) continue;
+    g_gcuBezelBindings.push_back({dk.a, dk.b, cmd});
   }
   for (const GcuKnobCommand& kc : kGcuKnobCommands) {
     std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%s", kc.suffix);
@@ -1393,11 +1571,36 @@ void CollectGcuCommands() {
     if (cmd == nullptr) continue;
     g_gcuKnobBindings.push_back({kc.action, cmd});
   }
+  for (char c = 'A'; c <= 'Z'; ++c) {
+    std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%c", c);
+    XPLMCommandRef cmd = XPLMFindCommand(name);
+    if (cmd == nullptr) continue;
+    g_gcuKeypadBindings.push_back({c, cmd});
+  }
+  for (char c = '0'; c <= '9'; ++c) {
+    std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%c", c);
+    XPLMCommandRef cmd = XPLMFindCommand(name);
+    if (cmd == nullptr) continue;
+    g_gcuKeypadBindings.push_back({c, cmd});
+  }
+  struct SpecialKey {
+    const char* suffix;
+    char ch;
+  };
+  static const SpecialKey kSpecial[] = {{"dot", '.'}, {"bksp", '\b'}};
+  for (const SpecialKey& sk : kSpecial) {
+    std::snprintf(name, sizeof(name), "sim/GPS/gcu478/%s", sk.suffix);
+    XPLMCommandRef cmd = XPLMFindCommand(name);
+    if (cmd == nullptr) continue;
+    g_gcuKeypadBindings.push_back({sk.ch, cmd});
+  }
 }
 
 void RegisterG1000Commands() {
   g_commandBindings.clear();
   g_gcuKnobBindings.clear();
+  g_gcuBezelBindings.clear();
+  g_gcuKeypadBindings.clear();
   g_customStrings.clear();
   // 3 GDU prefixes x (12 softkeys + 18 named + 4 diagonal) stock + the same
   // created, plus the GCU's intercept-only named/diagonal keys. Over-reserve so
@@ -1407,10 +1610,17 @@ void RegisterG1000Commands() {
   // Copilot-side GDU keys (g1000n2) drive the same pilot PFD engine.
   CollectDeviceCommands(g_pfd, "g1000n2", "pfd_copilot", "PFD (copilot GDU)");
   CollectDeviceCommands(g_mfd, "g1000n3", "mfd", "MFD");
-  // Optional GCU 478 control unit (FMS/map keys to the MFD engine).
+  // Optional GCU 478 control unit (routed dynamically to PFD or MFD).
   CollectGcuCommands();
   for (CommandBinding& b : g_commandBindings) {
     XPLMRegisterCommandHandler(b.cmd, &G1000CommandHandler, /*before=*/1, &b);
+  }
+  for (GcuBezelBinding& b : g_gcuBezelBindings) {
+    XPLMRegisterCommandHandler(b.cmd, &GcuBezelCommandHandler, /*before=*/1, &b);
+  }
+  for (GcuKeypadBinding& b : g_gcuKeypadBindings) {
+    XPLMRegisterCommandHandler(b.cmd, &GcuKeypadCommandHandler, /*before=*/1,
+                               &b);
   }
   for (GcuKnobBinding& b : g_gcuKnobBindings) {
     XPLMRegisterCommandHandler(b.cmd, &GcuKnobCommandHandler, /*before=*/1, &b);
@@ -1435,6 +1645,16 @@ void UnregisterG1000Commands() {
     XPLMUnregisterCommandHandler(b.cmd, &G1000CommandHandler, /*before=*/1, &b);
   }
   g_commandBindings.clear();
+  for (GcuBezelBinding& b : g_gcuBezelBindings) {
+    XPLMUnregisterCommandHandler(b.cmd, &GcuBezelCommandHandler, /*before=*/1,
+                                 &b);
+  }
+  g_gcuBezelBindings.clear();
+  for (GcuKeypadBinding& b : g_gcuKeypadBindings) {
+    XPLMUnregisterCommandHandler(b.cmd, &GcuKeypadCommandHandler, /*before=*/1,
+                                 &b);
+  }
+  g_gcuKeypadBindings.clear();
   for (GcuKnobBinding& b : g_gcuKnobBindings) {
     XPLMUnregisterCommandHandler(b.cmd, &GcuKnobCommandHandler, /*before=*/1, &b);
   }

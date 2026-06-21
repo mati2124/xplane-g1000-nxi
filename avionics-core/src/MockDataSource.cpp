@@ -124,6 +124,9 @@ void seedDemoFeatures(MapData& map) {
   kfmy.lat = kKfmyLat;
   kfmy.lon = kKfmyLon;
   kfmy.id = "KFMY";
+  kfmy.name = "Page Field";
+  kfmy.city = "Ft Myers";
+  kfmy.region = "FL";
   kfmy.airportTowered = true;
   kfmy.airportServiced = true;
 

@@ -299,10 +299,13 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   const float timeW = w - timeX;
 
   // Trainer: HSI Map off → rose circle cutout; HSI Map on → bip-middle arc;
-  // Inset Map layout → inset-map + rose dual cutouts.
-  const bool insetMapMode = ui.insetMapVisible() && !ui.hsiMapVisible();
+  // Inset Map layout → inset-map + rose dual cutouts. Display backup moves the
+  // inset to the bottom-right but keeps the same band cutout behavior.
+  const bool leftInsetMapMode =
+      ui.insetMapVisible() && !ui.hsiMapVisible() && !L.reversionaryInsetMap;
+  const bool insetMapBandCutout = leftInsetMapMode || L.reversionaryInsetMap;
   drawInfoBand(r, w, top, panelH, oatW, xpdrX, L, ui.hsiMapVisible(),
-               insetMapMode);
+               insetMapBandCutout);
 
   // WT BottomInfoPanel: OAT, XPDR, and TMR/UTC each sit on their own gradient
   // fill; OAT also has a groove separator on its right edge. When the inset map
@@ -310,7 +313,7 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   // band cutout can expose the map above it (trainer PFD Inset Map.bmp).
   const float grooveW = std::max(2.0f, 4.0f * L.sx);
   const float bandBottom = top + panelH;
-  if (insetMapMode) {
+  if (leftInsetMapMode) {
     const float insetBottom = L.insetMapY + L.insetMapH;
     if (insetBottom < bandBottom) {
       const float oatStripH = bandBottom - insetBottom;
@@ -351,7 +354,7 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   // back over the label. When the inset map is showing, OAT sits lower in the
   // narrow strip below the square map viewport (trainer PFD Inset Map.bmp).
   const float oatCy =
-      insetMapMode
+      leftInsetMapMode
           ? L.insetMapY + L.insetMapH + kInsetMapOatCyBelowViewportPx * L.sy
           : bottomRowCy;
   const float oatValueX = putText(r, oatW * 0.06f, oatCy, "OAT", labelSize,

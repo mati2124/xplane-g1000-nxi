@@ -435,6 +435,7 @@ class MfdController {
   std::string directToIdent() const { return dtoEntry_.ident(); }
   int directToCursor() const { return dtoEntry_.pos; }
   int directToTypedCount() const { return dtoEntry_.typedCount(); }
+  bool directToSelectAll() const { return dtoEntry_.selectAll; }
   bool directToNotFound() const { return dtoEntry_.notFound; }
   bool directToHasMatch() const { return dtoEntry_.hasMatch; }
   const MapFeature& directToMatch() const { return dtoEntry_.match; }
@@ -443,6 +444,9 @@ class MfdController {
   // Activation latch for the shell: true once after ENT on ACTIVATE?, copying
   // out the target waypoint so the shell engages the direct course.
   bool consumeDirectToRequest(MapLeg& out);
+
+  // GCU alphanumeric keypad during waypoint-ident entry (Direct-To / FPL / WPT).
+  bool applyGcuEntryKey(char ch);
 
   // ---- SimBrief (AUX - SIMBRIEF page) ----
   // Latest fetch status, published by the shell each frame (the shell owns the
@@ -640,6 +644,7 @@ class MfdController {
   // ENT in the FPL entry window: insert the matched waypoint before the cursor
   // row (append on the blank end slot) and advance the cursor.
   void fplCommitEntry();
+  FmsWaypointEntry* activeWaypointEntry();
   // Mark the edited plan for the shell to pick up.
   void fplPublishEdit();
   // ---- VNAV altitude-constraint entry (ALT column) ----
@@ -802,6 +807,8 @@ class MfdController {
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;
   MapLeg dtoRequestTarget_;
+  bool dtoPreservePlan_ = false;
+  int dtoPreserveLegIndex_ = -1;
 
   // SimBrief page state. The pending ID is UI-only until ENT commits it; the
   // fetch state itself lives in the shell (which owns the HTTPS client) and is

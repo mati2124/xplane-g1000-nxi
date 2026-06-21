@@ -139,6 +139,11 @@ void NanoVgRenderer::beginFrame(int widthPx, int heightPx, float pixelRatio) {
   stats_ = DrawStats{};
   nvgBeginFrame(vg_, static_cast<float>(widthPx),
                 static_cast<float>(heightPx), pixelRatio);
+  if (displayFlip180_) {
+    nvgTranslate(vg_, static_cast<float>(widthPx),
+                 static_cast<float>(heightPx));
+    nvgRotate(vg_, nvgDegToRad(180.0f));
+  }
 }
 
 void NanoVgRenderer::endFrame() {

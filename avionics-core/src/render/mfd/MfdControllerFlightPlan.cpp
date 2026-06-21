@@ -31,7 +31,8 @@ void MfdController::syncFlightPlan(const MapData& map,
     fplLastMapPlan_ = map.flightPlan;
     // Adopt the change unless it is just the data source catching up with our
     // own pending/published edit.
-    if (!fplEditPending_ && !legsEqual(map.flightPlan, fplLastPublished_)) {
+    if (!fplEditPending_ && !legsEqual(map.flightPlan, fplLastPublished_) &&
+        !legsEqual(fplLegs_, fplLastPublished_)) {
       fplLegs_ = map.flightPlan;
       // The rows the interaction state referenced are gone; close the entry
       // and confirmation windows rather than acting on the wrong waypoint.
@@ -344,6 +345,24 @@ bool MfdController::fplBezelKey(BezelKey key) {
     default:
       return false;
   }
+}
+
+FmsWaypointEntry* MfdController::activeWaypointEntry() {
+  if (dtoOpen_ && dtoEntry_.active && !dtoArmed_) return &dtoEntry_;
+  if (fplEntry_.active) return &fplEntry_;
+  if (wptEntry_.active) return &wptEntry_;
+  return nullptr;
+}
+
+bool MfdController::applyGcuEntryKey(char ch) {
+  FmsWaypointEntry* entry = activeWaypointEntry();
+  if (entry == nullptr) return false;
+  if (ch == '\b') {
+    entry->backspaceChar(navSource_, mapData_);
+  } else {
+    entry->typeChar(navSource_, mapData_, ch);
+  }
+  return true;
 }
 
 }  // namespace avionics

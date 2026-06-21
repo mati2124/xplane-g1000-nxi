@@ -52,6 +52,10 @@ class DatarefDataSource : public DataSource {
                ? checklistSource_->checklists()
                : emptyChecklists_;
   }
+  std::string checklistSourcePath() const override {
+    return checklistSource_ != nullptr ? checklistSource_->sourcePath()
+                                       : std::string();
+  }
 
   void setEisSource(EisSource* source) { eisSource_ = source; }
   void setChecklistSource(ChecklistSource* source) {
@@ -72,6 +76,11 @@ class DatarefDataSource : public DataSource {
   void setMapPanCenter(bool active, double lat, double lon) override;
   void setChartRangeNm(float rangeNm) override;
   void setMapViewHalfExtentNm(float halfExtentNm) override;
+
+  std::string aircraftIcaoType() const override { return lastAircraftIcao_; }
+  std::string aircraftAcfRelativePath() const override {
+    return lastAircraftAcfPath_;
+  }
 
   // NAV/COM bezel tuning written straight back to the sim's radio datarefs so
   // the stock radios follow the glass. tuneRadioStandby sets the standby

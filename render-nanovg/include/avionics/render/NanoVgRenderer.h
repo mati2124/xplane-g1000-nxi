@@ -47,6 +47,10 @@ class NanoVgRenderer : public Renderer {
   };
   const DrawStats& drawStats() const { return stats_; }
 
+  // When set, the next beginFrame() rotates the draw surface 180° after
+  // nvgBeginFrame resets the stack (used on Windows landscape-flipped monitors).
+  void setDisplayFlip180(bool flip) { displayFlip180_ = flip; }
+
   void beginFrame(int widthPx, int heightPx, float pixelRatio) override;
   void endFrame() override;
 
@@ -119,6 +123,7 @@ class NanoVgRenderer : public Renderer {
   int boldFontId_ = -1;     // bold weight (Roboto Bold), e.g. softkey labels
   std::vector<FontFace> defaultFaceStack_;  // active Default-face overrides
   DrawStats stats_;
+  bool displayFlip180_ = false;
 };
 
 }  // namespace avionics
