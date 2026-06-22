@@ -333,10 +333,10 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
 
   // The Direct-To window (bezel-key driven) eases the same way. Cache the map
   // snapshot and the active waypoint so the window can resolve idents and seed
-  // its default destination.
+  // its default destination. Flight-plan sync runs in AvionicsEngine::update
+  // after the data source is pumped so both GDUs adopt the same live route.
   mapData_ = &map;
   activeWaypoint_ = data.fmaToWpt;
-  syncFlightPlanLegs(map);
   dtoAnim_ = approach(dtoAnim_, dtoOpen_ ? 1.0f : 0.0f, dt / kWindowAnimSeconds);
   pageMenuAnim_ =
       approach(pageMenuAnim_, pageMenuOpen_ ? 1.0f : 0.0f, dt / kWindowAnimSeconds);

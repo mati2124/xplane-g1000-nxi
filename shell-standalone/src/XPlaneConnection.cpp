@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "avionics/Datarefs.h"
+#include "avionics/GlidepathGuidance.h"
 #include "avionics/MapRange.h"
 #include "avionics/NavMath.h"
 #include "avionics/Radio.h"
@@ -933,6 +934,7 @@ void XPlaneConnection::update(double dtSeconds) {
     }
     updateFmaModes();
     updateNavInstrumentation();
+    updateGpsGlidepathCoupling();
     // GPS flight phase (ENR/TERM/APR/OCN) is a discrete annunciation derived
     // from the live CDI sensitivity, so it is set straight through (no easing).
     data_.gpsFlightPhase = gpsPhaseFromSensitivity(gpsHdefNmPerDot_);
@@ -1084,6 +1086,11 @@ void XPlaneConnection::updateMap(double dtSeconds) {
 
   map_.ownshipLat = static_cast<double>(ownshipLatDeg_);
   map_.ownshipLon = static_cast<double>(ownshipLonDeg_);
+
+  // Live datalink NEXRAD overlay centered on the aircraft (real ground radar).
+  nexrad_.setCenter(map_.ownshipLat, map_.ownshipLon);
+  nexrad_.advance(dtSeconds);
+  map_.nexrad = &nexrad_;
 
   // Flight plan precedence:
   //   1. An externally supplied route (SimBrief OFP / FPL page edits) wins.
@@ -1302,6 +1309,68 @@ void XPlaneConnection::updateNavInstrumentation() {
     data_.dmeDistanceNm = gpsDme;
     data_.dmeMode = "GPS";
     data_.dmeFreqMhz = 0.0f;
+  }
+}
+
+void XPlaneConnection::updateGpsGlidepathCoupling() {
+  if (connectionState() != ConnectionState::Connected) {
+    gpsGlidepathHasSignal_ = false;
+    return;
+  }
+
+  // Only synthesize a GPS glidepath for RNAV; ILS GS comes from the NAV radios.
+  if (data_.cdiSource != CdiSource::Gps) {
+    gpsGlidepathHasSignal_ = false;
+    return;
+  }
+
+  const int gsStatus = apModeStatus_[kApGlideslope];
+  if (gsStatus == 0) {
+    gpsGlidepathHasSignal_ = false;
+    return;
+  }
+
+  const GlidepathSolution gp = computeGlidepath(map_, data_);
+  if (!gp.valid) {
+    gpsGlidepathHasSignal_ = false;
+    return;
+  }
+
+  // Tell X-Plane a WAAS/LPV vertical path is available and publish deviation
+  // dots so APP/GS can capture and track like an ILS glideslope.
+  sendDataref(datarefs::kGpsHasGlideslope, 1.0f);
+  if (std::fabs(gp.deviationDots - lastSentGpsVdefDots_) > 0.02f) {
+    sendDataref(datarefs::kGpsVdefDots, gp.deviationDots);
+    lastSentGpsVdefDots_ = gp.deviationDots;
+  }
+  gpsGlidepathHasSignal_ = true;
+
+  bool gsStatusChanged = false;
+  if (gsStatus == kApModeArmed) {
+    // X-Plane captures GS when crossing the path from below with a valid signal.
+    const bool interceptable =
+        gp.altitudeErrorFt <= 100.0f && gp.altitudeErrorFt >= -2000.0f;
+    const bool inEnvelope =
+        std::fabs(gp.deviationDots) <= kGlidepathCaptureMaxDots;
+    if (interceptable && inEnvelope) {
+      sendDataref(datarefs::kApGlideslopeStatus,
+                  static_cast<float>(kApModeActive));
+      apModeStatus_[kApGlideslope] = kApModeActive;
+      gsStatusChanged = true;
+    }
+  }
+
+  if (apModeStatus_[kApGlideslope] == kApModeActive && data_.apEngaged) {
+    // Some aircraft APs need an explicit VS target while GS is active; the sim
+    // may ignore this when GS pitch tracking is working from the injected vdef.
+    if (std::fabs(gp.targetVerticalSpeedFpm - lastSentGsTrackVsFpm_) > 10.0f) {
+      sendDataref(datarefs::kSelectedVerticalSpeedFpm, gp.targetVerticalSpeedFpm);
+      lastSentGsTrackVsFpm_ = gp.targetVerticalSpeedFpm;
+    }
+  }
+
+  if (gsStatusChanged) {
+    updateFmaModes();
   }
 }
 

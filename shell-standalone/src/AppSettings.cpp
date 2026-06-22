@@ -1,5 +1,6 @@
 #include "AppSettings.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +28,16 @@ constexpr const char* kKeyDebugDataSource = "debugDataSource";
 constexpr const char* kKeyDemoMasterPower = "demoMasterPower";
 constexpr const char* kKeyDemoAvionicsPower = "demoAvionicsPower";
 constexpr const char* kKeyDemoCasMessages = "demoCasMessages";
+constexpr const char* kKeyApproachActive = "approachActive";
+constexpr const char* kKeyApproachAirport = "approachAirport";
+constexpr const char* kKeyApproachType = "approachType";
+constexpr const char* kKeyApproachName = "approachName";
+constexpr const char* kKeyApproachTransition = "approachTransition";
+constexpr const char* kKeyApproachRunway = "approachRunway";
+constexpr const char* kKeyApproachKind = "approachKind";
+constexpr const char* kKeyApproachLos = "approachLos";
+constexpr const char* kKeyFplActive = "fplActive";
+constexpr const char* kKeyFplDestFilled = "fplDestFilled";
 
 // Stable text tokens for the persisted DebugDataSource selection.
 constexpr const char* kSourceXPlane = "xplane";
@@ -55,6 +66,28 @@ DebugDataSource ParseDebugDataSource(const std::string& value,
   if (value == kSourceDemoFlying) return DebugDataSource::DemoFlying;
   if (value == kSourceDemoTurbulence) return DebugDataSource::DemoTurbulence;
   return fallback;
+}
+
+bool ParsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
+  const std::size_t sep1 = value.find('|');
+  if (sep1 == std::string::npos) return false;
+  const std::size_t sep2 = value.find('|', sep1 + 1);
+  if (sep2 == std::string::npos) return false;
+  try {
+    legOut.id = value.substr(0, sep1);
+    legOut.lat = std::stod(value.substr(sep1 + 1, sep2 - sep1 - 1));
+    legOut.lon = std::stod(value.substr(sep2 + 1));
+    return !legOut.id.empty();
+  } catch (...) {
+    return false;
+  }
+}
+
+std::string FormatPersistedFlightPlanLeg(const MapLeg& leg) {
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f", leg.id.c_str(), leg.lat,
+                leg.lon);
+  return std::string(buf);
 }
 
 // Per-user config directory, following each platform's convention. Empty when
@@ -171,6 +204,48 @@ AppSettings LoadAppSettings() {
     } else if (key == kKeyDemoCasMessages) {
       settings.demoCasMessagesOn =
           ParseBool(value, settings.demoCasMessagesOn);
+    } else if (key == kKeyApproachActive) {
+      settings.persistedApproach.active =
+          ParseBool(value, settings.persistedApproach.active);
+    } else if (key == kKeyApproachAirport) {
+      settings.persistedApproach.airportIcao = value;
+    } else if (key == kKeyApproachType) {
+      try {
+        const int t = std::stoi(value);
+        if (t >= 0 && t <= 2) {
+          settings.persistedApproach.type =
+              static_cast<ProcedureType>(t);
+        }
+      } catch (...) {
+      }
+    } else if (key == kKeyApproachName) {
+      settings.persistedApproach.name = value;
+    } else if (key == kKeyApproachTransition) {
+      settings.persistedApproach.transition = value;
+    } else if (key == kKeyApproachRunway) {
+      settings.persistedApproach.runway = value;
+    } else if (key == kKeyApproachKind) {
+      settings.persistedApproach.approachKind = value;
+    } else if (key == kKeyApproachLos) {
+      settings.persistedApproach.levelOfService = value;
+    } else if (key == kKeyFplActive) {
+      settings.persistedFlightPlan.active = ParseBool(value, false);
+    } else if (key == kKeyFplDestFilled) {
+      settings.persistedFlightPlan.destinationFilled = ParseBool(value, false);
+    } else if (key.rfind("fplLeg", 0) == 0 && key.size() > 6) {
+      const int idx = std::atoi(key.c_str() + 6);
+      if (idx >= 0 && idx < 64) {
+        MapLeg leg;
+        if (ParsePersistedFlightPlanLeg(value, leg)) {
+          if (settings.persistedFlightPlan.legs.size() <=
+              static_cast<std::size_t>(idx)) {
+            settings.persistedFlightPlan.legs.resize(
+                static_cast<std::size_t>(idx + 1));
+          }
+          settings.persistedFlightPlan.legs[static_cast<std::size_t>(idx)] =
+              std::move(leg);
+        }
+      }
     } else {
       // Durable avionics display preferences are owned by the shared core, so
       // it parses its own keys; anything else is silently ignored.
@@ -211,6 +286,31 @@ void SaveAppSettings(const AppSettings& settings) {
       << (settings.demoAvionicsPowerOn ? '1' : '0') << '\n';
   out << kKeyDemoCasMessages << '='
       << (settings.demoCasMessagesOn ? '1' : '0') << '\n';
+  out << kKeyApproachActive << '='
+      << (settings.persistedApproach.active ? '1' : '0') << '\n';
+  out << kKeyApproachAirport << '=' << settings.persistedApproach.airportIcao
+      << '\n';
+  out << kKeyApproachType << '='
+      << static_cast<int>(settings.persistedApproach.type) << '\n';
+  out << kKeyApproachName << '=' << settings.persistedApproach.name << '\n';
+  out << kKeyApproachTransition << '='
+      << settings.persistedApproach.transition << '\n';
+  out << kKeyApproachRunway << '=' << settings.persistedApproach.runway << '\n';
+  out << kKeyApproachKind << '=' << settings.persistedApproach.approachKind
+      << '\n';
+  out << kKeyApproachLos << '='
+      << settings.persistedApproach.levelOfService << '\n';
+  out << kKeyFplActive << '='
+      << (settings.persistedFlightPlan.active ? '1' : '0') << '\n';
+  out << kKeyFplDestFilled << '='
+      << (settings.persistedFlightPlan.destinationFilled ? '1' : '0')
+      << '\n';
+  for (std::size_t i = 0; i < settings.persistedFlightPlan.legs.size(); ++i) {
+    out << "fplLeg" << i << '='
+        << FormatPersistedFlightPlanLeg(
+               settings.persistedFlightPlan.legs[i])
+        << '\n';
+  }
   // Window coordinates are only written once a position has been captured, so
   // a fresh install never restores a bogus (0, 0) placement.
   if (settings.hasWindowPos) {

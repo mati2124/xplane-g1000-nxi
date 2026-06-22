@@ -25,6 +25,10 @@ struct CifpLeg {
   std::string qualifier2;        // APPCH col 38
   float rnp = 0.0f;              // APPCH col 11
   std::string levelOfService;    // LPV, LNAV, ... from PRDAT or heuristics
+  std::string altitudeDescription;  // APPCH col 23 (ARINC 5.29)
+  int altitude1Ft = 0;            // APPCH col 24 (ARINC 5.30)
+  int altitude2Ft = 0;            // APPCH col 25 (ARINC 5.30)
+  float verticalAngleDeg = 0.0f;  // APPCH col 29 (ARINC 5.70), positive descent
 };
 
 // Parsed terminal procedures for one airport.
@@ -49,5 +53,9 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
                                         const std::string& name,
                                         const std::string& transition,
                                         CifpFixLookup lookup, void* ctx);
+
+// Pilot-selectable transitions for an approach (VECTORS first, then IAF feeders).
+std::vector<ApproachTransitionOption> listApproachTransitions(
+    const CifpAirportProcedures& data, const std::string& approachName);
 
 }  // namespace avionics

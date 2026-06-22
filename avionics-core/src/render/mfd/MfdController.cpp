@@ -298,6 +298,20 @@ void MfdController::rebuildLabels() {
 
 float MfdController::rangeNm() const { return mapRangeNmAt(rangeIndex_); }
 
+void MfdController::setRangeFromNm(float rangeNm) {
+  rangeIndex_ = mapRangeIndexForNm(rangeNm);
+}
+
+bool MfdController::stepMapRange(int direction) {
+  const int before = rangeIndex_;
+  if (direction > 0) {
+    rangeIndex_ = std::min(kMapRangeLadderCount - 1, rangeIndex_ + 1);
+  } else if (direction < 0) {
+    rangeIndex_ = std::max(0, rangeIndex_ - 1);
+  }
+  return rangeIndex_ != before;
+}
+
 float MfdController::mapViewHalfExtentNm() const {
   if (!mapViewportValid_ || mapViewportW_ <= 0.0f || mapViewportH_ <= 0.0f) {
     return 0.0f;
@@ -549,8 +563,9 @@ void MfdController::pressBezelKey(BezelKey key) {
 
   // Pilot ID digit entry is modal, like a cursor field on the real unit: ENT
   // commits the pending digits, CLR erases (cancelling once empty), and the
-  // page-navigation keys are inert until the entry is closed.
-  if (simbriefIdEntry_) {
+  // page-navigation keys are inert until the entry is closed. Range still
+  // zooms the map underneath.
+  if (simbriefIdEntry_ && !isMapRangePanBezelKey(key)) {
     switch (key) {
       case BezelKey::Ent:
         if (!simbriefPendingId_.empty()) {
@@ -581,8 +596,9 @@ void MfdController::pressBezelKey(BezelKey key) {
   }
 
   // The Map Settings window is modal over the navigation map: it owns the FMS
-  // knob / ENT / CLR until the FMS knob push or CLR closes it.
-  if (mapSettingsOpen_) {
+  // knob / ENT / CLR until the FMS knob push or CLR closes it. The RANGE rocker
+  // still zooms the map underneath (Pilot's Guide).
+  if (mapSettingsOpen_ && !isMapRangePanBezelKey(key)) {
     mapSettingsBezelKey(key);
     rebuildLabels();
     return;
@@ -590,7 +606,8 @@ void MfdController::pressBezelKey(BezelKey key) {
 
   // The Page Menu (MENU key) is modal over the base page while it is up: it
   // owns the FMS knob / ENT / CLR until an option is run or it is backed out.
-  if (pageMenuOpen_) {
+  // RANGE zoom still applies to the base page map.
+  if (pageMenuOpen_ && !isMapRangePanBezelKey(key)) {
     pageMenuBezelKey(key);
     rebuildLabels();
     return;

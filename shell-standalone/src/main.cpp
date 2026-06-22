@@ -122,6 +122,7 @@
 #include "avionics/ComDecode.h"
 #include "avionics/MockDataSource.h"
 #include "avionics/PersistentState.h"
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/UpdateChecker.h"
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
@@ -131,6 +132,24 @@
 #include "avionics/render/SoftkeyBezel.h"
 
 namespace {
+
+void ApplyConsumedFlightPlan(avionics::XPlaneConnection& xplane,
+                             const std::vector<avionics::MapLeg>& plan,
+                             bool destinationFilled,
+                             bool requireDestinationFilled = true) {
+  if (plan.empty()) {
+    // Keep override active with an empty route so the map/FPL stay blank instead
+    // of re-adopting the .fms file.
+    xplane.setRouteOverride({});
+    return;
+  }
+  if (avionics::flightPlanReadyForSimulator(plan, destinationFilled,
+                                            requireDestinationFilled)) {
+    xplane.setRouteOverride(plan);
+  } else {
+    xplane.setLocalFlightPlan(plan);
+  }
+}
 
 // Absolute directory containing the running executable, used to find bundled
 // assets in a distributed build. Returns empty on failure (the asset resolver
@@ -803,8 +822,36 @@ bool BridgeFmsKeyBlockedByPfd(const AppState& app,
     return false;
   }
   if (app.pfdEngine == nullptr) return false;
+  // The MFD Active Flight Plan page owns its own FMS knob on the MFD GDU.
+  if (app.mfdEngine != nullptr &&
+      app.mfdEngine->mfdController().pageGroup() ==
+          avionics::MfdPageGroup::FlightPlan) {
+    return false;
+  }
   if (!app.pfdEngine->softkeyController().pfdClaimsFmsInput()) return false;
   return avionics::isGduFmsInputKey(key);
+}
+
+bool ApplyBridgeMfdMapRange(avionics::AvionicsEngine& engine,
+                            avionics::DataSource* source,
+                            avionics::BezelKey key) {
+  if (key != avionics::BezelKey::RangeUp &&
+      key != avionics::BezelKey::RangeDown) {
+    return false;
+  }
+  const int direction = key == avionics::BezelKey::RangeUp ? +1 : -1;
+  avionics::MfdController& ui = engine.mfdController();
+  const float beforeNm = ui.rangeNm();
+  engine.pressBezelKey(key);
+  if (ui.rangeNm() != beforeNm) {
+    if (source != nullptr) source->setChartRangeNm(ui.rangeNm());
+    return true;
+  }
+  if (ui.stepMapRange(direction)) {
+    if (source != nullptr) source->setChartRangeNm(ui.rangeNm());
+    return true;
+  }
+  return false;
 }
 
 // Applies bezel / softkey / radio events forwarded from the in-sim plugin.
@@ -872,6 +919,10 @@ void ApplyBridgeEvents(AppState& app,
         engine->acknowledgePowerUp();
       } else if (key == avionics::BezelKey::DisplayBackup) {
         ToggleDisplayBackup(app);
+      } else if (ev.device == avionics::cmdbridge::Device::Mfd &&
+                 (key == avionics::BezelKey::RangeUp ||
+                  key == avionics::BezelKey::RangeDown)) {
+        ApplyBridgeMfdMapRange(*engine, app.activeSource, key);
       } else if (key != avionics::BezelKey::Count) {
         engine->pressBezelKey(key);
       }
@@ -1387,6 +1438,100 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // step to second row
     engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // open ident entry
     engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // spell a character
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdfplblank") == 0) {
+    // MFD Active Flight Plan template with FMS cursor on (trainer
+    // screenshot009: Origin/Destination - ____ - RW__ label rows plus blank
+    // dash entry rows with the cyan selection arrow).
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    dataSource.updateRoute({});
+    dataSource.cancelDirectTo();
+    engine.mfdController().syncFlightPlan(dataSource.mapSnapshot(), {}, false);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfplblank") == 0) {
+    // Blank Active Flight Plan template (trainer: dashed ORIG/DEST header plus
+    // Origin, underscore rows, Enroute, and Destination section slots).
+    engine.skipBoot();
+    engine.update(seconds);
+    dataSource.updateRoute({});
+    dataSource.cancelDirectTo();
+    engine.softkeyController().syncFlightPlanFromMap(dataSource.mapSnapshot());
+    engine.mfdController().syncFlightPlan(dataSource.mapSnapshot(), {}, false);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfplorigin") == 0) {
+    // PFD Active Flight Plan with origin only (KPGD): header KPGD / ____ and
+    // the enroute template with a filled origin ident (trainer Fig. 5-48).
+    avionics::MapLeg origin;
+    origin.id = "KPGD";
+    origin.lat = 26.9202;
+    origin.lon = -81.9906;
+    engine.skipBoot();
+    engine.update(seconds);
+    dataSource.updateRoute({origin});
+    dataSource.cancelDirectTo();
+    engine.softkeyController().syncFlightPlanFromMap(dataSource.mapSnapshot());
+    engine.mfdController().syncFlightPlan(dataSource.mapSnapshot(), {}, false);
+    for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);
+    for (int i = 0; i < 3; ++i) {
+      engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);
+      for (int j = 0; j < 5; ++j) engine.update(1.0 / 60.0);
+    }
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfplenroute") == 0) {
+    // PFD Active Flight Plan KPGD -> LBV -> KFMY (enroute waypoint inserted).
+    avionics::MapLeg origin;
+    origin.id = "KPGD";
+    origin.lat = 26.9202;
+    origin.lon = -81.9906;
+    avionics::MapLeg enroute;
+    enroute.id = "LBV";
+    enroute.lat = 27.0442;
+    enroute.lon = -81.9953;
+    avionics::MapLeg dest;
+    dest.id = "KFMY";
+    dest.lat = 26.5862;
+    dest.lon = -81.8632;
+    dataSource.setRoute({origin, enroute, dest});
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfplroute") == 0) {
+    // PFD Active Flight Plan with a two-leg route (KPGD -> KFMY) so the magenta
+    // active-leg connector from Origin through Enroute to the destination row
+    // is visible (Pilot's Guide Fig. 5-48).
+    avionics::MapLeg origin;
+    origin.id = "KPGD";
+    origin.lat = 26.9202;
+    origin.lon = -81.9906;
+    avionics::MapLeg dest;
+    dest.id = "KFMY";
+    dest.lat = 26.5862;
+    dest.lon = -81.8632;
+    dataSource.setRoute({origin, dest});
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "pfdproc") == 0) {
@@ -2976,10 +3121,29 @@ int main(int argc, char** argv) {
     pfdEngine->skipBoot();
     avionics::applyPfdState(pfdEngine->softkeyController(),
                             savedSettings.avionics.pfd);
+    if (savedSettings.persistedApproach.active) {
+      pfdEngine->softkeyController().setPersistedLoadedApproach(
+          savedSettings.persistedApproach);
+    }
+    if (savedSettings.persistedFlightPlan.active) {
+      pfdEngine->softkeyController().restorePersistedFlightPlan(
+          savedSettings.persistedFlightPlan);
+      ApplyConsumedFlightPlan(
+          xplane, savedSettings.persistedFlightPlan.legs,
+          savedSettings.persistedFlightPlan.destinationFilled);
+    }
   }
   if (mfdEngine != nullptr) {
     avionics::applyMfdState(mfdEngine->mfdController(),
                             savedSettings.avionics.mfd);
+    if (savedSettings.persistedApproach.active) {
+      mfdEngine->mfdController().setPersistedLoadedApproach(
+          savedSettings.persistedApproach);
+    }
+    if (savedSettings.persistedFlightPlan.active) {
+      mfdEngine->mfdController().restorePersistedFlightPlan(
+          savedSettings.persistedFlightPlan);
+    }
   }
 
   AppState app;
@@ -3178,6 +3342,14 @@ int main(int argc, char** argv) {
             static_cast<int>(simbriefResult.legs.size());
         // The OFP becomes the displayed flight plan on the X-Plane feed.
         xplane.setRouteOverride(simbriefResult.legs);
+        if (pfdEngine != nullptr) {
+          pfdEngine->softkeyController().replaceFlightPlanFromExternal(
+              simbriefResult.legs);
+        }
+        if (mfdEngine != nullptr) {
+          mfdEngine->mfdController().replaceFlightPlanFromExternal(
+              simbriefResult.legs);
+        }
       } else {
         simbriefState.status = avionics::SimBriefStatus::Error;
         simbriefState.error = simbriefResult.error;
@@ -3199,13 +3371,7 @@ int main(int argc, char** argv) {
         }
       }
 
-      // PFD Active Flight Plan window edits (insert / remove / delete), and PROC
-      // window procedure loads, override the displayed plan and program the FMS,
-      // the same as the MFD FPL page.
-      std::vector<avionics::MapLeg> pfdEditedPlan;
-      if (pfdEngine->softkeyController().consumeFlightPlanEdit(pfdEditedPlan)) {
-        xplane.setRouteOverride(pfdEditedPlan);
-      }
+      // PFD Active Flight Plan window edits are drained after bridge events below.
 
       // A loaded PROC approach with an ILS frequency tunes NAV1 standby (same as
       // the MFD's procedure load).
@@ -3217,13 +3383,8 @@ int main(int argc, char** argv) {
     }
 
     // FPL page edits override the X-Plane feed's displayed plan, mirroring the
-    // SimBrief flow above.
+    // SimBrief flow above — drained after bridge events below.
     if (mfdEngine != nullptr) {
-      std::vector<avionics::MapLeg> editedPlan;
-      if (mfdEngine->mfdController().consumeFlightPlanEdit(editedPlan)) {
-        xplane.setRouteOverride(editedPlan);
-      }
-
       // Direct-To activation: the X-Plane feed shows the magenta direct line
       // (display only over UDP).
       avionics::MapLeg dtoTarget;
@@ -3258,6 +3419,23 @@ int main(int argc, char** argv) {
       std::vector<avionics::cmdbridge::Event> bridgeEvents;
       commandBridge.drainEvents(bridgeEvents);
       ApplyBridgeEvents(app, bridgeEvents);
+    }
+
+    // Flight-plan edits from GCU/GDU (including delete) — after bridge so the
+    // same frame's ENT confirm is published and consumed immediately.
+    if (pfdEngine != nullptr) {
+      std::vector<avionics::MapLeg> pfdEditedPlan;
+      if (pfdEngine->softkeyController().consumeFlightPlanEdit(pfdEditedPlan)) {
+        ApplyConsumedFlightPlan(
+            xplane, pfdEditedPlan,
+            pfdEngine->softkeyController().flightPlanDestinationFilled());
+      }
+    }
+    if (mfdEngine != nullptr) {
+      std::vector<avionics::MapLeg> editedPlan;
+      if (mfdEngine->mfdController().consumeFlightPlanEdit(editedPlan)) {
+        ApplyConsumedFlightPlan(xplane, editedPlan, false, false);
+      }
     }
 
     // Radio / transponder / HDG / CRS / BARO commands from the bezel and XPDR
@@ -3396,6 +3574,14 @@ int main(int argc, char** argv) {
       if (current != app.settings.avionics) {
         app.settings.avionics = current;
         avionics::SaveAppSettings(app.settings);
+      }
+      if (pfdEngine != nullptr) {
+        const avionics::PersistedLoadedApproach approach =
+            pfdEngine->softkeyController().persistedLoadedApproachSnapshot();
+        if (approach != app.settings.persistedApproach) {
+          app.settings.persistedApproach = approach;
+          avionics::SaveAppSettings(app.settings);
+        }
       }
     }
 

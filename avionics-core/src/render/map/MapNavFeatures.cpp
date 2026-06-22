@@ -1,6 +1,7 @@
 #include "render/map/MapViewInternal.h"
 
 #include <algorithm>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -109,6 +110,31 @@ bool drawFeature(const MapFeature& f, std::size_t featureIdx,
   return true;
 }
 
+// Flight-plan, direct-to, and procedure-preview layers draw their own idents
+// on top of nav symbology; skip the white nav label when one of those overlays
+// already labels the same fix.
+std::unordered_set<std::string> routeOverlayLabelIds(
+    const MapData& map, const MapViewConfig& config) {
+  std::unordered_set<std::string> ids;
+  if (config.style.showFlightPlan) {
+    if (map.flightPlan.size() >= 2) {
+      for (const MapLeg& leg : map.flightPlan) {
+        if (!leg.id.empty()) ids.insert(leg.id);
+      }
+    }
+    if (map.directToActive && map.positionValid && !map.directTo.id.empty()) {
+      ids.insert(map.directTo.id);
+    }
+  }
+  if (config.procedurePreview != nullptr &&
+      config.procedurePreview->size() >= 2) {
+    for (const MapLeg& leg : *config.procedurePreview) {
+      if (!leg.id.empty()) ids.insert(leg.id);
+    }
+  }
+  return ids;
+}
+
 }  // namespace
 
 void drawNavFeatures(Renderer& r, const MapData& map, const Proj& proj,
@@ -146,6 +172,8 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
 
   const std::unordered_set<std::size_t> airportDrawSet =
       rankedAirportDrawSet(map, config, rangeNm);
+  const std::unordered_set<std::string> routeLabelIds =
+      routeOverlayLabelIds(map, config);
 
   int fixesDrawn = 0;
   for (std::size_t i = 0; i < map.features.size(); ++i) {
@@ -157,6 +185,7 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
       continue;
     }
     if (f.id.empty()) continue;
+    if (routeLabelIds.find(f.id) != routeLabelIds.end()) continue;
 
     float x = 0.0f, y = 0.0f;
     proj.toPx(f.lat, f.lon, x, y);

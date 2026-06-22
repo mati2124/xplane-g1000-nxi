@@ -101,6 +101,11 @@ class ShellNavMapData : public NavFeatureSource {
     return procedures_.expandProcedure(icao, type, name, transition, this);
   }
 
+  std::vector<ApproachTransitionOption> approachTransitionsFor(
+      const std::string& icao, const std::string& approachName) const override {
+    return procedures_.approachTransitionsFor(icao, approachName);
+  }
+
   bool isAirwayName(const std::string& name) const override {
     return airways_.isAirwayName(name);
   }

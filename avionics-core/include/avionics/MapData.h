@@ -109,6 +109,10 @@ struct MapLeg {
 
   // Loaded procedure role suffix (e.g. "iaf", "faf") for the FPL ident column.
   std::string procedureRole;
+
+  // Published glidepath angle from CIFP (degrees, positive descent angle).
+  // Non-zero on LPV final-segment legs; drives the PFD magenta glidepath diamond.
+  float glidePathAngleDeg = 0.0f;
 };
 
 // A bare geographic vertex, used for airspace boundary rings.
@@ -307,6 +311,12 @@ struct MapProcedure {
   std::string approachKind; // ILS/RNAV/etc. letter from CIFP (approaches only)
   std::string levelOfService; // LPV, LNAV, LNAV/VNAV from CIFP/PRDAT (approaches only)
   float frequencyMhz = 0.0f;  // merged from earth_nav when available
+};
+
+// One pilot-selectable approach transition (id for FMS load, display for lists).
+struct ApproachTransitionOption {
+  std::string id;       // e.g. VECTORS, LBV
+  std::string display;  // e.g. VECTORS, LBV iaf
 };
 
 // Slow-changing navigation map snapshot, distinct from the per-frame FlightData

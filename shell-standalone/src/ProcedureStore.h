@@ -30,6 +30,9 @@ class ProcedureStore {
                                       const std::string& transition,
                                       const NavFeatureSource* lookup) const;
 
+  std::vector<ApproachTransitionOption> approachTransitionsFor(
+      const std::string& icao, const std::string& approachName) const;
+
  private:
   const CifpAirportProcedures& loadAirport(const std::string& icao) const;
 

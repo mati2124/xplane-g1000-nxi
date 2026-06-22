@@ -1,0 +1,340 @@
+#include "avionics/FplRouteEdit.h"
+
+#include "avionics/NavFeatureSource.h"
+#include "render/pfd/PfdFlightPlanSections.h"
+
+namespace avionics {
+namespace {
+
+using pfd::FplDisplayRowKind;
+using pfd::fplApproachInsertIndexForSelectable;
+using pfd::fplApproachLegIndexForSelectable;
+using pfd::fplApproachSelectableCount;
+using pfd::fplApproachSelectableRow;
+using pfd::fplEnrouteSelectableBase;
+using pfd::fplInsertIndexForSectionRow;
+using pfd::fplLegIndexForSectionRow;
+using pfd::fplSectionSelectableCount;
+using pfd::fplShowsDestinationBlankRow;
+
+bool approachLayoutDestFilled(const FplRouteEdit& edit) {
+  return fplApproachLayoutDestFilled(edit.destinationFilled, edit.approachLegStart);
+}
+
+bool fplCommitApproachIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
+                            const MapFeature& match, const std::string& ident,
+                            int selectableCursorRow,
+                            const std::string& approachAirport) {
+  const int legCount = static_cast<int>(edit.legs.size());
+  const bool blankOrigin = fplApproachBlankOriginSection(
+      edit.legs, edit.approachLegStart, approachAirport);
+  const bool layoutDestFilled = approachLayoutDestFilled(edit);
+  const int selectableLast = fplApproachSelectableCount(
+                                 edit.legs, edit.approachLegStart,
+                                 edit.approachLegCount, blankOrigin,
+                                 layoutDestFilled) -
+                             1;
+  const int legIndex = fplApproachLegIndexForSelectable(
+      selectableCursorRow, edit.legs, edit.approachLegStart,
+      edit.approachLegCount, blankOrigin, layoutDestFilled);
+  const int row = fplApproachInsertIndexForSelectable(
+      selectableCursorRow, edit.legs, edit.approachLegStart,
+      edit.approachLegCount, legCount, blankOrigin, layoutDestFilled);
+  const pfd::FplDisplayRow* dr = fplApproachSelectableRow(
+      selectableCursorRow, edit.legs, edit.approachLegStart,
+      edit.approachLegCount, blankOrigin, layoutDestFilled);
+  if (dr != nullptr && dr->kind == FplDisplayRowKind::Destination &&
+      dr->legIndex < 0) {
+    edit.destinationFilled = true;
+  }
+
+  if (navSource != nullptr && navSource->isAirwayName(ident) && row > 0 &&
+      row < legCount) {
+    const std::vector<MapLeg> expanded = navSource->expandAirway(
+        ident, edit.legs[static_cast<std::size_t>(row - 1)].id,
+        edit.legs[static_cast<std::size_t>(row)].id);
+    if (!expanded.empty()) {
+      edit.legs.insert(edit.legs.begin() + row, expanded.begin(), expanded.end());
+      if (row <= edit.approachLegStart) {
+        edit.approachLegStart += static_cast<int>(expanded.size());
+      }
+      if (edit.legs.size() >= 3) edit.destinationFilled = true;
+      edit.cursorRow = std::min(
+          selectableLast,
+          selectableCursorRow + static_cast<int>(expanded.size()));
+      return true;
+    }
+    return false;
+  }
+
+  MapLeg leg;
+  leg.lat = match.lat;
+  leg.lon = match.lon;
+  leg.id = ident;
+  if (legIndex >= 0 && legIndex < legCount) {
+    edit.legs[static_cast<std::size_t>(legIndex)] = leg;
+  } else {
+    edit.legs.insert(edit.legs.begin() + row, leg);
+    if (row <= edit.approachLegStart) {
+      ++edit.approachLegStart;
+    }
+    if (edit.legs.size() >= 3) edit.destinationFilled = true;
+    edit.cursorRow = std::min(selectableLast, selectableCursorRow + 1);
+  }
+  return true;
+}
+
+bool fplCommitSectionIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
+                           const MapFeature& match, const std::string& ident,
+                           int selectableCursorRow) {
+  const int legCount = static_cast<int>(edit.legs.size());
+  const int lastSection =
+      std::max(0, fplSectionSelectableCount(legCount, edit.destinationFilled,
+                                            edit.directToActive) - 1);
+  const int legIndex = fplLegIndexForSectionRow(
+      selectableCursorRow, legCount, edit.destinationFilled, edit.directToActive);
+  const int row = fplInsertIndexForSectionRow(
+      selectableCursorRow, legCount, edit.destinationFilled, edit.directToActive);
+
+  if (selectableCursorRow == lastSection ||
+      (fplShowsDestinationBlankRow(legCount, edit.destinationFilled) &&
+       selectableCursorRow == lastSection - 1)) {
+    edit.destinationFilled = true;
+  } else if (selectableCursorRow == fplEnrouteSelectableBase(legCount) &&
+             legCount < 2) {
+    edit.destinationFilled = false;
+  }
+
+  if (navSource != nullptr && navSource->isAirwayName(ident) && row > 0 &&
+      row < legCount) {
+    const std::vector<MapLeg> expanded = navSource->expandAirway(
+        ident, edit.legs[static_cast<std::size_t>(row - 1)].id,
+        edit.legs[static_cast<std::size_t>(row)].id);
+    if (!expanded.empty()) {
+      edit.legs.insert(edit.legs.begin() + row, expanded.begin(), expanded.end());
+      if (edit.legs.size() >= 3) edit.destinationFilled = true;
+      edit.cursorRow = std::min(
+          lastSection, selectableCursorRow + static_cast<int>(expanded.size()));
+      return true;
+    }
+    return false;
+  }
+
+  MapLeg leg;
+  leg.lat = match.lat;
+  leg.lon = match.lon;
+  leg.id = ident;
+  if (legIndex >= 0 && legIndex < legCount) {
+    edit.legs[static_cast<std::size_t>(legIndex)] = leg;
+  } else {
+    edit.legs.insert(edit.legs.begin() + row, leg);
+  }
+  if (edit.legs.size() >= 3) edit.destinationFilled = true;
+  return true;
+}
+
+bool fplCommitFlatIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
+                        const MapFeature& match, const std::string& ident,
+                        int selectableCursorRow) {
+  const int legCount = static_cast<int>(edit.legs.size());
+  const int row = std::max(0, std::min(legCount, selectableCursorRow));
+
+  if (navSource != nullptr && navSource->isAirwayName(ident) && row > 0 &&
+      row < legCount) {
+    const std::vector<MapLeg> expanded = navSource->expandAirway(
+        ident, edit.legs[static_cast<std::size_t>(row - 1)].id,
+        edit.legs[static_cast<std::size_t>(row)].id);
+    if (!expanded.empty()) {
+      edit.legs.insert(edit.legs.begin() + row, expanded.begin(), expanded.end());
+      edit.cursorRow = row + static_cast<int>(expanded.size());
+      return true;
+    }
+    return false;
+  }
+
+  MapLeg leg;
+  leg.lat = match.lat;
+  leg.lon = match.lon;
+  leg.id = ident;
+  edit.legs.insert(edit.legs.begin() + row, leg);
+  edit.cursorRow = row + 1;
+  return true;
+}
+
+}  // namespace
+
+bool isAirportIdent(const std::string& id) {
+  if (id.size() != 4) return false;
+  for (char c : id) {
+    if (c < 'A' || c > 'Z') return false;
+  }
+  return true;
+}
+
+std::string airportIcaoBeforeIndex(const std::vector<MapLeg>& legs, int before) {
+  for (int i = std::min(before, static_cast<int>(legs.size())) - 1; i >= 0; --i) {
+    if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) {
+      return legs[static_cast<std::size_t>(i)].id;
+    }
+  }
+  return {};
+}
+
+std::string lastAirportInPlan(const std::vector<MapLeg>& legs) {
+  for (int i = static_cast<int>(legs.size()) - 1; i >= 0; --i) {
+    if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) {
+      return legs[static_cast<std::size_t>(i)].id;
+    }
+  }
+  return {};
+}
+
+std::string directToAirportIcao(const MapData* map) {
+  if (map == nullptr || !map->directToActive) return {};
+  return isAirportIdent(map->directTo.id) ? map->directTo.id : std::string();
+}
+
+bool flightPlanLegsEqual(const std::vector<MapLeg>& a,
+                         const std::vector<MapLeg>& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].id != b[i].id || a[i].lat != b[i].lat || a[i].lon != b[i].lon ||
+        a[i].procedureRole != b[i].procedureRole) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool fplDestinationFilledFromLegCount(int legCount) {
+  return legCount >= 3 || legCount == 2;
+}
+
+bool fplDestinationFilledForDisplay(int legCount, bool directToActive) {
+  if (directToActive) return false;
+  return fplDestinationFilledFromLegCount(legCount);
+}
+
+std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
+                                   int approachStart, const MapData* map) {
+  if (approachStart <= 0 && legs.empty()) return {};
+  std::string icao = airportIcaoBeforeIndex(legs, approachStart);
+  if (!icao.empty()) return icao;
+  icao = directToAirportIcao(map);
+  if (!icao.empty()) return icao;
+  if (map != nullptr) {
+    icao = lastAirportInPlan(map->flightPlan);
+    if (!icao.empty()) return icao;
+  }
+  return {};
+}
+
+int fplCursorLegIndex(const FplRouteEdit& edit,
+                      const std::string& approachAirport,
+                      FplCursorLayout layout) {
+  const int legCount = static_cast<int>(edit.legs.size());
+  if (edit.approachLegCount > 0) {
+    return fplApproachLegIndexForSelectable(
+        edit.cursorRow, edit.legs, edit.approachLegStart, edit.approachLegCount,
+        fplApproachBlankOriginSection(edit.legs, edit.approachLegStart,
+                                      approachAirport),
+        approachLayoutDestFilled(edit));
+  }
+  if (layout == FplCursorLayout::FlatLegList) {
+    if (edit.cursorRow >= 0 && edit.cursorRow < legCount) return edit.cursorRow;
+    return -1;
+  }
+  return fplLegIndexForSectionRow(edit.cursorRow, legCount, edit.destinationFilled,
+                                  edit.directToActive);
+}
+
+int fplCursorSelectableLast(const FplRouteEdit& edit,
+                            const std::string& approachAirport,
+                            FplCursorLayout layout) {
+  if (edit.approachLegCount > 0) {
+    return fplApproachSelectableCount(
+               edit.legs, edit.approachLegStart, edit.approachLegCount,
+               fplApproachBlankOriginSection(edit.legs, edit.approachLegStart,
+                                             approachAirport),
+               approachLayoutDestFilled(edit)) -
+           1;
+  }
+  if (layout == FplCursorLayout::FlatLegList) {
+    return static_cast<int>(edit.legs.size());
+  }
+  return std::max(0, fplSectionSelectableCount(static_cast<int>(edit.legs.size()),
+                                               edit.destinationFilled,
+                                               edit.directToActive) -
+                           1);
+}
+
+void fplClampCursorRow(FplRouteEdit& edit, const std::string& approachAirport,
+                       FplCursorLayout layout) {
+  const int last = fplCursorSelectableLast(edit, approachAirport, layout);
+  edit.cursorRow = std::max(0, std::min(last, edit.cursorRow));
+}
+
+void fplRefreshDestinationFilledAfterRemove(FplRouteEdit& edit,
+                                            int legCountAfter) {
+  if (legCountAfter <= 1) {
+    edit.destinationFilled = false;
+  } else if (legCountAfter == 2 && !edit.destinationFilled) {
+    // still origin + enroute
+  } else if (legCountAfter < 3) {
+    edit.destinationFilled = legCountAfter == 2;
+  }
+}
+
+void fplAdjustApproachGroupingAfterRemove(FplRouteEdit& edit,
+                                           int removedLegIndex) {
+  if (edit.approachLegCount <= 0) return;
+  if (removedLegIndex >= edit.approachLegStart &&
+      removedLegIndex < edit.approachLegStart + edit.approachLegCount) {
+    --edit.approachLegCount;
+    if (edit.approachLegCount <= 0) {
+      edit.approachLegStart = 0;
+      if (edit.loadedApproach != nullptr) *edit.loadedApproach = {};
+      if (edit.approachHeaderLabel != nullptr) edit.approachHeaderLabel->clear();
+    }
+  } else if (removedLegIndex < edit.approachLegStart) {
+    --edit.approachLegStart;
+  }
+}
+
+bool fplRemoveLegAtIndex(FplRouteEdit& edit, int legIndex) {
+  if (legIndex < 0 || legIndex >= static_cast<int>(edit.legs.size())) {
+    return false;
+  }
+  edit.legs.erase(edit.legs.begin() + legIndex);
+  fplRefreshDestinationFilledAfterRemove(
+      edit, static_cast<int>(edit.legs.size()));
+  fplAdjustApproachGroupingAfterRemove(edit, legIndex);
+  return true;
+}
+
+void fplClearFlightPlan(FplRouteEdit& edit) {
+  edit.legs.clear();
+  edit.cursorRow = 0;
+  edit.destinationFilled = false;
+  edit.approachLegStart = 0;
+  edit.approachLegCount = 0;
+  if (edit.loadedApproach != nullptr) *edit.loadedApproach = {};
+  if (edit.approachHeaderLabel != nullptr) edit.approachHeaderLabel->clear();
+}
+
+bool fplCommitWaypointIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
+                            const MapFeature& match, const std::string& ident,
+                            int selectableCursorRow,
+                            const std::string& approachAirport,
+                            FplCursorLayout layout) {
+  if (edit.approachLegCount > 0) {
+    return fplCommitApproachIdent(edit, navSource, match, ident,
+                                  selectableCursorRow, approachAirport);
+  }
+  if (layout == FplCursorLayout::FlatLegList) {
+    return fplCommitFlatIdent(edit, navSource, match, ident, selectableCursorRow);
+  }
+  return fplCommitSectionIdent(edit, navSource, match, ident, selectableCursorRow);
+}
+
+}  // namespace avionics

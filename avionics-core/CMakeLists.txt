@@ -13,6 +13,9 @@ add_library(avionics-core STATIC
   src/EisStore.cpp
   src/MockDataSource.cpp
   src/PersistentState.cpp
+  src/FlightPlanPersistence.cpp
+  src/GlidepathGuidance.cpp
+  src/FplRouteEdit.cpp
   src/Radio.cpp
   src/ComDecode.cpp
   src/DisplayBackup.cpp

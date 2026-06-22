@@ -125,6 +125,77 @@ bool looksLikeFix(const std::string& id) {
   return true;
 }
 
+bool isRunwayFixIdent(const std::string& id) {
+  if (id.size() < 3) return false;
+  if (id[0] != 'R' || id[1] != 'W') return false;
+  for (std::size_t i = 2; i < id.size(); ++i) {
+    const char c = id[i];
+    if (!std::isdigit(static_cast<unsigned char>(c)) && c != 'L' && c != 'R') {
+      return false;
+    }
+  }
+  return true;
+}
+
+int parseAltitudeFtField(const std::string& raw) {
+  const std::string s = trim(raw);
+  if (s.empty()) return 0;
+  return static_cast<int>(std::strtol(s.c_str(), nullptr, 10));
+}
+
+float parseVerticalAngleDegField(const std::string& raw) {
+  const std::string s = trim(raw);
+  if (s.empty()) return 0.0f;
+  double v = std::strtod(s.c_str(), nullptr);
+  if (std::fabs(v) >= 100.0) v /= 100.0;
+  return static_cast<float>(std::fabs(v));
+}
+
+void applyArincAltitudeConstraint(const CifpLeg& leg, MapLeg& ml) {
+  const int alt1 = leg.altitude1Ft;
+  const int alt2 = leg.altitude2Ft;
+  const std::string desc = upperCopy(trim(leg.altitudeDescription));
+  const char code = desc.empty() ? '\0' : desc[0];
+
+  switch (code) {
+    case '+':
+      if (alt1 > 0) {
+        ml.altitudeConstraintFt = alt1;
+        ml.altitudeConstraint = AltConstraintType::AtOrAbove;
+      }
+      break;
+    case '-':
+      if (alt1 > 0) {
+        ml.altitudeConstraintFt = alt1;
+        ml.altitudeConstraint = AltConstraintType::AtOrBelow;
+      }
+      break;
+    case 'B':
+    case 'H':
+      if (alt2 > 0) {
+        ml.altitudeConstraintFt = alt2;
+        ml.altitudeConstraint = AltConstraintType::At;
+      } else if (alt1 > 0) {
+        ml.altitudeConstraintFt = alt1;
+        ml.altitudeConstraint = AltConstraintType::AtOrAbove;
+      }
+      break;
+    case 'J':
+      if (alt1 > 0) {
+        ml.altitudeConstraintFt = alt1;
+        ml.altitudeConstraint = AltConstraintType::AtOrAbove;
+      }
+      break;
+  default:
+      if (alt1 > 0) {
+        ml.altitudeConstraintFt = alt1;
+        ml.altitudeConstraint = AltConstraintType::At;
+      }
+      break;
+  }
+  ml.altitudeDesignated = false;
+}
+
 std::string roleFromWaypointDesc(const std::string& raw) {
   std::string s = trim(raw);
   if (s.empty()) return {};
@@ -391,6 +462,20 @@ bool legMatchesSelection(const CifpLeg& leg, ProcedureType type,
                          const std::string& transition) {
   if (leg.kind != type || leg.procedureName != name) return false;
 
+  if (leg.kind == ProcedureType::Approach &&
+      upperCopy(transition) == "VECTORS") {
+    if (leg.routeType == "A" || leg.routeType == "B" || leg.routeType == "5") {
+      return false;
+    }
+    if (leg.routeType == "M") return true;
+    const std::string legTransition = trim(leg.transition);
+    if (legTransition.empty() &&
+        (leg.routeType == "R" || leg.routeType == "I")) {
+      return true;
+    }
+    return false;
+  }
+
   // Common feeder (route type 5) applies to every transition selection.
   if (leg.routeType == "5") return true;
 
@@ -466,6 +551,12 @@ CifpAirportProcedures parseCifp(std::istream& in, const std::string& icao) {
     if (fields.size() > 35) leg.gpsFmsIndication = trim(fields[35]);
     if (fields.size() > 36) leg.qualifier1 = trim(fields[36]);
     if (fields.size() > 37) leg.qualifier2 = trim(fields[37]);
+    if (fields.size() > 22) leg.altitudeDescription = trim(fields[22]);
+    if (fields.size() > 23) leg.altitude1Ft = parseAltitudeFtField(fields[23]);
+    if (fields.size() > 24) leg.altitude2Ft = parseAltitudeFtField(fields[24]);
+    if (fields.size() > 28) {
+      leg.verticalAngleDeg = parseVerticalAngleDegField(fields[28]);
+    }
     if (leg.kind == ProcedureType::Approach) leg.approachKind = leg.routeType;
 
     if (leg.procedureName.empty()) continue;
@@ -522,9 +613,48 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     ml.lat = lat;
     ml.lon = lon;
     ml.procedureRole = approachLegRole(leg);
+    if (leg.kind == ProcedureType::Approach) {
+      applyArincAltitudeConstraint(leg, ml);
+      if (leg.verticalAngleDeg > 0.0f) {
+        ml.glidePathAngleDeg = leg.verticalAngleDeg;
+      }
+    }
     result.push_back(std::move(ml));
   }
   return result;
+}
+
+std::vector<ApproachTransitionOption> listApproachTransitions(
+    const CifpAirportProcedures& data, const std::string& approachName) {
+  std::unordered_map<std::string, bool> iafByTransition;
+  for (const CifpLeg& leg : data.legs) {
+    if (leg.kind != ProcedureType::Approach || leg.procedureName != approachName) {
+      continue;
+    }
+    if (leg.routeType != "A" && leg.routeType != "B") continue;
+    const std::string trans = trim(leg.transition);
+    if (trans.empty()) continue;
+    if (trans.size() >= 2 && trans[0] == 'R' && trans[1] == 'W') continue;
+    if (approachLegRole(leg) == "iaf") {
+      iafByTransition[trans] = true;
+    } else if (!iafByTransition.count(trans)) {
+      iafByTransition.emplace(trans, false);
+    }
+  }
+
+  std::vector<std::string> iafNames;
+  for (const auto& entry : iafByTransition) {
+    if (entry.second) iafNames.push_back(entry.first);
+  }
+  std::sort(iafNames.begin(), iafNames.end());
+
+  std::vector<ApproachTransitionOption> options;
+  options.reserve(iafNames.size() + 1);
+  options.push_back({"VECTORS", "VECTORS"});
+  for (const std::string& name : iafNames) {
+    options.push_back({name, name + " iaf"});
+  }
+  return options;
 }
 
 }  // namespace avionics

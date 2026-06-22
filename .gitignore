@@ -35,6 +35,11 @@ compile_commands.json
 # Third-party SDKs (download locally, do not commit)
 /third_party/
 /X-Plane-SDK/
+/SDK/
+/XPSDK*.zip
+
+# Scratch screenshot captures (use docs/screenshots/ or convert to PNG)
+/*.ppm
 
 # Natural Earth download cache for tools/convert_natural_earth.py
 /tools/.ne_cache/

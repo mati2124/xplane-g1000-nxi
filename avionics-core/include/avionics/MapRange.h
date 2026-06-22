@@ -95,6 +95,22 @@ inline float mapRangeNmAt(int index) {
   return kMapRangeLadderNm[index];
 }
 
+// Nearest ladder index for a continuous range value (e.g. sim/cockpit2/EFIS/map_range_nm).
+inline int mapRangeIndexForNm(float rangeNm) {
+  if (rangeNm <= 0.0f) return kMapRangeDefaultIndex;
+  int best = kMapRangeDefaultIndex;
+  float bestLogDist = 1e9f;
+  for (int i = 0; i < kMapRangeLadderCount; ++i) {
+    const float logDist =
+        std::fabs(std::log(kMapRangeLadderNm[i]) - std::log(rangeNm));
+    if (logDist < bestLogDist) {
+      bestLogDist = logDist;
+      best = i;
+    }
+  }
+  return best;
+}
+
 // Time constant (seconds) for the moving-map zoom animation. The displayed
 // scale eases toward the selected ladder step instead of snapping, matching
 // the Working Title G1000 NXi's smooth zoom. Small enough to feel responsive

@@ -18,9 +18,9 @@ constexpr float kIdentRowPx = 50.0f;
 constexpr float kNameRowPx = 72.0f;
 constexpr float kSepPx = 95.0f;
 constexpr float kBrgRowPx = 118.0f;
-constexpr float kLatRowPx = 148.0f;
-constexpr float kLonRowPx = 168.0f;
-constexpr float kPromptRowPx = 202.0f;
+constexpr float kDisRowPx = 148.0f;
+constexpr float kLonRowPx = 188.0f;
+constexpr float kPromptRowPx = 222.0f;
 constexpr float kCityStartPx = 142.0f;
 
 struct DashStyle {
@@ -147,6 +147,57 @@ void drawCoordPlaceholder(Renderer& r, float rightX, float dashCy, float size,
   r.fillText(x, readoutCy, "'", size, TextAlign::Right, color);
 }
 
+constexpr char kDeg[] = "\xC2\xB0";  // UTF-8 degree sign
+
+void drawBrgReadout(Renderer& r, float x, float readoutCy, bool hasGeo,
+                    double brgDeg, float readoutSize, float smallSize) {
+  char num[16];
+  if (hasGeo) {
+    std::snprintf(num, sizeof(num), "%03.0f", brgDeg);
+  } else {
+    std::snprintf(num, sizeof(num), "360");
+  }
+  const float gap = readoutSize * 0.06f;
+  r.fillText(x, readoutCy, num, readoutSize, TextAlign::Left, colors::kWhite);
+  const float numW = r.measureTextWidth(num, readoutSize);
+  r.fillText(x + numW + gap, readoutCy, kDeg, smallSize, TextAlign::Left,
+             colors::kWhite);
+}
+
+void drawDisReadoutLeft(Renderer& r, float x, float dashCy, float readoutCy,
+                        float smallCy, bool hasGeo, double disNm,
+                        float readoutSize, float smallSize) {
+  const char* disNmUnit = "NM";
+  if (hasGeo) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%.1f", disNm);
+    const float gap = readoutSize * 0.06f;
+    r.fillText(x, readoutCy, buf, readoutSize, TextAlign::Left, colors::kWhite);
+    const float numW = r.measureTextWidth(buf, readoutSize);
+    r.fillText(x + numW + gap, smallCy, disNmUnit, smallSize, TextAlign::Left,
+               colors::kWhite);
+    return;
+  }
+
+  const DashStyle ds = dashStyle(readoutSize);
+  float disX = x;
+  drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, dashCy, ds,
+                colors::kWhite);
+  disX += ds.advance;
+  drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, dashCy, ds,
+                colors::kWhite);
+  disX += ds.advance;
+  r.fillText(disX, readoutCy, ".", readoutSize, TextAlign::Left,
+             colors::kWhite);
+  disX += r.measureTextWidth(".", readoutSize) * 0.55f;
+  drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, dashCy, ds,
+                colors::kWhite);
+  disX += ds.advance;
+  const float gap = readoutSize * 0.06f;
+  r.fillText(disX + gap, smallCy, disNmUnit, smallSize, TextAlign::Left,
+             colors::kWhite);
+}
+
 }  // namespace
 
 void drawWaypointInformationWindow(Renderer& r, float w, float h, const Layout& L,
@@ -186,7 +237,7 @@ void drawWaypointInformationWindow(Renderer& r, float w, float h, const Layout& 
   const float nameTextCy = textCyForDashBottom(r, nameDashCy, nameDs, faceSize);
   const float sepY = f.top + fontPx(kSepPx, h);
   const float brgDashCy = f.top + fontPx(kBrgRowPx, h);
-  const float latDashCy = f.top + fontPx(kLatRowPx, h);
+  const float disDashCy = f.top + fontPx(kDisRowPx, h);
   const float lonDashCy = f.top + fontPx(kLonRowPx, h);
   const float promptCy = f.top + fontPx(kPromptRowPx, h);
   const float cityStartX = f.x + fontPx(kCityStartPx, h);
@@ -235,57 +286,33 @@ void drawWaypointInformationWindow(Renderer& r, float w, float h, const Layout& 
   drawSeparator(r, f.x, f.w, sepY, h, a);
 
   // ---- BRG / DIS + coordinates ----
-  char buf[24];
   const bool hasGeo = ui.flightPlanEntryHasGeo();
   {
     const float brgLabelCy =
         textCyForDashBottom(r, brgDashCy, dashStyle(labelSize), labelSize);
     const float brgReadoutCy =
         textCyForDashBottom(r, brgDashCy, dashStyle(readoutSize), readoutSize);
-    const float brgSmallCy =
-        textCyForDashBottom(r, brgDashCy, dashStyle(smallSize), smallSize);
     float x = left + pad * 0.5f;
     x = putText(r, x, brgLabelCy, "BRG", labelSize, colors::kTitleGray, 0.35f);
-    if (hasGeo) {
-      std::snprintf(buf, sizeof(buf), "%03.0f\u00b0",
-                    ui.flightPlanEntryBearingDeg());
-    } else {
-      std::snprintf(buf, sizeof(buf), "%s", "360\u00b0");
-    }
-    putText(r, x, brgReadoutCy, buf, readoutSize, colors::kWhite, 0.0f);
+    drawBrgReadout(r, x, brgReadoutCy, hasGeo, ui.flightPlanEntryBearingDeg(),
+                   readoutSize, smallSize);
 
-    float dx = left + innerW * 0.52f;
-    dx = putText(r, dx, brgLabelCy, "DIS", labelSize, colors::kTitleGray, 0.35f);
-    const char* disNm = "NM";
-    const float disNmW = r.measureTextWidth(disNm, smallSize);
-    r.fillText(right - pad * 0.5f, brgSmallCy, disNm, smallSize, TextAlign::Right,
-               colors::kWhite);
-    if (hasGeo) {
-      std::snprintf(buf, sizeof(buf), "%.1f", ui.flightPlanEntryDistanceNm());
-      r.fillText(right - pad * 0.5f - disNmW, brgReadoutCy, buf, readoutSize,
-                 TextAlign::Right, colors::kWhite);
-    } else {
-      const DashStyle ds = dashStyle(readoutSize);
-      float disX = right - pad * 0.5f - disNmW;
-      disX -= ds.advance * 3.0f;
-      drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, brgDashCy, ds,
-                    colors::kWhite);
-      disX += ds.advance;
-      drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, brgDashCy, ds,
-                    colors::kWhite);
-      disX += ds.advance;
-      r.fillText(disX, brgReadoutCy, ".", readoutSize, TextAlign::Left,
-                 colors::kWhite);
-      disX += r.measureTextWidth(".", readoutSize) * 0.55f;
-      drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, brgDashCy, ds,
-                    colors::kWhite);
-    }
+    const float disLabelCy =
+        textCyForDashBottom(r, disDashCy, dashStyle(labelSize), labelSize);
+    const float disReadoutCy =
+        textCyForDashBottom(r, disDashCy, dashStyle(readoutSize), readoutSize);
+    const float disSmallCy =
+        textCyForDashBottom(r, disDashCy, dashStyle(smallSize), smallSize);
+    float dx = left + pad * 0.5f;
+    dx = putText(r, dx, disLabelCy, "DIS", labelSize, colors::kTitleGray, 0.35f);
+    drawDisReadoutLeft(r, dx, disDashCy, disReadoutCy, disSmallCy, hasGeo,
+                       ui.flightPlanEntryDistanceNm(), readoutSize, smallSize);
   }
 
   if (hasMatch) {
     const MapFeature& wpt = ui.flightPlanEntryMatch();
     const float latCy =
-        textCyForDashBottom(r, latDashCy, dashStyle(readoutSize), readoutSize);
+        textCyForDashBottom(r, disDashCy, dashStyle(readoutSize), readoutSize);
     const float lonCy =
         textCyForDashBottom(r, lonDashCy, dashStyle(readoutSize), readoutSize);
     r.fillText(right - pad * 0.5f, latCy, formatLatLon(wpt.lat, true), readoutSize,
@@ -293,7 +320,7 @@ void drawWaypointInformationWindow(Renderer& r, float w, float h, const Layout& 
     r.fillText(right - pad * 0.5f, lonCy, formatLatLon(wpt.lon, false),
                readoutSize, TextAlign::Right, colors::kWhite);
   } else {
-    drawCoordPlaceholder(r, right - pad * 0.5f, latDashCy, readoutSize,
+    drawCoordPlaceholder(r, right - pad * 0.5f, disDashCy, readoutSize,
                          colors::kWhite);
     drawCoordPlaceholder(r, right - pad * 0.5f, lonDashCy, readoutSize,
                          colors::kWhite);

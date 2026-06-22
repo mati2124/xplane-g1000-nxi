@@ -48,7 +48,7 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
   const float entryH = fontPx(58.0f, h);
   const float rowH = entryH * 0.5f;
   const float padX = fontPx(5.0f, h);
-  const float scrollW = fontPx(10.0f, h);
+  const float scrollW = wtScrollBarLane(h);
   const float listLeft = f.x + padX;
   const float listRight = f.x + f.w - padX - scrollW - fontPx(4.0f, h);
   const float listW = listRight - listLeft;
@@ -155,19 +155,8 @@ void drawNearestWindow(Renderer& r, float w, float h, const Layout& L,
     const float trackTop = f.contentTop;
     const float trackH = entryH * static_cast<float>(kVisibleEntries);
     const float trackX = f.x + f.w - padX - scrollW;
-    const float thumbH =
-        std::max(fontPx(18.0f, h),
-                 trackH * static_cast<float>(kVisibleEntries) /
-                     static_cast<float>(list.size()));
-    const float maxScroll =
-        static_cast<float>(list.size() - kVisibleEntries);
-    const float thumbTop =
-        trackTop +
-        (trackH - thumbH) * static_cast<float>(first) / maxScroll;
-    r.fillRect(trackX + scrollW * 0.5f - 1.0f, trackTop, 2.0f, trackH,
-               withAlpha(colors::kPanelSeparator, a));
-    r.fillRect(trackX, thumbTop, scrollW, thumbH,
-               withAlpha(colors::kMenuBorderGray, a));
+    drawWtScrollBar(r, h, trackX, trackTop, trackH,
+                    static_cast<int>(list.size()), kVisibleEntries, first, a);
   }
 }
 

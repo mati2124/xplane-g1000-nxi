@@ -10,6 +10,7 @@ void MfdController::directToOpen() {
   dtoArmed_ = false;
   dtoPreservePlan_ = false;
   dtoPreserveLegIndex_ = -1;
+  dtoPreserveFplCursorRow_ = -1;
   // Map Pointer: Direct-To opens on the waypoint under the pointer (Pilot's
   // Guide, Map Panning).
   if (mapPointerActive_) {
@@ -26,10 +27,13 @@ void MfdController::directToOpen() {
   // Default destination (Pilot's Guide: the field defaults to the active
   // waypoint, or the highlighted flight-plan waypoint when one is selected).
   std::string initial;
-  if (fplCursorOn_ && fplCursorRow_ < static_cast<int>(fplLegs_.size())) {
-    dtoPreserveLegIndex_ = fplCursorRow_;
+  const int legIdx = fplCursorLegIndex();
+  if (fplCursorOn_ && legIdx >= 0 &&
+      legIdx < static_cast<int>(fplLegs_.size())) {
+    dtoPreserveLegIndex_ = legIdx;
+    dtoPreserveFplCursorRow_ = fplCursorRow_;
     dtoPreservePlan_ = true;
-    initial = fplLegs_[fplCursorRow_].id;
+    initial = fplLegs_[static_cast<std::size_t>(legIdx)].id;
   } else if (!activeWaypoint_.empty()) {
     initial = activeWaypoint_;
   }
@@ -66,22 +70,27 @@ bool MfdController::directToBezelKey(BezelKey key) {
 
   // Armed: the ACTIVATE? prompt is highlighted; ENT engages the direct course.
   if (dtoArmed_) {
+    if (isMapRangePanBezelKey(key)) return false;
     if (key == BezelKey::Ent) {
       dtoRequestTarget_.lat = dtoEntry_.match.lat;
       dtoRequestTarget_.lon = dtoEntry_.match.lon;
       dtoRequestTarget_.id = dtoEntry_.match.id;
       dtoRequestPending_ = true;
-      if (dtoPreservePlan_) {
-        if (dtoPreserveLegIndex_ >= 0) {
-          fplCursorRow_ = dtoPreserveLegIndex_;
-        }
-      } else {
-        fplLegs_ = {dtoRequestTarget_};
+      if (!dtoPreservePlan_) {
+        fplLegs_.clear();
+        fplDestinationFilled_ = false;
+        fplLocalDraft_ = false;
         fplCursorRow_ = 0;
-        fplPublishEdit();
+        fplApproachLegStart_ = 0;
+        fplApproachLegCount_ = 0;
+        fplLoadedApproach_ = {};
+        fplApproachHeaderLabel_.clear();
+      } else if (dtoPreserveFplCursorRow_ >= 0) {
+        fplCursorRow_ = dtoPreserveFplCursorRow_;
       }
       dtoPreservePlan_ = false;
       dtoPreserveLegIndex_ = -1;
+      dtoPreserveFplCursorRow_ = -1;
       dtoOpen_ = false;
       dtoArmed_ = false;
       dtoEntry_.reset();

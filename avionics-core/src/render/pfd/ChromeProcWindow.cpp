@@ -31,21 +31,6 @@ void drawProcMenuRow(Renderer& r, float identX, float cy, const std::string& tex
   r.fillText(identX, cy, text, size, TextAlign::Left, withAlpha(color, a));
 }
 
-void drawProcScrollBar(Renderer& r, float trackX, float scrollW, float trackTop,
-                       float trackH, int total, int visible, int first, float a) {
-  if (total <= visible) return;
-  const float thumbH =
-      std::max(fontPx(18.0f, trackH), trackH * static_cast<float>(visible) /
-                                           static_cast<float>(total));
-  const float maxScroll = static_cast<float>(total - visible);
-  const float thumbTop =
-      trackTop + (trackH - thumbH) * static_cast<float>(first) / maxScroll;
-  r.fillRect(trackX + scrollW * 0.5f - 1.0f, trackTop, 2.0f, trackH,
-             withAlpha(colors::kPanelSeparator, a));
-  r.fillRect(trackX, thumbTop, scrollW, thumbH,
-             withAlpha(colors::kMenuBorderGray, a));
-}
-
 float drawDtoStyleButton(Renderer& r, float leftX, float cy, const char* label,
                          float size, bool armed, bool blinkOn, float a) {
   const float bw = r.measureTextWidth(label, size) + size * 1.3f;
@@ -159,18 +144,68 @@ bool labelIsRnavGps(const std::string& label) {
 }
 
 void drawProcSubListPopup(Renderer& r, const WindowFrame& f, float h,
-                          const SoftkeyController& ui, float a) {
+                          const SoftkeyController& ui, float anchorCy,
+                          float maxBottomY, float a) {
   const std::vector<std::string> items = ui.procListItems();
   if (items.empty()) return;
 
+  const bool transitionList =
+      ui.procStep() == SoftkeyController::ProcStep::TransitionList;
   const float size = fontPx(wt::kInfoValue, h);
-  const float rowH = fontPx(22.0f, h);
-  const float pad = fontPx(6.0f, h);
-  const int visible = 7;
-  const float popupW = f.w * 0.62f;
+  const float pad = fontPx(5.0f, h);
+  constexpr int kMaxApproachVisibleRows = 7;
+  constexpr int kMaxTransitionVisibleRows = 4;
+  const int maxVisibleRows =
+      transitionList ? kMaxTransitionVisibleRows : kMaxApproachVisibleRows;
+  float rowH = 0.0f;
+  if (transitionList) {
+    rowH = fontPx(24.0f, h);
+  } else {
+    const float popupTop = f.contentTop + fontPx(12.0f, h);
+    const float maxPopupH = maxBottomY - pad - popupTop;
+    rowH = (maxPopupH - pad * 2.0f) /
+           static_cast<float>(kMaxApproachVisibleRows);
+    rowH = std::clamp(rowH, fontPx(22.0f, h), fontPx(30.0f, h));
+  }
+  const int total = static_cast<int>(items.size());
+  const int visible = std::min(maxVisibleRows, total);
+  const int selected = std::min(std::max(0, ui.procListSelected()), total - 1);
+  int first = 0;
+  if (total > visible) {
+    first = std::max(0, std::min(selected - visible / 2, total - visible));
+  }
+  const int end = std::min(total, first + visible);
+  const bool blinkOn = ui.blinkOn();
+  const bool scrolling = total > visible;
+  const float scrollReserve = scrolling ? fontPx(14.0f, h) : 0.0f;
+
+  float maxLabelW = 0.0f;
+  for (int i = 0; i < total; ++i) {
+    std::string label;
+    if (transitionList) {
+      label = items[static_cast<std::size_t>(i)];
+    } else {
+      label = ui.procApproachDisplayName(i);
+    }
+    maxLabelW = std::max(
+        maxLabelW, measureApproachLabelWidth(r, label, size, labelIsRnavGps(label)));
+  }
+
+  const float maxWidthFrac = transitionList ? 0.52f : 0.78f;
+  const float neededW =
+      maxLabelW + scrollReserve + pad * 2.0f + size * 0.20f;
+  const float popupW = std::min(f.w * maxWidthFrac, neededW);
   const float popupH = rowH * static_cast<float>(visible) + pad * 2.0f;
   const float popupX = f.x + (f.w - popupW) * 0.5f;
-  const float popupY = f.top + (f.h - popupH) * 0.42f;
+  float popupY = 0.0f;
+  if (transitionList) {
+    popupY = anchorCy - popupH * 0.5f;
+  } else {
+    // Trainer: the approach list overlaps the airport header block.
+    popupY = f.contentTop + fontPx(12.0f, h);
+  }
+  popupY = std::min(popupY, maxBottomY - popupH - pad);
+  popupY = std::max(popupY, f.contentTop + pad);
   const float radius = fontPx(4.0f, h);
   const float borderW = 1.5f;
 
@@ -180,23 +215,14 @@ void drawProcSubListPopup(Renderer& r, const WindowFrame& f, float h,
                       popupW - borderW, popupH - borderW, radius, borderW,
                       withAlpha(colors::kPopoutBorder, a));
 
-  const int total = static_cast<int>(items.size());
-  const int selected = std::min(std::max(0, ui.procListSelected()), total - 1);
-  int first = 0;
-  if (total > visible) {
-    first = std::max(0, std::min(selected - visible / 2, total - visible));
-  }
-  const int end = std::min(total, first + visible);
   const float listTop = popupY + pad;
   const float listLeft = popupX + pad;
-  const float listRight = popupX + popupW - pad - fontPx(10.0f, h);
-  const bool blinkOn = ui.blinkOn();
 
   for (int i = first; i < end; ++i) {
     const float rowCy =
         listTop + rowH * (static_cast<float>(i - first) + 0.5f);
     std::string label;
-    if (ui.procStep() == SoftkeyController::ProcStep::TransitionList) {
+    if (transitionList) {
       label = items[static_cast<std::size_t>(i)];
     } else {
       label = ui.procApproachDisplayName(i);
@@ -216,12 +242,12 @@ void drawProcSubListPopup(Renderer& r, const WindowFrame& f, float h,
     }
   }
 
-  if (total > visible) {
-    const float scrollW = fontPx(8.0f, h);
+  if (scrolling) {
+    const float scrollW = wtScrollBarLane(h);
     const float trackTop = listTop;
     const float trackH = rowH * static_cast<float>(visible);
-    drawProcScrollBar(r, popupX + popupW - pad - scrollW, scrollW, trackTop,
-                      trackH, total, visible, first, a);
+    drawWtScrollBar(r, h, popupX + popupW - pad - scrollW, trackTop, trackH,
+                    total, visible, first, a);
   }
 }
 
@@ -482,7 +508,7 @@ void drawApproachSelectWindow(Renderer& r, const WindowFrame& f, float w, float 
              withAlpha(colors::kTitleGray, a));
 
   if (ui.procSubListOpen()) {
-    drawProcSubListPopup(r, f, h, ui, a);
+    drawProcSubListPopup(r, f, h, ui, transCy, btnSepY, a);
   }
 }
 
@@ -511,7 +537,7 @@ void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
   const float size = fontPx(wt::kInfoValue, h);
   const float smallSize = size * 0.72f;
   const float padX = fontPx(8.0f, h);
-  const float scrollW = fontPx(10.0f, h);
+  const float scrollW = wtScrollBarLane(h);
   const float listLeft = f.x + padX;
   const float listRight = f.x + f.w - padX;
   const float listW = listRight - listLeft;
@@ -582,8 +608,8 @@ void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
   if (scrolling) {
     const float trackTop = cy;
     const float trackH = rowH * static_cast<float>(visible);
-    drawProcScrollBar(r, f.x + f.w - padX - scrollW, scrollW, trackTop, trackH,
-                      total, visible, first, a);
+    drawWtScrollBar(r, h, f.x + f.w - padX - scrollW, trackTop, trackH, total,
+                    visible, first, a);
   }
 }
 

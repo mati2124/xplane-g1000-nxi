@@ -147,6 +147,14 @@ class NavFeatureSource {
     return {};
   }
 
+  // Approach transition choices from CIFP feeder routes (empty when unavailable).
+  virtual std::vector<ApproachTransitionOption> approachTransitionsFor(
+      const std::string& icao, const std::string& approachName) const {
+    (void)icao;
+    (void)approachName;
+    return {};
+  }
+
   // Expand an enroute airway between two published fixes into the intermediate
   // waypoints along that airway. Returns empty when the segment cannot be
   // resolved (unknown airway, disconnected graph, or missing endpoints).

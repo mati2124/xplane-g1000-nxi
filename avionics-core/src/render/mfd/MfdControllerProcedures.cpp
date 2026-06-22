@@ -1,5 +1,6 @@
 #include <algorithm>
 
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/MfdController.h"
 
 // Nav-database queries (approaches, procedures, frequencies, runways) and the
@@ -41,6 +42,12 @@ void insertProcedureLegs(ProcedureType type, std::vector<MapLeg>& fplLegs,
     row = std::max(0, static_cast<int>(fplLegs.size()) - 1);
   } else {
     row = static_cast<int>(fplLegs.size());
+    // Enroute feeder and IAF share a fix; the approach copy wins on the FPL.
+    if (!fplLegs.empty() &&
+        fplLegIdentsEqual(fplLegs.back().id, legs.front().id)) {
+      fplLegs.pop_back();
+      row = static_cast<int>(fplLegs.size());
+    }
   }
   fplLegs.insert(fplLegs.begin() + row, legs.begin(), legs.end());
 }
@@ -140,15 +147,54 @@ std::vector<std::string> MfdController::procProcedureNames(
 std::vector<std::string> MfdController::procTransitions(
     ProcedureType type, const std::string& name) const {
   std::vector<std::string> transitions;
+  if (navSource_ != nullptr && navSource_->ready() &&
+      type == ProcedureType::Approach) {
+    const std::vector<ApproachTransitionOption> options =
+        navSource_->approachTransitionsFor(procAirportIcao(), name);
+    if (!options.empty()) {
+      transitions.reserve(options.size());
+      for (const ApproachTransitionOption& opt : options) {
+        transitions.push_back(opt.id);
+      }
+      return transitions;
+    }
+  }
   for (const MapProcedure& proc : proceduresFor(type)) {
     if (proc.name != name) continue;
+    if (type == ProcedureType::Approach && proc.transition.size() >= 2 &&
+        proc.transition[0] == 'R' && proc.transition[1] == 'W') {
+      continue;
+    }
     if (std::find(transitions.begin(), transitions.end(), proc.transition) ==
         transitions.end()) {
       transitions.push_back(proc.transition);
     }
   }
   std::sort(transitions.begin(), transitions.end());
+  if (type == ProcedureType::Approach &&
+      std::find(transitions.begin(), transitions.end(), "VECTORS") ==
+          transitions.end()) {
+    transitions.insert(transitions.begin(), "VECTORS");
+  }
   return transitions;
+}
+
+std::vector<std::string> MfdController::procTransitionLabels(
+    ProcedureType type, const std::string& name) const {
+  if (navSource_ != nullptr && navSource_->ready() &&
+      type == ProcedureType::Approach) {
+    const std::vector<ApproachTransitionOption> options =
+        navSource_->approachTransitionsFor(procAirportIcao(), name);
+    if (!options.empty()) {
+      std::vector<std::string> labels;
+      labels.reserve(options.size());
+      for (const ApproachTransitionOption& opt : options) {
+        labels.push_back(opt.display);
+      }
+      return labels;
+    }
+  }
+  return procTransitions(type, name);
 }
 
 std::vector<MapLeg> MfdController::procPreviewLegs() const {
@@ -185,6 +231,8 @@ std::vector<MapLeg> MfdController::procPreviewLegs() const {
 }
 
 bool MfdController::procBezelKey(BezelKey key) {
+  if (isMapRangePanBezelKey(key)) return false;
+
   const std::vector<std::string> names = procProcedureNames(procCategory_);
   const std::vector<std::string> transitions =
       procStep_ == ProcMenuStep::TransitionList
@@ -198,8 +246,25 @@ bool MfdController::procBezelKey(BezelKey key) {
     std::vector<MapLeg> legs =
         navSource_->expandProcedure(icao, procCategory_, name, transition);
     if (legs.empty()) return;
+    if (procCategory_ == ProcedureType::Approach) {
+      fplApproachLegCount_ = static_cast<int>(legs.size());
+    } else {
+      fplApproachLegStart_ = 0;
+      fplApproachLegCount_ = 0;
+      fplLoadedApproach_ = {};
+      fplApproachHeaderLabel_.clear();
+    }
     insertProcedureLegs(procCategory_, fplLegs_, legs);
-    fplCursorRow_ = static_cast<int>(fplLegs_.size());
+    if (procCategory_ == ProcedureType::Approach) {
+      fplApproachLegStart_ =
+          static_cast<int>(fplLegs_.size()) - fplApproachLegCount_;
+      fplLoadedApproach_ = findProcedure(procCategory_, name, transition,
+                                           proceduresFor(procCategory_));
+      fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
+      persistedApproachRestore_ =
+          persistedFromMapProcedure(fplLoadedApproach_, icao);
+    }
+    fplCursorRow_ = 0;
     fplPublishEdit();
     procLoadTarget_ = findProcedure(procCategory_, name, transition,
                                     proceduresFor(procCategory_));
@@ -224,6 +289,12 @@ bool MfdController::procBezelKey(BezelKey key) {
             procSelectedName_ = name;
             procStep_ = ProcMenuStep::TransitionList;
             procSelected_ = 0;
+            for (int i = 0; i < static_cast<int>(trans.size()); ++i) {
+              if (trans[static_cast<std::size_t>(i)] == "VECTORS") {
+                procSelected_ = i;
+                break;
+              }
+            }
           }
         }
       } else if (procSelected_ >= 0 &&

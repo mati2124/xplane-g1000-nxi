@@ -51,6 +51,16 @@ WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
 float drawDirectToIcon(Renderer& r, float x, float cy, float size,
                        const Color& color);
 
+// Navigation Status Box style: D→ glyph + target ident in one color (no slash).
+float drawNavDirectToHeader(Renderer& r, float x, float cy,
+                            const std::string& ident, float size,
+                            const Color& color);
+
+// D→ glyph plus ident on the Enroute row during GPS Direct-To.
+float drawFplDirectToTargetRow(Renderer& r, float x, float cy,
+                               const std::string& ident, float size,
+                               const Color& textColor);
+
 // One field of a pop-up window: text with an optional highlight-select cursor
 // (steady cyan plate / black text vs plain cyan text). Returns the x just past
 // the field. Shared by the Nearest and PFD Setup windows.
@@ -58,6 +68,10 @@ float putField(Renderer& r, float x, float cy, const std::string& text,
                float size, const Color& color, bool highlighted, float alpha,
                float trailingGapFrac = 0.6f,
                FontFace face = FontFace::Default);
+
+// WT popout list scrollbar: thin track, gray thumb, white end carrots.
+void drawWtScrollBar(Renderer& r, float displayH, float trackX, float trackTop,
+                     float trackH, int total, int visible, int first, float a);
 
 // --- Per-component entry points (called from drawChrome). ---
 

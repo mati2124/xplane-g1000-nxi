@@ -6,6 +6,9 @@
 
 #include "avionics/Color.h"
 #include "avionics/ComDecode.h"
+#include "avionics/FlightPlanPersistence.h"
+#include "avionics/FplRouteEdit.h"
+#include "avionics/GlidepathGuidance.h"
 #include "avionics/MapData.h"
 #include "avionics/NavMath.h"
 #include "avionics/render/BootScreen.h"
@@ -32,6 +35,33 @@ constexpr float kDefaultFpaDeg = 3.0f;
 // PFD VNAV vertical-deviation full-scale: +/-2 dots at +/-500 ft.
 constexpr float kVnavDevFtPerDot = 250.0f;
 
+int activeLegIndex(const std::vector<MapLeg>& plan, const std::string& toWpt) {
+  if (plan.empty()) return 0;
+  for (std::size_t i = 0; i < plan.size(); ++i) {
+    if (!toWpt.empty() && plan[i].id == toWpt) {
+      return static_cast<int>(i);
+    }
+  }
+  return 0;
+}
+
+double alongTrackDistanceNm(const MapData& map, const FlightData& data,
+                            const std::vector<MapLeg>& plan, int targetIdx) {
+  if (targetIdx < 0 || targetIdx >= static_cast<int>(plan.size())) return 0.0;
+  const int activeIdx = activeLegIndex(plan, data.fmaToWpt);
+  double distNm = navDistanceNm(map.ownshipLat, map.ownshipLon, plan[activeIdx].lat,
+                                plan[activeIdx].lon);
+  for (int i = activeIdx; i < targetIdx; ++i) {
+    distNm += navDistanceNm(plan[i].lat, plan[i].lon, plan[i + 1].lat,
+                            plan[i + 1].lon);
+  }
+  return distNm;
+}
+
+void applyGlidepath(FlightData& data, const MapData& map) {
+  applyGlidepathSolution(data, computeGlidepath(map, data));
+}
+
 // Computes the active VNAV profile: finds the next constrained, lower waypoint
 // ahead of the active leg, builds the descent path to it at the default FPA, and
 // derives the required vertical speed, top-of-descent, and path deviation.
@@ -41,14 +71,7 @@ VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
 
   const std::vector<MapLeg>& plan = map.flightPlan;
 
-  // Active leg = the leg whose TO ident matches the FMA active waypoint.
-  int activeIdx = 0;
-  for (std::size_t i = 0; i < plan.size(); ++i) {
-    if (!data.fmaToWpt.empty() && plan[i].id == data.fmaToWpt) {
-      activeIdx = static_cast<int>(i);
-      break;
-    }
-  }
+  const int activeIdx = activeLegIndex(plan, data.fmaToWpt);
 
   // The VNAV target is the next waypoint at/after the active leg that carries an
   // altitude constraint lower than the current altitude (a descent target).
@@ -65,17 +88,17 @@ VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
   }
   if (targetIdx < 0) return vnv;
 
-  // Along-track distance from ownship to the target (ownship -> active leg, then
-  // leg to leg up to the target).
-  double distNm = navDistanceNm(map.ownshipLat, map.ownshipLon,
-                                plan[activeIdx].lat, plan[activeIdx].lon);
-  for (int i = activeIdx; i < targetIdx; ++i) {
-    distNm += navDistanceNm(plan[i].lat, plan[i].lon, plan[i + 1].lat,
-                            plan[i + 1].lon);
-  }
+  const double distNm = alongTrackDistanceNm(map, data, plan, targetIdx);
 
   constexpr double kPi = 3.14159265358979323846;
-  const float fpaDeg = kDefaultFpaDeg;
+  float fpaDeg = kDefaultFpaDeg;
+  for (int i = activeIdx; i <= targetIdx; ++i) {
+    const float legGpa = plan[static_cast<std::size_t>(i)].glidePathAngleDeg;
+    if (legGpa > 0.0f) {
+      fpaDeg = legGpa;
+      break;
+    }
+  }
   const double tanFpa = std::tan(static_cast<double>(fpaDeg) * kPi / 180.0);
   const double gsKts = std::max(1.0f, data.groundSpeedKts);
 
@@ -224,8 +247,81 @@ void AvionicsEngine::update(double dtSeconds) {
   // (and ownship, for waypoint-entry lookups). The active leg's TO ident
   // seeds the Direct-To window's default waypoint.
   mfd_.syncFlightPlan(dataSource_->mapSnapshot(),
-                      dataSource_->snapshot().fmaToWpt);
+                      dataSource_->snapshot().fmaToWpt,
+                      navDirectToActive(dataSource_->snapshot()));
   syncSoftkeyPeerRadioVolume();
+  syncFlightPlanApproachPeer();
+}
+
+namespace {
+
+bool flightPlanApproachGroupingEqual(const FlightPlanApproachState& a,
+                                     const FlightPlanApproachState& b) {
+  return a.legStart == b.legStart && a.legCount == b.legCount &&
+         a.loaded.type == b.loaded.type && a.loaded.name == b.loaded.name &&
+         a.loaded.transition == b.loaded.transition &&
+         a.loaded.runway == b.loaded.runway &&
+         a.loaded.approachKind == b.loaded.approachKind &&
+         a.loaded.levelOfService == b.loaded.levelOfService;
+}
+
+}  // namespace
+
+void AvionicsEngine::syncFlightPlanApproachPeer() {
+  if (!softkeyPeer_) return;
+  const std::vector<MapLeg>& localLegs = mfd_.fplLegs();
+  const std::vector<MapLeg>& peerLegs = softkeyPeer_->mfdController().fplLegs();
+  if (!::avionics::flightPlanLegsEqual(localLegs, peerLegs)) return;
+
+  const FlightPlanApproachState localSk = softkeys_.flightPlanApproachState();
+  const FlightPlanApproachState localMfd = mfd_.flightPlanApproachState();
+  const FlightPlanApproachState peerSk =
+      softkeyPeer_->softkeyController().flightPlanApproachState();
+  const FlightPlanApproachState peerMfd =
+      softkeyPeer_->mfdController().flightPlanApproachState();
+
+  FlightPlanApproachState authoritative = localSk;
+  if (!authoritative.active()) authoritative = peerSk;
+  if (!authoritative.active()) authoritative = localMfd;
+  if (!authoritative.active()) authoritative = peerMfd;
+  if (!authoritative.active()) return;
+
+  const auto stateForLegs = [](const FlightPlanApproachState& source,
+                               const std::vector<MapLeg>& legs) {
+    return approachStateFitsPlan(source, legs) ? source
+                                               : FlightPlanApproachState{};
+  };
+
+  const FlightPlanApproachState mfdState = stateForLegs(authoritative, localLegs);
+  if (!flightPlanApproachGroupingEqual(mfd_.flightPlanApproachState(), mfdState) ||
+      mfd_.fplApproachHeaderLabel() != mfdState.headerLabel) {
+    mfd_.applyFlightPlanApproachState(mfdState);
+  }
+
+  const FlightPlanApproachState skState =
+      stateForLegs(authoritative, softkeys_.flightPlanLegs());
+  if (!flightPlanApproachGroupingEqual(softkeys_.flightPlanApproachState(),
+                                       skState)) {
+    softkeys_.applyFlightPlanApproachState(skState);
+  }
+
+  const FlightPlanApproachState peerMfdState =
+      stateForLegs(authoritative, peerLegs);
+  if (!flightPlanApproachGroupingEqual(
+          softkeyPeer_->mfdController().flightPlanApproachState(),
+          peerMfdState) ||
+      softkeyPeer_->mfdController().fplApproachHeaderLabel() !=
+          peerMfdState.headerLabel) {
+    softkeyPeer_->mfdController().applyFlightPlanApproachState(peerMfdState);
+  }
+
+  const FlightPlanApproachState peerSkState = stateForLegs(
+      authoritative, softkeyPeer_->softkeyController().flightPlanLegs());
+  if (!flightPlanApproachGroupingEqual(
+          softkeyPeer_->softkeyController().flightPlanApproachState(),
+          peerSkState)) {
+    softkeyPeer_->softkeyController().applyFlightPlanApproachState(peerSkState);
+  }
 }
 
 void AvionicsEngine::syncSoftkeyPeerRadioVolume() {
@@ -239,13 +335,15 @@ double AvionicsEngine::bootGateSeconds() const {
 }
 
 bool AvionicsEngine::bootComplete() const {
-  // The animated power-up must have run, and any source that requires an ENT
-  // acknowledgement of the power-up page must have received it.
+  // The animated power-up must have run. The PFD goes live on its own once the
+  // init cross-fade finishes; only the MFD waits for ENT on the database page.
   if (bootElapsedSeconds_ < bootGateSeconds()) return false;
+  if (page_ == DisplayPage::PrimaryFlightDisplay) return true;
   return powerUpAcknowledged_ || !dataSource_->requiresPowerUpAcknowledge();
 }
 
 bool AvionicsEngine::awaitingPowerUpAck() const {
+  if (page_ == DisplayPage::PrimaryFlightDisplay) return false;
   return bootElapsedSeconds_ >= bootGateSeconds() && !powerUpAcknowledged_ &&
          dataSource_->requiresPowerUpAcknowledge();
 }
@@ -320,14 +418,38 @@ bool AvionicsEngine::toggleDisplayBackup() {
 
 void AvionicsEngine::pressBezelKey(BezelKey key) {
   // While the power-up page waits for acknowledgement, ENT brings up the live
-  // pages; every other bezel key is inert (as on the real unit).
+  // pages; other keys are inert except map range/pan on the MFD.
   if (awaitingPowerUpAck()) {
-    if (key == BezelKey::Ent) acknowledgePowerUp();
+    if (key == BezelKey::Ent) {
+      acknowledgePowerUp();
+      return;
+    }
+    if (page_ == DisplayPage::MultiFunctionDisplay &&
+        isMapRangePanBezelKey(key)) {
+      mfd_.pressBezelKey(key);
+      dataSource_->setChartRangeNm(mfd_.rangeNm());
+      return;
+    }
     return;
   }
   // The audio panel DISPLAY BACKUP key is system-wide (both GDUs reversionary).
   if (key == BezelKey::DisplayBackup) {
     toggleDisplayBackup();
+    return;
+  }
+  // Map range / pan bypass bootComplete and the live-link gate; only require
+  // display power (same as NAV/COM knobs once the unit is energized).
+  if (isMapRangePanBezelKey(key)) {
+    if (!displayPowered()) return;
+    switch (page_) {
+      case DisplayPage::PrimaryFlightDisplay:
+        softkeys_.pressBezelKey(key);
+        break;
+      case DisplayPage::MultiFunctionDisplay:
+        mfd_.pressBezelKey(key);
+        dataSource_->setChartRangeNm(mfd_.rangeNm());
+        break;
+    }
     return;
   }
   if (!displayPowered() || !bootComplete()) return;
@@ -571,7 +693,10 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
                         softkeys_.navFeatureSource());
   // VNAV profile (FPL "Active VNV Profile" box + PFD vertical deviation) is
   // computed from the live plan and state; skip it when the link is down.
-  if (connected) applyVnav(data, dataSource_->mapSnapshot());
+  if (connected) {
+    applyGlidepath(data, dataSource_->mapSnapshot());
+    applyVnav(data, dataSource_->mapSnapshot());
+  }
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:
       PrimaryFlightDisplay::render(renderer_, data, dataSource_->mapSnapshot(),

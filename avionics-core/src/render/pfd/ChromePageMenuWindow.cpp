@@ -87,16 +87,10 @@ void drawPageMenuWindow(Renderer& r, float w, float h, const Layout& L,
     }
   }
 
-  if (n > visible) {
-    const float barX = groupX + groupW - pad * 0.35f;
-    const float barTop = listTop;
-    const float barH = listH;
-    r.strokeLine(barX, barTop, barX, barTop + barH, 1.0f,
-                 withAlpha(colors::kTitleGray, a));
-    const float thumbH = barH * (static_cast<float>(visible) / n);
-    const float thumbY =
-        barTop + (barH - thumbH) * (static_cast<float>(scroll) / (n - visible));
-    r.fillRect(barX - 1.0f, thumbY, 2.0f, thumbH, withAlpha(colors::kPopoutCyan, a));
+  if (n > maxRows) {
+    const float scrollW = wtScrollBarLane(h);
+    const float trackX = groupX + groupW - pad * 0.35f - scrollW;
+    drawWtScrollBar(r, h, trackX, listTop, listH, n, maxRows, scroll, a);
   }
 }
 

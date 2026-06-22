@@ -235,4 +235,10 @@ std::vector<MapLeg> ProcedureStore::expandProcedure(
   return {};
 }
 
+std::vector<ApproachTransitionOption> ProcedureStore::approachTransitionsFor(
+    const std::string& icao, const std::string& approachName) const {
+  if (icao.empty() || approachName.empty()) return {};
+  return listApproachTransitions(loadAirport(icao), approachName);
+}
+
 }  // namespace avionics

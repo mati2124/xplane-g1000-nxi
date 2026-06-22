@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "avionics/FlightData.h"
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
 #include "avionics/NavFeatureSource.h"
@@ -344,6 +345,13 @@ class SoftkeyController {
   // enroute, or a three-or-more-leg route). Distinguishes [origin, enroute] from
   // [origin, destination] when both have two legs.
   bool flightPlanDestinationFilled() const { return fplDestinationFilled_; }
+  // True while the pilot is building a route locally that has not been adopted
+  // from the simulator feed (partial plans stay in-app only).
+  bool flightPlanLocalDraft() const { return fplLocalDraft_; }
+  PersistedFlightPlan persistedFlightPlanSnapshot() const;
+  void restorePersistedFlightPlan(const PersistedFlightPlan& saved);
+  // Adopt a route pushed from outside the FPL editor (SimBrief OFP, sim FMS).
+  void replaceFlightPlanFromExternal(const std::vector<MapLeg>& plan);
   const std::string& activeWaypointId() const { return activeWaypoint_; }
   // True while GPS Direct-To is engaged (present-position nav to the active TO).
   bool mapDirectToActive() const {
@@ -382,6 +390,12 @@ class SoftkeyController {
   // Re-sync after the data-source pump when the map snapshot was stale earlier
   // in the frame (route override from consumeFlightPlanEdit).
   void syncFlightPlanFromMap(const MapData& map) { syncFlightPlanLegs(map); }
+
+  // Restores PROC/FPL approach metadata after reload (waypoints come from the sim).
+  void setPersistedLoadedApproach(const PersistedLoadedApproach& saved);
+  PersistedLoadedApproach persistedLoadedApproachSnapshot() const;
+  FlightPlanApproachState flightPlanApproachState() const;
+  void applyFlightPlanApproachState(const FlightPlanApproachState& state);
 
   // ---- Procedures window (PROC bezel key) ----
   // The Procedures window first shows the top-level menu; selecting a "Select
@@ -731,6 +745,8 @@ class SoftkeyController {
   void flightPlanApplyDirectTo(const MapLeg& target);
   FmsWaypointEntry* activeWaypointEntry();
   void syncFlightPlanLegs(const MapData& map);
+  void tryRestorePersistedApproach();
+  void reinferApproachFromProcedureLegs();
   // Procedures window (PROC bezel key): build the top-level menu on open, route
   // the FMS knob / ENT / CLR while it is open, move the menu cursor (skipping
   // disabled rows), and load the selected procedure's legs into the plan.
@@ -858,6 +874,7 @@ class SoftkeyController {
   bool fplEditPending_ = false;
   bool fplCursorOn_ = false;
   bool fplDestinationFilled_ = false;
+  bool fplLocalDraft_ = false;
   int fplCursorRow_ = 0;
   FmsWaypointEntry fplEntry_;
   FplConfirm fplConfirm_ = FplConfirm::None;
@@ -889,6 +906,7 @@ class SoftkeyController {
   MapProcedure fplLoadedApproach_{};
   int fplApproachLegStart_ = 0;
   int fplApproachLegCount_ = 0;
+  PersistedLoadedApproach persistedApproachRestore_{};
   MapProcedure procSelectedProcedure() const;
   std::string formatApproachLabel(const MapProcedure& proc) const;
   void procOpenApproachSelect();

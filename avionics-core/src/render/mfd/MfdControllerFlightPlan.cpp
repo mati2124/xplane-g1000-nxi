@@ -1,41 +1,88 @@
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 
+#include "avionics/FlightPlanPersistence.h"
+#include "avionics/FplRouteEdit.h"
 #include "avionics/MfdController.h"
 
 // Active Flight Plan page (FPL group, Pilot's Guide 5.6): caches the map plan
 // plus local edits, the leg-row cursor, the Waypoint Information insert window,
 // the VNAV altitude-constraint entry, and the remove/delete confirmations.
 namespace avionics {
-namespace {
 
-bool legsEqual(const std::vector<MapLeg>& a, const std::vector<MapLeg>& b) {
-  if (a.size() != b.size()) return false;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    if (a[i].id != b[i].id || a[i].lat != b[i].lat || a[i].lon != b[i].lon) {
-      return false;
-    }
+void MfdController::fplEnsureApproachInferred() {
+  if (fplApproachLegCount_ <= 0) {
+    reinferApproachFromProcedureLegs();
   }
-  return true;
 }
 
-}  // namespace
+MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const {
+  FplEffectiveApproach out;
+  out.start = fplApproachLegStart_;
+  out.count = fplApproachLegCount_;
+  if (out.count <= 0) {
+    const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+    if (block.valid()) {
+      out.start = block.start;
+      out.count = block.count;
+    }
+  }
+  out.count = fplNormalizedApproachCount(
+      out.start, out.count, static_cast<int>(fplLegs_.size()));
+  FlightPlanApproachState state;
+  state.legStart = out.start;
+  state.legCount = out.count;
+  if (!approachStateFitsPlan(state, fplLegs_)) {
+    out.start = 0;
+    out.count = 0;
+  }
+  return out;
+}
+
+int MfdController::fplCursorLegIndex() const {
+  FplRouteEdit edit{
+      const_cast<std::vector<MapLeg>&>(fplLegs_),
+      const_cast<bool&>(fplDestinationFilled_),
+      const_cast<int&>(fplApproachLegStart_),
+      const_cast<int&>(fplApproachLegCount_),
+      const_cast<int&>(fplCursorRow_),
+      const_cast<MapProcedure*>(&fplLoadedApproach_),
+      const_cast<std::string*>(&fplApproachHeaderLabel_)};
+  edit.directToActive = fplNavDirectToActive_;
+  const FplCursorLayout layout = FplCursorLayout::SectionRows;
+  return ::avionics::fplCursorLegIndex(edit, fplApproachAirportIcao(), layout);
+}
+
+void MfdController::fplClampCursorRow() {
+  fplEnsureApproachInferred();
+  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                    &fplApproachHeaderLabel_};
+  edit.directToActive = fplNavDirectToActive_;
+  ::avionics::fplClampCursorRow(edit, fplApproachAirportIcao(),
+                                FplCursorLayout::SectionRows);
+  fplCursorCol_ = FplCursorCol::Ident;
+}
 
 void MfdController::syncFlightPlan(const MapData& map,
-                                   const std::string& activeWaypoint) {
+                                   const std::string& activeWaypoint,
+                                   bool navDirectTo) {
   mapData_ = &map;
   activeWaypoint_ = activeWaypoint;
+  fplNavDirectToActive_ = navDirectTo;
 
-  if (!legsEqual(map.flightPlan, fplLastMapPlan_)) {
-    fplLastMapPlan_ = map.flightPlan;
-    // Adopt the change unless it is just the data source catching up with our
-    // own pending/published edit.
-    if (!fplEditPending_ && !legsEqual(map.flightPlan, fplLastPublished_) &&
-        !legsEqual(fplLegs_, fplLastPublished_)) {
-      fplLegs_ = map.flightPlan;
-      // The rows the interaction state referenced are gone; close the entry
-      // and confirmation windows rather than acting on the wrong waypoint.
+  // GPS Direct-To keeps the FPL editor template blank (matches PFD); do not
+  // re-adopt sim route legs into the editor while navigation is active.
+  if (navDirectTo && !fplLocalDraft_ && !fplEditPending_) {
+    if (!fplLegs_.empty() || fplDestinationFilled_ || fplApproachLegCount_ > 0) {
+      fplLegs_.clear();
+      fplDestinationFilled_ = false;
+      fplApproachLegStart_ = 0;
+      fplApproachLegCount_ = 0;
+      fplLoadedApproach_ = {};
+      fplApproachHeaderLabel_.clear();
       fplEntry_.active = false;
       fplEntry_.notFound = false;
       fplAltEntry_.active = false;
@@ -44,11 +91,48 @@ void MfdController::syncFlightPlan(const MapData& map,
     }
   }
 
-  fplCursorRow_ =
-      std::max(0, std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_));
-  if (fplCursorRow_ >= static_cast<int>(fplLegs_.size())) {
-    fplCursorCol_ = FplCursorCol::Ident;  // the append slot has no ALT field
+  const bool mapChanged = !flightPlanLegsEqual(map.flightPlan, fplLastMapPlan_);
+  if (mapChanged) {
+    fplLastMapPlan_ = map.flightPlan;
   }
+  // Keep the FPL page aligned with the shared map plan unless a local edit is
+  // waiting to publish. Adopt even when the map echoes our own publication so
+  // the PFD and MFD stay in step after either side edits the route.
+  if (!fplEditPending_ && !fplLocalDraft_ && !navDirectTo &&
+      !flightPlanLegsEqual(fplLegs_, map.flightPlan)) {
+    const MapProcedure savedApproach = fplLoadedApproach_;
+    const std::string savedHeader = fplApproachHeaderLabel_;
+    std::vector<MapLeg> adopted = map.flightPlan;
+    preserveFlightPlanIdents(adopted, fplLastPublished_);
+    fplLegs_ = std::move(adopted);
+    fplDestinationFilled_ =
+        fplDestinationFilledForDisplay(static_cast<int>(fplLegs_.size()),
+                                       navDirectTo);
+    fplApproachLegStart_ = 0;
+    fplApproachLegCount_ = 0;
+    fplLoadedApproach_ = {};
+    fplApproachHeaderLabel_.clear();
+    tryRestorePersistedApproach();
+    if (fplApproachLegCount_ <= 0) {
+      reinferApproachFromProcedureLegs();
+    }
+    if (fplLoadedApproach_.name.empty() && !savedApproach.name.empty() &&
+        fplApproachLegCount_ > 0) {
+      fplLoadedApproach_ = savedApproach;
+      if (fplApproachHeaderLabel_.empty() && !savedHeader.empty()) {
+        fplApproachHeaderLabel_ = savedHeader;
+      }
+    }
+    // The rows the interaction state referenced are gone; close the entry
+    // and confirmation windows rather than acting on the wrong waypoint.
+    fplEntry_.active = false;
+    fplEntry_.notFound = false;
+    fplAltEntry_.active = false;
+    fplConfirm_ = FplConfirm::None;
+    fplMenuOpen_ = false;
+  }
+
+  fplClampCursorRow();
 }
 
 bool MfdController::consumeFlightPlanEdit(std::vector<MapLeg>& out) {
@@ -59,11 +143,14 @@ bool MfdController::consumeFlightPlanEdit(std::vector<MapLeg>& out) {
   return true;
 }
 
-void MfdController::fplPublishEdit() { fplEditPending_ = true; }
+void MfdController::fplPublishEdit() {
+  fplEditPending_ = true;
+  fplLocalDraft_ = !fplLegs_.empty();
+}
 
 void MfdController::fplResetInteraction() {
   fplCursorOn_ = false;
-  fplCursorRow_ = std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_);
+  fplClampCursorRow();
   fplCursorCol_ = FplCursorCol::Ident;
   fplEntry_.reset();
   fplAltEntry_ = FplAltEntry{};
@@ -106,51 +193,50 @@ void MfdController::fplAltEntryCommit() {
 }
 
 void MfdController::fplCommitEntry() {
+  fplEnsureApproachInferred();
   if (fplEntry_.chars.empty()) {
-    // Nothing spelled: close the window, like backing out.
     fplEntry_.active = false;
     return;
   }
   if (!fplEntry_.hasMatch) {
-    fplEntry_.notFound = true;  // stay open so the ident can be corrected
+    fplEntry_.notFound = true;
     return;
   }
 
-  // Insert before the selected row (Pilot's Guide: "The new waypoint is
-  // placed directly in front of the highlighted waypoint"); the blank slot
-  // after the last waypoint appends.
-  const int row =
-      std::max(0, std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_));
-
-  const std::string ident = fplEntry_.autofill.empty() ? fplEntry_.chars
-                                                         : fplEntry_.autofill;
-  if (navSource_ != nullptr && navSource_->isAirwayName(ident) && row > 0 &&
-      row < static_cast<int>(fplLegs_.size())) {
-    const std::vector<MapLeg> expanded = navSource_->expandAirway(
-        ident, fplLegs_[static_cast<std::size_t>(row - 1)].id,
-        fplLegs_[static_cast<std::size_t>(row)].id);
-    if (!expanded.empty()) {
-      fplLegs_.insert(fplLegs_.begin() + row, expanded.begin(), expanded.end());
-      fplCursorRow_ = row + static_cast<int>(expanded.size());
-      fplEntry_.active = false;
-      fplEntry_.notFound = false;
-      fplPublishEdit();
-      return;
-    }
+  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                    &fplApproachHeaderLabel_};
+  edit.directToActive = fplNavDirectToActive_;
+  const FplCursorLayout layout = FplCursorLayout::SectionRows;
+  const std::string ident =
+      fplEntry_.autofill.empty() ? fplEntry_.chars : fplEntry_.autofill;
+  if (!::avionics::fplCommitWaypointIdent(edit, navSource_, fplEntry_.match, ident,
+                                          fplCursorRow_, fplApproachAirportIcao(),
+                                          layout)) {
+    return;
   }
-
-  MapLeg leg;
-  leg.lat = fplEntry_.match.lat;
-  leg.lon = fplEntry_.match.lon;
-  leg.id = fplEntry_.match.id;
-  fplLegs_.insert(fplLegs_.begin() + row, leg);
-  fplCursorRow_ = row + 1;  // follow the insertion, ready for the next entry
   fplEntry_.active = false;
   fplEntry_.notFound = false;
   fplPublishEdit();
 }
 
 bool MfdController::fplBezelKey(BezelKey key) {
+  fplEnsureApproachInferred();
+  const int legCount = static_cast<int>(fplLegs_.size());
+  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                    &fplApproachHeaderLabel_};
+  edit.directToActive = fplNavDirectToActive_;
+  const std::string approachAirport = fplApproachAirportIcao();
+  const FplCursorLayout layout = FplCursorLayout::SectionRows;
+  const bool approachView = fplApproachLegCount_ > 0;
+  const int selectableLast =
+      ::avionics::fplCursorSelectableLast(edit, approachAirport, layout);
+
+  // GCU / GDU range still zooms the map (Pilot's Guide); fall through to the
+  // common range handling in pressBezelKey.
+  if (isMapRangePanBezelKey(key)) return false;
+
   // The confirmation window is modal: ENT executes the highlighted choice,
   // CLR (or pushing the FMS knob) cancels, the knob toggles OK/CANCEL.
   if (fplConfirm_ != FplConfirm::None) {
@@ -158,13 +244,13 @@ bool MfdController::fplBezelKey(BezelKey key) {
       case BezelKey::Ent:
         if (fplConfirmOk_) {
           if (fplConfirm_ == FplConfirm::RemoveWaypoint) {
-            if (fplCursorRow_ < static_cast<int>(fplLegs_.size())) {
-              fplLegs_.erase(fplLegs_.begin() + fplCursorRow_);
+            const int legIndex =
+                ::avionics::fplCursorLegIndex(edit, approachAirport, layout);
+            if (::avionics::fplRemoveLegAtIndex(edit, legIndex)) {
               fplPublishEdit();
             }
-          } else {  // DeleteFlightPlan
-            fplLegs_.clear();
-            fplCursorRow_ = 0;
+          } else {
+            ::avionics::fplClearFlightPlan(edit);
             fplPublishEdit();
           }
         }
@@ -276,28 +362,43 @@ bool MfdController::fplBezelKey(BezelKey key) {
   // Pushing the knob turns the selection cursor on/off.
   if (key == BezelKey::FmsPush) {
     fplCursorOn_ = !fplCursorOn_;
-    fplCursorRow_ =
-        std::max(0, std::min(static_cast<int>(fplLegs_.size()), fplCursorRow_));
-    fplCursorCol_ = FplCursorCol::Ident;
+    fplClampCursorRow();
     return true;
   }
 
-  if (!fplCursorOn_) return false;  // knob turns step pages as usual
+  if (!fplCursorOn_) {
+    // Cursor off: the knob scrolls the section list (PFD FPL window behavior).
+    if (key == BezelKey::FmsOuterCw || key == BezelKey::FmsInnerCw) {
+      fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
+      return true;
+    }
+    if (key == BezelKey::FmsOuterCcw || key == BezelKey::FmsInnerCcw) {
+      fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
+      return true;
+    }
+    return false;  // other keys fall through to page stepping
+  }
 
-  const int legCount = static_cast<int>(fplLegs_.size());
-  // The blank append slot (row == legCount) has no ALT field.
-  const bool onWaypointRow = fplCursorRow_ < legCount;
+  const int legIndex = fplCursorLegIndex();
+  const bool onLegRow = legIndex >= 0 && legIndex < legCount;
   const bool onAltCol =
-      onWaypointRow && fplCursorCol_ == FplCursorCol::Altitude;
+      onLegRow && fplCursorCol_ == FplCursorCol::Altitude;
 
   switch (key) {
     case BezelKey::FmsOuterCw:
-      // Step through fields: a waypoint row's IDENT then its ALT, then the next
-      // row's IDENT (Pilot's Guide: the large knob moves the field highlight).
-      if (onWaypointRow && fplCursorCol_ == FplCursorCol::Ident) {
+      // Blank section template: step rows like the PFD FPL window. Filled legs
+      // also expose the VNAV ALT column on the large knob.
+      if (approachView) {
+        if (onLegRow && fplCursorCol_ == FplCursorCol::Ident) {
+          fplCursorCol_ = FplCursorCol::Altitude;
+        } else {
+          fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
+          fplCursorCol_ = FplCursorCol::Ident;
+        }
+      } else if (onLegRow && fplCursorCol_ == FplCursorCol::Ident) {
         fplCursorCol_ = FplCursorCol::Altitude;
       } else {
-        fplCursorRow_ = std::min(legCount, fplCursorRow_ + 1);
+        fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
         fplCursorCol_ = FplCursorCol::Ident;
       }
       return true;
@@ -306,38 +407,43 @@ bool MfdController::fplBezelKey(BezelKey key) {
         fplCursorCol_ = FplCursorCol::Ident;
       } else if (fplCursorRow_ > 0) {
         fplCursorRow_ -= 1;
-        // Land on the previous waypoint row's ALT field when it has one.
-        fplCursorCol_ = fplCursorRow_ < legCount ? FplCursorCol::Altitude
+        const int prevLeg = fplCursorLegIndex();
+        fplCursorCol_ =
+            (prevLeg >= 0 && prevLeg < legCount) ? FplCursorCol::Altitude
                                                  : FplCursorCol::Ident;
       }
       return true;
     case BezelKey::FmsInnerCw:
     case BezelKey::FmsInnerCcw:
       if (onAltCol) {
-        // Small knob on the ALT column opens the altitude-constraint entry.
-        fplAltEntryOpen(fplCursorRow_);
+        fplAltEntryOpen(legIndex);
       } else {
-        // Small knob on the IDENT column opens the Waypoint Information window
-        // for an insertion before that row.
-        fplEntry_.open(navSource_, mapData_);
+        if (!fplEntry_.active) {
+          std::string initial;
+          if (onLegRow) {
+            initial = fplLegs_[static_cast<std::size_t>(legIndex)].id;
+            if (!initial.empty() && isFmsLatLonIdent(initial)) initial.clear();
+          }
+          fplEntry_.open(navSource_, mapData_, initial);
+          fplEntry_.selectAll = false;
+        }
+        fplEntry_.turnChar(navSource_, mapData_,
+                           key == BezelKey::FmsInnerCw ? +1 : -1);
       }
       return true;
     case BezelKey::Clr:
       if (onAltCol) {
-        // CLR on the ALT column removes an existing constraint.
-        MapLeg& leg = fplLegs_[static_cast<std::size_t>(fplCursorRow_)];
+        MapLeg& leg = fplLegs_[static_cast<std::size_t>(legIndex)];
         if (leg.altitudeConstraint != AltConstraintType::None) {
           leg.altitudeConstraintFt = 0;
           leg.altitudeConstraint = AltConstraintType::None;
           leg.altitudeDesignated = false;
           fplPublishEdit();
         }
-      } else if (onWaypointRow) {
-        // CLR on a waypoint row asks "Remove <wpt>?"; the blank append slot has
-        // nothing to remove.
+      } else if (onLegRow) {
         fplConfirm_ = FplConfirm::RemoveWaypoint;
         fplConfirmOk_ = true;
-        fplRemoveIdent_ = fplLegs_[fplCursorRow_].id;
+        fplRemoveIdent_ = fplLegs_[static_cast<std::size_t>(legIndex)].id;
       }
       return true;
     case BezelKey::Ent:
@@ -363,6 +469,105 @@ bool MfdController::applyGcuEntryKey(char ch) {
     entry->typeChar(navSource_, mapData_, ch);
   }
   return true;
+}
+
+void MfdController::setPersistedLoadedApproach(
+    const PersistedLoadedApproach& saved) {
+  persistedApproachRestore_ = saved;
+  tryRestorePersistedApproach();
+}
+
+FlightPlanApproachState MfdController::flightPlanApproachState() const {
+  FlightPlanApproachState out;
+  out.legStart = fplApproachLegStart_;
+  out.legCount = fplApproachLegCount_;
+  out.loaded = fplLoadedApproach_;
+  out.headerLabel = fplApproachHeaderLabel_;
+  return out;
+}
+
+void MfdController::applyFlightPlanApproachState(
+    const FlightPlanApproachState& state) {
+  if (state.legCount <= 0) {
+    fplApproachLegStart_ = 0;
+    fplApproachLegCount_ = 0;
+    fplLoadedApproach_ = {};
+    fplApproachHeaderLabel_.clear();
+    return;
+  }
+  fplApproachLegStart_ = state.legStart;
+  fplApproachLegCount_ = state.legCount;
+  fplLoadedApproach_ = state.loaded;
+  fplApproachHeaderLabel_ = state.headerLabel;
+}
+
+std::string MfdController::fplApproachAirportIcao() const {
+  if (fplApproachLegCount_ <= 0) return {};
+  return ::avionics::fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_);
+}
+
+void MfdController::tryRestorePersistedApproach() {
+  if (!persistedApproachRestore_.active ||
+      persistedApproachRestore_.name.empty()) {
+    return;
+  }
+  if (navSource_ == nullptr || !navSource_->ready() || fplLegs_.empty()) {
+    return;
+  }
+  const std::string icao = persistedApproachRestore_.airportIcao;
+  if (icao.empty()) return;
+
+  const std::vector<MapLeg> expanded =
+      navSource_->expandProcedure(icao, persistedApproachRestore_.type,
+                                  persistedApproachRestore_.name,
+                                  persistedApproachRestore_.transition);
+  if (expanded.empty()) return;
+
+  int start = 0;
+  if (!findLegSequenceInPlan(fplLegs_, expanded, start)) return;
+
+  fplApproachLegStart_ = start;
+  fplApproachLegCount_ = static_cast<int>(expanded.size());
+  fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
+  fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
+  mergeProcedureLegMetadata(fplLegs_, start, expanded);
+}
+
+void MfdController::reinferApproachFromProcedureLegs() {
+  const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+  if (!block.valid()) return;
+  fplApproachLegStart_ = block.start;
+  fplApproachLegCount_ = block.count;
+  if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
+    fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
+    fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
+  }
+}
+
+void MfdController::replaceFlightPlanFromExternal(
+    const std::vector<MapLeg>& plan) {
+  fplLegs_ = plan;
+  fplLocalDraft_ = false;
+  fplEditPending_ = false;
+  fplApproachLegStart_ = 0;
+  fplApproachLegCount_ = 0;
+  fplLoadedApproach_ = {};
+  fplApproachHeaderLabel_.clear();
+  fplLastPublished_ = plan;
+  fplLastMapPlan_ = plan;
+}
+
+void MfdController::restorePersistedFlightPlan(
+    const PersistedFlightPlan& saved) {
+  if (!saved.active || saved.legs.empty()) return;
+  fplLegs_ = saved.legs;
+  fplLocalDraft_ = true;
+  fplEditPending_ = false;
+  fplApproachLegStart_ = 0;
+  fplApproachLegCount_ = 0;
+  fplLoadedApproach_ = {};
+  fplApproachHeaderLabel_.clear();
+  fplCursorRow_ = 0;
 }
 
 }  // namespace avionics

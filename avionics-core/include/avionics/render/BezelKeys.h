@@ -115,6 +115,22 @@ inline bool isGduFmsInputKey(BezelKey key) {
   }
 }
 
+// RANGE joystick zoom and pan: local map UI (no live sim data link required).
+inline bool isMapRangePanBezelKey(BezelKey key) {
+  switch (key) {
+    case BezelKey::RangeUp:
+    case BezelKey::RangeDown:
+    case BezelKey::PanPush:
+    case BezelKey::PanUp:
+    case BezelKey::PanDown:
+    case BezelKey::PanLeft:
+    case BezelKey::PanRight:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // FPL / PROC / MENU switch pages on the real unit even when a pop-up is open.
 inline bool isPageNavigationBezelKey(BezelKey key) {
   switch (key) {

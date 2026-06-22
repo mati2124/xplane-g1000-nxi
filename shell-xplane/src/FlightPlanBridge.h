@@ -51,8 +51,6 @@ class FlightPlanBridge {
   // Sim-thread work, all called from the flight loop:
   void applyPendingWritesOnSimThread();  // program queued route / Direct-To
   void readFmsOnSimThread();             // snapshot the live route for serving
-  void programRoute(const std::vector<MapLeg>& legs);  // route -> FMS entries
-  void programDirectTo(bool active, const MapLeg& target);
 
   // UDP server loop (background thread): answers read requests and queues write
   // commands for the flight loop. Never touches the XPLM SDK.

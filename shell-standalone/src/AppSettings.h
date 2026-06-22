@@ -10,6 +10,7 @@
 #include <string>
 
 #include "avionics/PersistentState.h"
+#include "avionics/FlightPlanPersistence.h"
 
 namespace avionics {
 
@@ -60,6 +61,10 @@ struct AppSettings {
   // survive between flights, e.g. the PFD inset map on/off). Captured from the
   // engines and restored on the next launch.
   AvionicsPersistentState avionics;
+  // Last loaded approach (PROC load); waypoint legs reload from the sim FMS.
+  PersistedLoadedApproach persistedApproach;
+  // Pilot-built flight plan kept in the avionics app (partial routes included).
+  PersistedFlightPlan persistedFlightPlan;
   // Dev-only Debug menu state (only meaningful when launched with --debug-menu,
   // i.e. from the IDE; the installed app never shows the menu). Persisted so the
   // last-used feed, demo flight state, and demo power switches survive restarts.

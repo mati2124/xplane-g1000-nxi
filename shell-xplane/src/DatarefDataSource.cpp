@@ -1,4 +1,5 @@
 #include "DatarefDataSource.h"
+#include "FmsRouteProgrammer.h"
 #include "avionics/EisLegacy.h"
 
 #include <algorithm>
@@ -19,6 +20,8 @@
 #include "avionics/AptDatParser.h"
 #include "avionics/AssetPaths.h"
 #include "avionics/Datarefs.h"
+#include "avionics/FlightPlanPersistence.h"
+#include "avionics/MfdController.h"
 #include "avionics/OpenAirParser.h"
 
 namespace avionics {
@@ -250,6 +253,11 @@ FmsEntry fmsEntry(int index) {
 
 std::string fmsEntryId(int index) { return fmsEntry(index).id; }
 
+std::string flightPlanIdentAt(const std::vector<MapLeg>& plan, int index) {
+  if (index < 0 || index >= static_cast<int>(plan.size())) return {};
+  return plan[static_cast<std::size_t>(index)].id;
+}
+
 bool dirExists(const std::string& path) {
   std::error_code ec;
   return std::filesystem::is_directory(path, ec);
@@ -372,6 +380,7 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   transponderMode_ = XPLMFindDataRef(datarefs::kTransponderMode);
   batteryMasterOn_ = XPLMFindDataRef(datarefs::kBatteryMasterOn);
   avionicsPowerOn_ = XPLMFindDataRef(datarefs::kAvionicsPowerOn);
+  efisMapRangeNm_ = XPLMFindDataRef(datarefs::kEfisMapRangeNm);
 
   failAttitude_ = XPLMFindDataRef(datarefs::kFailAttitude);
   failHeading_ = XPLMFindDataRef(datarefs::kFailHeading);
@@ -638,15 +647,44 @@ void DatarefDataSource::update(double dtSeconds) {
   }
   syncEisLegacyFields(data_);
 
-  // Active flight-plan leg (FROM -> TO). The entry the FMS is flying toward is
-  // the TO waypoint; the one before it is FROM (e.g. KFMY -> KLAL).
+  // Active flight-plan leg (FROM -> TO). Prefer typed idents from the last
+  // PFD/MFD edit: the sim FMS readback uses coordinate strings (+27-81) for
+  // lat/lon entries even when the pilot entered a VOR/fix ident.
   const int fmsCount = XPLMCountFMSEntries();
   if (fmsCount > 0) {
     int dest = XPLMGetDestinationFMSEntry();
     if (dest < 0) dest = 0;
     if (dest >= fmsCount) dest = fmsCount - 1;
-    data_.fmaToWpt = fmsEntryId(dest);
-    data_.fmaFromWpt = (dest > 0) ? fmsEntryId(dest - 1) : std::string();
+    if (directToActive_ && !directTo_.id.empty()) {
+      data_.fmaToWpt = directTo_.id;
+      data_.fmaFromWpt.clear();
+    } else if (routeOverrideSet_) {
+      data_.fmaToWpt = flightPlanIdentAt(routeOverride_, dest);
+      if (data_.fmaToWpt.empty() || isFmsLatLonIdent(data_.fmaToWpt)) {
+        const std::string simTo = fmsEntryId(dest);
+        if (!isFmsLatLonIdent(simTo)) {
+          data_.fmaToWpt = simTo;
+        } else if (data_.fmaToWpt.empty()) {
+          data_.fmaToWpt = simTo;
+        }
+      }
+      if (dest > 0) {
+        data_.fmaFromWpt = flightPlanIdentAt(routeOverride_, dest - 1);
+        if (data_.fmaFromWpt.empty() || isFmsLatLonIdent(data_.fmaFromWpt)) {
+          const std::string simFrom = fmsEntryId(dest - 1);
+          if (!isFmsLatLonIdent(simFrom)) {
+            data_.fmaFromWpt = simFrom;
+          } else if (data_.fmaFromWpt.empty()) {
+            data_.fmaFromWpt = simFrom;
+          }
+        }
+      } else {
+        data_.fmaFromWpt.clear();
+      }
+    } else {
+      data_.fmaToWpt = fmsEntryId(dest);
+      data_.fmaFromWpt = (dest > 0) ? fmsEntryId(dest - 1) : std::string();
+    }
   } else if (gpsNavId_) {
     // No flight plan entered: fall back to the active GPS destination id (a
     // null-terminated byte string), rendering as a direct-to "->KXXX".
@@ -665,6 +703,61 @@ void DatarefDataSource::update(double dtSeconds) {
 
 void DatarefDataSource::syncWeatherRadar(const MfdController& ui) {
   weather_.syncFromController(ui);
+}
+
+void DatarefDataSource::syncMapRangeFromSim(MfdController& ui) {
+  if (efisMapRangeNm_ == nullptr) return;
+  const float simNm = XPLMGetDataf(efisMapRangeNm_);
+  if (simNm <= 0.0f) return;
+  if (lastPushedMapRangeNm_ >= 0.0f &&
+      std::fabs(simNm - lastPushedMapRangeNm_) < 0.01f) {
+    return;
+  }
+  const float uiNm = ui.rangeNm();
+  if (std::fabs(std::log(simNm) - std::log(uiNm)) > 0.02f) {
+    ui.setRangeFromNm(simNm);
+    chartRangeNm_ = ui.rangeNm();
+    mapPanDirty_ = true;
+  }
+}
+
+void DatarefDataSource::pushMapRangeToSim(float rangeNm) {
+  if (efisMapRangeNm_ == nullptr || rangeNm <= 0.0f) return;
+  if (lastPushedMapRangeNm_ >= 0.0f &&
+      std::fabs(rangeNm - lastPushedMapRangeNm_) < 0.001f) {
+    return;
+  }
+  XPLMSetDataf(efisMapRangeNm_, rangeNm);
+  lastPushedMapRangeNm_ = rangeNm;
+}
+
+bool DatarefDataSource::stepMapRangeFromSim(int direction,
+                                            MfdController* ui) {
+  if (direction == 0) return false;
+  float simNm = 0.0f;
+  if (efisMapRangeNm_ != nullptr) {
+    simNm = XPLMGetDataf(efisMapRangeNm_);
+  }
+  if (simNm <= 0.0f && ui != nullptr) {
+    simNm = ui->rangeNm();
+  }
+  if (simNm <= 0.0f) {
+    simNm = mapRangeNmAt(kMapRangeDefaultIndex);
+  }
+  int idx = mapRangeIndexForNm(simNm);
+  if (direction > 0) {
+    idx = std::min(kMapRangeLadderCount - 1, idx + 1);
+  } else {
+    idx = std::max(0, idx - 1);
+  }
+  const float newNm = mapRangeNmAt(idx);
+  pushMapRangeToSim(newNm);
+  if (ui != nullptr) {
+    ui->setRangeFromNm(newNm);
+  }
+  chartRangeNm_ = newNm;
+  mapPanDirty_ = true;
+  return newNm != simNm;
 }
 
 void DatarefDataSource::tuneRadioStandby(RadioUnit unit, float standbyMhz) {
@@ -712,6 +805,38 @@ void DatarefDataSource::setTransponderCode(int code) {
 void DatarefDataSource::setTransponderMode(int mode) {
   if (transponderMode_) XPLMSetDatai(transponderMode_, mode);
   data_.transponderMode = xpdrModeString(mode);
+}
+
+void DatarefDataSource::setLocalFlightPlan(std::vector<MapLeg> route) {
+  routeOverride_ = std::move(route);
+  routeOverrideSet_ = true;
+}
+
+void DatarefDataSource::setRouteOverride(std::vector<MapLeg> route,
+                                           bool programSimulator) {
+  routeOverride_ = std::move(route);
+  routeOverrideSet_ = true;
+  if (programSimulator) programFmsRoute(routeOverride_);
+}
+
+void DatarefDataSource::clearRouteOverride() {
+  routeOverride_ = {};
+  routeOverrideSet_ = false;
+}
+
+void DatarefDataSource::setDirectTo(MapLeg target) {
+  directTo_ = std::move(target);
+  directToActive_ = !directTo_.id.empty();
+  if (directToActive_) {
+    programFmsDirectTo(true, directTo_);
+  } else {
+    programFmsDirectTo(false, directTo_);
+  }
+}
+
+void DatarefDataSource::clearDirectTo() {
+  directToActive_ = false;
+  programFmsDirectTo(false, directTo_);
 }
 
 void DatarefDataSource::buildNavCache() {
@@ -796,19 +921,25 @@ void DatarefDataSource::updateMap(double dtSeconds) {
   nexrad_.advance(dtSeconds);
   map_.nexrad = &nexrad_;
 
-  // Active flight-plan route: every FMS entry as a lat/lon leg with its id. The
-  // PFD inset and the future MFD MAP page both render this via the shared
-  // MapView, so the route is built once here regardless of which page is up.
+  map_.directToActive = directToActive_;
+  map_.directTo = directTo_;
+
+  // Active flight-plan route: prefer the last PFD/MFD edit so typed idents are
+  // not replaced by the sim FMS coordinate strings for lat/lon entries.
   map_.flightPlan.clear();
-  const int count = XPLMCountFMSEntries();
-  map_.flightPlan.reserve(static_cast<std::size_t>(count));
-  for (int i = 0; i < count; ++i) {
-    const FmsEntry entry = fmsEntry(i);
-    // Skip empty / unpopulated entries (a 0/0 fix would draw a spurious leg).
-    if (entry.lat == 0.0f && entry.lon == 0.0f) continue;
-    map_.flightPlan.push_back(
-        {static_cast<double>(entry.lat), static_cast<double>(entry.lon),
-         entry.id});
+  if (routeOverrideSet_) {
+    map_.flightPlan = routeOverride_;
+  } else {
+    const int count = XPLMCountFMSEntries();
+    map_.flightPlan.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+      const FmsEntry entry = fmsEntry(i);
+      // Skip empty / unpopulated entries (a 0/0 fix would draw a spurious leg).
+      if (entry.lat == 0.0f && entry.lon == 0.0f) continue;
+      map_.flightPlan.push_back(
+          {static_cast<double>(entry.lat), static_cast<double>(entry.lon),
+           entry.id});
+    }
   }
 
   // Nearby navaids/airports: built once from the nav database, then range-
@@ -1023,6 +1154,7 @@ void DatarefDataSource::setChartRangeNm(float rangeNm) {
     chartRangeNm_ = rangeNm;
     mapPanDirty_ = true;
   }
+  pushMapRangeToSim(rangeNm);
 }
 
 void DatarefDataSource::setMapViewHalfExtentNm(float halfExtentNm) {
@@ -1037,6 +1169,88 @@ std::vector<MapAirportFrequency> DatarefDataSource::airportFrequencies(
   const auto it = aptMetaByIcao_.find(icao);
   if (it == aptMetaByIcao_.end()) return {};
   return it->second.frequencies;
+}
+
+std::vector<MapFeature> DatarefDataSource::lookupNavIdent(
+    const std::string& ident, std::size_t maxCount) const {
+  if (ident.empty() || maxCount == 0) return {};
+  std::vector<MapFeature> out;
+  out.reserve(maxCount);
+  for (const MapFeature& feature : navCache_) {
+    if (feature.id != ident) continue;
+    out.push_back(feature);
+    if (out.size() >= maxCount) break;
+  }
+  if (out.size() >= maxCount) return out;
+
+  auto navIdentEquals = [](const char* found, const std::string& expected) {
+    if (found == nullptr || expected.empty()) return false;
+    std::string a(found);
+    while (!a.empty() && std::isspace(static_cast<unsigned char>(a.back()))) {
+      a.pop_back();
+    }
+    if (a.size() != expected.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (std::toupper(static_cast<unsigned char>(a[i])) !=
+          std::toupper(static_cast<unsigned char>(expected[i]))) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  auto mapNavType = [](XPLMNavType type) -> MapFeatureType {
+    switch (type) {
+      case xplm_Nav_Airport:
+        return MapFeatureType::Airport;
+      case xplm_Nav_VOR:
+        return MapFeatureType::Vor;
+      case xplm_Nav_NDB:
+        return MapFeatureType::Ndb;
+      case xplm_Nav_Fix:
+        return MapFeatureType::Fix;
+      default:
+        return MapFeatureType::Waypoint;
+    }
+  };
+
+  const XPLMNavType types[] = {xplm_Nav_Fix, xplm_Nav_VOR, xplm_Nav_NDB,
+                               xplm_Nav_Airport};
+  for (XPLMNavType type : types) {
+    const XPLMNavRef ref =
+        XPLMFindNavAid(nullptr, ident.c_str(), nullptr, nullptr, nullptr, type);
+    if (ref == XPLM_NAV_NOT_FOUND) continue;
+
+    XPLMNavType outType = xplm_Nav_Unknown;
+    float lat = 0.0f;
+    float lon = 0.0f;
+    char foundId[32] = {};
+    XPLMGetNavAidInfo(ref, &outType, &lat, &lon, nullptr, nullptr, nullptr,
+                      foundId, nullptr, nullptr);
+    foundId[sizeof(foundId) - 1] = '\0';
+    if (!navIdentEquals(foundId, ident)) continue;
+
+    MapFeature feature;
+    feature.id = ident;
+    feature.lat = static_cast<double>(lat);
+    feature.lon = static_cast<double>(lon);
+    feature.type = mapNavType(outType);
+    out.push_back(std::move(feature));
+    if (out.size() >= maxCount) break;
+  }
+  return out;
+}
+
+std::string DatarefDataSource::firstNavIdentWithPrefix(
+    const std::string& prefix) const {
+  if (prefix.empty()) return {};
+  std::string best;
+  for (const MapFeature& feature : navCache_) {
+    if (feature.id.size() < prefix.size()) continue;
+    if (feature.id.compare(0, prefix.size(), prefix) != 0) continue;
+    if (best.empty() || feature.id < best) best = feature.id;
+  }
+  return best;
 }
 
 }  // namespace avionics

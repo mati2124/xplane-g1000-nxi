@@ -8,6 +8,7 @@
 
 #include "avionics/Checklist.h"
 #include "avionics/FlightData.h"
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
 #include "avionics/MapRange.h"
@@ -251,6 +252,12 @@ class MfdController {
   // the selected step: it labels the range readout and gates symbol declutter.
   float rangeNm() const;
 
+  // Snap the range ladder to the nearest step for `rangeNm` (sim EFIS sync).
+  void setRangeFromNm(float rangeNm);
+
+  // Step the navigation-map range ladder (+1 zoom out, -1 zoom in).
+  bool stepMapRange(int direction);
+
   // Animated zoom scale, in NM, easing toward rangeNm() each update(). Passed
   // to the map renderer as the on-screen scale so zooming glides between ladder
   // steps (Working Title G1000 NXi smooth zoom) rather than snapping.
@@ -379,7 +386,9 @@ class MfdController {
   // External plan changes (a SimBrief fetch, an .fms reload) are adopted; the
   // locally edited plan stays authoritative while the shell applies it.
   // `activeWaypoint` is the FMS active leg's TO ident (Direct-To default).
-  void syncFlightPlan(const MapData& map, const std::string& activeWaypoint);
+  // `navDirectTo` mirrors the PFD Navigation Status Box Direct-To display.
+  void syncFlightPlan(const MapData& map, const std::string& activeWaypoint,
+                      bool navDirectTo);
   // Ident lookups for waypoint entry (the shell wires its nav database in;
   // without one, entry falls back to the nearby map features).
   void setNavFeatureSource(const NavFeatureSource* source) {
@@ -389,9 +398,36 @@ class MfdController {
   // new plan out so the shell can push it to the data sources.
   bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
 
+  void replaceFlightPlanFromExternal(const std::vector<MapLeg>& plan);
+  void restorePersistedFlightPlan(const PersistedFlightPlan& saved);
+
+  void setPersistedLoadedApproach(const PersistedLoadedApproach& saved);
+  FlightPlanApproachState flightPlanApproachState() const;
+  void applyFlightPlanApproachState(const FlightPlanApproachState& state);
+
+  // Infer approach grouping from procedure-tagged legs when metadata is missing.
+  void fplEnsureApproachInferred();
+
+  struct FplEffectiveApproach {
+    int start = 0;
+    int count = 0;
+    bool loaded() const { return count > 0; }
+  };
+  FplEffectiveApproach fplEffectiveApproach() const;
+
   // ---- read by the FPL page renderer ----
   // The plan as the page shows it (mirrors the map plan plus pending edits).
   const std::vector<MapLeg>& fplLegs() const { return fplLegs_; }
+  bool fplHasLoadedApproach() const { return fplApproachLegCount_ > 0; }
+  bool fplDestinationFilled() const { return fplDestinationFilled_; }
+  bool fplLocalDraft() const { return fplLocalDraft_; }
+  int fplApproachLegStart() const { return fplApproachLegStart_; }
+  int fplApproachLegCount() const { return fplApproachLegCount_; }
+  std::string fplApproachAirportIcao() const;
+  std::string fplApproachHeaderLabel() const { return fplApproachHeaderLabel_; }
+  std::string fplApproachTransition() const {
+    return fplLoadedApproach_.transition;
+  }
   // Selection cursor over the leg list. The cursor ranges [0, legCount]:
   // legCount selects the blank slot after the last waypoint (append).
   bool fplCursorOn() const { return fplCursorOn_; }
@@ -498,6 +534,8 @@ class MfdController {
   std::vector<std::string> procProcedureNames(ProcedureType type) const;
   std::vector<std::string> procTransitions(ProcedureType type,
                                            const std::string& name) const;
+  std::vector<std::string> procTransitionLabels(ProcedureType type,
+                                                const std::string& name) const;
   // Preview legs for the current PROC selection (drawn on the FPL map).
   std::vector<MapLeg> procPreviewLegs() const;
   // Returns true once per ENT on a highlighted procedure; clears the latch.
@@ -576,6 +614,12 @@ class MfdController {
   // The persistence helpers read/write the durable display options directly.
   friend void captureMfdState(const MfdController&, MfdPersistentState&);
   friend void applyMfdState(MfdController&, const MfdPersistentState&);
+
+  void tryRestorePersistedApproach();
+  void reinferApproachFromProcedureLegs();
+  // Leg index under the FPL cursor (-1 for blank / sep rows in approach view).
+  int fplCursorLegIndex() const;
+  void fplClampCursorRow();
 
   // The MFD softkey bar is a small menu stack like the PFD's: the root bar
   // can open the Engine or Map Opt submenus, which carry a Back key (NXi
@@ -753,6 +797,14 @@ class MfdController {
   std::vector<MapLeg> fplLastMapPlan_;
   std::vector<MapLeg> fplLastPublished_;
   bool fplEditPending_ = false;
+  bool fplLocalDraft_ = false;
+  bool fplNavDirectToActive_ = false;
+  bool fplDestinationFilled_ = false;
+  MapProcedure fplLoadedApproach_{};
+  int fplApproachLegStart_ = 0;
+  int fplApproachLegCount_ = 0;
+  std::string fplApproachHeaderLabel_;
+  PersistedLoadedApproach persistedApproachRestore_{};
   bool fplCursorOn_ = false;
   int fplCursorRow_ = 0;
   FplCursorCol fplCursorCol_ = FplCursorCol::Ident;
@@ -809,6 +861,7 @@ class MfdController {
   MapLeg dtoRequestTarget_;
   bool dtoPreservePlan_ = false;
   int dtoPreserveLegIndex_ = -1;
+  int dtoPreserveFplCursorRow_ = -1;
 
   // SimBrief page state. The pending ID is UI-only until ENT commits it; the
   // fetch state itself lives in the shell (which owns the HTTPS client) and is

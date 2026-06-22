@@ -177,6 +177,12 @@ inline constexpr const char* kGpsBearingDegMag =
 // OCN = 4 NM, ENR = 2 NM, TERM = 1 NM, APR = 0.3 NM.
 inline constexpr const char* kGpsHdefNmPerDot =
     "sim/cockpit/radios/gps_hdef_nm_per_dot";
+// GPS vertical deviation in dots (+ = above path). Writable so standalone can
+// feed CIFP-computed LPV glidepath into X-Plane's GS/AP logic over UDP DREF.
+inline constexpr const char* kGpsVdefDots =
+    "sim/cockpit/radios/gps_vdef_dot";
+inline constexpr const char* kGpsHasGlideslope =
+    "sim/cockpit/radios/gps_has_glideslope";
 // GPS destination waypoint identifier. This is a byte[] string dataref, so it
 // is readable only in-process (the X-Plane plugin shell via XPLMGetDatab); the
 // float-only RREF protocol used by the standalone shell cannot carry it.
@@ -352,6 +358,8 @@ inline constexpr const char* kEfisWeatherSectorWidth =
     "sim/cockpit2/EFIS/EFIS_weather_sector_width";
 inline constexpr const char* kEfisMapRangeSelector =
     "sim/cockpit/switches/EFIS_map_range_selector";
+inline constexpr const char* kEfisMapRangeNm =
+    "sim/cockpit2/EFIS/map_range_nm";
 
 }  // namespace datarefs
 }  // namespace avionics

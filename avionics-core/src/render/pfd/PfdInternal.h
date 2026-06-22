@@ -66,6 +66,14 @@ constexpr float kWtPageMenuRowHeightPx = 24.0f;
 // PFD Procedures top-level menu (WT PFDProc): six fixed rows at 29 px pitch.
 constexpr float kWtProcMenuRowHeightPx = 29.0f;
 constexpr float kWtProcMenuListTopPadFrac = 0.25f;  // fraction of kInfoValue
+// WT ScrollBar on popout list windows (Flight Plan, Procedures, Nearest): a
+// 1 px track, gray thumb, and white triangular carrots at each end.
+constexpr float kWtScrollBarLanePx = 6.0f;
+constexpr float kWtScrollBarTrackPx = 1.0f;
+constexpr float kWtScrollBarThumbPx = 3.0f;
+constexpr float kWtScrollBarCarrotHalfWPx = 2.0f;
+constexpr float kWtScrollBarCarrotHalfHPx = 2.5f;
+constexpr float kWtScrollBarMinThumbPx = 12.0f;
 
 inline void popoutPanelSize(float w, float h, float& outW, float& outH) {
   outW = w * (kWtPopoutWidthPx / kWtCanvasWidth);
@@ -334,6 +342,10 @@ constexpr float kVsiLabelAnchorFraction = 31.0f / 48.0f;
 
 inline float fontPx(float wtPx, float displayH) {
   return wtPx * (displayH / kWtCanvasHeightPx);
+}
+
+inline float wtScrollBarLane(float displayH) {
+  return fontPx(kWtScrollBarLanePx, displayH);
 }
 
 namespace wt {

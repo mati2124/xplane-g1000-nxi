@@ -28,6 +28,29 @@ float drawDirectToIcon(Renderer& r, float x, float cy, float size,
   return shaftR + head * 0.7f;
 }
 
+float drawNavDirectToHeader(Renderer& r, float x, float cy,
+                            const std::string& ident, float size,
+                            const Color& color) {
+  float hx = drawDirectToIcon(r, x, cy, size, color);
+  hx += size * 0.18f;
+  if (!ident.empty()) {
+    r.fillText(hx, cy, ident, size, TextAlign::Left, color);
+  }
+  return hx;
+}
+
+// Direct-To target row under Enroute (D→ glyph + ident), shared by PFD/MFD FPL.
+float drawFplDirectToTargetRow(Renderer& r, float x, float cy,
+                               const std::string& ident, float size,
+                               const Color& textColor) {
+  float hx = drawDirectToIcon(r, x, cy, size, colors::kMagenta);
+  hx += size * 0.10f;
+  if (!ident.empty()) {
+    r.fillText(hx, cy, ident, size, TextAlign::Left, textColor);
+  }
+  return hx;
+}
+
 WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
                             float rawAnim, const char* title, float panelW,
                             float panelH) {
@@ -88,6 +111,50 @@ float putField(Renderer& r, float x, float cy, const std::string& text,
   r.fillText(x, cy, text, size, TextAlign::Left, withAlpha(textColor, alpha),
              face);
   return x + tw + size * trailingGapFrac;
+}
+
+void drawWtScrollBar(Renderer& r, float displayH, float trackX, float trackTop,
+                     float trackH, int total, int visible, int first, float a) {
+  if (total <= visible || trackH <= 0.0f) return;
+
+  const float laneW = wtScrollBarLane(displayH);
+  const float trackW = std::max(1.0f, fontPx(kWtScrollBarTrackPx, displayH));
+  const float thumbW =
+      std::max(trackW + 1.0f, fontPx(kWtScrollBarThumbPx, displayH));
+  const float carrotHalfW = fontPx(kWtScrollBarCarrotHalfWPx, displayH);
+  const float carrotHalfH = fontPx(kWtScrollBarCarrotHalfHPx, displayH);
+  const float trackCenterX = trackX + laneW * 0.5f;
+  const float trackBottom = trackTop + trackH;
+
+  const Color carrotColor = withAlpha(colors::kWhite, a);
+  const Color trackColor = withAlpha(colors::kWhite, a);
+  const Color thumbColor = withAlpha(colors::kMenuBorderGray, a);
+
+  const Point upCarrot[3] = {{trackCenterX, trackTop},
+                             {trackCenterX - carrotHalfW, trackTop + carrotHalfH},
+                             {trackCenterX + carrotHalfW, trackTop + carrotHalfH}};
+  r.fillPolygon(upCarrot, 3, carrotColor);
+
+  const Point downCarrot[3] = {
+      {trackCenterX, trackBottom},
+      {trackCenterX - carrotHalfW, trackBottom - carrotHalfH},
+      {trackCenterX + carrotHalfW, trackBottom - carrotHalfH}};
+  r.fillPolygon(downCarrot, 3, carrotColor);
+
+  const float lineTop = trackTop + carrotHalfH;
+  const float lineBottom = trackBottom - carrotHalfH;
+  const float lineH = lineBottom - lineTop;
+  if (lineH > 0.0f) {
+    r.fillRect(trackCenterX - trackW * 0.5f, lineTop, trackW, lineH, trackColor);
+  }
+
+  const float thumbH =
+      std::max(fontPx(kWtScrollBarMinThumbPx, displayH),
+               lineH * static_cast<float>(visible) / static_cast<float>(total));
+  const float maxScroll = static_cast<float>(total - visible);
+  const float thumbTop =
+      lineTop + (lineH - thumbH) * static_cast<float>(first) / maxScroll;
+  r.fillRect(trackCenterX - thumbW * 0.5f, thumbTop, thumbW, thumbH, thumbColor);
 }
 
 }  // namespace avionics::pfd

@@ -68,6 +68,13 @@ class DatarefDataSource : public DataSource {
   // the MFD's NEXRAD overlay state and dedicated Weather Radar page controls.
   void syncWeatherRadar(const MfdController& ui);
 
+  // Bidirectional sync with sim/cockpit2/EFIS/map_range_nm so GCU range (and
+  // stock G1000 when our handler passes through) updates the NXi map ladder.
+  void syncMapRangeFromSim(MfdController& ui);
+  void pushMapRangeToSim(float rangeNm);
+  // Step sim/cockpit2/EFIS/map_range_nm and optionally mirror onto the MFD UI.
+  bool stepMapRangeFromSim(int direction, MfdController* ui);
+
   // Whether the current airframe carries a weather radar (probed from the sim's
   // radar return texture; see DatarefWeatherRadar::equipped). The MFD uses this
   // to hide its dedicated Weather Radar page on unequipped aircraft.
@@ -96,12 +103,24 @@ class DatarefDataSource : public DataSource {
   void setTransponderCode(int code);
   void setTransponderMode(int mode);
 
+  // Flight-plan edits from the PFD Active Flight Plan window or the MFD FPL
+  // page. Programs the sim FMS when programSimulator is true; otherwise the
+  // route is kept on the in-plugin display feed only.
+  void setLocalFlightPlan(std::vector<MapLeg> route);
+  void setRouteOverride(std::vector<MapLeg> route, bool programSimulator = true);
+  void clearRouteOverride();
+  void setDirectTo(MapLeg target);
+  void clearDirectTo();
+
   // apt.dat airport metadata (tower/fuel/kind and published comm frequencies).
   // Used by the plugin NavFeatureSource for COM frequency decode and WPT/NRST
   // frequency lists once the background apt.dat load finishes.
   bool aptDatReady() const { return aptDatLoaded_.load(); }
   std::vector<MapAirportFrequency> airportFrequencies(
       const std::string& icao) const;
+  std::vector<MapFeature> lookupNavIdent(const std::string& ident,
+                                         std::size_t maxCount) const;
+  std::string firstNavIdentWithPrefix(const std::string& prefix) const;
 
  private:
   // Rebuild the moving-map snapshot (ownship position, active flight plan, and
@@ -195,6 +214,8 @@ class DatarefDataSource : public DataSource {
   bool mapPanDirty_ = false;
   float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
   float mapViewHalfExtentNm_ = 0.0f;
+  XPLMDataRef efisMapRangeNm_ = nullptr;
+  float lastPushedMapRangeNm_ = -1.0f;
 
   std::vector<MapAirspace> airspaceCache_;
   std::atomic<bool> airspaceLoaded_{false};
@@ -333,6 +354,16 @@ class DatarefDataSource : public DataSource {
   bool eisWasReady_ = false;
   XPLMDataRef acfRelativePath_ = nullptr;
   XPLMDataRef acfIcao_ = nullptr;
+
+  // Display-only Direct-To course (the live FMS route is unchanged).
+  bool directToActive_ = false;
+  MapLeg directTo_;
+
+  // Authoritative route from PFD/MFD edits until cleared. Without this the sim
+  // FMS readback replaces typed idents with coordinate strings (+27-81) for
+  // fixes stored as lat/lon entries.
+  std::vector<MapLeg> routeOverride_;
+  bool routeOverrideSet_ = false;
 };
 
 }  // namespace avionics

@@ -9,11 +9,10 @@
 #pragma comment(lib, "Ws2_32.lib")
 #endif
 
-#include <cmath>
 #include <cstring>
-#include <string>
 #include <utility>
 
+#include "FmsRouteProgrammer.h"
 #include "XPLMNavigation.h"
 #include "XPLMProcessing.h"
 #include "avionics/FlightPlanBridgeProtocol.h"
@@ -50,20 +49,6 @@ constexpr int kRecvTimeoutMs = 500;
 // its recommended generous size and force null-termination.
 constexpr int kFmsIdBufferSize = 256;
 
-// A written entry carries no altitude constraint (the shell's route is lateral
-// only); 0 ft tells the FMS "no constraint".
-constexpr int kNoAltitudeConstraint = 0;
-
-// When matching a route leg's identifier to a database navaid, accept the match
-// only if it is within this many degrees of the leg's coordinates, so a far-off
-// like-named navaid never hijacks the entry. ~0.1 deg latitude is ~6 NM.
-constexpr float kNavMatchToleranceDeg = 0.1f;
-
-// Navaid types a route leg may resolve to (airports, fixes, and the beacon
-// types the FMS can hold).
-constexpr XPLMNavType kRouteNavTypes = xplm_Nav_Airport | xplm_Nav_VOR |
-                                       xplm_Nav_NDB | xplm_Nav_Fix;
-
 void closeSocket(SocketHandle sock) {
 #ifdef _WIN32
   closesocket(sock);
@@ -83,45 +68,6 @@ void setRecvTimeout(SocketHandle sock, int timeoutMs) {
   tv.tv_usec = (timeoutMs % 1000) * 1000;
   setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
-}
-
-// Resolve a route leg to a real database navaid so the FMS shows the proper
-// identifier (and frequency/type) rather than a bare lat/lon point. Returns
-// XPLM_NAV_NOT_FOUND when the id is empty or no like-named navaid sits near the
-// leg's coordinates -- the caller then writes a lat/lon entry instead. Must run
-// on the sim thread.
-XPLMNavRef resolveNavRef(const MapLeg& leg) {
-  if (leg.id.empty()) return XPLM_NAV_NOT_FOUND;
-  float lat = static_cast<float>(leg.lat);
-  float lon = static_cast<float>(leg.lon);
-  const XPLMNavRef ref = XPLMFindNavAid(nullptr, leg.id.c_str(), &lat, &lon,
-                                        nullptr, kRouteNavTypes);
-  if (ref == XPLM_NAV_NOT_FOUND) return XPLM_NAV_NOT_FOUND;
-
-  float foundLat = 0.0f;
-  float foundLon = 0.0f;
-  char foundId[kFmsIdBufferSize] = {};
-  XPLMGetNavAidInfo(ref, nullptr, &foundLat, &foundLon, nullptr, nullptr,
-                    nullptr, foundId, nullptr, nullptr);
-  foundId[sizeof(foundId) - 1] = '\0';
-  if (std::strcmp(foundId, leg.id.c_str()) != 0) return XPLM_NAV_NOT_FOUND;
-  if (std::fabs(foundLat - static_cast<float>(leg.lat)) > kNavMatchToleranceDeg ||
-      std::fabs(foundLon - static_cast<float>(leg.lon)) > kNavMatchToleranceDeg) {
-    return XPLM_NAV_NOT_FOUND;
-  }
-  return ref;
-}
-
-// Write one route leg into FMS slot `index`, as a database navaid when it
-// resolves (preserving the identifier) or a plain lat/lon entry otherwise.
-void writeEntry(int index, const MapLeg& leg) {
-  const XPLMNavRef ref = resolveNavRef(leg);
-  if (ref != XPLM_NAV_NOT_FOUND) {
-    XPLMSetFMSEntryInfo(index, ref, kNoAltitudeConstraint);
-  } else {
-    XPLMSetFMSEntryLatLon(index, static_cast<float>(leg.lat),
-                          static_cast<float>(leg.lon), kNoAltitudeConstraint);
-  }
 }
 
 }  // namespace
@@ -177,69 +123,8 @@ void FlightPlanBridge::applyPendingWritesOnSimThread() {
     }
   }
   // Apply the route before the Direct-To so a combined edit lands coherently.
-  if (hasPlan) programRoute(plan);
-  if (hasDto) programDirectTo(dtoActive, dtoTarget);
-}
-
-void FlightPlanBridge::programRoute(const std::vector<MapLeg>& legs) {
-  const int oldCount = XPLMCountFMSEntries();
-  const int newCount = static_cast<int>(legs.size());
-
-  // Overwrite/extend entries 0..newCount-1 (setting an index at the current
-  // count appends; the FMS requires contiguous entries).
-  for (int i = 0; i < newCount; ++i) {
-    writeEntry(i, legs[static_cast<std::size_t>(i)]);
-  }
-  // Drop any trailing entries from a previously longer plan, back to front so
-  // the indices stay valid as the plan shortens.
-  for (int i = oldCount - 1; i >= newCount; --i) {
-    XPLMClearFMSEntry(i);
-  }
-  // Fly the first leg (track from entry 0 to entry 1) so the new plan is
-  // active rather than leaving the destination on a stale index.
-  if (newCount >= 2) XPLMSetDestinationFMSEntry(1);
-}
-
-void FlightPlanBridge::programDirectTo(bool active, const MapLeg& target) {
-  if (!active) {
-    // Cancel Direct-To: resume flying the active leg of the plan. With no plan
-    // there is nothing to resume, so this is a no-op.
-    const int count = XPLMCountFMSEntries();
-    if (count >= 2) XPLMSetDestinationFMSEntry(1);
-    return;
-  }
-
-  // Find the target among the existing entries; otherwise append it so we have
-  // an index to fly directly to.
-  int targetIndex = -1;
-  const int count = XPLMCountFMSEntries();
-  for (int i = 0; i < count; ++i) {
-    XPLMNavType type = xplm_Nav_Unknown;
-    char id[kFmsIdBufferSize] = {};
-    XPLMNavRef ref = XPLM_NAV_NOT_FOUND;
-    int altitude = 0;
-    float lat = 0.0f;
-    float lon = 0.0f;
-    XPLMGetFMSEntryInfo(i, &type, id, &ref, &altitude, &lat, &lon);
-    id[sizeof(id) - 1] = '\0';
-    if (!target.id.empty() && std::strcmp(id, target.id.c_str()) == 0) {
-      targetIndex = i;
-      break;
-    }
-  }
-  if (targetIndex < 0) {
-    targetIndex = count;  // append
-    writeEntry(targetIndex, target);
-  }
-
-#if defined(XPLM410)
-  // A true present-position Direct-To (track from the aircraft straight to the
-  // entry, ignoring the leg before it).
-  XPLMSetDirectToFMSFlightPlanEntry(xplm_Fpl_Pilot_Primary, targetIndex);
-#else
-  // Older SDKs: fly the leg ending at the target (closest available behavior).
-  XPLMSetDestinationFMSEntry(targetIndex);
-#endif
+  if (hasPlan) programFmsRoute(plan);
+  if (hasDto) programFmsDirectTo(dtoActive, dtoTarget);
 }
 
 void FlightPlanBridge::readFmsOnSimThread() {

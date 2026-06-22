@@ -21,11 +21,15 @@ add_library(xplane-avionics MODULE
   src/DatarefDataSource.cpp
   src/DatarefWeatherRadar.cpp
   src/FlightPlanBridge.cpp
+  src/FmsRouteProgrammer.cpp
   src/CommandBridge.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/DsfTerrainStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/LandDataStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/ObstacleStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/XPlaneInstall.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/NavData.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/AptDatStore.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/ProcedureStore.cpp
   # Shared portable SHA-256 (also used by the standalone updater) verifies the
   # downloaded plugin archive against the release's SHA256SUMS.
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/Sha256.cpp

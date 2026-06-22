@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cctype>
 
+#include "avionics/FlightPlanPersistence.h"
+#include "avionics/FplRouteEdit.h"
 #include "avionics/SoftkeyController.h"
 #include "avionics/render/BezelKeys.h"
 
@@ -16,39 +18,6 @@ namespace {
 
 const std::string kEmptyString;
 
-bool isAirportIdent(const std::string& id) {
-  if (id.size() != 4) return false;
-  for (char c : id) {
-    if (c < 'A' || c > 'Z') return false;
-  }
-  return true;
-}
-
-// Airport ICAO for procedure pickers: enroute/destination airport, not the
-// active approach fix (CITAG) or other 5-letter waypoint idents.
-std::string airportIcaoBeforeIndex(const std::vector<MapLeg>& legs, int before) {
-  for (int i = std::min(before, static_cast<int>(legs.size())) - 1; i >= 0; --i) {
-    if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) {
-      return legs[static_cast<std::size_t>(i)].id;
-    }
-  }
-  return {};
-}
-
-std::string directToAirportIcao(const MapData* map) {
-  if (map == nullptr || !map->directToActive) return {};
-  return isAirportIdent(map->directTo.id) ? map->directTo.id : std::string();
-}
-
-std::string lastAirportInPlan(const std::vector<MapLeg>& legs) {
-  for (int i = static_cast<int>(legs.size()) - 1; i >= 0; --i) {
-    if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) {
-      return legs[static_cast<std::size_t>(i)].id;
-    }
-  }
-  return {};
-}
-
 // Insert a procedure's legs at the conventional place in the plan: a departure
 // after the origin, an arrival before the destination, an approach at the end
 // (mirrors MfdControllerProcedures::insertProcedureLegs).
@@ -62,6 +31,12 @@ void insertProcedureLegs(ProcedureType type, std::vector<MapLeg>& fplLegs,
     row = std::max(0, static_cast<int>(fplLegs.size()) - 1);
   } else {
     row = static_cast<int>(fplLegs.size());
+    // Enroute feeder and IAF share a fix; the approach copy wins on the FPL.
+    if (!fplLegs.empty() &&
+        fplLegIdentsEqual(fplLegs.back().id, legs.front().id)) {
+      fplLegs.pop_back();
+      row = static_cast<int>(fplLegs.size());
+    }
   }
   fplLegs.insert(fplLegs.begin() + row, legs.begin(), legs.end());
 }
@@ -456,14 +431,41 @@ std::vector<std::string> SoftkeyController::procTransitions(
   if (navSource_ == nullptr || !navSource_->ready()) return transitions;
   const std::string icao = procAirportIcao();
   if (icao.empty()) return transitions;
+
+  if (type == ProcedureType::Approach) {
+    const std::vector<ApproachTransitionOption> options =
+        navSource_->approachTransitionsFor(icao, name);
+    if (!options.empty()) {
+      transitions.reserve(options.size());
+      for (const ApproachTransitionOption& opt : options) {
+        transitions.push_back(opt.id);
+      }
+      return transitions;
+    }
+  }
+
+  std::string abbrevType;
+  std::string abbrevRunway;
+  const bool namedRunwayApproach =
+      decodeAbbreviatedApproachName(name, abbrevType, abbrevRunway);
   for (const MapProcedure& proc : navSource_->proceduresForAirport(icao, type)) {
     if (proc.name != name) continue;
+    if (type == ProcedureType::Approach && namedRunwayApproach &&
+        proc.transition.size() >= 2 && proc.transition[0] == 'R' &&
+        proc.transition[1] == 'W') {
+      continue;
+    }
     if (std::find(transitions.begin(), transitions.end(), proc.transition) ==
         transitions.end()) {
       transitions.push_back(proc.transition);
     }
   }
   std::sort(transitions.begin(), transitions.end());
+  if (type == ProcedureType::Approach &&
+      std::find(transitions.begin(), transitions.end(), "VECTORS") ==
+          transitions.end()) {
+    transitions.insert(transitions.begin(), "VECTORS");
+  }
   return transitions;
 }
 
@@ -516,8 +518,10 @@ MapProcedure SoftkeyController::procSelectedProcedure() const {
   if (navSource_ == nullptr || !navSource_->ready()) return {};
   const std::string icao = procAirportIcao();
   const std::string transition =
-      procSelectedTransition_.empty() ? procSelectedTransitionDisplay()
-                                      : procSelectedTransition_;
+      procSelectedTransition_.empty()
+          ? defaultTransition(
+                procTransitions(procCategory_, procSelectedName_))
+          : procSelectedTransition_;
   return findProcedure(procCategory_, procSelectedName_, transition,
                        navSource_->proceduresForAirport(icao, procCategory_));
 }
@@ -542,11 +546,14 @@ std::string SoftkeyController::procSelectedApproachDisplay() const {
 }
 
 std::string SoftkeyController::procSelectedTransitionDisplay() const {
-  if (!procSelectedTransition_.empty()) return procSelectedTransition_;
-  if (procSelectedName_.empty()) return {};
-  const std::vector<std::string> transitions =
-      procTransitions(procCategory_, procSelectedName_);
-  return defaultTransition(transitions);
+  std::string id = procSelectedTransition_;
+  if (id.empty() && !procSelectedName_.empty()) {
+    const std::vector<std::string> transitions =
+        procTransitions(procCategory_, procSelectedName_);
+    id = defaultTransition(transitions);
+  }
+  if (upperCopy(id) == "VECTORS") return "VEC";
+  return id;
 }
 
 float SoftkeyController::procPrimaryFreqMhz() const {
@@ -576,7 +583,23 @@ std::string SoftkeyController::procPrimaryIdent() const {
 
 std::vector<std::string> SoftkeyController::procListItems() const {
   if (procStep_ == ProcStep::TransitionList) {
-    return procTransitions(procCategory_, procSelectedName_);
+    if (procCategory_ == ProcedureType::Approach && navSource_ != nullptr &&
+        navSource_->ready() && !procSelectedName_.empty()) {
+      const std::vector<ApproachTransitionOption> options =
+          navSource_->approachTransitionsFor(procAirportIcao(),
+                                             procSelectedName_);
+      if (!options.empty()) {
+        std::vector<std::string> labels;
+        labels.reserve(options.size());
+        for (const ApproachTransitionOption& opt : options) {
+          labels.push_back(opt.display);
+        }
+        return labels;
+      }
+    }
+    const std::vector<std::string> ids =
+        procTransitions(procCategory_, procSelectedName_);
+    return ids;
   }
   return procProcedureNames(procCategory_);
 }
@@ -734,7 +757,6 @@ void SoftkeyController::procLoadSelected(const std::string& name,
       navSource_->expandProcedure(icao, procCategory_, name, transition);
   if (legs.empty()) return;
   if (procCategory_ == ProcedureType::Approach) {
-    fplApproachLegStart_ = static_cast<int>(fplLegs_.size());
     fplApproachLegCount_ = static_cast<int>(legs.size());
   } else {
     fplApproachLegStart_ = 0;
@@ -743,10 +765,14 @@ void SoftkeyController::procLoadSelected(const std::string& name,
   }
   insertProcedureLegs(procCategory_, fplLegs_, legs);
   if (procCategory_ == ProcedureType::Approach) {
-    fplCursorRow_ = fplApproachLegStart_ + fplApproachLegCount_ - 1;
+    fplApproachLegStart_ =
+        static_cast<int>(fplLegs_.size()) - fplApproachLegCount_;
+    fplCursorRow_ = 0;
     fplLoadedApproach_ = findProcedure(procCategory_, name, transition,
                                        navSource_->proceduresForAirport(
                                            icao, procCategory_));
+    persistedApproachRestore_ =
+        persistedFromMapProcedure(fplLoadedApproach_, icao);
   }
   flightPlanPublishEdit();
   procLoadTarget_ = fplLoadedApproach_;
@@ -764,20 +790,20 @@ void SoftkeyController::procLoadSelected(const std::string& name,
 
 std::string SoftkeyController::flightPlanApproachAirportIcao() const {
   if (fplApproachLegCount_ <= 0) return {};
-  std::string icao = airportIcaoBeforeIndex(fplLegs_, fplApproachLegStart_);
-  if (!icao.empty()) return icao;
-  icao = directToAirportIcao(mapData_);
-  if (!icao.empty()) return icao;
-  if (mapData_ != nullptr) {
-    icao = lastAirportInPlan(mapData_->flightPlan);
-    if (!icao.empty()) return icao;
-  }
-  return {};
+  return fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_);
 }
 
 std::string SoftkeyController::flightPlanApproachHeaderLabel() const {
-  if (fplApproachLegCount_ <= 0 || fplLoadedApproach_.name.empty()) return {};
-  return formatApproachLabel(fplLoadedApproach_);
+  if (fplApproachLegCount_ <= 0) return {};
+  if (!fplLoadedApproach_.name.empty()) {
+    return formatApproachFplHeaderLabel(fplLoadedApproach_);
+  }
+  if (persistedApproachRestore_.active &&
+      !persistedApproachRestore_.name.empty()) {
+    return formatApproachFplHeaderLabel(
+        mapProcedureFromPersisted(persistedApproachRestore_));
+  }
+  return {};
 }
 
 bool SoftkeyController::procBezelKey(BezelKey key) {
@@ -855,8 +881,13 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
           if (procStep_ == ProcStep::ProcedureList) {
             procPickApproach(items[static_cast<std::size_t>(procSelected_)]);
           } else {
-            procSelectedTransition_ =
-                items[static_cast<std::size_t>(procSelected_)];
+            const std::vector<std::string> ids =
+                procTransitions(procCategory_, procSelectedName_);
+            if (procSelected_ >= 0 &&
+                procSelected_ < static_cast<int>(ids.size())) {
+              procSelectedTransition_ =
+                  ids[static_cast<std::size_t>(procSelected_)];
+            }
             procCloseSubList();
             procFocusLoad();
           }
@@ -895,8 +926,12 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
       case BezelKey::Ent:
         if (procApproachField_ == ProcApproachField::Load) {
           if (procLoadArmed_ && !procSelectedName_.empty()) {
-            procLoadSelected(procSelectedName_,
-                             procSelectedTransitionDisplay());
+            const std::string transition =
+                procSelectedTransition_.empty()
+                    ? defaultTransition(procTransitions(procCategory_,
+                                                        procSelectedName_))
+                    : procSelectedTransition_;
+            procLoadSelected(procSelectedName_, transition);
           } else if (!procSelectedName_.empty()) {
             procFocusLoad();
           }
@@ -990,8 +1025,12 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
         }
       } else if (procSelected_ >= 0 &&
                  procSelected_ < static_cast<int>(items.size())) {
-        procLoadSelected(procSelectedName_,
-                         items[static_cast<std::size_t>(procSelected_)]);
+        const std::vector<std::string> ids =
+            procTransitions(procCategory_, procSelectedName_);
+        if (procSelected_ < static_cast<int>(ids.size())) {
+          procLoadSelected(procSelectedName_,
+                           ids[static_cast<std::size_t>(procSelected_)]);
+        }
       }
       return true;
     case BezelKey::Clr:

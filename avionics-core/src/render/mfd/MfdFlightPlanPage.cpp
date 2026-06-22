@@ -2,14 +2,34 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 #include <string>
 #include <vector>
 
 #include "avionics/Color.h"
+#include "avionics/FlightPlanPersistence.h"
+#include "avionics/FplRouteEdit.h"
 #include "avionics/NavMath.h"
+#include "avionics/FplRouteEdit.h"
 #include "render/mfd/MfdPageSupport.h"
 #include "render/mfd/MfdStyle.h"
+#include "render/pfd/ChromeInternal.h"
+#include "render/pfd/PfdFlightPlanSections.h"
+
+using avionics::pfd::FplDisplayRow;
+using avionics::pfd::FplDisplayRowKind;
+using avionics::pfd::FplSectionRow;
+using avionics::pfd::buildFplApproachDisplayRows;
+using avionics::pfd::buildFplSectionRows;
+using avionics::pfd::fplFilterDuplicateLegSectionRows;
+using avionics::pfd::fplApproachDisplayRowIndexForSelectable;
+using avionics::pfd::fplApproachDisplayRowSelectable;
+using avionics::pfd::fplHeaderDestinationIdent;
+using avionics::pfd::fplSectionRowIsActiveDisplay;
+using avionics::pfd::fplSectionRowIsSelectable;
+using avionics::pfd::fplShowsDestinationBlankRow;
+using avionics::fplApproachLayoutDestFilled;
 
 namespace avionics::mfd {
 
@@ -30,8 +50,10 @@ const char* fplFeatureTypeName(MapFeatureType type) {
   return "INTERSECTION";
 }
 
-std::string fplActiveToIdent(const FlightData& d, const MapData& map) {
-  if (map.directToActive && !map.directTo.id.empty()) return map.directTo.id;
+std::string fplActiveToIdent(const FlightData& d, const MapData& map,
+                             const std::vector<MapLeg>& plan) {
+  if (plan.empty()) return {};
+  (void)map;
   return d.fmaToWpt;
 }
 
@@ -113,6 +135,351 @@ void drawAltEntryCells(Renderer& r, float rightX, float cy,
                isCursor ? colors::kBlack : colors::kWhite);
     cx += cellW + cellGap;
   }
+}
+
+constexpr int kFplApproachSepDashCount = 7;
+constexpr int kFplDashCount = 5;
+constexpr int kFplOriginDashCount = 4;
+
+struct DashStyle {
+  float width;
+  float advance;
+  float height;
+};
+
+DashStyle dashStyle(float size) {
+  return {size * 0.36f, size * 0.48f, size * 0.09f};
+}
+
+void drawTightDash(Renderer& r, float x, float cy, const DashStyle& ds,
+                   const Color& color) {
+  r.fillRect(x, cy - ds.height * 0.5f, ds.width, ds.height, color);
+}
+
+float drawTightDashRun(Renderer& r, float x, float dashCy, int count, float size,
+                       const Color& color) {
+  const DashStyle ds = dashStyle(size);
+  for (int i = 0; i < count; ++i) {
+    drawTightDash(r, x + (ds.advance - ds.width) * 0.5f, dashCy, ds, color);
+    x += ds.advance;
+  }
+  return x;
+}
+
+float tightDashRunWidth(int count, float size) {
+  return dashStyle(size).advance * static_cast<float>(count);
+}
+
+std::string restAfterRnavGps(const std::string& label) {
+  if (label.size() < 4 || label.compare(0, 4, "RNAV") != 0) return label;
+  std::size_t pos = 4;
+  while (pos < label.size() && label[pos] == ' ') ++pos;
+  if (pos < label.size() && label[pos] == '_') ++pos;
+  if (label.compare(pos, 5, "(GPS)") == 0) pos += 5;
+  else if (label.compare(pos, 3, "GPS") == 0) pos += 3;
+  while (pos < label.size() && label[pos] == ' ') ++pos;
+  return label.substr(pos);
+}
+
+bool labelIsRnavGps(const std::string& label) {
+  return label.size() >= 4 && label.compare(0, 4, "RNAV") == 0;
+}
+
+void drawFplDashRow(Renderer& r, float x, float cy, int count, float size,
+                    const Color& color, bool highlighted, bool blinkOn) {
+  const DashStyle ds = dashStyle(size);
+  const float runW = ds.advance * static_cast<float>(count);
+  if (highlighted && blinkOn) {
+    r.fillRect(x, cy - size * 0.62f, runW, size * 1.24f, colors::kPopoutCyan);
+    drawTightDashRun(r, x, cy, count, size, colors::kBlack);
+  } else if (highlighted) {
+    drawTightDashRun(r, x, cy, count, size, colors::kPopoutCyan);
+  } else {
+    drawTightDashRun(r, x, cy, count, size, color);
+  }
+}
+
+void drawFplApproachHeader(Renderer& r, float x, float cy, const std::string& icao,
+                           const std::string& label, float size,
+                           const Color& color) {
+  const std::string prefix = icao + "-";
+  float xx = x;
+  r.fillText(xx, cy, prefix, size, TextAlign::Left, color);
+  xx += r.measureTextWidth(prefix, size);
+  if (labelIsRnavGps(label)) {
+    const float subSize = size * 0.72f;
+    r.fillText(xx, cy, "RNAV", size, TextAlign::Left, color);
+    xx += r.measureTextWidth("RNAV", size) + size * 0.08f;
+    r.fillText(xx, cy, "GPS", subSize, TextAlign::Left, color);
+    xx += r.measureTextWidth("GPS", subSize);
+    const std::string rest = restAfterRnavGps(label);
+    if (!rest.empty()) {
+      r.fillText(xx, cy, " " + rest, size, TextAlign::Left, color);
+    }
+  } else {
+    r.fillText(xx, cy, label, size, TextAlign::Left, color);
+  }
+}
+
+std::string fplApproachLegRole(const MapLeg& leg, const std::string& transition) {
+  if (!leg.procedureRole.empty()) return leg.procedureRole;
+  if (transition.size() >= 2 && transition[0] == 'R' && transition[1] == 'W') {
+    return {};
+  }
+  std::string transUpper = transition;
+  for (char& c : transUpper) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+  if (transUpper == "VECTORS") return {};
+  if (!transition.empty() && leg.id == transition) return "iaf";
+  return {};
+}
+
+void drawFplApproachLegIdent(Renderer& r, float x, float cy, const MapLeg& leg,
+                             const std::string& transition, float size,
+                             float smallSize, const Color& identColor,
+                             const Color& roleColor, bool isCursor,
+                             bool active, bool blinkOn) {
+  const std::string role = fplApproachLegRole(leg, transition);
+  const float tracking = size * 0.06f;
+  if (active) {
+    const float tw = r.measureTextWidth(leg.id.c_str(), size) +
+                     (role.empty() ? 0.0f
+                                   : size * 0.14f +
+                                         r.measureTextWidth(role.c_str(), smallSize));
+    if (blinkOn) {
+      r.fillRect(x - tracking * 0.5f, cy - size * 0.62f, tw + tracking,
+                 size * 1.24f, colors::kMagenta);
+      r.fillText(x, cy, leg.id, size, TextAlign::Left, colors::kBlack);
+    } else {
+      r.fillText(x, cy, leg.id, size, TextAlign::Left, colors::kMagenta);
+    }
+    if (!role.empty()) {
+      const float roleX = x + r.measureTextWidth(leg.id.c_str(), size) + size * 0.14f;
+      const Color rc = blinkOn ? colors::kBlack : colors::kMagenta;
+      r.fillText(roleX, cy, role, smallSize, TextAlign::Left, rc);
+    }
+    return;
+  }
+  if (isCursor) {
+    const float tw = r.measureTextWidth(leg.id.c_str(), size) +
+                     (role.empty() ? 0.0f
+                                   : size * 0.14f +
+                                         r.measureTextWidth(role.c_str(), smallSize));
+    if (blinkOn) {
+      r.fillRect(x - tracking * 0.5f, cy - size * 0.62f, tw + tracking,
+                 size * 1.24f, colors::kCyan);
+      r.fillText(x, cy, leg.id, size, TextAlign::Left, colors::kBlack);
+      if (!role.empty()) {
+        const float roleX = x + r.measureTextWidth(leg.id.c_str(), size) + size * 0.14f;
+        r.fillText(roleX, cy, role, smallSize, TextAlign::Left, colors::kBlack);
+      }
+    } else {
+      r.fillText(x, cy, leg.id, size, TextAlign::Left, colors::kCyan);
+      if (!role.empty()) {
+        const float roleX = x + r.measureTextWidth(leg.id.c_str(), size) + size * 0.14f;
+        r.fillText(roleX, cy, role, smallSize, TextAlign::Left, colors::kWhite);
+      }
+    }
+    return;
+  }
+  r.fillText(x, cy, leg.id, size, TextAlign::Left, identColor);
+  if (!role.empty()) {
+    const float roleX = x + r.measureTextWidth(leg.id.c_str(), size) + size * 0.14f;
+    r.fillText(roleX, cy, role, smallSize, TextAlign::Left, roleColor);
+  }
+}
+
+void drawOriginDestLine(Renderer& r, float x, float cy, const char* prefix,
+                        const std::string& ident, bool blank, float size,
+                        const Color& color, bool highlighted, bool blinkOn) {
+  r.fillText(x, cy, prefix, size, TextAlign::Left, color);
+  const float prefixW = r.measureTextWidth(prefix, size);
+  const float fieldX = x + prefixW;
+  if (blank) {
+    const DashStyle ds = dashStyle(size);
+    const float dashW =
+        ds.advance * static_cast<float>(kFplOriginDashCount);
+    if (highlighted && blinkOn) {
+      r.fillRect(fieldX, cy - size * 0.62f, dashW, size * 1.24f,
+                 colors::kPopoutCyan);
+      drawTightDashRun(r, fieldX, cy, kFplOriginDashCount, size,
+                       colors::kBlack);
+    } else if (highlighted) {
+      drawTightDashRun(r, fieldX, cy, kFplOriginDashCount, size,
+                       colors::kPopoutCyan);
+    } else {
+      drawTightDashRun(r, fieldX, cy, kFplOriginDashCount, size, color);
+    }
+  } else if (highlighted) {
+    drawCursorSelect(r, fieldX, cy, ident, size, TextAlign::Left, blinkOn);
+  } else {
+    r.fillText(fieldX, cy, ident, size, TextAlign::Left, color);
+  }
+}
+
+void drawFplHeaderOrigDest(Renderer& r, float x, float cy, const std::string& orig,
+                           const std::string& dest, bool blankOrig, bool blankDest,
+                           float size, const Color& color) {
+  float hx = x;
+  if (blankOrig) {
+    hx = drawTightDashRun(r, hx, cy, kFplDashCount, size, color);
+  } else {
+    r.fillText(hx, cy, orig, size, TextAlign::Left, color);
+    hx += r.measureTextWidth(orig.c_str(), size);
+  }
+  const char* slash = " / ";
+  r.fillText(hx, cy, slash, size, TextAlign::Left, color);
+  hx += r.measureTextWidth(slash, size);
+  if (blankDest) {
+    drawTightDashRun(r, hx, cy, kFplDashCount, size, color);
+  } else {
+    r.fillText(hx, cy, dest, size, TextAlign::Left, color);
+  }
+}
+
+void drawFplSectionIdent(Renderer& r, float x, float cy, const char* prefix,
+                         const std::string& ident, bool blankIdent,
+                         bool highlighted, bool blinkOn, float size,
+                         const Color& textColor) {
+  if (blankIdent) {
+    drawOriginDestLine(r, x, cy, prefix, ident, true, size, textColor,
+                       highlighted, blinkOn);
+    return;
+  }
+  if (highlighted) {
+    drawCursorSelect(r, x, cy, ident, size, TextAlign::Left, blinkOn);
+  } else {
+    r.fillText(x, cy, ident, size, TextAlign::Left, textColor);
+  }
+}
+
+void drawFplDestinationLabelRow(Renderer& r, float x, float cy, float size) {
+  const Color c = colors::kPopoutCyan;
+  const char* prefix = "Destination - ";
+  r.fillText(x, cy, prefix, size, TextAlign::Left, c);
+  float rx = x + r.measureTextWidth(prefix, size);
+  r.fillText(rx, cy, "RW", size, TextAlign::Left, c);
+  rx += r.measureTextWidth("RW", size);
+  drawTightDashRun(r, rx, cy, 2, size, c);
+}
+
+bool sectionRowIsSelectable(const FplSectionRow& sr, int legCount,
+                            bool destinationFilled) {
+  return fplSectionRowIsSelectable(sr, legCount, destinationFilled);
+}
+
+int sectionDisplayRowForSelectable(int selectableRow,
+                                   const std::vector<FplSectionRow>& rows,
+                                   int legCount, bool destinationFilled) {
+  int sel = 0;
+  for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+    if (!sectionRowIsSelectable(rows[static_cast<std::size_t>(i)], legCount,
+                                destinationFilled)) {
+      continue;
+    }
+    if (sel == selectableRow) return i;
+    ++sel;
+  }
+  return 0;
+}
+
+void countSectionSelectablesBefore(int before,
+                                   const std::vector<FplSectionRow>& rows,
+                                   int legCount, bool destinationFilled,
+                                   int& selectableIdx) {
+  for (int i = 0; i < before; ++i) {
+    if (sectionRowIsSelectable(rows[static_cast<std::size_t>(i)], legCount,
+                               destinationFilled)) {
+      ++selectableIdx;
+    }
+  }
+}
+
+void drawFplLegRow(Renderer& r, const FlightData& d, const MapData& map,
+                   const std::vector<MapLeg>& plan, int legIdx,
+                   const std::string& activeToIdent, int activeLegIdx,
+                   float innerX, float fixX, float colDtkR, float colDisR,
+                   float colAltR, float cy, float rowSize, float rowH,
+                   float displayH, const MfdController& ui, bool isCursor,
+                   bool useApproachIdent,
+                   const std::string& approachTransition) {
+  if (legIdx < 0 || legIdx >= static_cast<int>(plan.size())) return;
+  const MapLeg& leg = plan[static_cast<std::size_t>(legIdx)];
+  const bool active = (activeLegIdx >= 0 && legIdx == activeLegIdx) ||
+                      (!activeToIdent.empty() && leg.id == activeToIdent);
+  const Color rowColor = active ? colors::kMagenta : colors::kWhitesmoke;
+  char buf[24];
+
+  const bool identSel =
+      isCursor && !active &&
+      ui.fplCursorCol() == MfdController::FplCursorCol::Ident;
+  const bool altSel =
+      isCursor && ui.fplCursorCol() == MfdController::FplCursorCol::Altitude;
+
+  if (active) {
+    const float ax = innerX;
+    const Point arrow[7] = {
+        {ax + rowSize * 1.0f, cy},
+        {ax + rowSize * 0.65f, cy - rowSize * 0.35f},
+        {ax + rowSize * 0.65f, cy - rowSize * 0.10f},
+        {ax, cy - rowSize * 0.10f},
+        {ax, cy + rowSize * 0.10f},
+        {ax + rowSize * 0.65f, cy + rowSize * 0.10f},
+        {ax + rowSize * 0.65f, cy + rowSize * 0.35f}};
+    r.fillPolygon(arrow, 7, colors::kMagenta);
+  }
+
+  if (useApproachIdent) {
+    drawFplApproachLegIdent(r, fixX, cy, leg, approachTransition, rowSize,
+                            rowSize * 0.72f, colors::kCyan, colors::kWhite,
+                            identSel, active, ui.blinkOn());
+  } else if (active) {
+    drawFplActiveIdentFlash(r, fixX, cy, leg.id, rowSize, ui.blinkOn());
+  } else if (identSel) {
+    drawCursorSelect(r, fixX, cy, leg.id, rowSize, TextAlign::Left,
+                     ui.blinkOn());
+  } else {
+    r.fillText(fixX, cy, leg.id, rowSize, TextAlign::Left, colors::kCyan);
+  }
+
+  if (legIdx > 0) {
+    const MapLeg& prev = plan[static_cast<std::size_t>(legIdx - 1)];
+    const double dtk =
+        active ? static_cast<double>(d.fmaLegBearingDeg)
+               : navBearingDeg(prev.lat, prev.lon, leg.lat, leg.lon);
+    const double dis =
+        active ? static_cast<double>(d.fmaLegDistanceNm)
+               : navDistanceNm(prev.lat, prev.lon, leg.lat, leg.lon);
+    std::snprintf(buf, sizeof(buf), "%03.0f", dtk);
+    drawValueWithUnit(r, colDtkR, cy, buf, kDeg, rowSize, rowColor);
+    std::snprintf(buf, sizeof(buf), "%.1f", dis);
+    drawValueWithUnit(r, colDisR, cy, buf, "NM", rowSize, rowColor);
+  }
+
+  if (ui.fplAltEntryActive() && ui.fplAltEntryRow() == legIdx) {
+    drawAltEntryCells(r, colAltR, cy, ui.fplAltEntryDigits(),
+                      ui.fplAltEntryCursor(), displayH);
+  } else if (leg.altitudeConstraint != AltConstraintType::None &&
+             leg.altitudeConstraintFt > 0) {
+    std::snprintf(buf, sizeof(buf), "%d", leg.altitudeConstraintFt);
+    const Color altColor =
+        leg.altitudeDesignated ? colors::kCyan : colors::kWhite;
+    if (altSel) {
+      std::string altText = std::string(buf) + "FT";
+      drawCursorSelect(r, colAltR, cy, altText, rowSize, TextAlign::Right,
+                       ui.blinkOn());
+    } else {
+      drawValueWithUnit(r, colAltR, cy, buf, "FT", rowSize, altColor);
+    }
+  } else if (altSel) {
+    drawCursorSelect(r, colAltR, cy, "_____FT", rowSize, TextAlign::Right,
+                     ui.blinkOn());
+  } else {
+    drawValueWithUnit(r, colAltR, cy, "_____", "FT", rowSize,
+                      colors::kWhitesmoke);
+  }
+  (void)rowH;
 }
 
 // Draws the resolved-waypoint description (type/region) and the geographic
@@ -441,7 +808,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
   // The controller's copy of the plan shows pending edits immediately (the
   // data sources echo them a frame later).
   const std::vector<MapLeg>& plan = ui.fplLegs();
-  const std::string activeToIdent = fplActiveToIdent(d, map);
+  const std::string activeToIdent = fplActiveToIdent(d, map, plan);
 
   // Route preview map around ownship, wide enough to show the plan.
   float previewRangeNm = 25.0f;
@@ -472,49 +839,130 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         "Active Flight Plan", displayH);
 
     const float headerSize = mfdFontPx(kWtRow, displayH);
-    // Origin / destination header (cyan, dashes while the plan is empty).
-    // During Direct-To the FMS stores only the target as a single leg; it is the
-    // destination, not the origin (Pilot's Guide Fig. 5-48).
+    const MfdController::FplEffectiveApproach approach = ui.fplEffectiveApproach();
+    int approachStart = approach.start;
+    int approachCount = approach.count;
+    approachCount = fplNormalizedApproachCount(
+        approachStart, approachCount, static_cast<int>(plan.size()));
+    const bool approachLoaded = approachCount > 0;
+    std::string approachAirport;
+    if (approachLoaded) {
+      approachAirport = ui.fplApproachAirportIcao();
+      if (approachAirport.empty() && approachStart > 0 &&
+          approachStart <= static_cast<int>(plan.size())) {
+        approachAirport = plan[static_cast<std::size_t>(approachStart - 1)].id;
+      }
+    }
+    // Direct-To: copy the PFD Navigation Status Box (D→ + target, magenta); the
+    // section template below stays blank until the pilot builds a flight plan.
+    const bool directToFplView =
+        navDirectToActive(d) && !ui.fplLocalDraft();
+    const bool destOnlyPlan =
+        ui.fplDestinationFilled() && plan.size() == 1;
+    const float colDtkR = inner.x + mfdFontPx(210.0f, displayH);
+    const float colDisR = inner.x + mfdFontPx(330.0f, displayH);
+
     std::string orig;
     std::string dest;
-    if (map.directToActive && plan.size() <= 1) {
-      orig = "_____";
-      dest = !activeToIdent.empty() ? activeToIdent
-                                    : (plan.empty() ? "_____" : plan.front().id);
-    } else {
-      orig = plan.empty() ? "_____" : plan.front().id;
-      dest = plan.size() < 2 ? "_____" : plan.back().id;
+    bool blankOrig = false;
+    bool blankDest = false;
+    if (approachLoaded && plan.empty() && !approachAirport.empty()) {
+      blankOrig = true;
+      dest = approachAirport;
+    } else if (!directToFplView) {
+      const bool blankOriginHeader =
+          approachLoaded && approachStart <= 1 && !plan.empty() &&
+          !approachAirport.empty() && plan.front().id == approachAirport;
+      orig = blankOriginHeader || destOnlyPlan
+                 ? std::string()
+                 : (plan.empty() ? std::string() : plan.front().id);
+      blankOrig = orig.empty();
+      dest = fplHeaderDestinationIdent(plan, ui.fplDestinationFilled(), approachStart,
+                                       approachLoaded, approachAirport);
+      blankDest = dest.empty();
     }
     float fy = inner.y;
-    r.fillText(inner.x + mfdFontPx(40.0f, displayH), fy + headerSize * 0.6f,
-               orig + " / " + dest, headerSize, TextAlign::Left, colors::kCyan);
-    fy += headerSize * 1.5f;
+    const float headerX = inner.x + mfdFontPx(40.0f, displayH);
+    const float headerBandH = headerSize * 1.5f;
+    const float headerCy =
+        directToFplView ? inner.y + headerBandH * 0.5f
+                        : fy + headerSize * 0.6f;
+    if (directToFplView) {
+      const std::string dest = d.fmaToWpt;
+      pfd::drawNavDirectToHeader(r, headerX, headerCy, dest, headerSize,
+                                 colors::kMagenta);
+    } else if (approachLoaded && plan.empty() && !approachAirport.empty()) {
+      drawFplHeaderOrigDest(r, headerX, headerCy, std::string(), dest, true, false,
+                            headerSize, colors::kCyan);
+    } else {
+      drawFplHeaderOrigDest(r, headerX, headerCy, orig, dest, blankOrig, blankDest,
+                            headerSize, colors::kCyan);
+    }
+    fy += headerBandH;
 
     // Column headers + the rule under them (WT .mfd-flightplan-hr).
     const float colHdrSize = mfdFontPx(kWtHeader, displayH);
-    const float colDtkR = inner.x + mfdFontPx(210.0f, displayH);
-    const float colDisR = inner.x + mfdFontPx(330.0f, displayH);
     const float colAltR = inner.x + inner.w - mfdFontPx(5.0f, displayH);
-    r.fillText(inner.x + mfdFontPx(170.0f, displayH), fy + colHdrSize * 0.6f,
-               "DTK", colHdrSize, TextAlign::Left, colors::kWhite);
-    r.fillText(inner.x + mfdFontPx(250.0f, displayH), fy + colHdrSize * 0.6f,
-               "DIS", colHdrSize, TextAlign::Left, colors::kWhite);
-    r.fillText(inner.x + mfdFontPx(320.0f, displayH), fy + colHdrSize * 0.6f,
-               "ALT", colHdrSize, TextAlign::Left, colors::kWhite);
-    fy += colHdrSize * 1.4f;
+    if (!directToFplView) {
+      r.fillText(inner.x + mfdFontPx(170.0f, displayH), fy + colHdrSize * 0.6f,
+                 "DTK", colHdrSize, TextAlign::Left, colors::kWhite);
+      r.fillText(inner.x + mfdFontPx(250.0f, displayH), fy + colHdrSize * 0.6f,
+                 "DIS", colHdrSize, TextAlign::Left, colors::kWhite);
+      r.fillText(inner.x + mfdFontPx(320.0f, displayH), fy + colHdrSize * 0.6f,
+                 "ALT", colHdrSize, TextAlign::Left, colors::kWhite);
+      fy += colHdrSize * 1.4f;
+    }
     r.strokeLine(inner.x, fy, inner.x + inner.w, fy, 1.0f,
                  Color{0.596f, 0.624f, 0.682f, 1.0f});
     fy += mfdFontPx(4.0f, displayH);
 
     const float rowH = mfdFontPx(32.0f, displayH);
     const float rowSize = mfdFontPx(kWtRow, displayH);
-    const float fixX = inner.x + mfdFontPx(25.0f, displayH);
+    const float labelX = inner.x + mfdFontPx(25.0f, displayH);
+    const float filledIdentX =
+        labelX + mfdFontPx(kFplSectionIdentIndentPx, displayH);
 
     const bool cursorOn = ui.fplCursorOn();
+    const bool blinkOn = ui.blinkOn();
     const int wptCount = static_cast<int>(plan.size());
-    // With the cursor on, a blank slot after the last waypoint takes entries
-    // that extend the plan (and is how a plan is built from scratch).
-    const int totalRows = wptCount + (cursorOn ? 1 : 0);
+    const bool destFilled =
+        ui.fplDestinationFilled() || approachStart >= 2;
+    const bool directToPlanBody = directToFplView;
+    const bool blankOriginSection =
+        directToFplView || destOnlyPlan ||
+        (approachLoaded && approachStart <= 1 && !plan.empty() &&
+         !approachAirport.empty() && plan.front().id == approachAirport);
+    const int bodyLegCount =
+        directToFplView && !approachLoaded ? 0 : wptCount;
+    int activeLegIdx = fplActiveLegIndexInPlan(plan, activeToIdent);
+    const int sectionLegCount =
+        approachLoaded
+            ? (blankOriginSection ? 0
+                                  : fplEnrouteDisplayLegCount(plan, approachStart))
+            : wptCount;
+    const int fplActiveLayoutLegCount =
+        approachLoaded ? sectionLegCount : bodyLegCount;
+    const bool fplActiveLayoutDestFilled =
+        approachLoaded
+            ? (ui.fplDestinationFilled() || approachStart >= 2)
+            : ui.fplDestinationFilled();
+    const std::vector<FplDisplayRow> approachDisplayRows =
+        approachLoaded
+            ? buildFplApproachDisplayRows(
+                  plan, approachStart, approachCount, blankOriginSection,
+                  destFilled)
+            : std::vector<FplDisplayRow>{};
+    const std::vector<FplSectionRow> sectionRows =
+        approachLoaded ? std::vector<FplSectionRow>{}
+                       : fplFilterDuplicateLegSectionRows(
+                             buildFplSectionRows(bodyLegCount,
+                                                 ui.fplDestinationFilled(),
+                                                 directToPlanBody),
+                             plan);
+    const int displayRowCount =
+        approachLoaded ? static_cast<int>(approachDisplayRows.size())
+                       : static_cast<int>(sectionRows.size());
+    const int totalRows = displayRowCount;
 
     if (totalRows == 0) {
       r.fillText(inner.x + inner.w * 0.5f, fy + rowH,
@@ -522,107 +970,222 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                  colors::kTitleGray);
     }
 
-    // Scroll to keep the cursor row visible.
+    int scrollAnchor = 0;
+    if (approachLoaded && cursorOn) {
+      scrollAnchor = fplApproachDisplayRowIndexForSelectable(
+          ui.fplCursorRow(), plan, approachStart, approachCount,
+          blankOriginSection, destFilled);
+    } else if (cursorOn) {
+      scrollAnchor = sectionDisplayRowForSelectable(
+          ui.fplCursorRow(), sectionRows, bodyLegCount,
+          ui.fplDestinationFilled());
+    }
+
     const int maxRows =
         std::max(1, static_cast<int>((inner.y + inner.h - fy) / rowH));
     int start = 0;
     if (cursorOn && totalRows > maxRows) {
-      start = ui.fplCursorRow() - maxRows / 2;
+      start = scrollAnchor - maxRows / 2;
       start = std::max(0, std::min(start, totalRows - maxRows));
     }
 
-    char buf[24];
+    const std::string approachTransition = ui.fplApproachTransition();
     const int end = std::min(totalRows, start + maxRows);
+    int selectableIdx = 0;
+    if (start > 0) {
+      if (approachLoaded) {
+        for (int i = 0; i < start; ++i) {
+          if (fplApproachDisplayRowSelectable(
+                  approachDisplayRows[static_cast<std::size_t>(i)].kind)) {
+            ++selectableIdx;
+          }
+        }
+      } else {
+        countSectionSelectablesBefore(start, sectionRows, bodyLegCount,
+                                      ui.fplDestinationFilled(), selectableIdx);
+      }
+    }
     for (int row = start; row < end; ++row) {
       const float cy = fy + rowH * 0.5f;
-      const bool isCursor = cursorOn && row == ui.fplCursorRow();
 
-      if (row == wptCount) {
-        // The blank append slot.
-        if (isCursor) {
-          drawCursorSelect(r, fixX, cy, "_____", rowSize, TextAlign::Left,
-                           ui.blinkOn());
+      if (approachLoaded) {
+        const FplDisplayRow& dr =
+            approachDisplayRows[static_cast<std::size_t>(row)];
+        const bool isCursorRow = cursorOn && selectableIdx == ui.fplCursorRow();
+        switch (dr.kind) {
+          case FplDisplayRowKind::SepDash:
+            ++selectableIdx;
+            drawFplDashRow(r, filledIdentX, cy, kFplApproachSepDashCount,
+                           rowSize, colors::kPopoutCyan, isCursorRow, blinkOn);
+            fy += rowH;
+            continue;
+          case FplDisplayRowKind::ApproachHeader:
+            drawFplApproachHeader(r, labelX, cy, approachAirport,
+                                  ui.fplApproachHeaderLabel(), rowSize,
+                                  colors::kCyan);
+            fy += rowH;
+            continue;
+          case FplDisplayRowKind::EnrouteLabel:
+            r.fillText(labelX, cy, "Enroute", rowSize, TextAlign::Left,
+                       colors::kCyan);
+            fy += rowH;
+            continue;
+          case FplDisplayRowKind::Origin: {
+            ++selectableIdx;
+            if (dr.legIndex >= 0) {
+              drawFplLegRow(r, d, map, plan, dr.legIndex, activeToIdent, activeLegIdx,
+                            inner.x, filledIdentX, colDtkR, colDisR, colAltR,
+                            cy, rowSize, rowH, displayH, ui, isCursorRow, false,
+                            approachTransition);
+            } else {
+              drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(),
+                                  true, isCursorRow, blinkOn, rowSize,
+                                  colors::kPopoutCyan);
+            }
+            fy += rowH;
+            continue;
+          }
+          case FplDisplayRowKind::Destination: {
+            ++selectableIdx;
+            if (dr.legIndex >= 0) {
+              drawFplLegRow(r, d, map, plan, dr.legIndex, activeToIdent, activeLegIdx,
+                            inner.x, filledIdentX, colDtkR, colDisR, colAltR,
+                            cy, rowSize, rowH, displayH, ui, isCursorRow, false,
+                            approachTransition);
+            } else {
+              drawFplSectionIdent(r, labelX, cy, "Destination - ",
+                                  std::string(), true, isCursorRow, blinkOn,
+                                  rowSize, colors::kPopoutCyan);
+            }
+            fy += rowH;
+            continue;
+          }
+          case FplDisplayRowKind::EnrouteBlank: {
+            ++selectableIdx;
+            drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                           colors::kTitleGray, isCursorRow, blinkOn);
+            fy += rowH;
+            continue;
+          }
+          case FplDisplayRowKind::EnrouteLeg:
+          case FplDisplayRowKind::ApproachLeg: {
+            ++selectableIdx;
+            drawFplLegRow(r, d, map, plan, dr.legIndex, activeToIdent, activeLegIdx, inner.x,
+                          filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
+                          rowH, displayH, ui, isCursorRow,
+                          dr.kind == FplDisplayRowKind::ApproachLeg,
+                          approachTransition);
+            fy += rowH;
+            continue;
+          }
+          default:
+            break;
+        }
+        continue;
+      }
+
+      const FplSectionRow& sr = sectionRows[static_cast<std::size_t>(row)];
+      if (sr.kind == FplSectionRow::Kind::EnrouteLabel) {
+        r.fillText(labelX, cy, "Enroute", rowSize, TextAlign::Left,
+                   colors::kCyan);
+        fy += rowH;
+        continue;
+      }
+      if (sr.kind == FplSectionRow::Kind::DestinationLabel) {
+        drawFplDestinationLabelRow(r, labelX, cy, rowSize);
+        fy += rowH;
+        continue;
+      }
+      if (sr.kind == FplSectionRow::Kind::Origin && sr.legIndex < 0) {
+        if (bodyLegCount == 0) {
+          const bool isCursorRow =
+              cursorOn && selectableIdx == ui.fplCursorRow();
+          drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(), true,
+                              isCursorRow, blinkOn, rowSize,
+                              colors::kPopoutCyan);
+          ++selectableIdx;
         } else {
-          r.fillText(fixX, cy, "_____", rowSize, TextAlign::Left,
-                     colors::kTitleGray);
+          drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(), true,
+                              false, false, rowSize, colors::kPopoutCyan);
         }
         fy += rowH;
         continue;
       }
-
-      const MapLeg& leg = plan[row];
-      const bool active =
-          !activeToIdent.empty() && leg.id == activeToIdent;
-      // Active leg: the whole row magenta with the leg arrow ahead of the
-      // ident (WT .active-wpt + FplActiveLegArrow).
-      const Color rowColor = active ? colors::kMagenta : colors::kWhitesmoke;
-      if (active) {
-        const float ax = inner.x;
-        const Point arrow[7] = {
-            {ax + rowSize * 1.0f, cy},
-            {ax + rowSize * 0.65f, cy - rowSize * 0.35f},
-            {ax + rowSize * 0.65f, cy - rowSize * 0.10f},
-            {ax, cy - rowSize * 0.10f},
-            {ax, cy + rowSize * 0.10f},
-            {ax + rowSize * 0.65f, cy + rowSize * 0.10f},
-            {ax + rowSize * 0.65f, cy + rowSize * 0.35f}};
-        r.fillPolygon(arrow, 7, colors::kMagenta);
-      }
-      // The cursor highlights either the identifier or the ALT field (the
-      // large knob steps between them); the small knob edits the highlighted
-      // one (Pilot's Guide, Section 6 "Vertical Navigation").
-      const bool identSel =
-          isCursor && !active &&
-          ui.fplCursorCol() == MfdController::FplCursorCol::Ident;
-      const bool altSel =
-          isCursor && ui.fplCursorCol() == MfdController::FplCursorCol::Altitude;
-      if (active) {
-        drawFplActiveIdentFlash(r, fixX, cy, leg.id, rowSize, ui.blinkOn());
-      } else if (identSel) {
-        drawCursorSelect(r, fixX, cy, leg.id, rowSize, TextAlign::Left,
-                         ui.blinkOn());
-      } else {
-        r.fillText(fixX, cy, leg.id, rowSize, TextAlign::Left, colors::kCyan);
-      }
-      if (row > 0) {
-        const MapLeg& prev = plan[row - 1];
-        const double dtk = active
-                               ? static_cast<double>(d.fmaLegBearingDeg)
-                               : navBearingDeg(prev.lat, prev.lon, leg.lat,
-                                               leg.lon);
-        const double dis = active
-                               ? static_cast<double>(d.fmaLegDistanceNm)
-                               : navDistanceNm(prev.lat, prev.lon, leg.lat,
-                                               leg.lon);
-        std::snprintf(buf, sizeof(buf), "%03.0f", dtk);
-        drawValueWithUnit(r, colDtkR, cy, buf, kDeg, rowSize, rowColor);
-        std::snprintf(buf, sizeof(buf), "%.1f", dis);
-        drawValueWithUnit(r, colDisR, cy, buf, "NM", rowSize, rowColor);
-      }
-      // ALT column: a manually entered (designated) constraint draws cyan, a
-      // procedure constraint white, and an unconstrained leg shows dashes.
-      if (ui.fplAltEntryActive() && ui.fplAltEntryRow() == row) {
-        drawAltEntryCells(r, colAltR, cy, ui.fplAltEntryDigits(),
-                          ui.fplAltEntryCursor(), displayH);
-      } else if (leg.altitudeConstraint != AltConstraintType::None &&
-                 leg.altitudeConstraintFt > 0) {
-        std::snprintf(buf, sizeof(buf), "%d", leg.altitudeConstraintFt);
-        const Color altColor =
-            leg.altitudeDesignated ? colors::kCyan : colors::kWhite;
-        if (altSel) {
-          std::string altText = std::string(buf) + "FT";
-          drawCursorSelect(r, colAltR, cy, altText, rowSize, TextAlign::Right,
-                           ui.blinkOn());
+      if (sr.kind == FplSectionRow::Kind::Destination && sr.legIndex < 0 &&
+          fplShowsDestinationBlankRow(bodyLegCount, ui.fplDestinationFilled())) {
+        if (bodyLegCount == 0) {
+          const bool isCursorRow =
+              cursorOn && selectableIdx == ui.fplCursorRow();
+          drawFplSectionIdent(r, labelX, cy, "Destination - ", std::string(),
+                              true, isCursorRow, blinkOn, rowSize,
+                              colors::kPopoutCyan);
+          ++selectableIdx;
         } else {
-          drawValueWithUnit(r, colAltR, cy, buf, "FT", rowSize, altColor);
+          drawFplSectionIdent(r, labelX, cy, "Destination - ", std::string(),
+                              true, false, false, rowSize, colors::kPopoutCyan);
         }
-      } else if (altSel) {
-        drawCursorSelect(r, colAltR, cy, "_____FT", rowSize, TextAlign::Right,
-                         ui.blinkOn());
-      } else {
-        drawValueWithUnit(r, colAltR, cy, "_____", "FT", rowSize,
-                          colors::kWhitesmoke);
+        fy += rowH;
+        continue;
       }
+      if (bodyLegCount == 0 &&
+          (sr.kind == FplSectionRow::Kind::OriginBlank ||
+           sr.kind == FplSectionRow::Kind::DestinationBlank)) {
+        continue;
+      }
+
+      const bool isCursorRow = cursorOn && selectableIdx == ui.fplCursorRow();
+      switch (sr.kind) {
+        case FplSectionRow::Kind::Origin:
+          drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
+                        filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
+                        rowH, displayH, ui, isCursorRow, false,
+                        approachTransition);
+          break;
+        case FplSectionRow::Kind::OriginBlank:
+          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                         colors::kPopoutCyan, isCursorRow, blinkOn);
+          break;
+        case FplSectionRow::Kind::EnrouteBlank: {
+          const bool active = fplSectionRowIsActiveDisplay(
+              sr, fplActiveLayoutLegCount, fplActiveLayoutDestFilled,
+              activeLegIdx);
+          drawFplDashRow(
+              r, labelX, cy, kFplDashCount, rowSize,
+              active ? colors::kMagenta : colors::kPopoutCyan,
+              isCursorRow && !active, blinkOn);
+          if (active) {
+            char buf[24];
+            std::snprintf(buf, sizeof(buf), "%03.0f",
+                          static_cast<double>(d.fmaLegBearingDeg));
+            drawValueWithUnit(r, colDtkR, cy, buf, kDeg, rowSize,
+                              colors::kMagenta);
+            std::snprintf(buf, sizeof(buf), "%.1f",
+                          static_cast<double>(d.fmaLegDistanceNm));
+            drawValueWithUnit(r, colDisR, cy, buf, "NM", rowSize,
+                              colors::kMagenta);
+          }
+          break;
+        }
+        case FplSectionRow::Kind::EnrouteLeg:
+          drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
+                        filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
+                        rowH, displayH, ui, isCursorRow, false,
+                        approachTransition);
+          break;
+        case FplSectionRow::Kind::Destination:
+          drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
+                        filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
+                        rowH, displayH, ui, isCursorRow, false,
+                        approachTransition);
+          break;
+        case FplSectionRow::Kind::DestinationBlank:
+          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                         colors::kPopoutCyan, isCursorRow, blinkOn);
+          break;
+        default:
+          break;
+      }
+      ++selectableIdx;
       fy += rowH;
     }
   }
@@ -749,7 +1312,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                colors::kWhitesmoke);
 
     const std::vector<std::string> rows =
-        pickingTransition ? ui.procTransitions(cat, ui.procSelectedName())
+        pickingTransition ? ui.procTransitionLabels(cat, ui.procSelectedName())
                           : ui.procProcedureNames(cat);
     const float listRowH = mfdFontPx(kWtListRow, displayH);
     const float rowSize = mfdFontPx(kWtRow, displayH);

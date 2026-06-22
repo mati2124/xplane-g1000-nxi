@@ -27,8 +27,8 @@ inline constexpr double kBootLogoFadeSeconds = 1.8;
 // MFD Power-up Page / PFD init opacity ramp (StartupLogo.css: transition opacity
 // 2s ease-in-out on .startup-confirm-screen).
 inline constexpr double kBootPowerUpFadeSeconds = 2.0;
-// Total animated power-up before the unit is either live (mock) or awaiting the
-// ENT acknowledgement (live sim link).
+// Total animated PFD power-up before the live page (logo hold + init cross-fade).
+// The MFD uses kBootPowerUpFadeSeconds as its gate and then waits for ENT.
 inline constexpr double kBootDurationSeconds =
     kBootLogoSeconds + kBootPowerUpFadeSeconds;
 
@@ -66,9 +66,10 @@ class AvionicsEngine {
     powerUpAcknowledged_ = true;
   }
 
-  // True while the power-up page is up and waiting for the pilot to press ENT to
-  // acknowledge the database information (only for sources that require it; the
-  // mock advances on its own). The shell uses this to route ENT during boot.
+  // True while the MFD power-up page is up and waiting for ENT to acknowledge
+  // the database information (only for sources that require it). The PFD never
+  // waits: it goes live once its init animation finishes. The shell uses this
+  // to route ENT during boot.
   bool awaitingPowerUpAck() const;
   // Acknowledge the power-up page (the ENT key). No-op unless awaiting; brings
   // up the live pages.
@@ -134,6 +135,7 @@ class AvionicsEngine {
   // controls and was handled.
   bool handleBezelKnob(BezelKey key);
   void syncSoftkeyPeerRadioVolume();
+  void syncFlightPlanApproachPeer();
 
   // Whether this GDU's bus is powered, per the real-world power tree: the PFD
   // needs the battery/master bus; the MFD additionally needs the avionics

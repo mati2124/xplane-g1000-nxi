@@ -18,6 +18,7 @@
 #include "avionics/Eis.h"
 #include "avionics/MapData.h"
 #include "avionics/MapRange.h"
+#include "avionics/NexradWeatherRadar.h"
 #include "avionics/Radio.h"
 #include "avionics/SimulatorConnection.h"
 #include "avionics/Terrain.h"
@@ -76,8 +77,14 @@ class XPlaneConnection : public SimulatorConnection {
   ConnectionState connectionState() const override;
   const char* simulatorName() const override { return "X-PLANE"; }
 
+  // Show a pilot-built route on the map feed without programming X-Plane's FMS.
+  void setLocalFlightPlan(std::vector<MapLeg> route) {
+    routeOverride_ = std::move(route);
+    routeOverrideSet_ = true;
+  }
+
   // Replaces the .fms-file flight plan with an externally supplied route
-  // (a SimBrief OFP or an FPL page edit). Once set it stays authoritative --
+  // (a SimBrief OFP or a completed FPL edit). Once set it stays authoritative --
   // an empty vector shows an empty plan (a deleted flight plan) rather than
   // falling back to the .fms file. When FMS write-back is enabled and the
   // plugin bridge is reachable, the route is also programmed into X-Plane's
@@ -86,6 +93,11 @@ class XPlaneConnection : public SimulatorConnection {
     routeOverride_ = std::move(route);
     routeOverrideSet_ = true;
     if (fmsWriteEnabled_) fmsBridge_.writePlan(routeOverride_);
+  }
+
+  void clearRouteOverride() {
+    routeOverride_ = {};
+    routeOverrideSet_ = false;
   }
 
   // Active GPS Direct-To target for the map's magenta direct course. When FMS
@@ -155,6 +167,10 @@ class XPlaneConnection : public SimulatorConnection {
   // Glideslope, marker beacon, and DME fields from the nav radio indicators.
   void updateNavInstrumentation();
 
+  // Standalone-only: feed CIFP-computed GPS glidepath into X-Plane and capture
+  // GS when APP mode is armed but the sim has no RNAV vertical signal.
+  void updateGpsGlidepathCoupling();
+
   // Flight plan shown on the map/FPL (same precedence as updateMap).
   std::vector<MapLeg> displayedFlightPlan() const;
 
@@ -218,6 +234,10 @@ class XPlaneConnection : public SimulatorConnection {
   // fmsPlan_ are shared (owned by the shell, also used by the mock feed).
   MapData map_;
   const TerrainSource* terrain_ = nullptr;
+
+  // Live datalink NEXRAD for the map precipitation overlay (real ground radar).
+  NexradWeatherRadar nexrad_;
+
   // Database stores are owned by the shell and shared (also used by the mock
   // feed through ShellNavMapData) so each is loaded only once.
   NavDataStore& navData_;
@@ -279,6 +299,10 @@ class XPlaneConnection : public SimulatorConnection {
   // false, e.g. --no-fms-write).
   FlightPlanBridgeClient fmsBridge_;
   bool fmsWriteEnabled_ = true;
+
+  float lastSentGpsVdefDots_ = 999.0f;
+  float lastSentGsTrackVsFpm_ = 99999.0f;
+  bool gpsGlidepathHasSignal_ = false;
 
   // Native socket handle stored width-safe: -1 is "invalid" on both POSIX (int
   // fd) and Windows (SOCKET, where INVALID_SOCKET is all-ones == -1).

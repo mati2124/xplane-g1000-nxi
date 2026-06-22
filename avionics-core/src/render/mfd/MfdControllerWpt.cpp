@@ -26,6 +26,8 @@ void MfdController::wptCommitEntry() {
 }
 
 bool MfdController::wptBezelKey(BezelKey key) {
+  if (isMapRangePanBezelKey(key)) return false;
+
   if (wptEntry_.active) {
     switch (key) {
       case BezelKey::Ent:
