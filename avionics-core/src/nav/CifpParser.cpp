@@ -205,6 +205,7 @@ std::string roleFromWaypointDesc(const std::string& raw) {
       std::toupper(static_cast<unsigned char>(s.back())));
   switch (c) {
     case 'A':
+    case 'I':
       return "iaf";
     case 'F':
       return "faf";
@@ -602,7 +603,26 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     }
     if (!navigableTerminator(leg.pathTerminator)) continue;
     if (!looksLikeFix(leg.fixIdent)) continue;
-    if (!added.insert(leg.fixIdent).second) continue;
+    const std::string role = approachLegRole(leg);
+    if (!added.insert(leg.fixIdent).second) {
+      // Feeder holds (route A/B, HF/HA) often share a fix with the final-segment
+      // IAF (route R/I, IF). Keep one leg; the final-segment row carries IAF/FAF
+      // roles and altitude constraints (e.g. KPGD RNAV R04 BULOW transition).
+      if ((leg.routeType == "R" || leg.routeType == "I") && !role.empty()) {
+        for (MapLeg& existing : result) {
+          if (existing.id != leg.fixIdent) continue;
+          existing.procedureRole = role;
+          if (leg.kind == ProcedureType::Approach) {
+            applyArincAltitudeConstraint(leg, existing);
+            if (leg.verticalAngleDeg > 0.0f) {
+              existing.glidePathAngleDeg = leg.verticalAngleDeg;
+            }
+          }
+          break;
+        }
+      }
+      continue;
+    }
 
     double lat = 0.0;
     double lon = 0.0;
@@ -612,7 +632,7 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     ml.id = leg.fixIdent;
     ml.lat = lat;
     ml.lon = lon;
-    ml.procedureRole = approachLegRole(leg);
+    ml.procedureRole = role;
     if (leg.kind == ProcedureType::Approach) {
       applyArincAltitudeConstraint(leg, ml);
       if (leg.verticalAngleDeg > 0.0f) {
@@ -624,28 +644,37 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
   return result;
 }
 
+bool isNamedApproachTransition(const std::string& trans) {
+  if (trans.empty()) return false;
+  if (trans.size() >= 2 && trans[0] == 'R' && trans[1] == 'W') return false;
+  return true;
+}
+
+bool isDirectIafRouteType(const std::string& routeType) {
+  return routeType == "R" || routeType == "I" || routeType == "H" ||
+         routeType == "L" || routeType == "V";
+}
+
 std::vector<ApproachTransitionOption> listApproachTransitions(
     const CifpAirportProcedures& data, const std::string& approachName) {
-  std::unordered_map<std::string, bool> iafByTransition;
+  std::unordered_set<std::string> transitionNames;
   for (const CifpLeg& leg : data.legs) {
     if (leg.kind != ProcedureType::Approach || leg.procedureName != approachName) {
       continue;
     }
-    if (leg.routeType != "A" && leg.routeType != "B") continue;
     const std::string trans = trim(leg.transition);
-    if (trans.empty()) continue;
-    if (trans.size() >= 2 && trans[0] == 'R' && trans[1] == 'W') continue;
-    if (approachLegRole(leg) == "iaf") {
-      iafByTransition[trans] = true;
-    } else if (!iafByTransition.count(trans)) {
-      iafByTransition.emplace(trans, false);
+    if (leg.routeType == "A" || leg.routeType == "B") {
+      if (isNamedApproachTransition(trans)) transitionNames.insert(trans);
+      continue;
+    }
+    // Final-segment IAF (e.g. ZEPIG on ILS I04) with no named feeder route.
+    if (trans.empty() && isDirectIafRouteType(leg.routeType) &&
+        approachLegRole(leg) == "iaf" && looksLikeFix(leg.fixIdent)) {
+      transitionNames.insert(leg.fixIdent);
     }
   }
 
-  std::vector<std::string> iafNames;
-  for (const auto& entry : iafByTransition) {
-    if (entry.second) iafNames.push_back(entry.first);
-  }
+  std::vector<std::string> iafNames(transitionNames.begin(), transitionNames.end());
   std::sort(iafNames.begin(), iafNames.end());
 
   std::vector<ApproachTransitionOption> options;

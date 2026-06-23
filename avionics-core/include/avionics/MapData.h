@@ -335,6 +335,11 @@ struct MapData {
   // any flight plan. `directTo.id` also names the active waypoint.
   bool directToActive = false;
   MapLeg directTo;
+  // Present position when Direct-To was activated; used for CDI cross-track on
+  // the great-circle line to the destination (not the live ownship radial).
+  bool directToOriginValid = false;
+  double directToOriginLat = 0.0;
+  double directToOriginLon = 0.0;
   std::vector<MapFeature> features;
   std::vector<MapAirspace> airspaces;
   std::vector<MapAirwaySegment> airways;

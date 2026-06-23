@@ -1,6 +1,7 @@
 #include "DatarefDataSource.h"
 #include "FmsRouteProgrammer.h"
 #include "avionics/EisLegacy.h"
+#include "avionics/GpsLegCourse.h"
 
 #include <algorithm>
 #include <cctype>
@@ -258,6 +259,39 @@ std::string flightPlanIdentAt(const std::vector<MapLeg>& plan, int index) {
   return plan[static_cast<std::size_t>(index)].id;
 }
 
+bool idsEqual(const std::string& a, const std::string& b) {
+  if (a == b) return true;
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const char ca = static_cast<char>(std::tolower(
+        static_cast<unsigned char>(a[i])));
+    const char cb = static_cast<char>(std::tolower(
+        static_cast<unsigned char>(b[i])));
+    if (ca != cb) return false;
+  }
+  return true;
+}
+
+int legIndexInPlan(const std::vector<MapLeg>& plan, const std::string& id) {
+  if (id.empty()) return -1;
+  for (int i = 0; i < static_cast<int>(plan.size()); ++i) {
+    if (idsEqual(plan[static_cast<std::size_t>(i)].id, id)) return i;
+  }
+  return -1;
+}
+
+std::vector<MapLeg> fmsFlightPlanSnapshot(int count) {
+  std::vector<MapLeg> plan;
+  plan.reserve(static_cast<std::size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    const FmsEntry entry = fmsEntry(i);
+    if (entry.lat == 0.0f && entry.lon == 0.0f) continue;
+    plan.push_back({static_cast<double>(entry.lat), static_cast<double>(entry.lon),
+                    entry.id});
+  }
+  return plan;
+}
+
 bool dirExists(const std::string& path) {
   std::error_code ec;
   return std::filesystem::is_directory(path, ec);
@@ -348,6 +382,11 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   gpsDistance_ = XPLMFindDataRef(datarefs::kGpsDistanceNm);
   gpsBearing_ = XPLMFindDataRef(datarefs::kGpsBearingDegMag);
   gpsNavId_ = XPLMFindDataRef(datarefs::kGpsNavId);
+  gpsHdef_ = XPLMFindDataRef(datarefs::kGpsHdefNmPerDot);
+  hsiObsCourse_ = XPLMFindDataRef(datarefs::kHsiObsCourseDegMag);
+  overrideGps_ = XPLMFindDataRef(datarefs::kOverrideGps);
+  gpsCourseDegMag_ = XPLMFindDataRef(datarefs::kGpsCourseDegMag);
+  gpsHdefDot_ = XPLMFindDataRef(datarefs::kGpsHdefDot);
   nav1NavId_ = XPLMFindDataRef(datarefs::kNav1NavId);
   nav2NavId_ = XPLMFindDataRef(datarefs::kNav2NavId);
   nav1DmeId_ = XPLMFindDataRef(datarefs::kNav1DmeId);
@@ -650,14 +689,55 @@ void DatarefDataSource::update(double dtSeconds) {
   // Active flight-plan leg (FROM -> TO). Prefer typed idents from the last
   // PFD/MFD edit: the sim FMS readback uses coordinate strings (+27-81) for
   // lat/lon entries even when the pilot entered a VOR/fix ident.
+  if (routeOverrideSet_ && routeOverride_.empty()) {
+    data_.fmaToWpt.clear();
+    data_.fmaFromWpt.clear();
+    directToActive_ = false;
+    directTo_ = {};
+  } else {
   const int fmsCount = XPLMCountFMSEntries();
   if (fmsCount > 0) {
     int dest = XPLMGetDestinationFMSEntry();
     if (dest < 0) dest = 0;
     if (dest >= fmsCount) dest = fmsCount - 1;
     if (directToActive_ && !directTo_.id.empty()) {
-      data_.fmaToWpt = directTo_.id;
-      data_.fmaFromWpt.clear();
+      const std::vector<MapLeg> plan =
+          routeOverrideSet_ ? routeOverride_ : fmsFlightPlanSnapshot(fmsCount);
+      std::string simTo = routeOverrideSet_
+                              ? flightPlanIdentAt(routeOverride_, dest)
+                              : fmsEntryId(dest);
+      if (simTo.empty() || isFmsLatLonIdent(simTo)) {
+        const std::string raw = fmsEntryId(dest);
+        if (!isFmsLatLonIdent(raw)) {
+          simTo = raw;
+        } else if (simTo.empty()) {
+          simTo = raw;
+        }
+      }
+      const int dtoIdx = legIndexInPlan(plan, directTo_.id);
+      const int simIdx = legIndexInPlan(plan, simTo);
+      const bool simOnPlanLeg = !simTo.empty() && simTo != directTo_.id &&
+                                simIdx >= 0 &&
+                                (dtoIdx < 0 || simIdx != dtoIdx);
+      if (simOnPlanLeg) {
+        data_.fmaToWpt = simTo;
+        data_.fmaFromWpt.clear();
+        if (simIdx > 0) {
+          data_.fmaFromWpt = flightPlanIdentAt(plan, simIdx - 1);
+          if (data_.fmaFromWpt.empty() ||
+              isFmsLatLonIdent(data_.fmaFromWpt)) {
+            const std::string rawFrom = fmsEntryId(simIdx - 1);
+            if (!isFmsLatLonIdent(rawFrom)) {
+              data_.fmaFromWpt = rawFrom;
+            } else if (data_.fmaFromWpt.empty()) {
+              data_.fmaFromWpt = rawFrom;
+            }
+          }
+        }
+      } else {
+        data_.fmaToWpt = directTo_.id;
+        data_.fmaFromWpt.clear();
+      }
     } else if (routeOverrideSet_) {
       data_.fmaToWpt = flightPlanIdentAt(routeOverride_, dest);
       if (data_.fmaToWpt.empty() || isFmsLatLonIdent(data_.fmaToWpt)) {
@@ -695,10 +775,57 @@ void DatarefDataSource::update(double dtSeconds) {
     data_.fmaToWpt = buf;
     data_.fmaFromWpt.clear();
   }
+  }
 
   updateMap(dtSeconds);
   weather_.update(dtSeconds);
   syncDisplayBackup(data_, dtSeconds);
+}
+
+void DatarefDataSource::applyGpsNavigation(bool obsMode, CdiSource cdiSource,
+                                           float nmPerDot) {
+  float scale = nmPerDot;
+  if (scale <= 0.01f && gpsHdef_ != nullptr) {
+    scale = XPLMGetDataf(gpsHdef_);
+  }
+  if (scale <= 0.01f) scale = 0.5f;
+
+  const GpsLegNavigation nav =
+      computeGpsLegNavigation(map_, data_, obsMode, cdiSource);
+  applyGpsLegNavigation(data_, map_, obsMode, cdiSource, scale);
+
+  if (!nav.active || obsMode || cdiSource != CdiSource::Gps) {
+    if (gpsOverrideActive_ && overrideGps_ != nullptr) {
+      XPLMSetDatai(overrideGps_, 0);
+      gpsOverrideActive_ = false;
+      lastSentGpsCourseDeg_ = -999.0f;
+      lastSentGpsHdefDots_ = 999.0f;
+    }
+    return;
+  }
+
+  if (hsiObsCourse_ != nullptr &&
+      std::fabs(data_.courseDeg - lastPushedCourseDeg_) > 0.5f) {
+    XPLMSetDataf(hsiObsCourse_, data_.courseDeg);
+    lastPushedCourseDeg_ = data_.courseDeg;
+  }
+
+  if (overrideGps_ == nullptr || gpsCourseDegMag_ == nullptr ||
+      gpsHdefDot_ == nullptr) {
+    return;
+  }
+  if (!gpsOverrideActive_) {
+    XPLMSetDatai(overrideGps_, 1);
+    gpsOverrideActive_ = true;
+  }
+  if (std::fabs(data_.courseDeg - lastSentGpsCourseDeg_) > 0.25f) {
+    XPLMSetDataf(gpsCourseDegMag_, data_.courseDeg);
+    lastSentGpsCourseDeg_ = data_.courseDeg;
+  }
+  if (std::fabs(data_.cdiDeviationDots - lastSentGpsHdefDots_) > 0.02f) {
+    XPLMSetDataf(gpsHdefDot_, data_.cdiDeviationDots);
+    lastSentGpsHdefDots_ = data_.cdiDeviationDots;
+  }
 }
 
 void DatarefDataSource::syncWeatherRadar(const MfdController& ui) {
@@ -810,12 +937,15 @@ void DatarefDataSource::setTransponderMode(int mode) {
 void DatarefDataSource::setLocalFlightPlan(std::vector<MapLeg> route) {
   routeOverride_ = std::move(route);
   routeOverrideSet_ = true;
+  map_.flightPlan = routeOverride_;
 }
 
 void DatarefDataSource::setRouteOverride(std::vector<MapLeg> route,
                                            bool programSimulator) {
   routeOverride_ = std::move(route);
   routeOverrideSet_ = true;
+  map_.flightPlan = routeOverride_;
+  if (routeOverride_.empty()) setDirectTo({});
   if (programSimulator) programFmsRoute(routeOverride_);
 }
 
@@ -825,17 +955,31 @@ void DatarefDataSource::clearRouteOverride() {
 }
 
 void DatarefDataSource::setDirectTo(MapLeg target) {
+  const bool activating =
+      !target.id.empty() &&
+      (!directToActive_ || directTo_.id != target.id);
   directTo_ = std::move(target);
   directToActive_ = !directTo_.id.empty();
   if (directToActive_) {
+    directToOriginPending_ = activating;
+    if (activating && map_.positionValid) {
+      directToOriginLat_ = map_.ownshipLat;
+      directToOriginLon_ = map_.ownshipLon;
+      directToOriginValid_ = true;
+      directToOriginPending_ = false;
+    }
     programFmsDirectTo(true, directTo_);
   } else {
+    directToOriginPending_ = false;
+    directToOriginValid_ = false;
     programFmsDirectTo(false, directTo_);
   }
 }
 
 void DatarefDataSource::clearDirectTo() {
   directToActive_ = false;
+  directToOriginPending_ = false;
+  directToOriginValid_ = false;
   programFmsDirectTo(false, directTo_);
 }
 
@@ -923,6 +1067,18 @@ void DatarefDataSource::updateMap(double dtSeconds) {
 
   map_.directToActive = directToActive_;
   map_.directTo = directTo_;
+  map_.directToOriginValid = directToOriginValid_;
+  map_.directToOriginLat = directToOriginLat_;
+  map_.directToOriginLon = directToOriginLon_;
+  if (directToOriginPending_ && map_.positionValid) {
+    directToOriginLat_ = map_.ownshipLat;
+    directToOriginLon_ = map_.ownshipLon;
+    directToOriginValid_ = true;
+    directToOriginPending_ = false;
+    map_.directToOriginValid = true;
+    map_.directToOriginLat = directToOriginLat_;
+    map_.directToOriginLon = directToOriginLon_;
+  }
 
   // Active flight-plan route: prefer the last PFD/MFD edit so typed idents are
   // not replaced by the sim FMS coordinate strings for lat/lon entries.

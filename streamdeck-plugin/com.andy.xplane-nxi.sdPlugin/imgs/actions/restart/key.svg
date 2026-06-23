@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+  <rect width="144" height="144" rx="18" fill="#101820"/>
+  <path d="M92 52 A34 34 0 1 0 98 78" fill="none" stroke="#00ff88" stroke-width="10" stroke-linecap="round"/>
+  <path d="M98 44 L98 78 L72 78" fill="none" stroke="#00ff88" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="72" y="118" text-anchor="middle" fill="#00ff88" font-family="Arial, sans-serif" font-size="16" font-weight="700">NXI</text>
+</svg>

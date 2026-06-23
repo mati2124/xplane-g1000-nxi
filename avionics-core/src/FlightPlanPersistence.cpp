@@ -68,6 +68,15 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
     }
   }
   if (out.start < 0) return out;
+  // Untagged feeder/hold fixes may sit immediately before the first tagged IAF/FAF
+  // when a route A/B hold duplicates the final-segment IAF fix (BULOW on R04).
+  while (out.start > 0 &&
+         legs[static_cast<std::size_t>(out.start - 1)].procedureRole.empty()) {
+    const std::string& taggedRole =
+        legs[static_cast<std::size_t>(out.start)].procedureRole;
+    if (taggedRole != "iaf" && taggedRole != "faf") break;
+    --out.start;
+  }
   // CIFP only tags IAF/FAF/MAP legs with procedureRole; the intermediate
   // fixes on a loaded approach are still part of the same tail block.
   out.count = static_cast<int>(legs.size()) - out.start;

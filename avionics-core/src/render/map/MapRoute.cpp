@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace avionics::mapview {
@@ -139,19 +140,81 @@ void drawSmoothedRouteDashedPolyline(Renderer& r, const SmoothedRoute& route,
                        static_cast<int>(route.points.size()), width, color);
 }
 
+bool resolveNavIdentCoords(const MapData& map, const std::string& id,
+                           double& lat, double& lon) {
+  if (id.empty()) return false;
+  for (const MapFeature& f : map.features) {
+    if (f.id == id) {
+      lat = f.lat;
+      lon = f.lon;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Active GPS Direct-To target for map rendering: the display overlay when set,
+// otherwise the sim destination when there is no stored plan leg to highlight.
+bool activeDirectNavTarget(const MapData& map, const FlightData& flight,
+                           MapLeg& out) {
+  if (map.directToActive && !map.directTo.id.empty()) {
+    out = map.directTo;
+    if (out.lat == 0.0 && out.lon == 0.0 &&
+        !resolveNavIdentCoords(map, out.id, out.lat, out.lon)) {
+      return false;
+    }
+    return true;
+  }
+  // When a flight plan is on the map, leg highlighting covers navigation; a
+  // second ownship-to-fix line duplicates the active-leg segment (common after
+  // loading an approach while fmaFromWpt is still empty).
+  if (map.flightPlan.size() >= 2) return false;
+  if (flight.fmaToWpt.empty() || !flight.fmaFromWpt.empty()) return false;
+  out.id = flight.fmaToWpt;
+  return resolveNavIdentCoords(map, out.id, out.lat, out.lon);
+}
+
+// Contiguous loaded-procedure legs (SID/STAR/approach) within a flight plan.
+bool procedureLegSpan(const std::vector<MapLeg>& plan, int& start, int& end) {
+  start = end = -1;
+  for (int i = 0; i < static_cast<int>(plan.size()); ++i) {
+    if (plan[static_cast<std::size_t>(i)].procedureRole.empty()) continue;
+    if (start < 0) start = i;
+    end = i;
+  }
+  return start >= 0 && end > start;
+}
+
+std::vector<MapLeg> legsForMapRoute(const MapData& map) {
+  if (!map.directToActive || map.flightPlan.size() < 2) {
+    return map.flightPlan;
+  }
+  int procStart = -1;
+  int procEnd = -1;
+  if (!procedureLegSpan(map.flightPlan, procStart, procEnd)) {
+    return {};
+  }
+  return std::vector<MapLeg>(map.flightPlan.begin() + procStart,
+                             map.flightPlan.begin() + procEnd + 1);
+}
+
 }  // namespace
 
 void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
                     const MapViewConfig& config, const FlightData& flight,
                     float symSize) {
   if (config.rangeNm > kContinentalChartRangeNm) return;
-  if (map.flightPlan.size() < 2) return;
+
+  const std::vector<MapLeg> routeLegs = legsForMapRoute(map);
+  if (routeLegs.size() < 2) return;
 
   const int activeTo = activeFlightPlanToIndex(map, flight);
-  const SmoothedRoute route = buildSmoothedRoute(map.flightPlan, proj);
+  const SmoothedRoute route = buildSmoothedRoute(routeLegs, proj);
 
   drawSmoothedRoutePolyline(r, route, 2.0f, colors::kWhite);
-  if (activeTo >= 1) {
+  // During GPS Direct-To the magenta course is drawn from ownship to the
+  // target (drawDirectToCourse); do not also highlight the stored plan leg.
+  if (!map.directToActive && activeTo >= 1) {
     const std::size_t leg = static_cast<std::size_t>(activeTo) - 1;
     if (leg < route.legStart.size()) {
       const std::size_t start = route.legStart[leg];
@@ -164,10 +227,21 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
     }
   }
 
-  for (std::size_t i = 0; i < map.flightPlan.size(); ++i) {
-    const Point pt = projectLeg(proj, map.flightPlan[i]);
-    const Color c = static_cast<int>(i) == activeTo ? colors::kMagenta
-                                                    : colors::kWhite;
+  int procOffset = 0;
+  if (map.directToActive) {
+    int procStart = -1;
+    int procEnd = -1;
+    if (procedureLegSpan(map.flightPlan, procStart, procEnd)) {
+      procOffset = procStart;
+    }
+  }
+
+  for (std::size_t i = 0; i < routeLegs.size(); ++i) {
+    const Point pt = projectLeg(proj, routeLegs[i]);
+    const int planIndex = static_cast<int>(i) + procOffset;
+    const Color c = (!map.directToActive && planIndex == activeTo)
+                        ? colors::kMagenta
+                        : colors::kWhite;
     r.fillCircle(pt.x, pt.y, symSize * 0.35f, c);
   }
 }
@@ -179,17 +253,30 @@ void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
     return;
   }
 
+  const std::vector<MapLeg> routeLegs = legsForMapRoute(map);
+  if (routeLegs.empty()) return;
+
   const int activeTo = activeFlightPlanToIndex(map, flight);
   const float textSize = labelSize * kMapIdentLabelScale;
 
-  for (std::size_t i = 0; i < map.flightPlan.size(); ++i) {
-    if (map.flightPlan[i].id.empty()) continue;
-    const Point pt = projectLeg(proj, map.flightPlan[i]);
-    const Color c = static_cast<int>(i) == activeTo ? colors::kMagenta
-                                                    : colors::kWhite;
-    r.fillText(pt.x, pt.y - symSize * 0.95f - kMapLabelLiftPx,
-               map.flightPlan[i].id, textSize, TextAlign::Center, c,
-               kMapLabelFace);
+  int procOffset = 0;
+  if (map.directToActive) {
+    int procStart = -1;
+    int procEnd = -1;
+    if (procedureLegSpan(map.flightPlan, procStart, procEnd)) {
+      procOffset = procStart;
+    }
+  }
+
+  for (std::size_t i = 0; i < routeLegs.size(); ++i) {
+    if (routeLegs[i].id.empty()) continue;
+    const Point pt = projectLeg(proj, routeLegs[i]);
+    const int planIndex = static_cast<int>(i) + procOffset;
+    const Color c = (!map.directToActive && planIndex == activeTo)
+                        ? colors::kMagenta
+                        : colors::kWhite;
+    r.fillText(pt.x, pt.y - symSize * 0.95f - kMapLabelLiftPx, routeLegs[i].id,
+               textSize, TextAlign::Center, c, kMapLabelFace);
   }
 }
 
@@ -227,29 +314,38 @@ void drawProcedurePreviewLabels(Renderer& r, const Proj& proj,
   }
 }
 
-void drawDirectToCourse(Renderer& r, const MapData& map, const Proj& proj,
+void drawDirectToCourse(Renderer& r, const MapData& map,
+                        const FlightData& flight, const Proj& proj,
                         const MapViewConfig& config, float symSize) {
   if (config.rangeNm > kContinentalChartRangeNm) return;
 
+  MapLeg target;
+  if (!activeDirectNavTarget(map, flight, target)) return;
+
   float ox = 0.0f, oy = 0.0f, tx = 0.0f, ty = 0.0f;
   proj.toPx(map.ownshipLat, map.ownshipLon, ox, oy);
-  proj.toPx(map.directTo.lat, map.directTo.lon, tx, ty);
+  proj.toPx(target.lat, target.lon, tx, ty);
   const Point dto[2] = {{ox, oy}, {tx, ty}};
   r.strokePolyline(dto, 2, 2.0f, colors::kMagenta);
   r.fillCircle(tx, ty, symSize * 0.35f, colors::kMagenta);
 }
 
-void drawDirectToCourseLabel(Renderer& r, const MapData& map, const Proj& proj,
+void drawDirectToCourseLabel(Renderer& r, const MapData& map,
+                             const FlightData& flight, const Proj& proj,
                              const MapViewConfig& config, float symSize,
                              float labelSize) {
-  if (config.rangeNm > kContinentalChartRangeNm || !config.style.showLabels ||
-      map.directTo.id.empty()) {
+  if (config.rangeNm > kContinentalChartRangeNm || !config.style.showLabels) {
+    return;
+  }
+
+  MapLeg target;
+  if (!activeDirectNavTarget(map, flight, target) || target.id.empty()) {
     return;
   }
 
   float tx = 0.0f, ty = 0.0f;
-  proj.toPx(map.directTo.lat, map.directTo.lon, tx, ty);
-  r.fillText(tx, ty - symSize * 0.95f - kMapLabelLiftPx, map.directTo.id,
+  proj.toPx(target.lat, target.lon, tx, ty);
+  r.fillText(tx, ty - symSize * 0.95f - kMapLabelLiftPx, target.id,
              labelSize * kMapIdentLabelScale, TextAlign::Center,
              colors::kMagenta, kMapLabelFace);
 }

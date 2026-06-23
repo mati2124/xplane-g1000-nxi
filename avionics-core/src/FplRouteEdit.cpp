@@ -87,7 +87,7 @@ bool fplCommitApproachIdent(FplRouteEdit& edit, const NavFeatureSource* navSourc
 bool fplCommitSectionIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
                            const MapFeature& match, const std::string& ident,
                            int selectableCursorRow) {
-  const int legCount = static_cast<int>(edit.legs.size());
+  const int legCount = fplEditSectionLegCount(edit);
   const int lastSection =
       std::max(0, fplSectionSelectableCount(legCount, edit.destinationFilled,
                                             edit.directToActive) - 1);
@@ -216,8 +216,13 @@ bool fplDestinationFilledForDisplay(int legCount, bool directToActive) {
 }
 
 std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
-                                   int approachStart, const MapData* map) {
-  if (approachStart <= 0 && legs.empty()) return {};
+                                   int approachStart, const MapData* map,
+                                   const std::string& loadedApproachAirportIcao) {
+  if (approachStart <= 0 && legs.empty()) {
+    return isAirportIdent(loadedApproachAirportIcao)
+               ? loadedApproachAirportIcao
+               : std::string();
+  }
   std::string icao = airportIcaoBeforeIndex(legs, approachStart);
   if (!icao.empty()) return icao;
   icao = directToAirportIcao(map);
@@ -226,6 +231,7 @@ std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
     icao = lastAirportInPlan(map->flightPlan);
     if (!icao.empty()) return icao;
   }
+  if (isAirportIdent(loadedApproachAirportIcao)) return loadedApproachAirportIcao;
   return {};
 }
 
@@ -233,6 +239,7 @@ int fplCursorLegIndex(const FplRouteEdit& edit,
                       const std::string& approachAirport,
                       FplCursorLayout layout) {
   const int legCount = static_cast<int>(edit.legs.size());
+  const int sectionLegCount = fplEditSectionLegCount(edit);
   if (edit.approachLegCount > 0) {
     return fplApproachLegIndexForSelectable(
         edit.cursorRow, edit.legs, edit.approachLegStart, edit.approachLegCount,
@@ -244,8 +251,8 @@ int fplCursorLegIndex(const FplRouteEdit& edit,
     if (edit.cursorRow >= 0 && edit.cursorRow < legCount) return edit.cursorRow;
     return -1;
   }
-  return fplLegIndexForSectionRow(edit.cursorRow, legCount, edit.destinationFilled,
-                                  edit.directToActive);
+  return fplLegIndexForSectionRow(edit.cursorRow, sectionLegCount,
+                                  edit.destinationFilled, edit.directToActive);
 }
 
 int fplCursorSelectableLast(const FplRouteEdit& edit,
@@ -262,7 +269,7 @@ int fplCursorSelectableLast(const FplRouteEdit& edit,
   if (layout == FplCursorLayout::FlatLegList) {
     return static_cast<int>(edit.legs.size());
   }
-  return std::max(0, fplSectionSelectableCount(static_cast<int>(edit.legs.size()),
+  return std::max(0, fplSectionSelectableCount(fplEditSectionLegCount(edit),
                                                edit.destinationFilled,
                                                edit.directToActive) -
                            1);

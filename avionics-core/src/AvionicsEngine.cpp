@@ -9,8 +9,10 @@
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
 #include "avionics/GlidepathGuidance.h"
+#include "avionics/GpsLegCourse.h"
 #include "avionics/MapData.h"
 #include "avionics/NavMath.h"
+#include "avionics/TurnAnticipation.h"
 #include "avionics/render/BootScreen.h"
 #include "avionics/render/MultiFunctionDisplay.h"
 #include "avionics/render/PrimaryFlightDisplay.h"
@@ -36,19 +38,15 @@ constexpr float kDefaultFpaDeg = 3.0f;
 constexpr float kVnavDevFtPerDot = 250.0f;
 
 int activeLegIndex(const std::vector<MapLeg>& plan, const std::string& toWpt) {
-  if (plan.empty()) return 0;
-  for (std::size_t i = 0; i < plan.size(); ++i) {
-    if (!toWpt.empty() && plan[i].id == toWpt) {
-      return static_cast<int>(i);
-    }
-  }
-  return 0;
+  const int idx = legIndexInPlan(plan, toWpt);
+  return idx >= 0 ? idx : 0;
 }
 
 double alongTrackDistanceNm(const MapData& map, const FlightData& data,
                             const std::vector<MapLeg>& plan, int targetIdx) {
   if (targetIdx < 0 || targetIdx >= static_cast<int>(plan.size())) return 0.0;
-  const int activeIdx = activeLegIndex(plan, data.fmaToWpt);
+  int activeIdx = resolveNavLegToIndex(plan, data, map);
+  if (activeIdx < 0) activeIdx = activeLegIndex(plan, data.fmaToWpt);
   double distNm = navDistanceNm(map.ownshipLat, map.ownshipLon, plan[activeIdx].lat,
                                 plan[activeIdx].lon);
   for (int i = activeIdx; i < targetIdx; ++i) {
@@ -235,6 +233,14 @@ void AvionicsEngine::update(double dtSeconds) {
   dataSource_->setChartRangeNm(mfd_.rangeNm());
   if (drivesDataSource_) dataSource_->update(dtSeconds);
 
+  if (drivesDataSource_ &&
+      dataSource_->connectionState() == ConnectionState::Connected) {
+    const FlightData& snap = dataSource_->snapshot();
+    dataSource_->applyGpsNavigation(
+        softkeys_.displayToggle(DisplayToggle::Obs),
+        softkeys_.cdiSourceFor(snap.cdiSource), 0.0f);
+  }
+
   // Flight-plan sync uses mapSnapshot(); pump the source first so a route
   // override applied before this frame's update is visible (softkeys_.update
   // above may have seen a stale plan).
@@ -243,13 +249,16 @@ void AvionicsEngine::update(double dtSeconds) {
   // Keep the MFD's checklist navigation in step with the loaded file (the data
   // is owned by the source; the controller only holds the interactive state).
   mfd_.syncChecklist(dataSource_->checklistSnapshot());
+  syncSoftkeyPeerRadioVolume();
+  // Peer sync runs before the map-driven FPL adopt so a PFD Active Flight
+  // Plan edit is not overwritten by a stale mapSnapshot on the other GDU.
+  syncFlightPlanPeer();
   // Keep the FPL page's editable plan in step with the active flight plan
   // (and ownship, for waypoint-entry lookups). The active leg's TO ident
   // seeds the Direct-To window's default waypoint.
   mfd_.syncFlightPlan(dataSource_->mapSnapshot(),
                       dataSource_->snapshot().fmaToWpt,
                       navDirectToActive(dataSource_->snapshot()));
-  syncSoftkeyPeerRadioVolume();
   syncFlightPlanApproachPeer();
 }
 
@@ -267,11 +276,57 @@ bool flightPlanApproachGroupingEqual(const FlightPlanApproachState& a,
 
 }  // namespace
 
+void AvionicsEngine::syncFlightPlanPeer() {
+  if (!softkeyPeer_) return;
+
+  SoftkeyController& pfdSk =
+      page_ == DisplayPage::PrimaryFlightDisplay
+          ? softkeys_
+          : softkeyPeer_->softkeyController();
+  MfdController& mfdFpl =
+      page_ == DisplayPage::MultiFunctionDisplay
+          ? mfd_
+          : softkeyPeer_->mfdController();
+
+  const std::vector<MapLeg>& skLegs = pfdSk.flightPlanLegs();
+  const std::vector<MapLeg>& mfdLegs = mfdFpl.fplLegs();
+  const bool skDest = pfdSk.flightPlanDestinationFilled();
+  const bool mfdDest = mfdFpl.fplDestinationFilled();
+  if (::avionics::flightPlanLegsEqual(skLegs, mfdLegs) && skDest == mfdDest) {
+    return;
+  }
+
+  const bool skDraft = pfdSk.flightPlanLocalDraft();
+  const bool mfdDraft = mfdFpl.fplLocalDraft();
+  const FlightPlanApproachState skApproach = pfdSk.flightPlanApproachState();
+  const FlightPlanApproachState mfdApproach = mfdFpl.flightPlanApproachState();
+
+  if (skDraft && !mfdDraft) {
+    mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach);
+  } else if (mfdDraft && !skDraft) {
+    pfdSk.adoptFlightPlanFromPeer(mfdLegs, mfdDest, mfdApproach);
+  } else {
+    // Neither side is exclusively drafting — keep the MFD page aligned with
+    // the PFD Active Flight Plan window (the primary route editor on the PFD).
+    mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach);
+  }
+}
+
 void AvionicsEngine::syncFlightPlanApproachPeer() {
   if (!softkeyPeer_) return;
-  const std::vector<MapLeg>& localLegs = mfd_.fplLegs();
-  const std::vector<MapLeg>& peerLegs = softkeyPeer_->mfdController().fplLegs();
-  if (!::avionics::flightPlanLegsEqual(localLegs, peerLegs)) return;
+
+  const SoftkeyController& pfdSk =
+      page_ == DisplayPage::PrimaryFlightDisplay
+          ? softkeys_
+          : softkeyPeer_->softkeyController();
+  const MfdController& mfdFpl =
+      page_ == DisplayPage::MultiFunctionDisplay
+          ? mfd_
+          : softkeyPeer_->mfdController();
+  if (!::avionics::flightPlanLegsEqual(pfdSk.flightPlanLegs(),
+                                       mfdFpl.fplLegs())) {
+    return;
+  }
 
   const FlightPlanApproachState localSk = softkeys_.flightPlanApproachState();
   const FlightPlanApproachState localMfd = mfd_.flightPlanApproachState();
@@ -292,7 +347,8 @@ void AvionicsEngine::syncFlightPlanApproachPeer() {
                                                : FlightPlanApproachState{};
   };
 
-  const FlightPlanApproachState mfdState = stateForLegs(authoritative, localLegs);
+  const std::vector<MapLeg>& syncedLegs = pfdSk.flightPlanLegs();
+  const FlightPlanApproachState mfdState = stateForLegs(authoritative, syncedLegs);
   if (!flightPlanApproachGroupingEqual(mfd_.flightPlanApproachState(), mfdState) ||
       mfd_.fplApproachHeaderLabel() != mfdState.headerLabel) {
     mfd_.applyFlightPlanApproachState(mfdState);
@@ -306,7 +362,7 @@ void AvionicsEngine::syncFlightPlanApproachPeer() {
   }
 
   const FlightPlanApproachState peerMfdState =
-      stateForLegs(authoritative, peerLegs);
+      stateForLegs(authoritative, syncedLegs);
   if (!flightPlanApproachGroupingEqual(
           softkeyPeer_->mfdController().flightPlanApproachState(),
           peerMfdState) ||
@@ -694,8 +750,12 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
   // VNAV profile (FPL "Active VNV Profile" box + PFD vertical deviation) is
   // computed from the live plan and state; skip it when the link is down.
   if (connected) {
-    applyGlidepath(data, dataSource_->mapSnapshot());
-    applyVnav(data, dataSource_->mapSnapshot());
+    const MapData& map = dataSource_->mapSnapshot();
+    applyGlidepath(data, map);
+    applyVnav(data, map);
+    applyTurnAnticipation(data, map,
+                          softkeys_.displayToggle(DisplayToggle::Obs),
+                          softkeys_.blinkOn());
   }
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:

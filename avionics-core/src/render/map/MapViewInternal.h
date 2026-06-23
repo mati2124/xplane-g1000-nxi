@@ -330,12 +330,14 @@ void drawProcedurePreviewLabels(Renderer& r, const Proj& proj,
                                 const MapViewConfig& config, float symSize,
                                 float labelSize);
 
-// Direct-To course: a magenta line from ownship to the direct-to waypoint.
-void drawDirectToCourse(Renderer& r, const MapData& map, const Proj& proj,
-                          const MapViewConfig& config, float symSize);
+// Direct-To / active GPS course: magenta line from ownship to the target.
+void drawDirectToCourse(Renderer& r, const MapData& map, const FlightData& flight,
+                        const Proj& proj, const MapViewConfig& config,
+                        float symSize);
 
 // Direct-To waypoint ident (magenta, centered above symbol).
-void drawDirectToCourseLabel(Renderer& r, const MapData& map, const Proj& proj,
+void drawDirectToCourseLabel(Renderer& r, const MapData& map,
+                             const FlightData& flight, const Proj& proj,
                              const MapViewConfig& config, float symSize,
                              float labelSize);
 

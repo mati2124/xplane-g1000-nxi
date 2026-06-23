@@ -89,6 +89,13 @@ class DataSource {
   // DataSource.
   void toggleDisplayBackup() { displayBackup_.toggle(); }
 
+  // Reconcile GPS leg DTK/CDI with the active flight plan. Called from the
+  // avionics engine after each source update so navigation state is correct
+  // for rendering and sim write-back (X-Plane OBS course does not track GPS
+  // leg sequencing).
+  virtual void applyGpsNavigation(bool /*obsMode*/, CdiSource /*cdiSource*/,
+                                  float /*nmPerDot*/) {}
+
  protected:
   // Call from update() to advance the exit-delay timer and publish the flag on
   // `data`.

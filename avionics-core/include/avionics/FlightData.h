@@ -271,6 +271,10 @@ struct FlightData {
   std::string fmaToWpt = "KRSW";
   float fmaLegDistanceNm = 12.4f;
   float fmaLegBearingDeg = 315.0f;
+  // Turn-anticipation annunciation for the Navigation Status Box (replaces the
+  // active-leg field when non-empty; G1000 NXi Pilot's Guide Section 5.1).
+  std::string navStatusAnnunciation;
+  bool navStatusAnnunciationFlash = false;
   std::string fmaLateralActive = "HDG";
   std::string fmaLateralArmed = "GPS";
   std::string fmaVerticalActive = "VS";

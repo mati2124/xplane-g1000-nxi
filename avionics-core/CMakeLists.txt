@@ -15,6 +15,8 @@ add_library(avionics-core STATIC
   src/PersistentState.cpp
   src/FlightPlanPersistence.cpp
   src/GlidepathGuidance.cpp
+  src/GpsLegCourse.cpp
+  src/TurnAnticipation.cpp
   src/FplRouteEdit.cpp
   src/Radio.cpp
   src/ComDecode.cpp

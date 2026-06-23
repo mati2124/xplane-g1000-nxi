@@ -358,6 +358,32 @@ inline bool fplSectionRowIsActiveDisplay(const FplSectionRow& sr, int legCount,
 
 
 
+// Header origin ident: when flying a loaded approach, the header tracks the
+// active navigation fix (e.g. IAF/FAF). When the enroute template hides a
+// duplicated airport (blank origin section), fall back to the first approach fix.
+inline std::string fplHeaderOriginIdent(const std::vector<MapLeg>& legs,
+                                        int approachLegStart,
+                                        int approachLegCount,
+                                        bool approachLoaded,
+                                        bool blankOriginSection,
+                                        bool destOnlyPlan,
+                                        const std::string& activeToIdent) {
+  if (destOnlyPlan) return {};
+  if (approachLoaded && approachLegCount > 0 && !activeToIdent.empty()) {
+    const int activeIdx = fplActiveLegIndexInPlan(legs, activeToIdent);
+    const int approachEnd = approachLegStart + approachLegCount;
+    if (activeIdx >= approachLegStart && activeIdx < approachEnd) {
+      return activeToIdent;
+    }
+  }
+  if (blankOriginSection && approachLegStart >= 0 &&
+      approachLegStart < static_cast<int>(legs.size())) {
+    return legs[static_cast<std::size_t>(approachLegStart)].id;
+  }
+  if (legs.empty()) return {};
+  return legs.front().id;
+}
+
 // Header destination ident: the route destination airport, not the active leg
 // or an enroute fix. When an approach is loaded, use its airport; otherwise
 // use the last leg of the enroute plan segment (before approach legs).
@@ -371,7 +397,9 @@ inline std::string fplHeaderDestinationIdent(const std::vector<MapLeg>& legs,
 
                                              const std::string& approachAirport) {
 
-  if (approachLoaded && !approachAirport.empty()) return approachAirport;
+  if (approachLoaded && !approachAirport.empty()) {
+    return approachAirport;
+  }
 
   const int sectionLegCount =
 
@@ -408,6 +436,7 @@ inline std::string fplHeaderDestinationIdent(const std::vector<MapLeg>& legs,
 // (trainer: Origin, Enroute, destination, sep dash, approach header, approach legs).
 enum class FplDisplayRowKind {
   Origin,
+  OriginBlank,
   EnrouteLabel,
   EnrouteBlank,
   EnrouteLeg,
@@ -445,11 +474,8 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
       buildFplSectionRows(sectionLegCount, destinationFilled);
 
   bool enrouteBlock = false;
-  bool hasDestination = false;
 
   for (const FplSectionRow& sr : sectionRows) {
-
-    if (sr.kind == FplSectionRow::Kind::EnrouteBlank) continue;
 
     switch (sr.kind) {
 
@@ -463,10 +489,24 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
 
         break;
 
+      case FplSectionRow::Kind::OriginBlank:
+
+        rows.push_back({FplDisplayRowKind::OriginBlank, -1});
+
+        break;
+
       case FplSectionRow::Kind::EnrouteLabel:
 
         rows.push_back({FplDisplayRowKind::EnrouteLabel, -1});
 
+        enrouteBlock = true;
+
+        break;
+
+      case FplSectionRow::Kind::EnrouteBlank:
+
+        // Enroute blank slot is represented by the SepDash before the approach
+        // header; do not show the separate template dash row here.
         enrouteBlock = true;
 
         break;
@@ -483,18 +523,11 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
 
         break;
 
+      case FplSectionRow::Kind::DestinationLabel:
       case FplSectionRow::Kind::Destination:
+      case FplSectionRow::Kind::DestinationBlank:
 
-        if (sr.legIndex >= 0 &&
-            fplHideLegForDuplicateIdent(legs, sr.legIndex)) {
-          break;
-        }
-        rows.push_back({FplDisplayRowKind::Destination, sr.legIndex});
-
-        enrouteBlock = true;
-
-        if (sr.legIndex >= 0) hasDestination = true;
-
+        // Destination is shown in the approach header when a procedure is loaded.
         break;
 
       default:
@@ -505,7 +538,7 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
 
   }
 
-  if (hasDestination || enrouteBlock) {
+  if (enrouteBlock) {
 
     rows.push_back({FplDisplayRowKind::SepDash, -1});
 
@@ -561,6 +594,8 @@ inline bool fplApproachDisplayRowSelectable(FplDisplayRowKind kind) {
   switch (kind) {
 
     case FplDisplayRowKind::Origin:
+
+    case FplDisplayRowKind::OriginBlank:
 
     case FplDisplayRowKind::EnrouteLeg:
 
@@ -710,7 +745,8 @@ inline int fplApproachLegIndexForSelectable(int selectableRow,
 
   if (dr == nullptr || !fplApproachDisplayRowSelectable(dr->kind)) return -1;
 
-  if (dr->kind == FplDisplayRowKind::EnrouteBlank ||
+  if (dr->kind == FplDisplayRowKind::OriginBlank ||
+      dr->kind == FplDisplayRowKind::EnrouteBlank ||
       dr->kind == FplDisplayRowKind::SepDash) {
     return -1;
   }
@@ -746,6 +782,8 @@ inline int fplApproachInsertIndexForSelectable(int selectableRow,
   switch (dr->kind) {
 
     case FplDisplayRowKind::Origin:
+
+    case FplDisplayRowKind::OriginBlank:
 
       return 0;
 

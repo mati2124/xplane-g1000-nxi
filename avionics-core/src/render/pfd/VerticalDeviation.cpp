@@ -5,6 +5,9 @@
 namespace avionics::pfd {
 namespace {
 
+// WT NXi SVG uses 8x10 half-axes at 24 px; bump slightly for legibility.
+constexpr float kGsGpDiamondScale = 1.3f;
+
 // Marker beacon annunciation just left of the altimeter: outer (cyan "O"),
 // middle (amber "M"), inner (white "I"), each a filled capsule with a black
 // letter (G1000 NXi Pilot's Guide, Marker Beacon Annunciations).
@@ -163,8 +166,8 @@ void drawVerticalDeviation(Renderer& r, const Layout& L, const FlightData& d,
     const Color fill = (d.vdiKind == VerticalDeviationKind::Glideslope)
                            ? colors::kActiveGreen
                            : colors::kMagenta;
-    const float dw = 8.0f * scale;
-    const float dh = 10.0f * scale;
+    const float dw = 8.0f * scale * kGsGpDiamondScale;
+    const float dh = 10.0f * scale * kGsGpDiamondScale;
     const Point diamond[4] = {
         {cx, y - dh}, {cx + dw, y}, {cx, y + dh}, {cx - dw, y}};
     r.fillPolygon(diamond, 4, fill);

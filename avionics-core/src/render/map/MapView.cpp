@@ -209,8 +209,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     mapview::drawProcedurePreview(r, proj, config, symSize);
   }
 
-  if (config.style.showFlightPlan && map.directToActive && map.positionValid) {
-    mapview::drawDirectToCourse(r, map, proj, config, symSize);
+  if (config.style.showFlightPlan && map.positionValid) {
+    mapview::drawDirectToCourse(r, map, flight, proj, config, symSize);
   }
 
   // Taxiway/apron pavement at very close range, under the runway quads.
@@ -260,8 +260,9 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
         config.procedurePreview->size() >= 2) {
       mapview::drawProcedurePreviewLabels(r, proj, config, symSize, labelSize);
     }
-    if (config.style.showFlightPlan && map.directToActive && map.positionValid) {
-      mapview::drawDirectToCourseLabel(r, map, proj, config, symSize, labelSize);
+    if (config.style.showFlightPlan && map.positionValid) {
+      mapview::drawDirectToCourseLabel(r, map, flight, proj, config, symSize,
+                                       labelSize);
     }
   }
 

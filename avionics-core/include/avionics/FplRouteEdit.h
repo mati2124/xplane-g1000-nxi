@@ -29,7 +29,17 @@ struct FplRouteEdit {
   MapProcedure* loadedApproach = nullptr;
   std::string* approachHeaderLabel = nullptr;
   bool directToActive = false;
+  bool localDraft = false;
 };
+
+// Leg count for section-row cursor math. During GPS Direct-To the editor shows
+// the blank Origin/Enroute/Destination template even if stale legs remain.
+inline int fplEditSectionLegCount(const FplRouteEdit& edit) {
+  if (edit.directToActive && !edit.localDraft && edit.approachLegCount <= 0) {
+    return 0;
+  }
+  return static_cast<int>(edit.legs.size());
+}
 
 enum class FplCursorLayout {
   SectionRows,  // PFD (and MFD with a loaded approach)
@@ -57,7 +67,8 @@ inline bool fplApproachLayoutDestFilled(bool destinationFilled, int approachStar
 }
 
 std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
-                                   int approachStart, const MapData* map);
+                                   int approachStart, const MapData* map,
+                                   const std::string& loadedApproachAirportIcao = {});
 
 int fplCursorLegIndex(const FplRouteEdit& edit,
                       const std::string& approachAirport,

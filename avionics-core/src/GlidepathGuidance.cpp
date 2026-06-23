@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 
+#include "avionics/GpsLegCourse.h"
 #include "avionics/NavMath.h"
 
 namespace avionics {
@@ -12,33 +13,8 @@ namespace {
 
 constexpr double kFeetPerNm = 6076.12;
 constexpr double kPi = 3.14159265358979323846;
-// VS trim gain while GS is captured (fpm per foot of path error).
-constexpr float kGlidepathVsGainFpmPerFt = 3.0f;
 constexpr float kMinGsTrackVsFpm = -2500.0f;
 constexpr float kMaxGsTrackVsFpm = 500.0f;
-
-int activeLegIndex(const std::vector<MapLeg>& plan, const std::string& toWpt) {
-  if (plan.empty()) return 0;
-  for (std::size_t i = 0; i < plan.size(); ++i) {
-    if (!toWpt.empty() && plan[i].id == toWpt) {
-      return static_cast<int>(i);
-    }
-  }
-  return 0;
-}
-
-double alongTrackDistanceNm(const MapData& map, const FlightData& data,
-                            const std::vector<MapLeg>& plan, int targetIdx) {
-  if (targetIdx < 0 || targetIdx >= static_cast<int>(plan.size())) return 0.0;
-  const int activeIdx = activeLegIndex(plan, data.fmaToWpt);
-  double distNm = navDistanceNm(map.ownshipLat, map.ownshipLon, plan[activeIdx].lat,
-                                plan[activeIdx].lon);
-  for (int i = activeIdx; i < targetIdx; ++i) {
-    distNm += navDistanceNm(plan[i].lat, plan[i].lon, plan[i + 1].lat,
-                            plan[i + 1].lon);
-  }
-  return distNm;
-}
 
 bool isRunwayFixIdent(const std::string& id) {
   if (id.size() < 3) return false;
@@ -69,11 +45,6 @@ int approachThresholdLegIndex(const std::vector<MapLeg>& plan, int approachStart
     if (leg.procedureRole == "mapt") return i;
     if (isRunwayFixIdent(leg.id)) return i;
   }
-  for (int i = static_cast<int>(plan.size()) - 1; i >= approachStart; --i) {
-    if (!plan[static_cast<std::size_t>(i)].procedureRole.empty()) {
-      return i;
-    }
-  }
   return -1;
 }
 
@@ -88,15 +59,47 @@ float glidePathAngleForSegment(const std::vector<MapLeg>& plan, int startIdx,
 
 int thresholdElevationFt(const std::vector<MapLeg>& plan, int thrIdx) {
   if (thrIdx < 0) return 0;
-  const MapLeg& thr = plan[static_cast<std::size_t>(thrIdx)];
-  if (thr.altitudeConstraintFt > 0) return thr.altitudeConstraintFt;
-  for (int i = thrIdx + 1; i < static_cast<int>(plan.size()); ++i) {
+
+  for (int i = thrIdx; i < static_cast<int>(plan.size()); ++i) {
     const MapLeg& leg = plan[static_cast<std::size_t>(i)];
     if (leg.procedureRole == "mapt" && leg.altitudeConstraintFt > 0) {
       return leg.altitudeConstraintFt;
     }
   }
+
+  const MapLeg& thr = plan[static_cast<std::size_t>(thrIdx)];
+  if (thr.procedureRole == "mapt" && thr.altitudeConstraintFt > 0) {
+    return thr.altitudeConstraintFt;
+  }
+
+  // RW** fixes rarely carry TDZE; avoid using feeder/FAF crossing heights.
+  if (isRunwayFixIdent(thr.id)) return 0;
+
+  if (thr.altitudeConstraint == AltConstraintType::At &&
+      thr.altitudeConstraintFt > 0) {
+    return thr.altitudeConstraintFt;
+  }
   return 0;
+}
+
+double alongTrackDistanceNm(const MapData& map, const FlightData& data,
+                            const std::vector<MapLeg>& plan, int activeIdx,
+                            int targetIdx) {
+  if (targetIdx < 0 || targetIdx >= static_cast<int>(plan.size())) return 0.0;
+  if (activeIdx < 0) activeIdx = 0;
+  if (activeIdx > targetIdx) activeIdx = targetIdx;
+
+  double distNm =
+      navDistanceNm(map.ownshipLat, map.ownshipLon,
+                    plan[static_cast<std::size_t>(activeIdx)].lat,
+                    plan[static_cast<std::size_t>(activeIdx)].lon);
+  for (int i = activeIdx; i < targetIdx; ++i) {
+    distNm += navDistanceNm(plan[static_cast<std::size_t>(i)].lat,
+                            plan[static_cast<std::size_t>(i)].lon,
+                            plan[static_cast<std::size_t>(i + 1)].lat,
+                            plan[static_cast<std::size_t>(i + 1)].lon);
+  }
+  return distNm;
 }
 
 }  // namespace
@@ -119,7 +122,9 @@ GlidepathSolution computeGlidepath(const MapData& map, const FlightData& data) {
   const int thrAltFt = thresholdElevationFt(plan, thrIdx);
   if (thrAltFt <= 0) return gp;
 
-  const double distNm = alongTrackDistanceNm(map, data, plan, thrIdx);
+  const int activeIdx = resolveNavLegToIndex(plan, data, map);
+  const double distNm =
+      alongTrackDistanceNm(map, data, plan, activeIdx, thrIdx);
   if (distNm <= 0.05 || distNm > kGlidepathMaxDistNm) return gp;
 
   const double tanGpa = std::tan(static_cast<double>(gpaDeg) * kPi / 180.0);
@@ -143,8 +148,8 @@ GlidepathSolution computeGlidepath(const MapData& map, const FlightData& data) {
       std::max(static_cast<double>(kMinGsTrackVsFpm),
                std::min(static_cast<double>(kMaxGsTrackVsFpm),
                         pathVsFpm -
-                            static_cast<double>(kGlidepathVsGainFpmPerFt) *
-                                altErrorFt)));
+                            static_cast<double>(kGlidepathVsGainFpmPerDeg) *
+                                angleErrDeg)));
   return gp;
 }
 

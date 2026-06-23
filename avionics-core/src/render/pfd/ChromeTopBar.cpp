@@ -134,6 +134,7 @@ void drawFmaVsArrow(Renderer& r, float cx, float cy, float size, bool up) {
 // DIS/BRG to the next waypoint (G1000 NXi Pilot's Guide, Flight Management).
 void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
                       float h, const FlightData& d) {
+  const bool showTurnAnnun = !d.navStatusAnnunciation.empty();
   const float legW = centerW * (284.0f / 506.0f);
   const float dataL = centerL + legW;
   // Center the row on its visual ink: text is nudged below the geometric
@@ -154,6 +155,11 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
   const bool hasLeg = d.dataLinkValid && !d.fmaToWpt.empty();
 
   if (d.dataLinkValid) {
+    if (showTurnAnnun) {
+      const float legWidth = r.measureTextWidth(d.navStatusAnnunciation, dataSize);
+      const float x = centerL + std::max(centerW * 0.01f, (legW - legWidth) * 0.5f);
+      putText(r, x, cy, d.navStatusAnnunciation, dataSize, colors::kMagenta);
+    } else {
     // No FROM waypoint with an active TO means a GPS Direct-To: show the
     // Direct-To icon followed by the target identifier instead of a FROM -> TO
     // leg.
@@ -188,6 +194,7 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
         x = arrowTip + dataSize * 0.12f;
         putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
       }
+    }
     }
   }
 

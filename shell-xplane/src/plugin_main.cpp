@@ -974,7 +974,8 @@ void ApplyQueuedFlightPlanEdits() {
   if (g_mfd.engine) {
     std::vector<avionics::MapLeg> editedPlan;
     if (g_mfd.engine->mfdController().consumeFlightPlanEdit(editedPlan)) {
-      applyPlan(editedPlan, editedPlan.size() >= 2);
+      applyPlan(editedPlan,
+                g_mfd.engine->mfdController().fplDestinationFilled());
     }
     avionics::MapLeg dtoTarget;
     if (g_mfd.engine->mfdController().consumeDirectToRequest(dtoTarget)) {

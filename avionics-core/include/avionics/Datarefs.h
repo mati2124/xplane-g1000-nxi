@@ -181,8 +181,30 @@ inline constexpr const char* kGpsHdefNmPerDot =
 // feed CIFP-computed LPV glidepath into X-Plane's GS/AP logic over UDP DREF.
 inline constexpr const char* kGpsVdefDots =
     "sim/cockpit/radios/gps_vdef_dot";
+// Active GPS leg DTK (mag). Writable with kOverrideGps; the sim AP reads this
+// for NAV/GPSS lateral steering when the CDI source is GPS.
+inline constexpr const char* kGpsCourseDegMag =
+    "sim/cockpit/radios/gps_course_degtm";
+// GPS lateral CDI in dots (+ = fly right). Writable with kOverrideGps.
+inline constexpr const char* kGpsHdefDot =
+    "sim/cockpit/radios/gps_hdef_dot";
 inline constexpr const char* kGpsHasGlideslope =
     "sim/cockpit/radios/gps_has_glideslope";
+// Required before writing kGpsHasGlideslope / kGpsVdefDots over UDP (X-Plane
+// ignores those writes unless the GPS computer is overridden).
+inline constexpr const char* kOverrideGps =
+    "sim/operation/override/override_gps";
+// Bitmask autopilot mode control; use with kOverrideAutopilot to engage GS.
+inline constexpr const char* kAutopilotState =
+    "sim/cockpit/autopilot/autopilot_state";
+inline constexpr const char* kOverrideAutopilot =
+    "sim/operation/override/override_autopilot";
+// Override the heading flown in NAV mode and write nav_steer_deg_mag (X-Plane
+// developer docs: "Overriding the Autopilot Nav Heading").
+inline constexpr const char* kOverrideNavHeading =
+    "sim/operation/override/override_nav_heading";
+inline constexpr const char* kNavSteerDegMag =
+    "sim/cockpit/autopilot/nav_steer_deg_mag";
 // GPS destination waypoint identifier. This is a byte[] string dataref, so it
 // is readable only in-process (the X-Plane plugin shell via XPLMGetDatab); the
 // float-only RREF protocol used by the standalone shell cannot carry it.

@@ -790,7 +790,10 @@ void SoftkeyController::procLoadSelected(const std::string& name,
 
 std::string SoftkeyController::flightPlanApproachAirportIcao() const {
   if (fplApproachLegCount_ <= 0) return {};
-  return fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_);
+  const std::string loadedIcao =
+      persistedApproachRestore_.active ? persistedApproachRestore_.airportIcao
+                                       : std::string();
+  return fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_, loadedIcao);
 }
 
 std::string SoftkeyController::flightPlanApproachHeaderLabel() const {

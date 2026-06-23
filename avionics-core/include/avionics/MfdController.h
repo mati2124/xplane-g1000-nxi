@@ -404,6 +404,11 @@ class MfdController {
   void setPersistedLoadedApproach(const PersistedLoadedApproach& saved);
   FlightPlanApproachState flightPlanApproachState() const;
   void applyFlightPlanApproachState(const FlightPlanApproachState& state);
+  // Copy the peer GDU's displayed plan so the PFD FPL window and MFD FPL page
+  // always show the same route (called from AvionicsEngine::syncFlightPlanPeer).
+  void adoptFlightPlanFromPeer(const std::vector<MapLeg>& legs,
+                               bool destinationFilled,
+                               const FlightPlanApproachState& approach);
 
   // Infer approach grouping from procedure-tagged legs when metadata is missing.
   void fplEnsureApproachInferred();

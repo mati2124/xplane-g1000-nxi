@@ -65,6 +65,7 @@ void SoftkeyController::syncFlightPlanLegs(const MapData& map) {
                     fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
                     nullptr};
   edit.directToActive = mapDirectToActive();
+  edit.localDraft = fplLocalDraft_;
   fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
                     FplCursorLayout::SectionRows);
 }
@@ -79,7 +80,9 @@ bool SoftkeyController::consumeFlightPlanEdit(std::vector<MapLeg>& out) {
 
 void SoftkeyController::flightPlanPublishEdit() {
   fplEditPending_ = true;
-  fplLocalDraft_ = !fplLegs_.empty();
+  // Any pending edit (including a deliberate delete to empty) owns the plan
+  // until it is consumed so sync cannot re-adopt a stale sim route first.
+  fplLocalDraft_ = true;
 }
 
 std::string SoftkeyController::flightPlanSelectedLegIdent() const {
@@ -93,6 +96,7 @@ std::string SoftkeyController::flightPlanSelectedLegIdent() const {
       nullptr,
       nullptr};
   edit.directToActive = mapDirectToActive();
+  edit.localDraft = fplLocalDraft_;
   const int legIndex = fplCursorLegIndex(edit, flightPlanApproachAirportIcao(),
                                          FplCursorLayout::SectionRows);
   if (legIndex < 0 || legIndex >= static_cast<int>(fplLegs_.size())) return {};
@@ -110,6 +114,7 @@ int SoftkeyController::flightPlanSelectedLegIndex() const {
       nullptr,
       nullptr};
   edit.directToActive = mapDirectToActive();
+  edit.localDraft = fplLocalDraft_;
   return fplCursorLegIndex(edit, flightPlanApproachAirportIcao(),
                            FplCursorLayout::SectionRows);
 }
@@ -140,6 +145,7 @@ void SoftkeyController::flightPlanCommitEntry() {
                     fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
                     nullptr};
   edit.directToActive = mapDirectToActive();
+  edit.localDraft = fplLocalDraft_;
   const std::string ident =
       fplEntry_.autofill.empty() ? fplEntry_.chars : fplEntry_.autofill;
   if (!fplCommitWaypointIdent(edit, navSource_, fplEntry_.match, ident, fplCursorRow_,
@@ -178,6 +184,7 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
                     fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
                     nullptr};
   edit.directToActive = mapDirectToActive();
+  edit.localDraft = fplLocalDraft_;
   const std::string approachAirport = flightPlanApproachAirportIcao();
   const int selectableLast =
       fplCursorSelectableLast(edit, approachAirport, FplCursorLayout::SectionRows);
@@ -196,6 +203,9 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
             }
           } else {
             fplClearFlightPlan(edit);
+            persistedApproachRestore_ = {};
+            dtoRequestTarget_ = {};
+            dtoRequestPending_ = true;
             flightPlanPublishEdit();
           }
         }
@@ -401,6 +411,31 @@ void SoftkeyController::applyFlightPlanApproachState(
   fplApproachLegStart_ = state.legStart;
   fplApproachLegCount_ = state.legCount;
   fplLoadedApproach_ = state.loaded;
+}
+
+void SoftkeyController::adoptFlightPlanFromPeer(
+    const std::vector<MapLeg>& legs, bool destinationFilled,
+    const FlightPlanApproachState& approach) {
+  if (fplEntry_.active || fplConfirm_ != FplConfirm::None) return;
+  if (flightPlanLegsEqual(fplLegs_, legs) &&
+      fplDestinationFilled_ == destinationFilled &&
+      flightPlanApproachState() == approach) {
+    return;
+  }
+  fplLegs_ = legs;
+  fplDestinationFilled_ = destinationFilled;
+  fplLocalDraft_ = !fplLegs_.empty();
+  applyFlightPlanApproachState(approach);
+  fplEntry_.active = false;
+  fplEntry_.notFound = false;
+  fplConfirm_ = FplConfirm::None;
+  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                    nullptr};
+  edit.directToActive = mapDirectToActive();
+  edit.localDraft = fplLocalDraft_;
+  fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
+                    FplCursorLayout::SectionRows);
 }
 
 PersistedFlightPlan SoftkeyController::persistedFlightPlanSnapshot() const {

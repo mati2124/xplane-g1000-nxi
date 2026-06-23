@@ -1,0 +1,7 @@
+{
+  "name": "com.andy.xplane-nxi",
+  "private": true,
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

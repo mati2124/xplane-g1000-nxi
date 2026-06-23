@@ -200,7 +200,11 @@ void programFmsRoute(const std::vector<MapLeg>& legs) {
 
   }
 
-  if (newCount >= 2) XPLMSetDestinationFMSEntry(1);
+  if (newCount >= 2) {
+    int dest = XPLMGetDestinationFMSEntry();
+    if (dest < 1 || dest >= newCount) dest = 1;
+    XPLMSetDestinationFMSEntry(dest);
+  }
 
 }
 

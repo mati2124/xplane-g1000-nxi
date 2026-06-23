@@ -1,0 +1,43 @@
+{
+  "SDKVersion": 2,
+  "Author": "Andy",
+  "CodePath": "plugin.html",
+  "Description": "Restart and rebuild the G1000 NXi PFD/MFD for X-Plane.",
+  "Name": "X-Plane NXi",
+  "Icon": "imgs/plugin/marketplace",
+  "URL": "https://github.com/andy/xplane-g1000-nxi",
+  "Version": "1.0.0.1",
+  "Category": "X-Plane NXi",
+  "CategoryIcon": "imgs/plugin/category",
+  "Software": {
+    "MinimumVersion": "6.5"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    },
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.15"
+    }
+  ],
+  "Actions": [
+    {
+      "Icon": "imgs/actions/restart/icon",
+      "Name": "Restart NXi",
+      "Controllers": ["Keypad"],
+      "States": [
+        {
+          "Image": "imgs/actions/restart/key",
+          "TitleAlignment": "middle",
+          "FontSize": "10",
+          "Title": "NXI\nRESTART"
+        }
+      ],
+      "Tooltip": "Kill NXi, rebuild Release, launch PFD + MFD for X-Plane.",
+      "UUID": "com.andy.xplane-nxi.restart"
+    }
+  ],
+  "UUID": "com.andy.xplane-nxi"
+}

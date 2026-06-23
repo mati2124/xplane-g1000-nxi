@@ -134,13 +134,21 @@
 namespace {
 
 void ApplyConsumedFlightPlan(avionics::XPlaneConnection& xplane,
+                             avionics::MockDataSource* demoSource,
                              const std::vector<avionics::MapLeg>& plan,
                              bool destinationFilled,
                              bool requireDestinationFilled = true) {
+  const auto mirrorDemoRoute = [&](const std::vector<avionics::MapLeg>& route) {
+    if (demoSource == nullptr) return;
+    demoSource->updateRoute(route);
+    if (route.empty()) demoSource->cancelDirectTo();
+  };
+
   if (plan.empty()) {
     // Keep override active with an empty route so the map/FPL stay blank instead
     // of re-adopting the .fms file.
     xplane.setRouteOverride({});
+    mirrorDemoRoute({});
     return;
   }
   if (avionics::flightPlanReadyForSimulator(plan, destinationFilled,
@@ -149,6 +157,7 @@ void ApplyConsumedFlightPlan(avionics::XPlaneConnection& xplane,
   } else {
     xplane.setLocalFlightPlan(plan);
   }
+  mirrorDemoRoute(plan);
 }
 
 // Absolute directory containing the running executable, used to find bundled
@@ -3129,7 +3138,7 @@ int main(int argc, char** argv) {
       pfdEngine->softkeyController().restorePersistedFlightPlan(
           savedSettings.persistedFlightPlan);
       ApplyConsumedFlightPlan(
-          xplane, savedSettings.persistedFlightPlan.legs,
+          xplane, &demoSource, savedSettings.persistedFlightPlan.legs,
           savedSettings.persistedFlightPlan.destinationFilled);
     }
   }
@@ -3367,7 +3376,11 @@ int main(int argc, char** argv) {
         xplane.setDirectTo(pfdDto);
         if (app.demoSource != nullptr &&
             app.activeSource == app.demoSource) {
-          app.demoSource->directTo(pfdDto);
+          if (pfdDto.id.empty()) {
+            app.demoSource->cancelDirectTo();
+          } else {
+            app.demoSource->directTo(pfdDto);
+          }
         }
       }
 
@@ -3392,7 +3405,11 @@ int main(int argc, char** argv) {
         xplane.setDirectTo(dtoTarget);
         if (app.demoSource != nullptr &&
             app.activeSource == app.demoSource) {
-          app.demoSource->directTo(dtoTarget);
+          if (dtoTarget.id.empty()) {
+            app.demoSource->cancelDirectTo();
+          } else {
+            app.demoSource->directTo(dtoTarget);
+          }
         }
       }
 
@@ -3427,14 +3444,16 @@ int main(int argc, char** argv) {
       std::vector<avionics::MapLeg> pfdEditedPlan;
       if (pfdEngine->softkeyController().consumeFlightPlanEdit(pfdEditedPlan)) {
         ApplyConsumedFlightPlan(
-            xplane, pfdEditedPlan,
+            xplane, app.demoSource, pfdEditedPlan,
             pfdEngine->softkeyController().flightPlanDestinationFilled());
       }
     }
     if (mfdEngine != nullptr) {
       std::vector<avionics::MapLeg> editedPlan;
       if (mfdEngine->mfdController().consumeFlightPlanEdit(editedPlan)) {
-        ApplyConsumedFlightPlan(xplane, editedPlan, false, false);
+        ApplyConsumedFlightPlan(
+            xplane, app.demoSource, editedPlan,
+            mfdEngine->mfdController().fplDestinationFilled());
       }
     }
 

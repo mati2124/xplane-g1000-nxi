@@ -26,6 +26,7 @@ using avionics::pfd::fplFilterDuplicateLegSectionRows;
 using avionics::pfd::fplApproachDisplayRowIndexForSelectable;
 using avionics::pfd::fplApproachDisplayRowSelectable;
 using avionics::pfd::fplHeaderDestinationIdent;
+using avionics::pfd::fplHeaderOriginIdent;
 using avionics::pfd::fplSectionRowIsActiveDisplay;
 using avionics::pfd::fplSectionRowIsSelectable;
 using avionics::pfd::fplShowsDestinationBlankRow;
@@ -873,9 +874,9 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
       const bool blankOriginHeader =
           approachLoaded && approachStart <= 1 && !plan.empty() &&
           !approachAirport.empty() && plan.front().id == approachAirport;
-      orig = blankOriginHeader || destOnlyPlan
-                 ? std::string()
-                 : (plan.empty() ? std::string() : plan.front().id);
+      orig = fplHeaderOriginIdent(plan, approachStart, approachCount,
+                                  approachLoaded, blankOriginHeader,
+                                  destOnlyPlan, activeToIdent);
       blankOrig = orig.empty();
       dest = fplHeaderDestinationIdent(plan, ui.fplDestinationFilled(), approachStart,
                                        approachLoaded, approachAirport);
@@ -1015,8 +1016,8 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         switch (dr.kind) {
           case FplDisplayRowKind::SepDash:
             ++selectableIdx;
-            drawFplDashRow(r, filledIdentX, cy, kFplApproachSepDashCount,
-                           rowSize, colors::kPopoutCyan, isCursorRow, blinkOn);
+            drawFplDashRow(r, labelX, cy, kFplApproachSepDashCount, rowSize,
+                           colors::kPopoutCyan, isCursorRow, blinkOn);
             fy += rowH;
             continue;
           case FplDisplayRowKind::ApproachHeader:
@@ -1042,6 +1043,13 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                                   true, isCursorRow, blinkOn, rowSize,
                                   colors::kPopoutCyan);
             }
+            fy += rowH;
+            continue;
+          }
+          case FplDisplayRowKind::OriginBlank: {
+            ++selectableIdx;
+            drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                           colors::kPopoutCyan, isCursorRow, blinkOn);
             fy += rowH;
             continue;
           }
@@ -1097,39 +1105,21 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         continue;
       }
       if (sr.kind == FplSectionRow::Kind::Origin && sr.legIndex < 0) {
-        if (bodyLegCount == 0) {
-          const bool isCursorRow =
-              cursorOn && selectableIdx == ui.fplCursorRow();
-          drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(), true,
-                              isCursorRow, blinkOn, rowSize,
-                              colors::kPopoutCyan);
-          ++selectableIdx;
-        } else {
-          drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(), true,
-                              false, false, rowSize, colors::kPopoutCyan);
-        }
+        drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(), true,
+                            false, false, rowSize, colors::kPopoutCyan);
         fy += rowH;
         continue;
       }
       if (sr.kind == FplSectionRow::Kind::Destination && sr.legIndex < 0 &&
           fplShowsDestinationBlankRow(bodyLegCount, ui.fplDestinationFilled())) {
-        if (bodyLegCount == 0) {
-          const bool isCursorRow =
-              cursorOn && selectableIdx == ui.fplCursorRow();
-          drawFplSectionIdent(r, labelX, cy, "Destination - ", std::string(),
-                              true, isCursorRow, blinkOn, rowSize,
-                              colors::kPopoutCyan);
-          ++selectableIdx;
-        } else {
-          drawFplSectionIdent(r, labelX, cy, "Destination - ", std::string(),
-                              true, false, false, rowSize, colors::kPopoutCyan);
-        }
+        drawFplSectionIdent(r, labelX, cy, "Destination - ", std::string(),
+                            true, false, false, rowSize, colors::kPopoutCyan);
         fy += rowH;
         continue;
       }
-      if (bodyLegCount == 0 &&
-          (sr.kind == FplSectionRow::Kind::OriginBlank ||
-           sr.kind == FplSectionRow::Kind::DestinationBlank)) {
+
+      if (!sectionRowIsSelectable(sr, bodyLegCount, ui.fplDestinationFilled())) {
+        fy += rowH;
         continue;
       }
 
@@ -1173,10 +1163,16 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                         approachTransition);
           break;
         case FplSectionRow::Kind::Destination:
-          drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
-                        filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
-                        rowH, displayH, ui, isCursorRow, false,
-                        approachTransition);
+          if (sr.legIndex >= 0) {
+            drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
+                          filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
+                          rowH, displayH, ui, isCursorRow, false,
+                          approachTransition);
+          } else {
+            drawFplSectionIdent(r, labelX, cy, "Destination - ", std::string(),
+                                true, isCursorRow, blinkOn, rowSize,
+                                colors::kPopoutCyan);
+          }
           break;
         case FplSectionRow::Kind::DestinationBlank:
           drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,

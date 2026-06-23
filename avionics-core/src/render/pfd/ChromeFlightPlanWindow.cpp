@@ -565,15 +565,14 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
     drawNavDirectToHeader(r, identX, activeLegCy, dest, activeLegSize,
                           withAlpha(colors::kMagenta, a));
   } else {
-    const bool blankOriginSection =
+    const bool blankOriginHeader =
         approachLoaded && approachStart <= 1 && !legs.empty() &&
         !approachAirport.empty() && legs.front().id == approachAirport;
     const bool destOnlyPlan =
         ui.flightPlanDestinationFilled() && legs.size() == 1;
-    const std::string orig =
-        blankOriginSection || destOnlyPlan
-            ? std::string()
-            : (legs.empty() ? std::string() : legs.front().id);
+    const std::string orig = fplHeaderOriginIdent(
+        legs, approachStart, approachCount, approachLoaded, blankOriginHeader,
+        destOnlyPlan, ui.activeWaypointId());
     const std::string destIdent = fplHeaderDestinationIdent(
         legs, ui.flightPlanDestinationFilled(), approachStart, approachLoaded,
         approachAirport);
@@ -786,7 +785,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
         case FplDisplayRowKind::SepDash: {
           const bool isCursorRow = cursorOn && selectableIdx == sectionCursor;
           ++selectableIdx;
-          drawFplDashRow(r, filledIdentX, rowCy, kFplApproachSepDashCount, size,
+          drawFplDashRow(r, identX, rowCy, kFplApproachSepDashCount, size,
                          withAlpha(colors::kPopoutCyan, a), isCursorRow, blinkOn, a);
           continue;
         }
@@ -919,6 +918,13 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
             drawFplLegRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
                                 prev, leg, withAlpha(colors::kWhitesmoke, a));
           }
+          continue;
+        }
+        case FplDisplayRowKind::OriginBlank: {
+          const bool isCursorRow = cursorOn && selectableIdx == sectionCursor;
+          ++selectableIdx;
+          drawFplDashRow(r, identX, rowCy, kFplDashCount, size,
+                         withAlpha(colors::kPopoutCyan, a), isCursorRow, blinkOn, a);
           continue;
         }
         case FplDisplayRowKind::EnrouteLeg: {

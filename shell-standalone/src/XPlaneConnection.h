@@ -25,6 +25,8 @@
 
 namespace avionics {
 
+struct GlidepathSolution;
+
 // Live link to X-Plane over its UDP RREF protocol.
 //
 // Why UDP RREF instead of the 12.1+ Web API (WebSocket/JSON): RREF needs no
@@ -81,6 +83,7 @@ class XPlaneConnection : public SimulatorConnection {
   void setLocalFlightPlan(std::vector<MapLeg> route) {
     routeOverride_ = std::move(route);
     routeOverrideSet_ = true;
+    map_.flightPlan = routeOverride_;
   }
 
   // Replaces the .fms-file flight plan with an externally supplied route
@@ -92,6 +95,8 @@ class XPlaneConnection : public SimulatorConnection {
   void setRouteOverride(std::vector<MapLeg> route) {
     routeOverride_ = std::move(route);
     routeOverrideSet_ = true;
+    map_.flightPlan = routeOverride_;
+    if (routeOverride_.empty()) setDirectTo({});
     if (fmsWriteEnabled_) fmsBridge_.writePlan(routeOverride_);
   }
 
@@ -104,21 +109,8 @@ class XPlaneConnection : public SimulatorConnection {
   // write-back is enabled and the plugin bridge is reachable, this also engages
   // a present-position Direct-To in X-Plane's FMS; otherwise it drives the
   // display only. An empty id clears the direct course.
-  void setDirectTo(MapLeg target) {
-    directTo_ = std::move(target);
-    directToActive_ = !directTo_.id.empty();
-    if (fmsWriteEnabled_) {
-      if (directToActive_) {
-        fmsBridge_.writeDirectTo(directTo_);
-      } else {
-        fmsBridge_.clearDirectTo();
-      }
-    }
-  }
-  void clearDirectTo() {
-    directToActive_ = false;
-    if (fmsWriteEnabled_) fmsBridge_.clearDirectTo();
-  }
+  void setDirectTo(MapLeg target);
+  void clearDirectTo();
 
   void setMapPanCenter(bool active, double lat, double lon) override;
   void setChartRangeNm(float rangeNm) override;
@@ -140,6 +132,9 @@ class XPlaneConnection : public SimulatorConnection {
   void setHeadingBug(float deg);
   void setSelectedCourse(float deg);
   void setBaroInHg(float inHg);
+
+  void applyGpsNavigation(bool obsMode, CdiSource cdiSource,
+                          float nmPerDot) override;
 
  private:
   void sendDataref(const char* path, float value);
@@ -177,6 +172,10 @@ class XPlaneConnection : public SimulatorConnection {
   // Drop the local Direct-To display override without reprogramming the FMS
   // (X-Plane may already have sequenced past the DTO fix).
   void releaseDirectToOverride();
+
+  // Fill directTo_ lat/lon from the nav database when the Direct-To window
+  // supplied only an ident (needed for map course + DIS/BRG away from the target).
+  void ensureDirectToCoords();
 
   // Keep directToActive_ in sync with X-Plane sequencing / local arrival.
   void syncDirectToWithSimulator(const std::string& simDestination,
@@ -251,6 +250,10 @@ class XPlaneConnection : public SimulatorConnection {
   bool routeOverrideSet_ = false;      // override active (even when empty)
   MapLeg directTo_;                    // display-only Direct-To target
   bool directToActive_ = false;
+  bool directToOriginPending_ = false;
+  bool directToOriginValid_ = false;
+  double directToOriginLat_ = 0.0;
+  double directToOriginLon_ = 0.0;
   ChecklistSource* checklists_ = nullptr;
   EisSource* eisSource_ = nullptr;
   static inline const ChecklistData emptyChecklists_{};
@@ -301,8 +304,19 @@ class XPlaneConnection : public SimulatorConnection {
   bool fmsWriteEnabled_ = true;
 
   float lastSentGpsVdefDots_ = 999.0f;
+  float lastSentGpsHdefDots_ = 999.0f;
+  float lastSentGpsCourseDeg_ = -999.0f;
   float lastSentGsTrackVsFpm_ = 99999.0f;
   bool gpsGlidepathHasSignal_ = false;
+  bool gpsGlidepathCaptured_ = false;
+  bool gpsGlidepathPitchSteering_ = false;
+  bool gpsOverrideActive_ = false;
+  bool apOverrideForGsActive_ = false;
+  float lastPushedCourseDeg_ = -999.0f;
+
+  void setGpsOverride(bool active);
+  void setApOverrideForGs(bool active);
+  void engageGsCapture(const GlidepathSolution& gp);
 
   // Native socket handle stored width-safe: -1 is "invalid" on both POSIX (int
   // fd) and Windows (SOCKET, where INVALID_SOCKET is all-ones == -1).

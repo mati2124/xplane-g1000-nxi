@@ -112,6 +112,9 @@ class DatarefDataSource : public DataSource {
   void setDirectTo(MapLeg target);
   void clearDirectTo();
 
+  void applyGpsNavigation(bool obsMode, CdiSource cdiSource,
+                          float nmPerDot) override;
+
   // apt.dat airport metadata (tower/fuel/kind and published comm frequencies).
   // Used by the plugin NavFeatureSource for COM frequency decode and WPT/NRST
   // frequency lists once the background apt.dat load finishes.
@@ -358,12 +361,26 @@ class DatarefDataSource : public DataSource {
   // Display-only Direct-To course (the live FMS route is unchanged).
   bool directToActive_ = false;
   MapLeg directTo_;
+  bool directToOriginPending_ = false;
+  bool directToOriginValid_ = false;
+  double directToOriginLat_ = 0.0;
+  double directToOriginLon_ = 0.0;
 
   // Authoritative route from PFD/MFD edits until cleared. Without this the sim
   // FMS readback replaces typed idents with coordinate strings (+27-81) for
   // fixes stored as lat/lon entries.
   std::vector<MapLeg> routeOverride_;
   bool routeOverrideSet_ = false;
+
+  XPLMDataRef gpsHdef_ = nullptr;
+  XPLMDataRef hsiObsCourse_ = nullptr;
+  XPLMDataRef overrideGps_ = nullptr;
+  XPLMDataRef gpsCourseDegMag_ = nullptr;
+  XPLMDataRef gpsHdefDot_ = nullptr;
+  float lastPushedCourseDeg_ = -999.0f;
+  float lastSentGpsCourseDeg_ = -999.0f;
+  float lastSentGpsHdefDots_ = 999.0f;
+  bool gpsOverrideActive_ = false;
 };
 
 }  // namespace avionics

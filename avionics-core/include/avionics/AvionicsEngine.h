@@ -135,6 +135,7 @@ class AvionicsEngine {
   // controls and was handled.
   bool handleBezelKnob(BezelKey key);
   void syncSoftkeyPeerRadioVolume();
+  void syncFlightPlanPeer();
   void syncFlightPlanApproachPeer();
 
   // Whether this GDU's bus is powered, per the real-world power tree: the PFD

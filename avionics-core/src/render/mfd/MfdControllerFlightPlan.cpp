@@ -51,6 +51,7 @@ int MfdController::fplCursorLegIndex() const {
       const_cast<MapProcedure*>(&fplLoadedApproach_),
       const_cast<std::string*>(&fplApproachHeaderLabel_)};
   edit.directToActive = fplNavDirectToActive_;
+  edit.localDraft = fplLocalDraft_;
   const FplCursorLayout layout = FplCursorLayout::SectionRows;
   return ::avionics::fplCursorLegIndex(edit, fplApproachAirportIcao(), layout);
 }
@@ -61,6 +62,7 @@ void MfdController::fplClampCursorRow() {
                     fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
                     &fplApproachHeaderLabel_};
   edit.directToActive = fplNavDirectToActive_;
+  edit.localDraft = fplLocalDraft_;
   ::avionics::fplClampCursorRow(edit, fplApproachAirportIcao(),
                                 FplCursorLayout::SectionRows);
   fplCursorCol_ = FplCursorCol::Ident;
@@ -145,7 +147,9 @@ bool MfdController::consumeFlightPlanEdit(std::vector<MapLeg>& out) {
 
 void MfdController::fplPublishEdit() {
   fplEditPending_ = true;
-  fplLocalDraft_ = !fplLegs_.empty();
+  // Any pending edit (including a deliberate delete to empty) owns the plan
+  // until it is consumed so sync cannot re-adopt a stale sim route first.
+  fplLocalDraft_ = true;
 }
 
 void MfdController::fplResetInteraction() {
@@ -207,6 +211,7 @@ void MfdController::fplCommitEntry() {
                     fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
                     &fplApproachHeaderLabel_};
   edit.directToActive = fplNavDirectToActive_;
+  edit.localDraft = fplLocalDraft_;
   const FplCursorLayout layout = FplCursorLayout::SectionRows;
   const std::string ident =
       fplEntry_.autofill.empty() ? fplEntry_.chars : fplEntry_.autofill;
@@ -227,6 +232,7 @@ bool MfdController::fplBezelKey(BezelKey key) {
                     fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
                     &fplApproachHeaderLabel_};
   edit.directToActive = fplNavDirectToActive_;
+  edit.localDraft = fplLocalDraft_;
   const std::string approachAirport = fplApproachAirportIcao();
   const FplCursorLayout layout = FplCursorLayout::SectionRows;
   const bool approachView = fplApproachLegCount_ > 0;
@@ -251,6 +257,9 @@ bool MfdController::fplBezelKey(BezelKey key) {
             }
           } else {
             ::avionics::fplClearFlightPlan(edit);
+            persistedApproachRestore_ = {};
+            dtoRequestTarget_ = {};
+            dtoRequestPending_ = true;
             fplPublishEdit();
           }
         }
@@ -501,9 +510,40 @@ void MfdController::applyFlightPlanApproachState(
   fplApproachHeaderLabel_ = state.headerLabel;
 }
 
+void MfdController::adoptFlightPlanFromPeer(
+    const std::vector<MapLeg>& legs, bool destinationFilled,
+    const FlightPlanApproachState& approach) {
+  if (fplEntry_.active || fplAltEntry_.active ||
+      fplConfirm_ != FplConfirm::None || fplMenuOpen_) {
+    return;
+  }
+  if (flightPlanLegsEqual(fplLegs_, legs) &&
+      fplDestinationFilled_ == destinationFilled &&
+      flightPlanApproachState() == approach) {
+    return;
+  }
+  fplLegs_ = legs;
+  fplDestinationFilled_ = destinationFilled;
+  // Mirror the PFD Active Flight Plan window: a non-empty peer route is a local
+  // draft on this page too, including during GPS Direct-To (otherwise the MFD
+  // keeps drawing the blank Direct-To template even though legs were copied).
+  fplLocalDraft_ = !fplLegs_.empty();
+  applyFlightPlanApproachState(approach);
+  fplEntry_.active = false;
+  fplEntry_.notFound = false;
+  fplAltEntry_.active = false;
+  fplConfirm_ = FplConfirm::None;
+  fplMenuOpen_ = false;
+  fplClampCursorRow();
+}
+
 std::string MfdController::fplApproachAirportIcao() const {
   if (fplApproachLegCount_ <= 0) return {};
-  return ::avionics::fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_);
+  const std::string loadedIcao =
+      persistedApproachRestore_.active ? persistedApproachRestore_.airportIcao
+                                       : std::string();
+  return ::avionics::fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_,
+                                            loadedIcao);
 }
 
 void MfdController::tryRestorePersistedApproach() {
@@ -547,6 +587,8 @@ void MfdController::reinferApproachFromProcedureLegs() {
 void MfdController::replaceFlightPlanFromExternal(
     const std::vector<MapLeg>& plan) {
   fplLegs_ = plan;
+  const int n = static_cast<int>(fplLegs_.size());
+  fplDestinationFilled_ = fplDestinationFilledFromLegCount(n);
   fplLocalDraft_ = false;
   fplEditPending_ = false;
   fplApproachLegStart_ = 0;
@@ -561,6 +603,7 @@ void MfdController::restorePersistedFlightPlan(
     const PersistedFlightPlan& saved) {
   if (!saved.active || saved.legs.empty()) return;
   fplLegs_ = saved.legs;
+  fplDestinationFilled_ = saved.destinationFilled;
   fplLocalDraft_ = true;
   fplEditPending_ = false;
   fplApproachLegStart_ = 0;

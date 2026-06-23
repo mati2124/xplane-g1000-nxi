@@ -11,6 +11,9 @@ inline constexpr float kGlidepathDegPerDot = 0.35f;
 inline constexpr double kGlidepathMaxDistNm = 15.0;
 // GS capture when armed and within this many dots of the computed path.
 inline constexpr float kGlidepathCaptureMaxDots = 1.25f;
+// VS trim while GS is captured: fpm added per degree above/below path (+ = above).
+// Angle-based gain keeps correction consistent with the VDI at all distances.
+inline constexpr float kGlidepathVsGainFpmPerDeg = 650.0f;
 
 struct GlidepathSolution {
   bool valid = false;

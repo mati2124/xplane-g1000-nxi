@@ -29,6 +29,7 @@ set(AVIONICS_RELEASES_REPO "xplane-g1000-nxi" CACHE STRING "GitHub releases repo
 # it pulls in heavier platform dependencies (X-Plane SDK / windowing + GPU).
 option(BUILD_XPLANE_SHELL "Build the X-Plane plugin shell (requires XPLM SDK)" OFF)
 option(BUILD_STANDALONE_SHELL "Build the standalone desktop shell" ON)
+option(BUILD_TESTS "Build avionics-core unit tests" OFF)
 
 # Linux X-Plane plugins are shared objects; static libs they link must be -fPIC.
 if(BUILD_XPLANE_SHELL AND UNIX AND NOT APPLE)
@@ -90,6 +91,11 @@ function(avionics_install_shared_assets dest component)
 endfunction()
 
 add_subdirectory(avionics-core)
+
+if(BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(avionics-core/tests)
+endif()
 
 # HTTPS fetch for the notify-only update checker (GitHub Releases API) and the
 # live datalink NEXRAD overlay (RainViewer radar tiles).

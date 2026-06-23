@@ -1,0 +1,12 @@
+# Minimal KPGD CIFP excerpt: RNAV (GPS) Rwy 04, BULOW transition (from X-Plane 12 CIFP).
+APPCH:010,A,R04,BULOW,BULOW,K7,P,C,EE C,R,   ,HF, , , , , ,      ,    ,    ,0350,0040,+,02000,     ,18000, ,   ,    ,   , , , , , ,A,J,S;
+APPCH:010,R,R04, ,BULOW,K7,P,C,E  I, ,   ,IF, , , , , ,      ,    ,    ,    ,    ,+,02000,     ,18000, ,   ,    ,   , , , , , ,A,J,S;
+APPCH:020,R,R04, ,CISTS,K7,P,C,E  F, ,010,TF, , , , , ,      ,    ,    ,0350,0060,+,01600,     ,     , ,   ,    ,   ,RW04,K7,P,G, ,A,J,S;
+PRDAT:A,       LPV,A, LNAV/VNAV,A,      LNAV, ,   , ,   , ,   , ,   ,J,S;
+APPCH:025,R,R04, ,YENCU,K7,P,C,E S , ,302,TF, , , , , ,      ,    ,    ,0350,0029,+,00680,     ,     , ,   ,-300,   , , , , , ,A,J,S;
+APPCH:030,R,R04, ,RW04,K7,P,G,GY M, ,302,TF, , , , , ,      ,    ,    ,0350,0019, ,00073,     ,     , ,   ,-300,   , , , , , ,A,J,S;
+APPCH:040,R,R04, , , , , ,  M , ,   ,CA, , , , , ,      ,    ,    ,0350,    ,+,00256,     ,     , ,   ,    ,   , , , , , ,A,J,S;
+APPCH:050,R,R04, ,DOGLE,K7,P,C,E   , ,010,DF, , , , , ,      ,    ,    ,    ,    , ,     ,     ,     , ,   ,    ,   , , , , , ,A,J,S;
+APPCH:060,R,R04, ,JOCKS,K7,E,A,EY  , ,010,TF, , , , , ,      ,    ,    ,    ,    ,+,02000,     ,     , ,   ,    ,   , , , , , ,A,J,S;
+APPCH:070,R,R04, ,JOCKS,K7,E,A,EE H,L,   ,HM, , , , , ,      ,    ,    ,2930,0040, ,     ,     ,     , ,   ,    ,   , , , , , ,A,J,S;
+RWY:RW04 ,     ,      ,00023, ,IPGD,1,   ;N26543665,W081593173,0000;
