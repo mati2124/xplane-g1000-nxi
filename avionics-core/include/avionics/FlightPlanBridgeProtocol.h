@@ -27,7 +27,8 @@
 //   FPLR  plugin->client   the serialized active route (reply to FPLQ)
 //   FPLS  client->plugin   program this route into the FMS -> plugin replies FPLA
 //   FPLD  client->plugin   set/clear a Direct-To target    -> plugin replies FPLA
-//   FPLA  plugin->client   acknowledgement of an FPLS/FPLD write
+//   FPLG  client->plugin   set the FMS destination leg index -> plugin replies FPLA
+//   FPLA  plugin->client   acknowledgement of an FPLS/FPLD/FPLG write
 namespace avionics {
 namespace fpbridge {
 
@@ -40,6 +41,7 @@ constexpr char kRequestMagic[4] = {'F', 'P', 'L', 'Q'};  // request route
 constexpr char kReplyMagic[4] = {'F', 'P', 'L', 'R'};    // route payload (reply)
 constexpr char kSetPlanMagic[4] = {'F', 'P', 'L', 'S'};  // program route
 constexpr char kSetDtoMagic[4] = {'F', 'P', 'L', 'D'};   // set/clear Direct-To
+constexpr char kSetActiveLegMagic[4] = {'F', 'P', 'L', 'G'};  // set FMS destination
 constexpr char kAckMagic[4] = {'F', 'P', 'L', 'A'};      // write acknowledgement
 
 // Bump when a payload layout changes; a mismatched version is ignored by the
@@ -240,6 +242,32 @@ inline bool decodeSetDirectTo(const unsigned char* data, std::size_t len,
   off += 4;
   if (!active) return true;
   return getLeg(data, len, off, target);
+}
+
+// --- active-leg command (FPLG) ---
+//
+// Layout: magic | version | legIndex(i32).
+
+inline std::vector<unsigned char> encodeSetActiveLeg(int legIndex) {
+  std::vector<unsigned char> out;
+  out.insert(out.end(), kSetActiveLegMagic, kSetActiveLegMagic + 4);
+  putI32(out, kProtocolVersion);
+  putI32(out, legIndex);
+  return out;
+}
+inline bool isSetActiveLeg(const unsigned char* data, std::size_t len) {
+  return hasMagic(data, len, kSetActiveLegMagic);
+}
+inline bool decodeSetActiveLeg(const unsigned char* data, std::size_t len,
+                               int& legIndex) {
+  legIndex = -1;
+  if (len < kReplyHeaderBytes) return false;
+  if (!hasMagic(data, len, kSetActiveLegMagic)) return false;
+  std::size_t off = 4;
+  if (getI32(data + off) != kProtocolVersion) return false;
+  off += 4;
+  legIndex = getI32(data + off);
+  return legIndex >= 0;
 }
 
 // --- write acknowledgement (FPLA) ---

@@ -13,30 +13,62 @@
 // minus the VNAV ALT column the PFD window does not show.
 namespace avionics {
 
-void SoftkeyController::syncFlightPlanLegs(const MapData& map) {
+void SoftkeyController::syncFlightPlanLegs(const MapData& map, bool navDirectTo) {
   const bool mapChanged = !flightPlanLegsEqual(map.flightPlan, fplLastMapPlan_);
   if (mapChanged) {
     fplLastMapPlan_ = map.flightPlan;
   }
 
-  // GPS Direct-To keeps the FPL editor template blank (matches the MFD).
-  if (map.directToActive && !fplEditPending_ && !fplLocalDraft_) {
-    if (!fplLegs_.empty() || fplDestinationFilled_ || fplApproachLegCount_ > 0) {
-      fplLegs_.clear();
-      fplDestinationFilled_ = false;
-      fplApproachLegStart_ = 0;
-      fplApproachLegCount_ = 0;
-      fplLoadedApproach_ = {};
+  if ((navDirectTo || map.directToActive) && !fplEditPending_ && !fplLocalDraft_) {
+    const MapProcedure savedApproach = fplLoadedApproach_;
+    FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                      fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                      nullptr};
+    if (fplAdoptMapPlanDuringDirectTo(edit, map.flightPlan, fplLastPublished_)) {
+      tryRestorePersistedApproach();
+      if (fplApproachLegCount_ <= 0) {
+        reinferApproachFromProcedureLegs();
+      }
+      if (fplLoadedApproach_.name.empty() && !savedApproach.name.empty() &&
+          fplApproachLegCount_ > 0) {
+        fplLoadedApproach_ = savedApproach;
+      }
       fplEntry_.active = false;
       fplEntry_.notFound = false;
       fplConfirm_ = FplConfirm::None;
+    } else {
+      // map.flightPlan is cleared during display-only Direct-To; keep a loaded
+      // approach in the FPL editor instead of wiping it.
+      const bool keepProcedure =
+          fplApproachLegCount_ > 0 ||
+          inferProcedureBlockInPlan(fplLegs_).valid() ||
+          !fplLoadedApproach_.name.empty();
+      if (keepProcedure) {
+        if (fplApproachLegCount_ <= 0) {
+          reinferApproachFromProcedureLegs();
+        }
+        if (fplLoadedApproach_.name.empty() && !savedApproach.name.empty() &&
+            fplApproachLegCount_ > 0) {
+          fplLoadedApproach_ = savedApproach;
+        }
+      } else if (!fplLegs_.empty() || fplDestinationFilled_) {
+        fplLegs_.clear();
+        fplDestinationFilled_ = false;
+        fplApproachLegStart_ = 0;
+        fplApproachLegCount_ = 0;
+        fplLoadedApproach_ = {};
+        fplEntry_.active = false;
+        fplEntry_.notFound = false;
+        fplConfirm_ = FplConfirm::None;
+      }
     }
   }
 
   // Keep the working copy aligned with the shared map plan unless a local edit
   // is waiting to publish. Adopt even when the map echoes our own publication
   // so a stale pre-pump sync cannot leave fplLegs_ behind the other GDU.
-  if (!fplEditPending_ && !fplLocalDraft_ && !map.directToActive &&
+  if (!fplEditPending_ && !fplLocalDraft_ && !navDirectTo &&
+      !map.directToActive &&
       !flightPlanLegsEqual(fplLegs_, map.flightPlan)) {
     const MapProcedure savedApproach = fplLoadedApproach_;
     std::vector<MapLeg> adopted = map.flightPlan;
@@ -66,6 +98,8 @@ void SoftkeyController::syncFlightPlanLegs(const MapData& map) {
                     nullptr};
   edit.directToActive = mapDirectToActive();
   edit.localDraft = fplLocalDraft_;
+  fplSyncListCursorToActiveLeg(edit, flightPlanApproachAirportIcao(), activeWaypoint_,
+                               fplListCursorFollowsActive_);
   fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
                     FplCursorLayout::SectionRows);
 }
@@ -86,7 +120,7 @@ void SoftkeyController::flightPlanPublishEdit() {
 }
 
 std::string SoftkeyController::flightPlanSelectedLegIdent() const {
-  if (window_ != PfdWindow::FlightPlan || !fplCursorOn_) return {};
+  if (window_ != PfdWindow::FlightPlan) return {};
   FplRouteEdit edit{
       const_cast<std::vector<MapLeg>&>(fplLegs_),
       const_cast<bool&>(fplDestinationFilled_),
@@ -104,7 +138,7 @@ std::string SoftkeyController::flightPlanSelectedLegIdent() const {
 }
 
 int SoftkeyController::flightPlanSelectedLegIndex() const {
-  if (window_ != PfdWindow::FlightPlan || !fplCursorOn_) return -1;
+  if (window_ != PfdWindow::FlightPlan) return -1;
   FplRouteEdit edit{
       const_cast<std::vector<MapLeg>&>(fplLegs_),
       const_cast<bool&>(fplDestinationFilled_),
@@ -275,10 +309,12 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
   if (!fplCursorOn_) {
     // Cursor off: the knob scrolls the section list; other keys fall through.
     if (key == BezelKey::FmsOuterCw || key == BezelKey::FmsInnerCw) {
+      fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
       return true;
     }
     if (key == BezelKey::FmsOuterCcw || key == BezelKey::FmsInnerCcw) {
+      fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
       return true;
     }
@@ -289,9 +325,11 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
   // the insert entry, CLR removes the highlighted waypoint.
   switch (key) {
     case BezelKey::FmsOuterCw:
+      fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
       return true;
     case BezelKey::FmsOuterCcw:
+      fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
       return true;
     case BezelKey::FmsInnerCw:
@@ -316,11 +354,40 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
       }
       return true;
     }
-    case BezelKey::Ent:
-      return true;  // no function on a bare row, but the cursor owns the key
+    case BezelKey::Ent: {
+      const int legIndex = fplCursorLegIndex(
+          edit, approachAirport, FplCursorLayout::SectionRows);
+      if (legIndex >= 0 && legIndex < legCount) {
+        requestActivateFlightPlanLeg(legIndex);
+      }
+      return true;
+    }
     default:
       return false;
   }
+}
+
+void SoftkeyController::requestActivateFlightPlanLeg(int toLegIndex) {
+  if (toLegIndex < 0 || toLegIndex >= static_cast<int>(fplLegs_.size())) return;
+  dtoRequestPending_ = false;
+  fplActivateLegIndex_ = toLegIndex;
+  fplActivateLegPending_ = true;
+}
+
+void SoftkeyController::requestDirectToFlightPlanLeg(int legIndex) {
+  if (legIndex < 0 || legIndex >= static_cast<int>(fplLegs_.size())) return;
+  dtoRequestTarget_ = fplLegs_[static_cast<std::size_t>(legIndex)];
+  dtoRequestPending_ = true;
+}
+
+bool SoftkeyController::consumeActivateLegRequest(int& toLegIndex) {
+  if (!fplActivateLegPending_) return false;
+  // Route edits are consumed in the shell before engine update; defer activate
+  // until the new legs are published so leg indices match the navigator plan.
+  if (fplEditPending_) return false;
+  fplActivateLegPending_ = false;
+  toLegIndex = fplActivateLegIndex_;
+  return toLegIndex >= 0;
 }
 
 FmsWaypointEntry* SoftkeyController::activeWaypointEntry() {
@@ -458,6 +525,12 @@ void SoftkeyController::restorePersistedFlightPlan(
   fplApproachLegCount_ = 0;
   fplLoadedApproach_ = {};
   fplCursorRow_ = 0;
+  fplLastPublished_ = saved.legs;
+  fplLastMapPlan_ = saved.legs;
+  tryRestorePersistedApproach();
+  if (fplApproachLegCount_ <= 0) {
+    reinferApproachFromProcedureLegs();
+  }
 }
 
 void SoftkeyController::replaceFlightPlanFromExternal(

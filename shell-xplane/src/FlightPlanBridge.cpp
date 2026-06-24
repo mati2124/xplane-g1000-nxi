@@ -107,6 +107,8 @@ void FlightPlanBridge::applyPendingWritesOnSimThread() {
   bool hasDto = false;
   bool dtoActive = false;
   MapLeg dtoTarget;
+  bool hasActiveLeg = false;
+  int activeLegIndex = -1;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (hasPlanWrite_) {
@@ -121,10 +123,22 @@ void FlightPlanBridge::applyPendingWritesOnSimThread() {
       dtoTarget = dtoWriteTarget_;
       hasDtoWrite_ = false;
     }
+    if (hasActiveLegWrite_) {
+      hasActiveLeg = true;
+      activeLegIndex = activeLegWriteIndex_;
+      hasActiveLegWrite_ = false;
+    }
   }
   // Apply the route before the Direct-To so a combined edit lands coherently.
   if (hasPlan) programFmsRoute(plan);
   if (hasDto) programFmsDirectTo(dtoActive, dtoTarget);
+  if (hasActiveLeg) {
+    if (plan.empty()) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      plan = plan_;
+    }
+    programFmsActiveLeg(activeLegIndex, plan);
+  }
 }
 
 void FlightPlanBridge::readFmsOnSimThread() {
@@ -225,6 +239,19 @@ void FlightPlanBridge::serverLoop() {
             dtoWriteActive_ = active;
             dtoWriteTarget_ = std::move(target);
             hasDtoWrite_ = true;
+          }
+          const std::vector<unsigned char> ack = fpbridge::encodeAck();
+          ::sendto(sock, reinterpret_cast<const char*>(ack.data()),
+                   static_cast<int>(ack.size()), 0,
+                   reinterpret_cast<sockaddr*>(&src), srcLen);
+        }
+      } else if (fpbridge::isSetActiveLeg(buf.data(), len)) {
+        int legIndex = -1;
+        if (fpbridge::decodeSetActiveLeg(buf.data(), len, legIndex)) {
+          {
+            std::lock_guard<std::mutex> lock(mutex_);
+            activeLegWriteIndex_ = legIndex;
+            hasActiveLegWrite_ = true;
           }
           const std::vector<unsigned char> ack = fpbridge::encodeAck();
           ::sendto(sock, reinterpret_cast<const char*>(ack.data()),

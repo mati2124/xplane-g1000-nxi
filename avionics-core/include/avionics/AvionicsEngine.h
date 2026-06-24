@@ -3,6 +3,7 @@
 #include <string>
 
 #include "avionics/DataSource.h"
+#include "avionics/FmsNavigator.h"
 #include "avionics/MfdController.h"
 #include "avionics/Renderer.h"
 #include "avionics/SoftkeyController.h"
@@ -137,6 +138,7 @@ class AvionicsEngine {
   void syncSoftkeyPeerRadioVolume();
   void syncFlightPlanPeer();
   void syncFlightPlanApproachPeer();
+  void applyActivateLegRequests();
 
   // Whether this GDU's bus is powered, per the real-world power tree: the PFD
   // needs the battery/master bus; the MFD additionally needs the avionics
@@ -166,6 +168,10 @@ class AvionicsEngine {
   // the interactive live page is actually on screen.
   bool isLivePageUp() const;
 
+  // Widest map range across this GDU and its peer so shared MapData queries
+  // (land vectors, geo labels) cover every visible map instance.
+  float sharedMapQueryRangeNm() const;
+
   DataSource* dataSource_;
   Renderer& renderer_;
   DisplayPage page_ = DisplayPage::PrimaryFlightDisplay;
@@ -185,6 +191,7 @@ class AvionicsEngine {
   AvionicsEngine* softkeyPeer_ = nullptr;
   SoftkeyController softkeys_;
   MfdController mfd_;
+  FmsNavigator navigator_;
 };
 
 }  // namespace avionics

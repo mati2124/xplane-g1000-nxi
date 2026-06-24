@@ -24,11 +24,19 @@ void MfdController::directToOpen() {
       return;
     }
   }
+  // NRST list: Direct-To pre-fills with the highlighted facility.
+  if (const MapFeature* sel = nrstSelectedFeature()) {
+    dtoEntry_.open(navSource_, mapData_, sel->id);
+    dtoEntry_.match = *sel;
+    dtoEntry_.hasMatch = true;
+    dtoEntry_.autofill = sel->id;
+    return;
+  }
   // Default destination (Pilot's Guide: the field defaults to the active
   // waypoint, or the highlighted flight-plan waypoint when one is selected).
   std::string initial;
   const int legIdx = fplCursorLegIndex();
-  if (fplCursorOn_ && legIdx >= 0 &&
+  if (pageGroup_ == MfdPageGroup::FlightPlan && legIdx >= 0 &&
       legIdx < static_cast<int>(fplLegs_.size())) {
     dtoPreserveLegIndex_ = legIdx;
     dtoPreserveFplCursorRow_ = fplCursorRow_;
@@ -72,9 +80,15 @@ bool MfdController::directToBezelKey(BezelKey key) {
   if (dtoArmed_) {
     if (isMapRangePanBezelKey(key)) return false;
     if (key == BezelKey::Ent) {
-      dtoRequestTarget_.lat = dtoEntry_.match.lat;
-      dtoRequestTarget_.lon = dtoEntry_.match.lon;
-      dtoRequestTarget_.id = dtoEntry_.match.id;
+      if (dtoPreservePlan_ && dtoPreserveLegIndex_ >= 0 &&
+          dtoPreserveLegIndex_ < static_cast<int>(fplLegs_.size())) {
+        dtoRequestTarget_ =
+            fplLegs_[static_cast<std::size_t>(dtoPreserveLegIndex_)];
+      } else {
+        dtoRequestTarget_.lat = dtoEntry_.match.lat;
+        dtoRequestTarget_.lon = dtoEntry_.match.lon;
+        dtoRequestTarget_.id = dtoEntry_.match.id;
+      }
       dtoRequestPending_ = true;
       if (!dtoPreservePlan_) {
         fplLegs_.clear();

@@ -50,6 +50,7 @@
 #include "PluginNavMapData.h"
 #include "ProcedureStore.h"
 #include "FlightPlanBridge.h"
+#include "FmsDebugOverlay.h"
 #include "UpdateNotify.h"
 #include "avionics/AssetPaths.h"
 #include "avionics/ChecklistStore.h"
@@ -228,12 +229,14 @@ int g_rateMenuParentItem = -1;
 // item stays disabled until the launch-time check finds a newer release, at
 // which point the update pump enables it and labels it with the version.
 XPLMCommandRef g_installUpdateCmd = nullptr;
+XPLMCommandRef g_fmsDebugCmd = nullptr;
 int g_installUpdateMenuIndex = -1;
 bool g_installUpdateMenuShown = false;
 
 // When false the stock G1000 renders untouched and only the FMS bridge runs for
 // the networked standalone shell.
 bool g_replaceDisplays = true;
+bool g_showFmsDebug = false;
 
 // Durable PFD/MFD display preferences (the softkey-selectable options that
 // survive between flights, e.g. the PFD inset map on/off). Loaded at startup,
@@ -265,6 +268,7 @@ void ApplyPreset(RatePreset preset) {
 constexpr const char* kConfigFileName = "g1000nxi.prf";
 constexpr const char* kKeyRate = "rate";
 constexpr const char* kKeyReplaceDisplays = "replace_displays";
+constexpr const char* kKeyFmsDebug = "fms_debug";
 
 std::string ConfigFilePath() {
   char prefs[512] = {0};
@@ -282,6 +286,7 @@ void SaveConfig() {
   if (f == nullptr) return;
   std::fprintf(f, "%s=%s\n", kKeyRate, kPresets[static_cast<int>(g_preset)].name);
   std::fprintf(f, "%s=%d\n", kKeyReplaceDisplays, g_replaceDisplays ? 1 : 0);
+  std::fprintf(f, "%s=%d\n", kKeyFmsDebug, g_showFmsDebug ? 1 : 0);
   std::string stateLines;
   avionics::appendStateLines(g_avionicsState, stateLines);
   std::fwrite(stateLines.data(), 1, stateLines.size(), f);
@@ -310,6 +315,8 @@ void LoadConfig() {
       }
     } else if (key == kKeyReplaceDisplays) {
       g_replaceDisplays = (value == "1");
+    } else if (key == kKeyFmsDebug) {
+      g_showFmsDebug = (value == "1");
     } else {
       // Durable display preferences are parsed by the shared core.
       avionics::applyStateLine(key, value, g_avionicsState);
@@ -954,14 +961,14 @@ void ApplyQueuedFlightPlanEdits() {
   };
 
   if (g_pfd.engine) {
-    avionics::MapLeg pfdDto;
-    if (g_pfd.engine->softkeyController().consumeDirectToRequest(pfdDto)) {
-      g_dataSource->setDirectTo(pfdDto);
-    }
     std::vector<avionics::MapLeg> pfdEditedPlan;
     if (g_pfd.engine->softkeyController().consumeFlightPlanEdit(pfdEditedPlan)) {
       applyPlan(pfdEditedPlan,
                 g_pfd.engine->softkeyController().flightPlanDestinationFilled());
+    }
+    avionics::MapLeg pfdDto;
+    if (g_pfd.engine->softkeyController().consumeDirectToRequest(pfdDto)) {
+      g_dataSource->setDirectTo(pfdDto);
     }
     avionics::MapProcedure pfdProc;
     if (g_pfd.engine->softkeyController().consumeProcLoadRequest(pfdProc) &&
@@ -1854,6 +1861,7 @@ void DisableGlassTakeover();
 // itemRef -1 toggles in-sim display replacement; 0..kPresetCount-1 pick a preset.
 constexpr int kReplaceDisplaysMenuRef = -1;
 constexpr int kReplaceDisplaysMenuIndex = kPresetCount + 1;
+constexpr int kFmsDebugMenuIndex = kPresetCount + 2;
 
 // Puts a check mark beside the active preset and clears the others.
 void RefreshRateMenuChecks() {
@@ -1866,6 +1874,8 @@ void RefreshRateMenuChecks() {
   }
   XPLMCheckMenuItem(g_rateMenu, kReplaceDisplaysMenuIndex,
                     g_replaceDisplays ? xplm_Menu_Checked : xplm_Menu_Unchecked);
+  XPLMCheckMenuItem(g_rateMenu, kFmsDebugMenuIndex,
+                    g_showFmsDebug ? xplm_Menu_Checked : xplm_Menu_Unchecked);
 }
 
 void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
@@ -1892,6 +1902,19 @@ void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
 int OnInstallUpdateCommand(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
                            void* /*ref*/) {
   if (phase == xplm_CommandBegin) avionics::beginPluginSelfUpdate();
+  return 0;
+}
+
+void ToggleFmsDebugOverlay() {
+  g_showFmsDebug = !g_showFmsDebug;
+  avionics::FmsDebugOverlay::setEnabled(g_showFmsDebug);
+  SaveConfig();
+  RefreshRateMenuChecks();
+}
+
+int OnToggleFmsDebugCommand(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
+                            void* /*ref*/) {
+  if (phase == xplm_CommandBegin) ToggleFmsDebugOverlay();
   return 0;
 }
 
@@ -1926,6 +1949,13 @@ void BuildRateMenu() {
   XPLMAppendMenuItem(
       g_rateMenu, "Replace in-sim G1000 displays",
       reinterpret_cast<void*>(static_cast<intptr_t>(kReplaceDisplaysMenuRef)), 1);
+  g_fmsDebugCmd = XPLMCreateCommand(
+      "xplaneavionics/toggle_fms_debug",
+      "G1000 NXi: Toggle FMS / flight-plan debug overlay");
+  XPLMRegisterCommandHandler(g_fmsDebugCmd, &OnToggleFmsDebugCommand,
+                             /*before=*/1, nullptr);
+  XPLMAppendMenuItemWithCommand(g_rateMenu, "Show FMS debug overlay",
+                                g_fmsDebugCmd);
   // "Install Update" is bound to its command so it is both clickable and
   // key-bindable. Disabled until the update pump finds a newer release.
   XPLMAppendMenuSeparator(g_rateMenu);
@@ -2051,10 +2081,13 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   XPLMRegisterCommandHandler(g_installUpdateCmd, &OnInstallUpdateCommand,
                              /*before=*/1, nullptr);
 
-  // Restore the saved config (refresh-rate preset + durable display
+  Log("G1000 NXi plugin loaded (FMS debug overlay + active-leg sync)\n");
+
+  // Restore the saved config
   // preferences) before building the menu, so the right item starts checked
   // and the engines pick up the saved options when first created.
   LoadConfig();
+  avionics::FmsDebugOverlay::setEnabled(g_showFmsDebug);
   BuildRateMenu();
 
   // Periodic main-thread pump that drives the self-updater and reveals the
@@ -2085,9 +2118,15 @@ PLUGIN_API void XPluginStop(void) {
                                  /*before=*/1, nullptr);
     g_installUpdateCmd = nullptr;
   }
+  if (g_fmsDebugCmd != nullptr) {
+    XPLMUnregisterCommandHandler(g_fmsDebugCmd, &OnToggleFmsDebugCommand,
+                                 /*before=*/1, nullptr);
+    g_fmsDebugCmd = nullptr;
+  }
   UnregisterG1000Commands();
   if (g_commandBridge) g_commandBridge->stop();
   if (g_flightPlanBridge) g_flightPlanBridge->stop();
+  avionics::FmsDebugOverlay::unregisterDrawCallback();
   DestroyRateMenu();
   ShutdownDevice(g_pfd);
   ShutdownDevice(g_mfd);

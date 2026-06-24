@@ -69,8 +69,11 @@ class NavFeatureSource {
   }
   virtual std::vector<MapLandCity> nearbyCities(double lat, double lon,
                                                 float rangeNm,
-                                                std::size_t maxCount) const {
-    (void)lat, (void)lon, (void)rangeNm, (void)maxCount;
+                                                std::size_t maxCount,
+                                                float viewHalfExtentNm =
+                                                    0.0f) const {
+    (void)lat, (void)lon, (void)rangeNm, (void)maxCount,
+        (void)viewHalfExtentNm;
     return {};
   }
   virtual std::vector<MapObstacle> nearbyObstacles(double lat, double lon,
@@ -89,6 +92,14 @@ class NavFeatureSource {
     (void)ident;
     (void)maxCount;
     return {};
+  }
+
+  // Same as lookupIdent but prefers the match nearest to (refLat, refLon).
+  // Terminal-area fixes (e.g. BUTLY at KFMY) require this bias in X-Plane.
+  virtual std::vector<MapFeature> lookupIdentNear(const std::string& ident,
+                                                    double refLat, double refLon,
+                                                    std::size_t maxCount) const {
+    return lookupIdent(ident, maxCount);
   }
 
   // The alphabetically-first identifier starting with `prefix`, for the FMS

@@ -34,6 +34,8 @@ struct LookupCtx {
   const NavFeatureSource* nav = nullptr;
   const std::unordered_map<std::string, std::pair<double, double>>* runways =
       nullptr;
+  const std::unordered_map<std::string, std::pair<double, double>>* cifpFixes =
+      nullptr;
   double refLat = 0.0;
   double refLon = 0.0;
   bool haveRef = false;
@@ -42,6 +44,15 @@ struct LookupCtx {
 bool fixLookup(const std::string& ident, double& lat, double& lon, void* ctx) {
   auto* c = static_cast<LookupCtx*>(ctx);
   if (c == nullptr) return false;
+
+  if (c->cifpFixes != nullptr) {
+    const auto fixIt = c->cifpFixes->find(ident);
+    if (fixIt != c->cifpFixes->end()) {
+      lat = fixIt->second.first;
+      lon = fixIt->second.second;
+      return true;
+    }
+  }
 
   if (c->runways != nullptr) {
     const auto it = c->runways->find(ident);
@@ -53,11 +64,17 @@ bool fixLookup(const std::string& ident, double& lat, double& lon, void* ctx) {
   }
 
   if (c->nav == nullptr || !c->nav->ready()) return false;
-  const std::vector<MapFeature> matches = c->nav->lookupIdent(ident, 16);
+  std::vector<MapFeature> matches;
+  if (c->haveRef) {
+    matches = c->nav->lookupIdentNear(ident, c->refLat, c->refLon, 16);
+  }
+  if (matches.empty()) {
+    matches = c->nav->lookupIdent(ident, 16);
+  }
   if (matches.empty()) return false;
 
   const MapFeature* best = &matches.front();
-  if (c->haveRef) {
+  if (c->haveRef && matches.size() > 1) {
     constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
     const double cosLat =
         std::max(0.05, std::cos(c->refLat * kDegToRad));
@@ -207,6 +224,7 @@ std::vector<MapLeg> ProcedureStore::expandProcedure(
   LookupCtx ctx;
   ctx.nav = lookup;
   ctx.runways = &airport.runways;
+  ctx.cifpFixes = &airport.fixes;
   if (lookup != nullptr && lookup->ready() && !icao.empty()) {
     const std::vector<MapFeature> apt = lookup->lookupIdent(icao, 1);
     if (!apt.empty()) {

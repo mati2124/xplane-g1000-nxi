@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
@@ -389,7 +390,9 @@ class SoftkeyController {
   bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
   // Re-sync after the data-source pump when the map snapshot was stale earlier
   // in the frame (route override from consumeFlightPlanEdit).
-  void syncFlightPlanFromMap(const MapData& map) { syncFlightPlanLegs(map); }
+  void syncFlightPlanFromMap(const MapData& map, bool navDirectTo = false) {
+    syncFlightPlanLegs(map, navDirectTo);
+  }
 
   // Restores PROC/FPL approach metadata after reload (waypoints come from the sim).
   void setPersistedLoadedApproach(const PersistedLoadedApproach& saved);
@@ -501,6 +504,8 @@ class SoftkeyController {
   // Activation latch for the shell: true once after ENT on Activate?, copying
   // out the target waypoint so the shell engages the direct course.
   bool consumeDirectToRequest(MapLeg& out);
+  // FPL Activate Leg: ENT on a highlighted waypoint row (Pilot's Guide 5.6).
+  bool consumeActivateLegRequest(int& toLegIndex);
 
   // ---- Page Menu (MENU key on an open PFD popout, Pilot's Guide Fig. 1-10) ----
   // Context-sensitive options for the active popout window. With no popout
@@ -720,6 +725,7 @@ class SoftkeyController {
   // The persistence helpers read/write the durable display options directly.
   friend void capturePfdState(const SoftkeyController&, PfdPersistentState&);
   friend void applyPfdState(SoftkeyController&, const PfdPersistentState&);
+  friend void syncRadioVolumeAnnunciation(SoftkeyController&, SoftkeyController&);
 
   void rebuildAlerts(const FlightData& data);
   // Refresh the visible cell labels from the menu now on top of the stack.
@@ -742,6 +748,9 @@ class SoftkeyController {
   bool flightPlanBezelKey(BezelKey key);
   void flightPlanCommitEntry();
   void flightPlanPublishEdit();
+  void requestActivateFlightPlanLeg(int toLegIndex);
+  // Direct-To a plan leg while keeping the route (FPL ENT / approach activate).
+  void requestDirectToFlightPlanLeg(int legIndex);
   // Ident of the waypoint highlighted on the FPL window (empty when none).
   std::string flightPlanSelectedLegIdent() const;
   int flightPlanSelectedLegIndex() const;
@@ -749,7 +758,7 @@ class SoftkeyController {
   // metadata) and publish the edit to the data source.
   void flightPlanApplyDirectTo(const MapLeg& target);
   FmsWaypointEntry* activeWaypointEntry();
-  void syncFlightPlanLegs(const MapData& map);
+  void syncFlightPlanLegs(const MapData& map, bool navDirectTo = false);
   void tryRestorePersistedApproach();
   void reinferApproachFromProcedureLegs();
   // Procedures window (PROC bezel key): build the top-level menu on open, route
@@ -759,6 +768,8 @@ class SoftkeyController {
   bool procBezelKey(BezelKey key);
   void procMoveMenu(int dir);
   void procLoadSelected(const std::string& name, const std::string& transition);
+  void procActivateSelected(const std::string& name,
+                            const std::string& transition);
   std::vector<std::string> procProcedureNames(ProcedureType type) const;
   std::vector<std::string> procTransitions(ProcedureType type,
                                            const std::string& name) const;
@@ -878,6 +889,7 @@ class SoftkeyController {
   std::vector<MapLeg> fplLastPublished_;
   bool fplEditPending_ = false;
   bool fplCursorOn_ = false;
+  bool fplListCursorFollowsActive_ = true;
   bool fplDestinationFilled_ = false;
   bool fplLocalDraft_ = false;
   int fplCursorRow_ = 0;
@@ -922,6 +934,7 @@ class SoftkeyController {
   void procCycleApproachMins(int dir);
   void procAdjustApproachMinsAlt(int step);
   void procFocusLoad();
+  void procFocusActivate();
   void procOpenApproachList();
   void procOpenTransitionList();
 
@@ -936,6 +949,8 @@ class SoftkeyController {
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;
   MapLeg dtoRequestTarget_;
+  bool fplActivateLegPending_ = false;
+  int fplActivateLegIndex_ = -1;
   // Direct-To from a highlighted FPL leg: keep the plan and fly direct to that
   // fix (skip), rather than replacing the plan with a single leg.
   bool dtoPreservePlan_ = false;
@@ -995,6 +1010,9 @@ class SoftkeyController {
   RadioBand radioVolumeBand_ = RadioBand::None;
   RadioUnit radioVolumeUnit_ = RadioUnit::Com1;
   int radioVolumePct_ = 0;
+  // Incremented on each knob turn so peer sync can tell a fresh annunciation
+  // from a side that already dismissed it (timer at 0) but has not ticked yet.
+  std::uint32_t radioVolumeEpoch_ = 0;
   bool radioVolumePending_ = false;
   RadioUnit radioVolumeCommitUnit_ = RadioUnit::Com1;
   float radioVolumeCommitValue_ = 0.0f;

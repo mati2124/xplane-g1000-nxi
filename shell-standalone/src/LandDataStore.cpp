@@ -564,7 +564,9 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
   } else {
     for (std::size_t i : islandLandLowResIdx_) considerLand(i);
   }
-  if (rangeNm >= kRegionalLandMinRangeNm) {
+  // Regional lon-bands carry peninsula detail below 120 NM; above that the
+  // renderer uses coarse L1 silhouettes (lon-band meridian edges paint seams).
+  if (rangeNm >= kRegionalLandMinRangeNm && rangeNm < kRegionalLandMaxRangeNm) {
     for (std::size_t i : regionalLandIdx_) considerRegional(i);
   }
   std::sort(continentalCands.begin(), continentalCands.end(),
@@ -714,20 +716,42 @@ std::vector<MapLandLine> LandDataStore::nearbyLines(
 }
 
 std::vector<MapLandCity> LandDataStore::nearbyCities(
-    double lat, double lon, float rangeNm, std::size_t maxCount) const {
+    double lat, double lon, float rangeNm, std::size_t maxCount,
+    float viewHalfExtentNm) const {
   std::vector<MapLandCity> result;
   if (!loaded() || maxCount == 0) return result;
 
   const double cosLat = std::max(0.05, std::cos(lat * kDegToRad));
-  const float latSpan =
-      static_cast<float>((rangeNm / kNmPerDeg) * kWideLandOverlapScale);
+  const float landOverlapScale =
+      rangeNm >= 500.0f ? 2.05f : kWideLandOverlapScale;
+  const float reachScale =
+      std::max(landOverlapScale, kMapViewportReachFactor);
+  const float latMarginScale =
+      rangeNm >= 500.0f
+          ? std::max(reachScale, landOverlapScale * 2.5f)
+          : reachScale;
+  const float latReach =
+      static_cast<float>((rangeNm / kNmPerDeg) * latMarginScale);
   const double northCos =
-      std::max(0.05, std::cos((lat + static_cast<double>(latSpan)) * kDegToRad));
+      std::max(0.05, std::cos((lat + static_cast<double>(latReach)) * kDegToRad));
   const double southCos =
-      std::max(0.05, std::cos((lat - static_cast<double>(latSpan)) * kDegToRad));
+      std::max(0.05, std::cos((lat - static_cast<double>(latReach)) * kDegToRad));
   const double cosEdge = std::min({cosLat, northCos, southCos});
-  const double dLat = latSpan;
-  const double dLon = (rangeNm / (kNmPerDeg * cosEdge)) * kWideLandOverlapScale;
+  const float rangeReachLon = static_cast<float>(
+      (rangeNm / (kNmPerDeg * cosEdge)) * reachScale);
+  const float viewReachLon =
+      viewHalfExtentNm > 0.0f
+          ? static_cast<float>(
+                (viewHalfExtentNm / (kNmPerDeg * cosEdge)) * 1.08f)
+          : 0.0f;
+  const float viewReachLat =
+      viewHalfExtentNm > 0.0f
+          ? static_cast<float>((viewHalfExtentNm / kNmPerDeg) * 1.08f)
+          : 0.0f;
+  const double dLat =
+      std::max(static_cast<double>(latReach), static_cast<double>(viewReachLat));
+  const double dLon = std::max(static_cast<double>(rangeReachLon),
+                               static_cast<double>(viewReachLon));
 
   auto maxLabelRangeNm = [](const MapLandCity& label) -> float {
     switch (label.labelKind) {

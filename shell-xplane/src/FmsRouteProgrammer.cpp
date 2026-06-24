@@ -1,5 +1,7 @@
 #include "FmsRouteProgrammer.h"
 
+#include "FmsDebugOverlay.h"
+
 
 
 #include <cctype>
@@ -206,9 +208,58 @@ void programFmsRoute(const std::vector<MapLeg>& legs) {
     XPLMSetDestinationFMSEntry(dest);
   }
 
+  char detail[96] = {};
+  if (newCount == 0) {
+    std::snprintf(detail, sizeof(detail), "clear FMS");
+  } else if (!legs.empty()) {
+    std::snprintf(detail, sizeof(detail), "%d legs (%s ... %s)", newCount,
+                  legs.front().id.c_str(), legs.back().id.c_str());
+  } else {
+    std::snprintf(detail, sizeof(detail), "%d legs", newCount);
+  }
+  FmsDebugOverlay::recordWrite("Route", detail);
 }
 
 
+
+int findFmsEntryIndexForLeg(const MapLeg& target) {
+  const int count = XPLMCountFMSEntries();
+  for (int i = 0; i < count; ++i) {
+    XPLMNavType type = xplm_Nav_Unknown;
+    char id[kFmsIdBufferSize] = {};
+    XPLMNavRef ref = XPLM_NAV_NOT_FOUND;
+    int altitude = 0;
+    float lat = 0.0f;
+    float lon = 0.0f;
+    XPLMGetFMSEntryInfo(i, &type, id, &ref, &altitude, &lat, &lon);
+    id[sizeof(id) - 1] = '\0';
+    if (!target.id.empty() && navIdentEquals(id, target.id)) return i;
+    if (navPositionNear(target, lat, lon)) return i;
+  }
+  return -1;
+}
+
+void programFmsActiveLeg(int legIndex, const std::vector<MapLeg>& plan) {
+  if (legIndex < 0 || plan.empty() ||
+      legIndex >= static_cast<int>(plan.size())) {
+    return;
+  }
+
+  const MapLeg& target = plan[static_cast<std::size_t>(legIndex)];
+  int targetIndex = findFmsEntryIndexForLeg(target);
+  if (targetIndex < 0 && legIndex < XPLMCountFMSEntries()) {
+    targetIndex = legIndex;
+  }
+  if (targetIndex < 0) return;
+
+  if (XPLMGetDestinationFMSEntry() == targetIndex) return;
+  XPLMSetDestinationFMSEntry(targetIndex);
+
+  char detail[96] = {};
+  std::snprintf(detail, sizeof(detail), "leg %d -> FMS idx %d (%s)", legIndex,
+                targetIndex, target.id.c_str());
+  FmsDebugOverlay::recordWrite("ActiveLeg", detail);
+}
 
 void programFmsDirectTo(bool active, const MapLeg& target) {
 
@@ -218,50 +269,16 @@ void programFmsDirectTo(bool active, const MapLeg& target) {
 
     if (count >= 2) XPLMSetDestinationFMSEntry(1);
 
+    FmsDebugOverlay::recordWrite("DirectTo", "clear");
     return;
 
   }
 
-
-
-  int targetIndex = -1;
-
-  const int count = XPLMCountFMSEntries();
-
-  for (int i = 0; i < count; ++i) {
-
-    XPLMNavType type = xplm_Nav_Unknown;
-
-    char id[kFmsIdBufferSize] = {};
-
-    XPLMNavRef ref = XPLM_NAV_NOT_FOUND;
-
-    int altitude = 0;
-
-    float lat = 0.0f;
-
-    float lon = 0.0f;
-
-    XPLMGetFMSEntryInfo(i, &type, id, &ref, &altitude, &lat, &lon);
-
-    id[sizeof(id) - 1] = '\0';
-
-    if (!target.id.empty() && navIdentEquals(id, target.id)) {
-
-      targetIndex = i;
-
-      break;
-
-    }
-
-  }
+  int targetIndex = findFmsEntryIndexForLeg(target);
 
   if (targetIndex < 0) {
-
-    targetIndex = count;
-
+    targetIndex = XPLMCountFMSEntries();
     writeEntry(targetIndex, target);
-
   }
 
 
@@ -276,6 +293,10 @@ void programFmsDirectTo(bool active, const MapLeg& target) {
 
 #endif
 
+  char detail[96] = {};
+  std::snprintf(detail, sizeof(detail), "FMS idx %d (%s)", targetIndex,
+                target.id.c_str());
+  FmsDebugOverlay::recordWrite("DirectTo", detail);
 }
 
 

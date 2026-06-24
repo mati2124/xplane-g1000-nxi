@@ -75,21 +75,62 @@ void MfdController::syncFlightPlan(const MapData& map,
   activeWaypoint_ = activeWaypoint;
   fplNavDirectToActive_ = navDirectTo;
 
-  // GPS Direct-To keeps the FPL editor template blank (matches PFD); do not
-  // re-adopt sim route legs into the editor while navigation is active.
-  if (navDirectTo && !fplLocalDraft_ && !fplEditPending_) {
-    if (!fplLegs_.empty() || fplDestinationFilled_ || fplApproachLegCount_ > 0) {
-      fplLegs_.clear();
-      fplDestinationFilled_ = false;
-      fplApproachLegStart_ = 0;
-      fplApproachLegCount_ = 0;
-      fplLoadedApproach_ = {};
-      fplApproachHeaderLabel_.clear();
+  // GPS Direct-To keeps the FPL editor template blank unless a procedure is loaded
+  // on the map — then mirror the map plan so approach legs stay visible.
+  if ((navDirectTo || map.directToActive) && !fplLocalDraft_ &&
+      !fplEditPending_) {
+    const MapProcedure savedApproach = fplLoadedApproach_;
+    const std::string savedHeader = fplApproachHeaderLabel_;
+    FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                      fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                      &fplApproachHeaderLabel_};
+    if (fplAdoptMapPlanDuringDirectTo(edit, map.flightPlan, fplLastPublished_)) {
+      tryRestorePersistedApproach();
+      if (fplApproachLegCount_ <= 0) {
+        reinferApproachFromProcedureLegs();
+      }
+      if (fplLoadedApproach_.name.empty() && !savedApproach.name.empty() &&
+          fplApproachLegCount_ > 0) {
+        fplLoadedApproach_ = savedApproach;
+        if (fplApproachHeaderLabel_.empty() && !savedHeader.empty()) {
+          fplApproachHeaderLabel_ = savedHeader;
+        }
+      }
       fplEntry_.active = false;
       fplEntry_.notFound = false;
       fplAltEntry_.active = false;
       fplConfirm_ = FplConfirm::None;
       fplMenuOpen_ = false;
+    } else {
+      const bool keepProcedure =
+          fplApproachLegCount_ > 0 ||
+          inferProcedureBlockInPlan(fplLegs_).valid() ||
+          !fplLoadedApproach_.name.empty();
+      if (keepProcedure) {
+        if (fplApproachLegCount_ <= 0) {
+          reinferApproachFromProcedureLegs();
+        }
+        if (fplLoadedApproach_.name.empty() && !savedApproach.name.empty() &&
+            fplApproachLegCount_ > 0) {
+          fplLoadedApproach_ = savedApproach;
+          if (fplApproachHeaderLabel_.empty() && !savedHeader.empty()) {
+            fplApproachHeaderLabel_ = savedHeader;
+          }
+        }
+      } else if (!fplLegs_.empty() || fplDestinationFilled_ ||
+                 fplApproachLegCount_ > 0) {
+        fplLegs_.clear();
+        fplDestinationFilled_ = false;
+        fplApproachLegStart_ = 0;
+        fplApproachLegCount_ = 0;
+        fplLoadedApproach_ = {};
+        fplApproachHeaderLabel_.clear();
+        fplEntry_.active = false;
+        fplEntry_.notFound = false;
+        fplAltEntry_.active = false;
+        fplConfirm_ = FplConfirm::None;
+        fplMenuOpen_ = false;
+      }
     }
   }
 
@@ -101,6 +142,7 @@ void MfdController::syncFlightPlan(const MapData& map,
   // waiting to publish. Adopt even when the map echoes our own publication so
   // the PFD and MFD stay in step after either side edits the route.
   if (!fplEditPending_ && !fplLocalDraft_ && !navDirectTo &&
+      !map.directToActive &&
       !flightPlanLegsEqual(fplLegs_, map.flightPlan)) {
     const MapProcedure savedApproach = fplLoadedApproach_;
     const std::string savedHeader = fplApproachHeaderLabel_;
@@ -134,6 +176,14 @@ void MfdController::syncFlightPlan(const MapData& map,
     fplMenuOpen_ = false;
   }
 
+  fplEnsureApproachInferred();
+  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                    &fplApproachHeaderLabel_};
+  edit.directToActive = fplNavDirectToActive_;
+  edit.localDraft = fplLocalDraft_;
+  fplSyncListCursorToActiveLeg(edit, fplApproachAirportIcao(), activeWaypoint_,
+                               fplListCursorFollowsActive_);
   fplClampCursorRow();
 }
 
@@ -154,6 +204,7 @@ void MfdController::fplPublishEdit() {
 
 void MfdController::fplResetInteraction() {
   fplCursorOn_ = false;
+  fplListCursorFollowsActive_ = true;
   fplClampCursorRow();
   fplCursorCol_ = FplCursorCol::Ident;
   fplEntry_.reset();
@@ -378,10 +429,12 @@ bool MfdController::fplBezelKey(BezelKey key) {
   if (!fplCursorOn_) {
     // Cursor off: the knob scrolls the section list (PFD FPL window behavior).
     if (key == BezelKey::FmsOuterCw || key == BezelKey::FmsInnerCw) {
+      fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
       return true;
     }
     if (key == BezelKey::FmsOuterCcw || key == BezelKey::FmsInnerCcw) {
+      fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
       return true;
     }
@@ -401,12 +454,14 @@ bool MfdController::fplBezelKey(BezelKey key) {
         if (onLegRow && fplCursorCol_ == FplCursorCol::Ident) {
           fplCursorCol_ = FplCursorCol::Altitude;
         } else {
+          fplListCursorFollowsActive_ = false;
           fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
           fplCursorCol_ = FplCursorCol::Ident;
         }
       } else if (onLegRow && fplCursorCol_ == FplCursorCol::Ident) {
         fplCursorCol_ = FplCursorCol::Altitude;
       } else {
+        fplListCursorFollowsActive_ = false;
         fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
         fplCursorCol_ = FplCursorCol::Ident;
       }
@@ -415,6 +470,7 @@ bool MfdController::fplBezelKey(BezelKey key) {
       if (onAltCol) {
         fplCursorCol_ = FplCursorCol::Ident;
       } else if (fplCursorRow_ > 0) {
+        fplListCursorFollowsActive_ = false;
         fplCursorRow_ -= 1;
         const int prevLeg = fplCursorLegIndex();
         fplCursorCol_ =
@@ -456,10 +512,28 @@ bool MfdController::fplBezelKey(BezelKey key) {
       }
       return true;
     case BezelKey::Ent:
-      return true;  // no function on a bare row, but the cursor owns the key
+      if (onLegRow) {
+        requestActivateFlightPlanLeg(legIndex);
+      }
+      return true;
     default:
       return false;
   }
+}
+
+void MfdController::requestActivateFlightPlanLeg(int toLegIndex) {
+  if (toLegIndex < 0 || toLegIndex >= static_cast<int>(fplLegs_.size())) return;
+  dtoRequestPending_ = false;
+  fplActivateLegIndex_ = toLegIndex;
+  fplActivateLegPending_ = true;
+}
+
+bool MfdController::consumeActivateLegRequest(int& toLegIndex) {
+  if (!fplActivateLegPending_) return false;
+  if (fplEditPending_) return false;
+  fplActivateLegPending_ = false;
+  toLegIndex = fplActivateLegIndex_;
+  return toLegIndex >= 0;
 }
 
 FmsWaypointEntry* MfdController::activeWaypointEntry() {
@@ -599,6 +673,15 @@ void MfdController::replaceFlightPlanFromExternal(
   fplLastMapPlan_ = plan;
 }
 
+PersistedFlightPlan MfdController::persistedFlightPlanSnapshot() const {
+  PersistedFlightPlan out;
+  if (fplLegs_.empty()) return out;
+  out.active = true;
+  out.destinationFilled = fplDestinationFilled_;
+  out.legs = fplLegs_;
+  return out;
+}
+
 void MfdController::restorePersistedFlightPlan(
     const PersistedFlightPlan& saved) {
   if (!saved.active || saved.legs.empty()) return;
@@ -611,6 +694,15 @@ void MfdController::restorePersistedFlightPlan(
   fplLoadedApproach_ = {};
   fplApproachHeaderLabel_.clear();
   fplCursorRow_ = 0;
+  fplLastPublished_ = saved.legs;
+  fplLastMapPlan_ = saved.legs;
+  tryRestorePersistedApproach();
+  if (fplApproachLegCount_ <= 0) {
+    reinferApproachFromProcedureLegs();
+  }
+  if (fplApproachLegCount_ > 0 && !fplLoadedApproach_.name.empty()) {
+    fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
+  }
 }
 
 }  // namespace avionics

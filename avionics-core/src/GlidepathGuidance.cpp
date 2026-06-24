@@ -122,7 +122,10 @@ GlidepathSolution computeGlidepath(const MapData& map, const FlightData& data) {
   const int thrAltFt = thresholdElevationFt(plan, thrIdx);
   if (thrAltFt <= 0) return gp;
 
-  const int activeIdx = resolveNavLegToIndex(plan, data, map);
+  const int activeIdx =
+      data.fmaActiveLegIndex >= 0
+          ? data.fmaActiveLegIndex
+          : legIndexInPlan(plan, data.fmaToWpt);
   const double distNm =
       alongTrackDistanceNm(map, data, plan, activeIdx, thrIdx);
   if (distNm <= 0.05 || distNm > kGlidepathMaxDistNm) return gp;

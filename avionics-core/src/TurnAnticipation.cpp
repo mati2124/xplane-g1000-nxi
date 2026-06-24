@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "avionics/FplRouteEdit.h"
 #include "avionics/GpsLegCourse.h"
 #include "avionics/NavMath.h"
 
@@ -56,14 +57,16 @@ TurnAnticipation computeTurnAnticipation(const MapData& map,
   if (data.cdiSource != CdiSource::Gps) return out;
   if (!map.positionValid || !data.dataLinkValid) return out;
   if (data.fmaToWpt.empty()) return out;
-  if (map.directToActive) return out;
-  // Direct-To has no outbound leg to anticipate.
-  if (data.fmaFromWpt.empty() && !data.fmaToWpt.empty()) return out;
+  // Leg navigation only: Direct-To (no FROM on the FMA) has no outbound turn.
+  if (navDirectToActive(data)) return out;
 
   const std::vector<MapLeg>& plan = map.flightPlan;
   if (plan.size() < 2) return out;
 
-  const int activeIdx = legIndexInPlan(plan, data.fmaToWpt);
+  int activeIdx = data.fmaActiveLegIndex;
+  if (activeIdx < 0 || activeIdx >= static_cast<int>(plan.size())) {
+    activeIdx = legIndexInPlan(plan, data.fmaToWpt);
+  }
   if (activeIdx < 0 || activeIdx + 1 >= static_cast<int>(plan.size())) {
     return out;
   }

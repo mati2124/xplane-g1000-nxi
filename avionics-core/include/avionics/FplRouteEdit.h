@@ -81,6 +81,17 @@ int fplCursorSelectableLast(const FplRouteEdit& edit,
 void fplClampCursorRow(FplRouteEdit& edit, const std::string& approachAirport,
                        FplCursorLayout layout);
 
+int fplActiveSelectableRow(const FplRouteEdit& edit,
+                           const std::string& approachAirport,
+                           const std::string& activeToIdent,
+                           FplCursorLayout layout = FplCursorLayout::SectionRows);
+
+void fplSyncListCursorToActiveLeg(FplRouteEdit& edit,
+                                  const std::string& approachAirport,
+                                  const std::string& activeToIdent,
+                                  bool& listCursorFollowsActive,
+                                  FplCursorLayout layout = FplCursorLayout::SectionRows);
+
 void fplRefreshDestinationFilledAfterRemove(FplRouteEdit& edit, int legCountAfter);
 
 void fplAdjustApproachGroupingAfterRemove(FplRouteEdit& edit, int removedLegIndex);
@@ -88,6 +99,12 @@ void fplAdjustApproachGroupingAfterRemove(FplRouteEdit& edit, int removedLegInde
 bool fplRemoveLegAtIndex(FplRouteEdit& edit, int legIndex);
 
 void fplClearFlightPlan(FplRouteEdit& edit);
+
+// During GPS Direct-To, mirror the map plan when it still carries a loaded
+// procedure so the FPL pages keep showing approach legs (blank enroute template).
+bool fplAdoptMapPlanDuringDirectTo(FplRouteEdit& edit,
+                                   const std::vector<MapLeg>& mapPlan,
+                                   const std::vector<MapLeg>& lastPublished);
 
 // Insert or replace the waypoint at the highlighted row. Returns false when
 // the airway expansion failed (caller keeps the entry window open).

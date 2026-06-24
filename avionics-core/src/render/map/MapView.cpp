@@ -113,7 +113,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // through like the real NXi instead of procedural tan over the Gulf.
   if (config.style.showLand &&
       (!map.landLines.empty() || !map.cities.empty())) {
-    mapview::drawLandData(r, map, proj, rangeNm, false, viewHalfExtentNm);
+    mapview::drawLandData(r, map, proj, rangeNm, false, viewHalfExtentNm,
+                          scaleRangeNm);
     if (config.style.showLabels) {
       mapview::drawCityDots(r, map, proj, rangeNm, symSize);
     }

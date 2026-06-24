@@ -22,6 +22,7 @@ add_library(xplane-avionics MODULE
   src/DatarefWeatherRadar.cpp
   src/FlightPlanBridge.cpp
   src/FmsRouteProgrammer.cpp
+  src/FmsDebugOverlay.cpp
   src/CommandBridge.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/DsfTerrainStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/LandDataStore.cpp

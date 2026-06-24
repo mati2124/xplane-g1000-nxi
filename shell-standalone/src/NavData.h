@@ -58,6 +58,9 @@ class NavDataStore : public NavFeatureSource {
   // first identifier with a given prefix (the G1000 spell-ahead fill-in).
   std::vector<MapFeature> lookupIdent(const std::string& ident,
                                       std::size_t maxCount) const override;
+  std::vector<MapFeature> lookupIdentNear(const std::string& ident,
+                                          double refLat, double refLon,
+                                          std::size_t maxCount) const override;
   std::string firstIdentWithPrefix(const std::string& prefix) const override;
 
   std::vector<MapApproach> approachesForAirport(

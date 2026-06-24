@@ -63,6 +63,17 @@ class ShellNavMapData : public NavFeatureSource {
     return features;
   }
 
+  std::vector<MapFeature> lookupIdentNear(const std::string& ident,
+                                          double refLat, double refLon,
+                                          std::size_t maxCount) const override {
+    std::vector<MapFeature> features =
+        navData_.lookupIdentNear(ident, refLat, refLon, maxCount);
+    if (aptData_.loaded()) {
+      for (MapFeature& f : features) aptData_.enrichAirport(f);
+    }
+    return features;
+  }
+
   std::string firstIdentWithPrefix(const std::string& prefix) const override {
     return navData_.firstIdentWithPrefix(prefix);
   }
@@ -144,8 +155,10 @@ class ShellNavMapData : public NavFeatureSource {
   }
 
   std::vector<MapLandCity> nearbyCities(double lat, double lon, float rangeNm,
-                                        std::size_t maxCount) const override {
-    return landData_.nearbyCities(lat, lon, rangeNm, maxCount);
+                                        std::size_t maxCount,
+                                        float viewHalfExtentNm = 0.0f) const override {
+    return landData_.nearbyCities(lat, lon, rangeNm, maxCount,
+                                  viewHalfExtentNm);
   }
 
   std::vector<MapObstacle> nearbyObstacles(double lat, double lon, float rangeNm,

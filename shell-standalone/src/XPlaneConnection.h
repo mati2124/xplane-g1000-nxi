@@ -97,6 +97,7 @@ class XPlaneConnection : public SimulatorConnection {
     routeOverrideSet_ = true;
     map_.flightPlan = routeOverride_;
     if (routeOverride_.empty()) setDirectTo({});
+    lastSyncedFmsLegIndex_ = -1;
     if (fmsWriteEnabled_) fmsBridge_.writePlan(routeOverride_);
   }
 
@@ -133,8 +134,9 @@ class XPlaneConnection : public SimulatorConnection {
   void setSelectedCourse(float deg);
   void setBaroInHg(float inHg);
 
-  void applyGpsNavigation(bool obsMode, CdiSource cdiSource,
-                          float nmPerDot) override;
+  void applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
+                          CdiSource cdiSource, float nmPerDot) override;
+  void syncSimulatorActiveLeg(int legIndex) override;
 
  private:
   void sendDataref(const char* path, float value);
@@ -172,14 +174,11 @@ class XPlaneConnection : public SimulatorConnection {
   // Drop the local Direct-To display override without reprogramming the FMS
   // (X-Plane may already have sequenced past the DTO fix).
   void releaseDirectToOverride();
+  void onNavigatorDirectToCaptured(int activeLegIndex);
 
   // Fill directTo_ lat/lon from the nav database when the Direct-To window
   // supplied only an ident (needed for map course + DIS/BRG away from the target).
   void ensureDirectToCoords();
-
-  // Keep directToActive_ in sync with X-Plane sequencing / local arrival.
-  void syncDirectToWithSimulator(const std::string& simDestination,
-                                 const std::vector<MapLeg>& plan);
 
   // data_ is the smoothed state returned by snapshot(); target_ holds the most
   // recent values decoded from packets, which data_ is eased toward each frame.
@@ -305,6 +304,7 @@ class XPlaneConnection : public SimulatorConnection {
 
   float lastSentGpsVdefDots_ = 999.0f;
   float lastSentGpsHdefDots_ = 999.0f;
+  int lastSyncedFmsLegIndex_ = -1;
   float lastSentGpsCourseDeg_ = -999.0f;
   float lastSentGsTrackVsFpm_ = 99999.0f;
   bool gpsGlidepathHasSignal_ = false;

@@ -34,6 +34,11 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
       dtoPreservePlan_ = dtoPreserveLegIndex_ >= 0;
       initial = flightPlanSelectedLegIdent();
     }
+    if (initial.empty() && window_ == PfdWindow::Nearest && !nearest_.empty()) {
+      const int idx = std::max(
+          0, std::min(nearestCursor_, static_cast<int>(nearest_.size()) - 1));
+      initial = nearest_[static_cast<std::size_t>(idx)].id;
+    }
     if (initial.empty() && !activeWaypoint_.empty()) {
       initial = activeWaypoint_;
     }
@@ -65,9 +70,15 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
   // Armed: the Activate? prompt is highlighted; ENT engages the direct course.
   if (dtoArmed_) {
     if (key == BezelKey::Ent) {
-      dtoRequestTarget_.lat = dtoEntry_.match.lat;
-      dtoRequestTarget_.lon = dtoEntry_.match.lon;
-      dtoRequestTarget_.id = dtoEntry_.match.id;
+      if (dtoPreservePlan_ && dtoPreserveLegIndex_ >= 0 &&
+          dtoPreserveLegIndex_ < static_cast<int>(fplLegs_.size())) {
+        dtoRequestTarget_ =
+            fplLegs_[static_cast<std::size_t>(dtoPreserveLegIndex_)];
+      } else {
+        dtoRequestTarget_.lat = dtoEntry_.match.lat;
+        dtoRequestTarget_.lon = dtoEntry_.match.lon;
+        dtoRequestTarget_.id = dtoEntry_.match.id;
+      }
       dtoRequestPending_ = true;
       if (dtoPreservePlan_) {
         if (dtoPreserveLegIndex_ >= 0) {

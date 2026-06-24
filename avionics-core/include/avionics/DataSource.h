@@ -11,6 +11,8 @@
 
 namespace avionics {
 
+class FmsNavigator;
+
 // Abstraction over "where flight data comes from".
 //
 // The X-Plane shell implements this by reading datarefs in-process; the
@@ -89,12 +91,14 @@ class DataSource {
   // DataSource.
   void toggleDisplayBackup() { displayBackup_.toggle(); }
 
-  // Reconcile GPS leg DTK/CDI with the active flight plan. Called from the
-  // avionics engine after each source update so navigation state is correct
-  // for rendering and sim write-back (X-Plane OBS course does not track GPS
-  // leg sequencing).
-  virtual void applyGpsNavigation(bool /*obsMode*/, CdiSource /*cdiSource*/,
-                                  float /*nmPerDot*/) {}
+  // Reconcile GPS leg DTK/CDI with the active flight plan via FmsNavigator.
+  // Called from the avionics engine after each source update.
+  virtual void applyGpsNavigation(FmsNavigator& /*navigator*/, bool /*obsMode*/,
+                                  CdiSource /*cdiSource*/, float /*nmPerDot*/) {}
+
+  // Push the active flight-plan leg index into the simulator FMS destination
+  // (XPLMSetDestinationFMSEntry). Default no-op; X-Plane shells override.
+  virtual void syncSimulatorActiveLeg(int /*legIndex*/) {}
 
  protected:
   // Call from update() to advance the exit-delay timer and publish the flag on

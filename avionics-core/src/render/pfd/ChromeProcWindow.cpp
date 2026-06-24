@@ -516,7 +516,8 @@ void drawApproachSelectWindow(Renderer& r, const WindowFrame& f, float w, float 
 
 // PFD Procedures window (PROC bezel key, Pilot's Guide 5.8 "Procedures"): the
 // lower-right popout the other PFD windows share. The top-level menu lists the
-// approach-activation items (disabled in this suite) and the Select Approach /
+// approach-activation items (VTF / missed approach disabled in this suite) and
+// the Select Approach /
 // Arrival / Departure items; selecting one switches the window to the
 // procedure-selection list (procedure names, then transitions) that loads the
 // chosen procedure into the active flight plan.

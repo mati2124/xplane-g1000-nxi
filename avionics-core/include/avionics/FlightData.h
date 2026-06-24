@@ -269,6 +269,8 @@ struct FlightData {
   // FMA (center NavCom panel): active leg, lateral/vertical modes.
   std::string fmaFromWpt;
   std::string fmaToWpt = "KRSW";
+  // Index of fmaToWpt in the active flight plan (-1 when unknown / Direct-To).
+  int fmaActiveLegIndex = -1;
   float fmaLegDistanceNm = 12.4f;
   float fmaLegBearingDeg = 315.0f;
   // Turn-anticipation annunciation for the Navigation Status Box (replaces the

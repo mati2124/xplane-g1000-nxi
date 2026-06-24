@@ -311,10 +311,81 @@ inline int fplLegIndexForSectionRow(int sectionRow, int legCount,
   }
 
   return -1;
-
 }
 
+inline int fplSectionSelectableRowForLegIndex(
+    int legIndex, const std::vector<FplSectionRow>& sectionRows, int legCount,
+    bool destinationFilled, bool directToActive = false) {
+  if (legIndex < 0) return -1;
+  int sel = 0;
+  for (const FplSectionRow& sr : sectionRows) {
+    if (!fplSectionRowIsSelectable(sr, legCount, destinationFilled)) continue;
+    if (fplLegIndexForSectionRow(sel, legCount, destinationFilled,
+                                 directToActive) == legIndex) {
+      return sel;
+    }
+    ++sel;
+  }
+  return -1;
+}
 
+// Keep the magenta active-leg marker visible while scrolling/editing a loaded
+// approach whenever the active navigation leg is on the approach segment, or
+// during GPS Direct-To to a fix on that approach.
+inline bool fplPinActiveApproachLeg(bool approachLoaded, int activeLegIdx,
+                                    int approachStart, int approachCount,
+                                    bool localDraft, bool directToActive = false) {
+  if (localDraft || activeLegIdx < 0) return false;
+  if (directToActive) return true;
+  if (!approachLoaded || approachCount <= 0) return false;
+  return activeLegIdx >= approachStart &&
+         activeLegIdx < approachStart + approachCount;
+}
+
+// Magenta active-leg flash on the active navigation row. Pinned during
+// Direct-To on a loaded approach; otherwise follows the list cursor.
+inline bool fplShowActiveLegHighlight(int activeLegIdx, int cursorLegIdx,
+                                      int activeSelectableRow, int listCursorRow,
+                                      bool pinActiveLeg = false) {
+  if (pinActiveLeg) return true;
+  if (activeLegIdx >= 0 && cursorLegIdx >= 0 &&
+      activeLegIdx == cursorLegIdx) {
+    return true;
+  }
+  return activeSelectableRow >= 0 &&
+         listCursorRow == activeSelectableRow;
+}
+
+// List scroll offset: center on focusRow when possible; when pinnedRow is set
+// expand or shift the window so both rows stay visible when they fit.
+inline int fplListScrollFirst(int focusRow, int pinnedRow, int totalRows,
+                              int visibleRows) {
+  if (totalRows <= visibleRows || visibleRows <= 0) return 0;
+  const int maxFirst = totalRows - visibleRows;
+  int first = focusRow - visibleRows / 2;
+  first = std::max(0, std::min(first, maxFirst));
+  if (pinnedRow < 0 || pinnedRow == focusRow) return first;
+
+  const int lo = std::min(focusRow, pinnedRow);
+  const int hi = std::max(focusRow, pinnedRow);
+  if (hi - lo + 1 > visibleRows) {
+    if (pinnedRow < first) first = pinnedRow;
+    else if (pinnedRow >= first + visibleRows) {
+      first = pinnedRow - visibleRows + 1;
+    }
+    return std::max(0, std::min(first, maxFirst));
+  }
+
+  const int want = lo - (visibleRows - (hi - lo + 1)) / 2;
+  return std::max(0, std::min(want, maxFirst));
+}
+
+inline bool fplShowListRowSelection(int selectableIdx, int listCursorRow,
+                                    int activeSelectableRow, bool cursorOn) {
+  if (selectableIdx != listCursorRow) return false;
+  if (cursorOn) return true;
+  return activeSelectableRow < 0 || listCursorRow != activeSelectableRow;
+}
 
 // Which section row carries the magenta active-leg highlight (Pilot's Guide
 // Fig. 5-48). The vertical connector is drawn separately from origin to this
@@ -723,6 +794,19 @@ inline int fplApproachDisplayRowIndexForSelectable(
 
 }
 
+inline int fplApproachDisplayRowIndexForLegIndex(
+    int legIndex, const std::vector<MapLeg>& legs, int approachStart,
+    int approachCount, bool blankOriginSection, bool destinationFilled) {
+  if (legIndex < 0) return -1;
+  const auto rows =
+      fplApproachDisplayRowList(legs, approachStart, approachCount,
+                                blankOriginSection, destinationFilled);
+  for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+    if (rows[static_cast<std::size_t>(i)].legIndex == legIndex) return i;
+  }
+  return -1;
+}
+
 
 
 inline int fplApproachLegIndexForSelectable(int selectableRow,
@@ -755,7 +839,23 @@ inline int fplApproachLegIndexForSelectable(int selectableRow,
 
 }
 
-
+inline int fplApproachSelectableRowForLegIndex(
+    int legIndex, const std::vector<MapLeg>& legs, int approachStart,
+    int approachCount, bool blankOriginSection, bool destinationFilled) {
+  if (legIndex < 0) return -1;
+  const int last = fplApproachSelectableCount(
+                       legs, approachStart, approachCount, blankOriginSection,
+                       destinationFilled) -
+                   1;
+  for (int sel = 0; sel <= last; ++sel) {
+    if (fplApproachLegIndexForSelectable(sel, legs, approachStart, approachCount,
+                                         blankOriginSection,
+                                         destinationFilled) == legIndex) {
+      return sel;
+    }
+  }
+  return -1;
+}
 
 inline int fplApproachInsertIndexForSelectable(int selectableRow,
 

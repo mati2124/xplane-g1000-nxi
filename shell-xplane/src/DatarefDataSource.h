@@ -22,6 +22,7 @@
 #include "avionics/DataSource.h"
 #include "avionics/Eis.h"
 #include "avionics/EisLegacy.h"
+#include "avionics/FmsNavigator.h"
 #include "avionics/MapData.h"
 #include "avionics/MapRange.h"
 #include "avionics/NexradWeatherRadar.h"
@@ -111,9 +112,11 @@ class DatarefDataSource : public DataSource {
   void clearRouteOverride();
   void setDirectTo(MapLeg target);
   void clearDirectTo();
+  void onNavigatorDirectToCaptured(int activeLegIndex);
 
-  void applyGpsNavigation(bool obsMode, CdiSource cdiSource,
-                          float nmPerDot) override;
+  void applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
+                          CdiSource cdiSource, float nmPerDot) override;
+  void syncSimulatorActiveLeg(int legIndex) override;
 
   // apt.dat airport metadata (tower/fuel/kind and published comm frequencies).
   // Used by the plugin NavFeatureSource for COM frequency decode and WPT/NRST
@@ -123,6 +126,9 @@ class DatarefDataSource : public DataSource {
       const std::string& icao) const;
   std::vector<MapFeature> lookupNavIdent(const std::string& ident,
                                          std::size_t maxCount) const;
+  std::vector<MapFeature> lookupNavIdentNear(const std::string& ident,
+                                             double refLat, double refLon,
+                                             std::size_t maxCount) const;
   std::string firstNavIdentWithPrefix(const std::string& prefix) const;
 
  private:
@@ -380,6 +386,7 @@ class DatarefDataSource : public DataSource {
   float lastPushedCourseDeg_ = -999.0f;
   float lastSentGpsCourseDeg_ = -999.0f;
   float lastSentGpsHdefDots_ = 999.0f;
+  int lastSyncedFmsLegIndex_ = -1;
   bool gpsOverrideActive_ = false;
 };
 

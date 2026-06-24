@@ -46,16 +46,14 @@ TEST(GlidepathGuidanceTest, UsesMaptElevationNotFafCrossingHeight) {
   EXPECT_GT(gp.pathAltitudeFt, 100.0f);
 }
 
-TEST(GlidepathGuidanceTest, StaleActiveLegStillProducesReasonablePath) {
+TEST(GlidepathGuidanceTest, ActiveLegIndexDrivesGlidepathDistance) {
   const std::vector<MapLeg> plan = makeRnavFinalApproachPlan();
   const MapLeg& faf = plan[1];
 
-  // Aircraft near FAF but FMA still names IAF (sim lag).
   const MapData map = makeMapAt(faf.lat, faf.lon, plan);
   FlightData data = makeGpsFlightData("IAF01", "IAF01", 5.0f, 2000.0f);
-  const double distToFaf =
-      navDistanceNm(map.ownshipLat, map.ownshipLon, faf.lat, faf.lon);
-  data.fmaLegDistanceNm = static_cast<float>(distToFaf);
+  // FmsNavigator publishes the geometrically active leg even when FMA idents lag.
+  data.fmaActiveLegIndex = 1;
 
   const GlidepathSolution gp = computeGlidepath(map, data);
   EXPECT_TRUE(gp.valid);

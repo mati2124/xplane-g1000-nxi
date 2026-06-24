@@ -395,7 +395,7 @@ void SoftkeyController::toggleWindow(PfdWindow w) {
   if (window_ == PfdWindow::References) refCursor_ = RefField::TimerCmd;
   if (window_ == PfdWindow::Nearest) nearestCursor_ = 0;
   if (window_ == PfdWindow::FlightPlan) {
-    fplCursorRow_ = 0;
+    fplListCursorFollowsActive_ = true;
     fplCursorOn_ = false;
     fplEntry_.reset();
     fplConfirm_ = FplConfirm::None;

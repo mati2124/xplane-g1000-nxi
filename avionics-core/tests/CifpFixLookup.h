@@ -31,4 +31,15 @@ inline CifpFixTable kpgdR04FixTable() {
   return table;
 }
 
+inline CifpFixTable kfmyR05FixTable() {
+  CifpFixTable table;
+  table.fixes["CITAG"] = {26.237036111, -81.779541667};
+  table.fixes["BUTLY"] = {26.351555556, -81.960486111};
+  table.fixes["UZAWO"] = {26.436994444, -82.046516667};
+  table.fixes["GRAMS"] = {26.512741667, -81.953697222};
+  table.fixes["HADMO"] = {26.534000000, -81.940000000};
+  table.fixes["RW05"] = {26.5803025, -81.8672716};
+  return table;
+}
+
 }  // namespace avionics::test

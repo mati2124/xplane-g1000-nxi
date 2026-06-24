@@ -49,6 +49,9 @@ class FlightPlanBridgeClient {
   void writeDirectTo(MapLeg target);
   void clearDirectTo();
 
+  // Set the sim FMS destination to the given flight-plan leg index.
+  void writeActiveLeg(int legIndex);
+
  private:
   void run();              // background read/write loop
   bool pollOnce();         // one read request/response round trip
@@ -69,6 +72,8 @@ class FlightPlanBridgeClient {
   bool hasDtoCmd_ = false;
   bool dtoCmdActive_ = false;
   MapLeg dtoCmdTarget_;
+  bool hasActiveLegCmd_ = false;
+  int activeLegCmdIndex_ = -1;
 
   std::atomic<bool> stop_{false};
   std::thread thread_;

@@ -324,9 +324,13 @@ std::string defaultTransition(const std::vector<std::string>& transitions) {
 }  // namespace
 
 void SoftkeyController::buildProcMenu() {
+  const bool approachLoaded =
+      fplApproachLegCount_ > 0 &&
+      fplApproachLegStart_ >= 0 &&
+      fplApproachLegStart_ < static_cast<int>(fplLegs_.size());
   procMenuItems_ = {
       {"Activate Vector-to-Final", ProcMenuAction::ActivateVtf, false},
-      {"Activate Approach", ProcMenuAction::ActivateApproach, false},
+      {"Activate Approach", ProcMenuAction::ActivateApproach, approachLoaded},
       {"Activate Missed Approach", ProcMenuAction::ActivateMissed, false},
       {"Select Approach", ProcMenuAction::SelectApproach, true},
       {"Select Arrival", ProcMenuAction::SelectArrival, true},
@@ -700,6 +704,12 @@ void SoftkeyController::procFocusLoad() {
   procActivateArmed_ = false;
 }
 
+void SoftkeyController::procFocusActivate() {
+  procApproachField_ = ProcApproachField::Activate;
+  procActivateArmed_ = true;
+  procLoadArmed_ = false;
+}
+
 void SoftkeyController::procOpenApproachList() {
   procStep_ = ProcStep::ProcedureList;
   procSubListOpen_ = true;
@@ -788,6 +798,15 @@ void SoftkeyController::procLoadSelected(const std::string& name,
   procActivateArmed_ = false;
 }
 
+void SoftkeyController::procActivateSelected(const std::string& name,
+                                             const std::string& transition) {
+  procLoadSelected(name, transition);
+  if (fplApproachLegStart_ >= 0 &&
+      fplApproachLegStart_ < static_cast<int>(fplLegs_.size())) {
+    requestDirectToFlightPlanLeg(fplApproachLegStart_);
+  }
+}
+
 std::string SoftkeyController::flightPlanApproachAirportIcao() const {
   if (fplApproachLegCount_ <= 0) return {};
   const std::string loadedIcao =
@@ -860,8 +879,14 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
             procCategory_ = ProcedureType::Approach;
             procOpenApproachSelect();
             return true;
+          case ProcMenuAction::ActivateApproach:
+            if (fplApproachLegCount_ > 0) {
+              requestDirectToFlightPlanLeg(fplApproachLegStart_);
+              window_ = PfdWindow::None;
+            }
+            return true;
           default:
-            return true;  // activate items are inert in this suite
+            return true;  // VTF / missed-approach items are inert in this suite
         }
       }
       case BezelKey::Clr:
@@ -942,9 +967,16 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
         }
         if (procApproachField_ == ProcApproachField::Activate &&
             !procSelectedName_.empty()) {
-          procApproachField_ = ProcApproachField::Activate;
-          procActivateArmed_ = true;
-          procLoadArmed_ = false;
+          if (procActivateArmed_) {
+            const std::string transition =
+                procSelectedTransition_.empty()
+                    ? defaultTransition(procTransitions(procCategory_,
+                                                        procSelectedName_))
+                    : procSelectedTransition_;
+            procActivateSelected(procSelectedName_, transition);
+          } else {
+            procFocusActivate();
+          }
           return true;
         }
         procFocusLoad();
@@ -977,9 +1009,7 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
           procOpenTransitionList();
         } else if (procApproachField_ == ProcApproachField::Activate &&
                    !procSelectedName_.empty()) {
-          procApproachField_ = ProcApproachField::Activate;
-          procActivateArmed_ = true;
-          procLoadArmed_ = false;
+          procFocusActivate();
         } else if (procApproachField_ == ProcApproachField::Load &&
                    !procSelectedName_.empty()) {
           procFocusLoad();
@@ -996,9 +1026,7 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
           procOpenTransitionList();
         } else if (procApproachField_ == ProcApproachField::Activate &&
                    !procSelectedName_.empty()) {
-          procApproachField_ = ProcApproachField::Activate;
-          procActivateArmed_ = true;
-          procLoadArmed_ = false;
+          procFocusActivate();
         } else if (procApproachField_ == ProcApproachField::Load &&
                    !procSelectedName_.empty()) {
           procFocusLoad();

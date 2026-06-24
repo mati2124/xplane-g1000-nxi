@@ -71,6 +71,8 @@ class FlightPlanBridge {
   bool hasDtoWrite_ = false;
   bool dtoWriteActive_ = false;
   MapLeg dtoWriteTarget_;
+  bool hasActiveLegWrite_ = false;
+  int activeLegWriteIndex_ = -1;
 
   std::atomic<bool> stop_{false};
   std::thread thread_;

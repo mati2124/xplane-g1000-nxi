@@ -7,6 +7,7 @@
 #include "avionics/Color.h"
 #include "avionics/ComDecode.h"
 #include "avionics/FlightPlanPersistence.h"
+#include "avionics/FmsNavigator.h"
 #include "avionics/FplRouteEdit.h"
 #include "avionics/GlidepathGuidance.h"
 #include "avionics/GpsLegCourse.h"
@@ -45,8 +46,9 @@ int activeLegIndex(const std::vector<MapLeg>& plan, const std::string& toWpt) {
 double alongTrackDistanceNm(const MapData& map, const FlightData& data,
                             const std::vector<MapLeg>& plan, int targetIdx) {
   if (targetIdx < 0 || targetIdx >= static_cast<int>(plan.size())) return 0.0;
-  int activeIdx = resolveNavLegToIndex(plan, data, map);
-  if (activeIdx < 0) activeIdx = activeLegIndex(plan, data.fmaToWpt);
+  int activeIdx = data.fmaActiveLegIndex;
+  if (activeIdx < 0) activeIdx = legIndexInPlan(plan, data.fmaToWpt);
+  if (activeIdx < 0) activeIdx = 0;
   double distNm = navDistanceNm(map.ownshipLat, map.ownshipLon, plan[activeIdx].lat,
                                 plan[activeIdx].lon);
   for (int i = activeIdx; i < targetIdx; ++i) {
@@ -230,13 +232,15 @@ void AvionicsEngine::update(double dtSeconds) {
   // what MapView draws (pointer geo can lag the view center until edge-scroll).
   mfd_.applyMapPanToDataSource(*dataSource_, dataSource_->snapshot());
   dataSource_->setMapViewHalfExtentNm(mfd_.mapViewHalfExtentNm());
-  dataSource_->setChartRangeNm(mfd_.rangeNm());
+  dataSource_->setChartRangeNm(sharedMapQueryRangeNm());
   if (drivesDataSource_) dataSource_->update(dtSeconds);
 
   if (drivesDataSource_ &&
       dataSource_->connectionState() == ConnectionState::Connected) {
+    applyActivateLegRequests();
     const FlightData& snap = dataSource_->snapshot();
     dataSource_->applyGpsNavigation(
+        navigator_,
         softkeys_.displayToggle(DisplayToggle::Obs),
         softkeys_.cdiSourceFor(snap.cdiSource), 0.0f);
   }
@@ -244,7 +248,8 @@ void AvionicsEngine::update(double dtSeconds) {
   // Flight-plan sync uses mapSnapshot(); pump the source first so a route
   // override applied before this frame's update is visible (softkeys_.update
   // above may have seen a stale plan).
-  softkeys_.syncFlightPlanFromMap(dataSource_->mapSnapshot());
+  softkeys_.syncFlightPlanFromMap(dataSource_->mapSnapshot(),
+                                  navDirectToActive(dataSource_->snapshot()));
 
   // Keep the MFD's checklist navigation in step with the loaded file (the data
   // is owned by the source; the controller only holds the interactive state).
@@ -275,6 +280,35 @@ bool flightPlanApproachGroupingEqual(const FlightPlanApproachState& a,
 }
 
 }  // namespace
+
+void AvionicsEngine::applyActivateLegRequests() {
+  if (!drivesDataSource_) return;
+
+  auto applyFrom = [this](int legIdx) {
+    if (legIdx >= 0) {
+      navigator_.setActiveLegIndex(legIdx);
+      dataSource_->syncSimulatorActiveLeg(legIdx);
+    }
+  };
+
+  int legIdx = -1;
+  if (softkeys_.consumeActivateLegRequest(legIdx)) {
+    applyFrom(legIdx);
+    return;
+  }
+  if (mfd_.consumeActivateLegRequest(legIdx)) {
+    applyFrom(legIdx);
+    return;
+  }
+  if (!softkeyPeer_) return;
+  if (softkeyPeer_->softkeyController().consumeActivateLegRequest(legIdx)) {
+    applyFrom(legIdx);
+    return;
+  }
+  if (softkeyPeer_->mfdController().consumeActivateLegRequest(legIdx)) {
+    applyFrom(legIdx);
+  }
+}
 
 void AvionicsEngine::syncFlightPlanPeer() {
   if (!softkeyPeer_) return;
@@ -442,6 +476,21 @@ bool AvionicsEngine::isLivePageUp() const {
          dataSource_->connectionState() == ConnectionState::Connected;
 }
 
+float AvionicsEngine::sharedMapQueryRangeNm() const {
+  float rangeNm = mfd_.rangeNm();
+  if (page_ == DisplayPage::PrimaryFlightDisplay) {
+    rangeNm = std::max(rangeNm, softkeys_.insetRangeNm());
+  }
+  if (softkeyPeer_ != nullptr) {
+    rangeNm = std::max(rangeNm, softkeyPeer_->mfdController().rangeNm());
+    if (softkeyPeer_->page() == DisplayPage::PrimaryFlightDisplay) {
+      rangeNm =
+          std::max(rangeNm, softkeyPeer_->softkeyController().insetRangeNm());
+    }
+  }
+  return rangeNm;
+}
+
 void AvionicsEngine::pressSoftkey(int index) {
   if (awaitingPowerUpAck()) {
     if (index == kSoftkeyCount - 1) acknowledgePowerUp();
@@ -483,7 +532,7 @@ void AvionicsEngine::pressBezelKey(BezelKey key) {
     if (page_ == DisplayPage::MultiFunctionDisplay &&
         isMapRangePanBezelKey(key)) {
       mfd_.pressBezelKey(key);
-      dataSource_->setChartRangeNm(mfd_.rangeNm());
+      dataSource_->setChartRangeNm(sharedMapQueryRangeNm());
       return;
     }
     return;
@@ -503,7 +552,7 @@ void AvionicsEngine::pressBezelKey(BezelKey key) {
         break;
       case DisplayPage::MultiFunctionDisplay:
         mfd_.pressBezelKey(key);
-        dataSource_->setChartRangeNm(mfd_.rangeNm());
+        dataSource_->setChartRangeNm(sharedMapQueryRangeNm());
         break;
     }
     return;

@@ -111,6 +111,43 @@ TEST(CifpParserTest, KpgdR04GlidepathFromExpandedProcedure) {
   EXPECT_LT(gp.pathAltitudeFt, 2500.0f);
 }
 
+TEST(CifpParserTest, ListsCitagTransitionForKfmyR05) {
+  std::ifstream in(fixturePath("KFMY_R05_CITAG.dat"));
+  ASSERT_TRUE(in.good());
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  const std::vector<ApproachTransitionOption> transitions =
+      listApproachTransitions(data, "R05");
+  bool foundCitag = false;
+  for (const ApproachTransitionOption& opt : transitions) {
+    if (opt.id == "CITAG") foundCitag = true;
+  }
+  EXPECT_TRUE(foundCitag);
+}
+
+TEST(CifpParserTest, ExpandsKfmyR05CitagFeederSegment) {
+  std::ifstream in(fixturePath("KFMY_R05_CITAG.dat"));
+  ASSERT_TRUE(in.good());
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  CifpFixTable fixes = kfmyR05FixTable();
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "R05", "CITAG",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 5u);
+
+  const int citagIdx = legIndexById(legs, "CITAG");
+  const int butlyIdx = legIndexById(legs, "BUTLY");
+  const int uzawoIdx = legIndexById(legs, "UZAWO");
+  const int gramsIdx = legIndexById(legs, "GRAMS");
+  const int rwIdx = legIndexById(legs, "RW05");
+  EXPECT_GE(citagIdx, 0);
+  EXPECT_GT(butlyIdx, citagIdx);
+  EXPECT_GT(uzawoIdx, butlyIdx);
+  EXPECT_GT(gramsIdx, uzawoIdx);
+  EXPECT_GT(rwIdx, gramsIdx);
+  EXPECT_EQ(legs[static_cast<std::size_t>(gramsIdx)].procedureRole, "faf");
+  EXPECT_EQ(legs[static_cast<std::size_t>(rwIdx)].procedureRole, "mapt");
+}
+
 TEST(CifpParserTest, KpgdR04LegSequenceNearFaf) {
   const CifpAirportProcedures data = loadKpgdFixture();
   CifpFixTable fixes = kpgdR04FixTable();

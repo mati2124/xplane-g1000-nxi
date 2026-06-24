@@ -12,6 +12,10 @@ using pfd::fplApproachLegIndexForSelectable;
 using pfd::fplApproachSelectableCount;
 using pfd::fplApproachSelectableRow;
 using pfd::fplEnrouteSelectableBase;
+using pfd::buildFplSectionRows;
+using pfd::fplApproachSelectableRowForLegIndex;
+using pfd::fplFilterDuplicateLegSectionRows;
+using pfd::fplSectionSelectableRowForLegIndex;
 using pfd::fplInsertIndexForSectionRow;
 using pfd::fplLegIndexForSectionRow;
 using pfd::fplSectionSelectableCount;
@@ -206,6 +210,21 @@ bool flightPlanLegsEqual(const std::vector<MapLeg>& a,
   return true;
 }
 
+bool fplAdoptMapPlanDuringDirectTo(FplRouteEdit& edit,
+                                   const std::vector<MapLeg>& mapPlan,
+                                   const std::vector<MapLeg>& lastPublished) {
+  const InferredProcedureBlock proc = inferProcedureBlockInPlan(mapPlan);
+  if (!proc.valid()) return false;
+  edit.legs = mapPlan;
+  preserveFlightPlanIdents(edit.legs, lastPublished);
+  edit.destinationFilled = false;
+  edit.approachLegStart = 0;
+  edit.approachLegCount = 0;
+  if (edit.loadedApproach != nullptr) *edit.loadedApproach = {};
+  if (edit.approachHeaderLabel != nullptr) edit.approachHeaderLabel->clear();
+  return true;
+}
+
 bool fplDestinationFilledFromLegCount(int legCount) {
   return legCount >= 3 || legCount == 2;
 }
@@ -279,6 +298,48 @@ void fplClampCursorRow(FplRouteEdit& edit, const std::string& approachAirport,
                        FplCursorLayout layout) {
   const int last = fplCursorSelectableLast(edit, approachAirport, layout);
   edit.cursorRow = std::max(0, std::min(last, edit.cursorRow));
+}
+
+int fplActiveSelectableRow(const FplRouteEdit& edit,
+                             const std::string& approachAirport,
+                             const std::string& activeToIdent,
+                             FplCursorLayout layout) {
+  const int activeLegIdx =
+      fplActiveLegIndexInPlan(edit.legs, activeToIdent);
+  if (edit.approachLegCount > 0) {
+    return fplApproachSelectableRowForLegIndex(
+        activeLegIdx, edit.legs, edit.approachLegStart, edit.approachLegCount,
+        fplApproachBlankOriginSection(edit.legs, edit.approachLegStart,
+                                      approachAirport),
+        approachLayoutDestFilled(edit));
+  }
+  if (layout == FplCursorLayout::FlatLegList) {
+    return activeLegIdx;
+  }
+  const int legCount = fplEditSectionLegCount(edit);
+  const bool directToPlanBody =
+      edit.directToActive && !edit.localDraft && edit.approachLegCount <= 0;
+  const std::vector<pfd::FplSectionRow> sectionRows =
+      fplFilterDuplicateLegSectionRows(
+          buildFplSectionRows(legCount, edit.destinationFilled, directToPlanBody),
+          edit.legs);
+  return fplSectionSelectableRowForLegIndex(
+      activeLegIdx, sectionRows, legCount, edit.destinationFilled,
+      directToPlanBody);
+}
+
+void fplSyncListCursorToActiveLeg(FplRouteEdit& edit,
+                                  const std::string& approachAirport,
+                                  const std::string& activeToIdent,
+                                  bool& listCursorFollowsActive,
+                                  FplCursorLayout layout) {
+  if (!listCursorFollowsActive) return;
+  const int activeRow =
+      fplActiveSelectableRow(edit, approachAirport, activeToIdent, layout);
+  if (activeRow >= 0) {
+    edit.cursorRow = activeRow;
+    fplClampCursorRow(edit, approachAirport, layout);
+  }
 }
 
 void fplRefreshDestinationFilledAfterRemove(FplRouteEdit& edit,

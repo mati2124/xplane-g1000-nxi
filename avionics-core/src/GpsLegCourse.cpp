@@ -12,7 +12,7 @@ namespace avionics {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kLegMatchDistanceNm = 0.75;
+constexpr double kLegMatchDistanceNm = kFlightPlanLegMatchNm;
 constexpr double kWaypointCaptureNm = 0.4;
 constexpr double kWaypointPassedNm = 0.25;
 
@@ -68,6 +68,30 @@ int legIndexInPlan(const std::vector<MapLeg>& plan, const std::string& id) {
   if (id.empty()) return -1;
   for (std::size_t i = 0; i < plan.size(); ++i) {
     if (flightPlanIdentsEqual(plan[i].id, id)) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+int legIndexInPlan(const std::vector<MapLeg>& plan, const MapLeg& target) {
+  if (!target.id.empty()) {
+    if (target.lat != 0.0 || target.lon != 0.0) {
+      for (std::size_t i = 0; i < plan.size(); ++i) {
+        if (!flightPlanIdentsEqual(plan[i].id, target.id)) continue;
+        if (navDistanceNm(target.lat, target.lon, plan[i].lat, plan[i].lon) <=
+            kLegMatchDistanceNm) {
+          return static_cast<int>(i);
+        }
+      }
+    }
+    const int byId = legIndexInPlan(plan, target.id);
+    if (byId >= 0) return byId;
+  }
+  if (target.lat == 0.0 && target.lon == 0.0) return -1;
+  for (std::size_t i = 0; i < plan.size(); ++i) {
+    if (navDistanceNm(target.lat, target.lon, plan[i].lat, plan[i].lon) <=
+        kLegMatchDistanceNm) {
+      return static_cast<int>(i);
+    }
   }
   return -1;
 }

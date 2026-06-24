@@ -20,10 +20,18 @@
 namespace avionics::map {
 namespace {
 
-// Raster edge length in pixels. 512 px across ~2.4x the map range keeps each
-// raster pixel near (or below) the DEM's ~90 m grid at typical ranges while a
-// full rebuild stays a few-frame job.
-constexpr int kRasterSize = 512;
+// Raster edge length in pixels at close range. Halved above
+// kFullDetailTerrainMaxNm where each pixel already spans several NM.
+constexpr int kFullRasterSize = kTerrainFullRasterSize;
+constexpr int kCoarseRasterSize = kTerrainCoarseRasterSize;
+
+int rasterSizeFor(bool coarseSample) {
+  return coarseSample ? kCoarseRasterSize : kFullRasterSize;
+}
+
+bool allowTerrainStagingSwap(float rangeNm, bool zoomSettled) {
+  return zoomSettled || rangeNm >= mapview::kContinentalPerfRangeNm;
+}
 
 // Raster half-width as a multiple of the map range. The viewport's rotated
 // corner reaches ~1.9x range on a square map, but the MFD MAP window is wider
@@ -123,6 +131,7 @@ struct Snapshot {
   bool coarseSample = false;
   float detailHalfNm = 0.0f;
   float builtRangeNm = 0.0f;
+  int rasterSize = kFullRasterSize;
 
   // Geometry-only match (ignores sourceRevision): two snapshots that cover the
   // same ground at the same scale/mode, even if newer DEM tiles have since
@@ -134,7 +143,8 @@ struct Snapshot {
     const float halfTol =
         std::max(1.0f, halfNm * kHalfNmGeometryTolerance);
     return std::abs(halfNm - o.halfNm) <= halfTol && mode == o.mode &&
-           relAltBucket == o.relAltBucket && coarseSample == o.coarseSample;
+           relAltBucket == o.relAltBucket && coarseSample == o.coarseSample &&
+           rasterSize == o.rasterSize;
   }
 
   float driftNm(const Snapshot& o) const {
@@ -159,8 +169,8 @@ struct ViewRaster {
   bool building = false;
   Snapshot target;
   int rowsDone = 0;
-  std::vector<float> elevFt;        // kRasterSize^2 sampled elevations
-  std::vector<unsigned char> rgba;  // kRasterSize^2 * 4 upload buffer
+  std::vector<float> elevFt;
+  std::vector<unsigned char> rgba;
 
   // Draw calls since the last completed build, used to rate-limit rebuilds that
   // are driven only by newer DEM data (see kRevisionRebuildIntervalFrames).
@@ -175,8 +185,12 @@ struct ViewRaster {
 
 void applyStagingToFront(ViewRaster& v, Renderer& r) {
   if (!v.stagingValid || v.stagingRgba.empty()) return;
+  const int size = v.stagingFront.rasterSize;
   if (v.imageId < 0) {
-    v.imageId = r.createImageRGBA(kRasterSize, kRasterSize, v.stagingRgba.data());
+    v.imageId = r.createImageRGBA(size, size, v.stagingRgba.data());
+  } else if (v.front.rasterSize != size) {
+    r.deleteImage(v.imageId);
+    v.imageId = r.createImageRGBA(size, size, v.stagingRgba.data());
   } else {
     r.updateImageRGBA(v.imageId, v.stagingRgba.data());
   }
@@ -241,26 +255,28 @@ void prefetchTerrain(const TerrainSource& terrain, const Snapshot& s) {
 
 void sampleRows(ViewRaster& v, const TerrainSource& terrain, int rows) {
   const Snapshot& s = v.target;
+  const int rasterSize = s.rasterSize;
   if (v.rowsDone == 0) {
     terrain.setBulkTerrainSample(true);
     terrain.setCoarseTerrainSample(s.coarseSample);
     terrain.setTerrainViewCenter(s.centerLat, s.centerLon, s.detailHalfNm);
     prefetchTerrain(terrain, s);
   }
-  const float stepNm = 2.0f * s.halfNm / kRasterSize;
+  const float stepNm = 2.0f * s.halfNm / rasterSize;
   const double nmLon = nmPerDegLon(s.centerLat);
   const double lonStart =
       s.centerLon + (-s.halfNm + 0.5 * stepNm) / nmLon;
   const double lonStep = static_cast<double>(stepNm) / nmLon;
-  const int endRow = std::min(kRasterSize, v.rowsDone + rows);
+  const int endRow = std::min(rasterSize, v.rowsDone + rows);
   for (int i = v.rowsDone; i < endRow; ++i) {
     const double northNm = s.halfNm - (i + 0.5) * stepNm;
     const double lat = s.centerLat + northNm / kNmPerDegLat;
-    float* out = v.elevFt.data() + static_cast<std::size_t>(i) * kRasterSize;
-    terrain.elevationFtRow(lat, lonStart, lonStep, kRasterSize, out);
+    float* out =
+        v.elevFt.data() + static_cast<std::size_t>(i) * rasterSize;
+    terrain.elevationFtRow(lat, lonStart, lonStep, rasterSize, out);
   }
   v.rowsDone = endRow;
-  if (v.rowsDone >= kRasterSize) {
+  if (v.rowsDone >= rasterSize) {
     terrain.setBulkTerrainSample(false);
     terrain.setCoarseTerrainSample(false);
   }
@@ -283,7 +299,8 @@ void writePixel(unsigned char* px, const Color& c) {
 // colors against the snapshot's altitude bucket.
 void colorize(ViewRaster& v) {
   const Snapshot& s = v.target;
-  const float cellFt = (2.0f * s.halfNm / kRasterSize) * kFeetPerNm;
+  const int rasterSize = s.rasterSize;
+  const float cellFt = (2.0f * s.halfNm / rasterSize) * kFeetPerNm;
   // Light from the northwest, above (x = east, y = south, z = up).
   constexpr float kLx = -0.45f, kLy = -0.45f, kLz = 0.77f;
   // Slope exaggeration so ~90 m cells still produce visible relief.
@@ -292,15 +309,16 @@ void colorize(ViewRaster& v) {
   const float ownAltFt =
       static_cast<float>(s.relAltBucket) * kRelAltBucketFt;
 
-  for (int i = 0; i < kRasterSize; ++i) {
-    const float* row = v.elevFt.data() + static_cast<std::size_t>(i) * kRasterSize;
-    const float* rowN =
-        v.elevFt.data() + static_cast<std::size_t>(std::max(i - 1, 0)) * kRasterSize;
+  for (int i = 0; i < rasterSize; ++i) {
+    const float* row =
+        v.elevFt.data() + static_cast<std::size_t>(i) * rasterSize;
+    const float* rowN = v.elevFt.data() +
+        static_cast<std::size_t>(std::max(i - 1, 0)) * rasterSize;
     const float* rowS = v.elevFt.data() +
-        static_cast<std::size_t>(std::min(i + 1, kRasterSize - 1)) * kRasterSize;
+        static_cast<std::size_t>(std::min(i + 1, rasterSize - 1)) * rasterSize;
     unsigned char* px =
-        v.rgba.data() + static_cast<std::size_t>(i) * kRasterSize * 4;
-    for (int j = 0; j < kRasterSize; ++j, px += 4) {
+        v.rgba.data() + static_cast<std::size_t>(i) * rasterSize * 4;
+    for (int j = 0; j < rasterSize; ++j, px += 4) {
       const float e = row[j];
 
       if (std::isnan(e)) {
@@ -328,7 +346,7 @@ void colorize(ViewRaster& v) {
       Color c = terrainColor(e);
       if (e > 0.5f && !s.coarseSample) {
         const int jW = std::max(j - 1, 0);
-        const int jE = std::min(j + 1, kRasterSize - 1);
+        const int jE = std::min(j + 1, rasterSize - 1);
         const float dzdx = kSlopeGain * (row[jE] - row[jW]) / (2.0f * cellFt);
         const float dzdy = kSlopeGain * (rowS[j] - rowN[j]) / (2.0f * cellFt);
         const float invLen =
@@ -405,12 +423,12 @@ struct AsyncTerrainWorker {
       ViewRaster scratch;
       scratch.target = snap;
       scratch.rowsDone = 0;
-      scratch.elevFt.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize);
-      scratch.rgba.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize *
-                          4);
+      const int rasterSize = snap.rasterSize;
+      scratch.elevFt.resize(static_cast<std::size_t>(rasterSize) * rasterSize);
+      scratch.rgba.resize(static_cast<std::size_t>(rasterSize) * rasterSize * 4);
 
       bool cancelled = false;
-      while (scratch.rowsDone < kRasterSize) {
+      while (scratch.rowsDone < rasterSize) {
         {
           std::lock_guard<std::mutex> lock(mu);
           if (cancel) {
@@ -494,6 +512,7 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   ViewRaster& v = viewFor(r, cx, cy);
 
   const float zoomSettled = mapRangeZoomSettled(displayRangeNm, rangeNm);
+  const bool stagingSwapOk = allowTerrainStagingSwap(rangeNm, zoomSettled);
   const float minDrawHalfNm = viewHalfExtentNm * 1.01f;
   const bool rangeStepChanged =
       v.frontValid && v.front.builtRangeNm > 0.5f &&
@@ -507,13 +526,13 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
       v.stagingRgba = std::move(completedRgba);
       v.stagingValid = true;
       v.building = false;
-      if (zoomSettled) {
+      if (stagingSwapOk) {
         applyStagingToFront(v, r);
       }
     }
   }
 
-  if (zoomSettled && v.stagingValid) {
+  if (stagingSwapOk && v.stagingValid) {
     applyStagingToFront(v, r);
   }
 
@@ -537,6 +556,7 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
           ? static_cast<int>(std::lround(ownAltFt / kRelAltBucketFt))
           : 0;
   desired.coarseSample = rangeNm > kFullDetailTerrainMaxNm;
+  desired.rasterSize = rasterSizeFor(desired.coarseSample);
   desired.detailHalfNm =
       desired.coarseSample ? rangeNm * 0.25f : desired.halfNm;
   desired.builtRangeNm = rangeNm;
@@ -596,9 +616,11 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
       v.building = true;
       v.target = desired;
       v.rowsDone = 0;
-      if (v.elevFt.empty()) {
-        v.elevFt.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize);
-        v.rgba.resize(static_cast<std::size_t>(kRasterSize) * kRasterSize * 4);
+      const std::size_t cells =
+          static_cast<std::size_t>(desired.rasterSize) * desired.rasterSize;
+      if (v.elevFt.size() != cells) {
+        v.elevFt.resize(cells);
+        v.rgba.resize(cells * 4);
       }
       if (g_asyncBuilds) {
         g_async.submit(terrain, r, v.keyX, v.keyY, desired);
@@ -606,6 +628,12 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
     } else if (zoomSettled && !v.target.sameGeometry(desired)) {
       v.target = desired;
       v.rowsDone = 0;
+      const std::size_t cells =
+          static_cast<std::size_t>(desired.rasterSize) * desired.rasterSize;
+      if (v.elevFt.size() != cells) {
+        v.elevFt.resize(cells);
+        v.rgba.resize(cells * 4);
+      }
       if (g_asyncBuilds) {
         g_async.submit(terrain, r, v.keyX, v.keyY, desired);
       }
@@ -616,14 +644,14 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
     // Plugin path: spread rebuild work across full-render frames.
     sampleRows(v, terrain,
                v.target.coarseSample ? kCoarseRowsPerFrame : kRowsPerFrame);
-    if (v.rowsDone >= kRasterSize) {
+    if (v.rowsDone >= v.target.rasterSize) {
       colorize(v);
       v.stagingFront = v.target;
       v.stagingRgba = v.rgba;
       v.stagingValid = true;
       v.building = false;
       v.rowsDone = 0;
-      if (zoomSettled) {
+      if (stagingSwapOk) {
         applyStagingToFront(v, r);
       }
     }

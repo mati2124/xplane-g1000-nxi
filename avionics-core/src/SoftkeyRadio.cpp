@@ -190,6 +190,7 @@ void SoftkeyController::adjustRadioVolume(RadioUnit unit, RadioBand band,
   radioVolumeUnit_ = unit;
   radioVolumePct_ = static_cast<int>(std::lround(next * 100.0f));
   radioVolumeShownSeconds_ = kRadioVolumeShownSeconds;
+  ++radioVolumeEpoch_;
 }
 
 void SoftkeyController::adjustComVolume(int direction, const FlightData& d) {
@@ -232,6 +233,7 @@ bool SoftkeyController::radioVolumeShown(RadioBand band) const {
 
 void SoftkeyController::mirrorRadioVolumeAnnunciation(
     const SoftkeyController& src) {
+  radioVolumeEpoch_ = src.radioVolumeEpoch_;
   radioVolumeShownSeconds_ = src.radioVolumeShownSeconds_;
   radioVolumeBand_ = src.radioVolumeBand_;
   radioVolumeUnit_ = src.radioVolumeUnit_;
@@ -239,16 +241,24 @@ void SoftkeyController::mirrorRadioVolumeAnnunciation(
 }
 
 void syncRadioVolumeAnnunciation(SoftkeyController& a, SoftkeyController& b) {
-  if (a.radioVolumeAnnunciationActive() && b.radioVolumeAnnunciationActive()) {
-    if (a.radioVolumeSecondsLeft() >= b.radioVolumeSecondsLeft())
-      b.mirrorRadioVolumeAnnunciation(a);
-    else
-      a.mirrorRadioVolumeAnnunciation(b);
-  } else if (a.radioVolumeAnnunciationActive()) {
-    b.mirrorRadioVolumeAnnunciation(a);
-  } else if (b.radioVolumeAnnunciationActive()) {
-    a.mirrorRadioVolumeAnnunciation(b);
+  if (a.radioVolumeEpoch_ == 0 && b.radioVolumeEpoch_ == 0) return;
+
+  if (a.radioVolumeEpoch_ != b.radioVolumeEpoch_) {
+    // A fresh knob turn on one GDU should propagate to the peer, not be cleared
+    // by a side that has not seen the adjustment yet.
+    const SoftkeyController& src =
+        a.radioVolumeEpoch_ > b.radioVolumeEpoch_ ? a : b;
+    a.mirrorRadioVolumeAnnunciation(src);
+    b.mirrorRadioVolumeAnnunciation(src);
+    return;
   }
+
+  // Same adjustment: align on the earliest dismissal so a slower-updating peer
+  // cannot refresh the timer and leave VOL stuck on screen.
+  const SoftkeyController& src =
+      a.radioVolumeSecondsLeft() <= b.radioVolumeSecondsLeft() ? a : b;
+  a.mirrorRadioVolumeAnnunciation(src);
+  b.mirrorRadioVolumeAnnunciation(src);
 }
 
 bool SoftkeyController::radioBezelKey(BezelKey key, const FlightData& d) {

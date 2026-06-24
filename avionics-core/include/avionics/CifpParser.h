@@ -38,6 +38,8 @@ struct CifpAirportProcedures {
   std::vector<MapProcedure> catalog;
   // Runway threshold positions from RWY records (e.g. RW05 at KFMY).
   std::unordered_map<std::string, std::pair<double, double>> runways;
+  // Fix coordinates embedded in CIFP rows (cols 18-19) when present.
+  std::unordered_map<std::string, std::pair<double, double>> fixes;
 };
 
 // Parses an airport CIFP file (one ICAO per file). Returns empty on failure.

@@ -73,10 +73,17 @@ bool ParsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
   if (sep1 == std::string::npos) return false;
   const std::size_t sep2 = value.find('|', sep1 + 1);
   if (sep2 == std::string::npos) return false;
+  const std::size_t sep3 = value.find('|', sep2 + 1);
   try {
     legOut.id = value.substr(0, sep1);
     legOut.lat = std::stod(value.substr(sep1 + 1, sep2 - sep1 - 1));
-    legOut.lon = std::stod(value.substr(sep2 + 1));
+    if (sep3 == std::string::npos) {
+      legOut.lon = std::stod(value.substr(sep2 + 1));
+      legOut.procedureRole.clear();
+    } else {
+      legOut.lon = std::stod(value.substr(sep2 + 1, sep3 - sep2 - 1));
+      legOut.procedureRole = value.substr(sep3 + 1);
+    }
     return !legOut.id.empty();
   } catch (...) {
     return false;
@@ -84,9 +91,14 @@ bool ParsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
 }
 
 std::string FormatPersistedFlightPlanLeg(const MapLeg& leg) {
-  char buf[128];
-  std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f", leg.id.c_str(), leg.lat,
-                leg.lon);
+  char buf[160];
+  if (leg.procedureRole.empty()) {
+    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f", leg.id.c_str(), leg.lat,
+                  leg.lon);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s", leg.id.c_str(),
+                  leg.lat, leg.lon, leg.procedureRole.c_str());
+  }
   return std::string(buf);
 }
 

@@ -30,6 +30,8 @@ inline constexpr Color kMapLakeFill{0.0f, 0.0f, 0.38f, 1.0f};
 // fills, nation outlines, major place names). Matches the Garmin PC Trainer
 // at 1000 NM (MFD Default.bmp): no airports, navaids, or route symbology.
 inline constexpr float kContinentalChartRangeNm = 500.0f;
+// Continental perf tier: lighter land tessellation and terrain staging swap.
+inline constexpr float kContinentalPerfRangeNm = 250.0f;
 // Maximum navigation-map range; only the largest country/region names remain.
 inline constexpr float kWideChartRangeNm = 1000.0f;
 
@@ -265,7 +267,7 @@ float drawChromeLabel(Renderer& r, float x, float y, const char* text,
 // over them with transparent pixels where DEM data is not yet available.
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
                   float rangeNm, bool skipLandMassFill = false,
-                  float viewHalfExtentNm = 0.0f);
+                  float viewHalfExtentNm = 0.0f, float displayRangeNm = 0.0f);
 
 // Populated places: a dot plus name, decluttered by city rank vs. range.
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,

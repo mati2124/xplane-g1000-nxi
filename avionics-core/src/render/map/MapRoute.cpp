@@ -6,10 +6,16 @@
 #include <string>
 #include <vector>
 
+#include "avionics/FlightPlanPersistence.h"
+
 namespace avionics::mapview {
 namespace {
 
 int activeFlightPlanToIndex(const MapData& map, const FlightData& flight) {
+  if (flight.fmaActiveLegIndex >= 0 &&
+      flight.fmaActiveLegIndex < static_cast<int>(map.flightPlan.size())) {
+    return flight.fmaActiveLegIndex;
+  }
   if (flight.fmaToWpt.empty()) return -1;
   for (std::size_t i = 0; i < map.flightPlan.size(); ++i) {
     if (map.flightPlan[i].id == flight.fmaToWpt) {
@@ -174,28 +180,63 @@ bool activeDirectNavTarget(const MapData& map, const FlightData& flight,
   return resolveNavIdentCoords(map, out.id, out.lat, out.lon);
 }
 
-// Contiguous loaded-procedure legs (SID/STAR/approach) within a flight plan.
-bool procedureLegSpan(const std::vector<MapLeg>& plan, int& start, int& end) {
-  start = end = -1;
-  for (int i = 0; i < static_cast<int>(plan.size()); ++i) {
-    if (plan[static_cast<std::size_t>(i)].procedureRole.empty()) continue;
-    if (start < 0) start = i;
-    end = i;
+// Loaded approach / procedure tail in the active flight plan (includes untagged
+// feeder fixes before the first IAF, matching the FPL page grouping).
+bool procedureBlockForMap(const std::vector<MapLeg>& plan, int& start,
+                          int& count) {
+  const InferredProcedureBlock block = inferProcedureBlockInPlan(plan);
+  if (block.start < 0 || block.count < 2) return false;
+  start = block.start;
+  count = block.count;
+  return true;
+}
+
+int procedureBlockStartIndex(const MapData& map) {
+  int start = -1;
+  int count = 0;
+  if (!procedureBlockForMap(map.flightPlan, start, count)) return 0;
+  return start;
+}
+
+// Last match mirrors FPL page Direct-To resolution when duplicate idents exist.
+int directToTargetIndexInPlan(const MapData& map) {
+  if (!map.directToActive || map.directTo.id.empty()) return -1;
+  for (int i = static_cast<int>(map.flightPlan.size()) - 1; i >= 0; --i) {
+    if (map.flightPlan[static_cast<std::size_t>(i)].id == map.directTo.id) {
+      return i;
+    }
   }
-  return start >= 0 && end > start;
+  return -1;
+}
+
+int mapRouteSliceStart(const MapData& map) {
+  if (!map.directToActive) return 0;
+  const int dtoIdx = directToTargetIndexInPlan(map);
+  if (dtoIdx >= 0) return dtoIdx;
+  return procedureBlockStartIndex(map);
 }
 
 std::vector<MapLeg> legsForMapRoute(const MapData& map) {
   if (!map.directToActive || map.flightPlan.size() < 2) {
     return map.flightPlan;
   }
+  const int dtoIdx = directToTargetIndexInPlan(map);
+  if (dtoIdx >= 0) {
+    // In-plan Direct-To: drop bypassed legs before the target (e.g. UZAWO→BUTLY
+    // when flying direct to BUTLY); keep the remaining flight plan tail.
+    return std::vector<MapLeg>(map.flightPlan.begin() + dtoIdx,
+                               map.flightPlan.end());
+  }
   int procStart = -1;
-  int procEnd = -1;
-  if (!procedureLegSpan(map.flightPlan, procStart, procEnd)) {
+  int procCount = 0;
+  if (!procedureBlockForMap(map.flightPlan, procStart, procCount)) {
+    // GPS Direct-To with no loaded procedure: only the magenta ownship course
+    // should appear; stale sim FMS legs must not draw a white route.
     return {};
   }
-  return std::vector<MapLeg>(map.flightPlan.begin() + procStart,
-                             map.flightPlan.begin() + procEnd + 1);
+  return std::vector<MapLeg>(
+      map.flightPlan.begin() + procStart,
+      map.flightPlan.begin() + procStart + procCount);
 }
 
 }  // namespace
@@ -210,38 +251,35 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
 
   const int activeTo = activeFlightPlanToIndex(map, flight);
   const SmoothedRoute route = buildSmoothedRoute(routeLegs, proj);
+  const int procOffset = map.directToActive ? mapRouteSliceStart(map) : 0;
 
   drawSmoothedRoutePolyline(r, route, 2.0f, colors::kWhite);
-  // During GPS Direct-To the magenta course is drawn from ownship to the
-  // target (drawDirectToCourse); do not also highlight the stored plan leg.
-  if (!map.directToActive && activeTo >= 1) {
-    const std::size_t leg = static_cast<std::size_t>(activeTo) - 1;
-    if (leg < route.legStart.size()) {
-      const std::size_t start = route.legStart[leg];
-      const std::size_t end = route.legEnd[leg];
-      if (end > start && end < route.points.size()) {
-        r.strokePolyline(route.points.data() + start,
-                         static_cast<int>(end - start + 1), 2.0f,
-                         colors::kMagenta);
+  // In-plan Direct-To draws the magenta course from ownship to the target;
+  // do not also highlight a plan leg (index math differs once the route is
+  // sliced to the loaded procedure during approach Direct-To).
+  if (!map.directToActive && activeTo >= 0) {
+    const int activeToInRoute = activeTo - procOffset;
+    if (activeToInRoute >= 1 &&
+        activeToInRoute < static_cast<int>(routeLegs.size())) {
+      const std::size_t leg = static_cast<std::size_t>(activeToInRoute) - 1;
+      if (leg < route.legStart.size()) {
+        const std::size_t start = route.legStart[leg];
+        const std::size_t end = route.legEnd[leg];
+        if (end > start && end < route.points.size()) {
+          r.strokePolyline(route.points.data() + start,
+                           static_cast<int>(end - start + 1), 2.0f,
+                           colors::kMagenta);
+        }
       }
-    }
-  }
-
-  int procOffset = 0;
-  if (map.directToActive) {
-    int procStart = -1;
-    int procEnd = -1;
-    if (procedureLegSpan(map.flightPlan, procStart, procEnd)) {
-      procOffset = procStart;
     }
   }
 
   for (std::size_t i = 0; i < routeLegs.size(); ++i) {
     const Point pt = projectLeg(proj, routeLegs[i]);
     const int planIndex = static_cast<int>(i) + procOffset;
-    const Color c = (!map.directToActive && planIndex == activeTo)
-                        ? colors::kMagenta
-                        : colors::kWhite;
+    const Color c =
+        (!map.directToActive && planIndex == activeTo) ? colors::kMagenta
+                                                       : colors::kWhite;
     r.fillCircle(pt.x, pt.y, symSize * 0.35f, c);
   }
 }
@@ -258,23 +296,15 @@ void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
 
   const int activeTo = activeFlightPlanToIndex(map, flight);
   const float textSize = labelSize * kMapIdentLabelScale;
-
-  int procOffset = 0;
-  if (map.directToActive) {
-    int procStart = -1;
-    int procEnd = -1;
-    if (procedureLegSpan(map.flightPlan, procStart, procEnd)) {
-      procOffset = procStart;
-    }
-  }
+  const int procOffset = map.directToActive ? mapRouteSliceStart(map) : 0;
 
   for (std::size_t i = 0; i < routeLegs.size(); ++i) {
     if (routeLegs[i].id.empty()) continue;
     const Point pt = projectLeg(proj, routeLegs[i]);
     const int planIndex = static_cast<int>(i) + procOffset;
-    const Color c = (!map.directToActive && planIndex == activeTo)
-                        ? colors::kMagenta
-                        : colors::kWhite;
+    const Color c =
+        (!map.directToActive && planIndex == activeTo) ? colors::kMagenta
+                                                       : colors::kWhite;
     r.fillText(pt.x, pt.y - symSize * 0.95f - kMapLabelLiftPx, routeLegs[i].id,
                textSize, TextAlign::Center, c, kMapLabelFace);
   }
@@ -322,8 +352,14 @@ void drawDirectToCourse(Renderer& r, const MapData& map,
   MapLeg target;
   if (!activeDirectNavTarget(map, flight, target)) return;
 
+  double fromLat = map.ownshipLat;
+  double fromLon = map.ownshipLon;
+  if (map.directToOriginValid) {
+    fromLat = map.directToOriginLat;
+    fromLon = map.directToOriginLon;
+  }
   float ox = 0.0f, oy = 0.0f, tx = 0.0f, ty = 0.0f;
-  proj.toPx(map.ownshipLat, map.ownshipLon, ox, oy);
+  proj.toPx(fromLat, fromLon, ox, oy);
   proj.toPx(target.lat, target.lon, tx, ty);
   const Point dto[2] = {{ox, oy}, {tx, ty}};
   r.strokePolyline(dto, 2, 2.0f, colors::kMagenta);

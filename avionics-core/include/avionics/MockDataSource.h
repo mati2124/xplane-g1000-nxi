@@ -6,6 +6,7 @@
 #include "avionics/Checklist.h"
 #include "avionics/Eis.h"
 #include "avionics/DataSource.h"
+#include "avionics/FmsNavigator.h"
 #include "avionics/MapData.h"
 #include "avionics/NavFeatureSource.h"
 #include "avionics/NexradWeatherRadar.h"
@@ -73,6 +74,9 @@ class MockDataSource : public DataSource {
   void directTo(MapLeg target);
   // Cancel an active Direct-To without changing the loaded route.
   void cancelDirectTo();
+
+  void applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
+                          CdiSource cdiSource, float nmPerDot) override;
 
   // Source of real nearby navigation data (features, airspaces, airways,
   // runways, land vectors, obstacles). When set it replaces the hand-placed

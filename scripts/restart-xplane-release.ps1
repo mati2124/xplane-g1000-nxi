@@ -28,10 +28,9 @@ try {
         throw "Expected executable not found: $Exe"
     }
 
-    Write-Log "Launching PFD and MFD..."
+    Write-Log "Launching PFD + MFD (single process, shared command bridge)..."
     $env:AVIONICS_SKIP_UPDATE_CHECK = "1"
-    Start-Process $Exe -ArgumentList @("--no-mfd", "--debug-menu") -WorkingDirectory $Repo
-    Start-Process $Exe -ArgumentList @("--no-pfd", "--debug-menu") -WorkingDirectory $Repo
+    Start-Process $Exe -ArgumentList @("--debug-menu") -WorkingDirectory $Repo
     Write-Log "Done."
 }
 catch {

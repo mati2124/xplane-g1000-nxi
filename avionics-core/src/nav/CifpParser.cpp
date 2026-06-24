@@ -561,6 +561,14 @@ CifpAirportProcedures parseCifp(std::istream& in, const std::string& icao) {
     if (leg.kind == ProcedureType::Approach) leg.approachKind = leg.routeType;
 
     if (leg.procedureName.empty()) continue;
+    if (fields.size() > 18 && !leg.fixIdent.empty()) {
+      double fixLat = 0.0;
+      double fixLon = 0.0;
+      if (parseArincCoordinate(fields[17], fixLat) &&
+          parseArincCoordinate(fields[18], fixLon)) {
+        out.fixes[leg.fixIdent] = {fixLat, fixLon};
+      }
+    }
     out.legs.push_back(std::move(leg));
   }
 

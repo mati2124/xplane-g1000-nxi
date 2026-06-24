@@ -9,8 +9,10 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(avionics-core-tests
   GpsLegCourseTest.cpp
+  FmsNavigatorTest.cpp
   GlidepathGuidanceTest.cpp
   CifpParserTest.cpp
+  RadioVolumeAnnunciationTest.cpp
 )
 
 target_compile_definitions(avionics-core-tests PRIVATE

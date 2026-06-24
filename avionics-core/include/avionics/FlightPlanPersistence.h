@@ -4,6 +4,7 @@
 
 #include <cctype>
 
+#include "avionics/FlightData.h"
 #include "avionics/MapData.h"
 
 namespace avionics {
@@ -174,6 +175,67 @@ inline int fplActiveLegIndexInPlan(const std::vector<MapLeg>& legs,
   return -1;
 }
 
+// Active-leg highlight: resolve the visible plan row for the active TO ident
+// (last duplicate wins in FPL lists). Fall back to fmaActiveLegIndex when it
+// points at a displayed leg.
+inline int fplResolvedActiveLegIndex(const std::vector<MapLeg>& legs,
+                                     const FlightData& d,
+                                     const std::string& activeIdent) {
+  const std::string& toIdent =
+      !activeIdent.empty() ? activeIdent : d.fmaToWpt;
+  if (!toIdent.empty()) {
+    const int byIdent = fplActiveLegIndexInPlan(legs, toIdent);
+    if (byIdent >= 0) return byIdent;
+  }
+  if (d.fmaActiveLegIndex >= 0 &&
+      d.fmaActiveLegIndex < static_cast<int>(legs.size())) {
+    const int idx = d.fmaActiveLegIndex;
+    if (!fplHideLegForDuplicateIdent(legs, idx)) return idx;
+    if (!toIdent.empty()) {
+      const int visible = fplActiveLegIndexInPlan(legs, toIdent);
+      if (visible >= 0) return visible;
+    }
+    return idx;
+  }
+  return -1;
+}
+
+// Leg index of the GPS Direct-To target in the displayed plan (last ident match).
+inline int fplDirectToTargetLegIndex(const std::vector<MapLeg>& legs,
+                                     const FlightData& d,
+                                     const std::string& activeIdent,
+                                     bool directToActive) {
+  if (!directToActive) return -1;
+  const std::string& toIdent =
+      !d.fmaToWpt.empty() ? d.fmaToWpt : activeIdent;
+  if (toIdent.empty()) return -1;
+  return fplActiveLegIndexInPlan(legs, toIdent);
+}
+
+// True when this displayed row is the current navigation TO fix.
+inline bool fplRowIsNavToTarget(const MapLeg& leg, const std::string& toIdent) {
+  return !toIdent.empty() && fplLegIdentsEqual(leg.id, toIdent);
+}
+
+// Magenta ident flash on the active navigation row follows the list cursor:
+// the arrow and DTK/DIS stay on the TO fix while another row is highlighted.
+inline bool fplActiveNavRowBlink(int legIdx, int activeLegIdx, int cursorLegIdx,
+                                 bool cursorOn, int listCursorRow,
+                                 int activeSelectableRow) {
+  if (cursorOn && cursorLegIdx >= 0 && legIdx == cursorLegIdx) return true;
+  return !cursorOn && legIdx == activeLegIdx && activeSelectableRow >= 0 &&
+         listCursorRow == activeSelectableRow;
+}
+
+// Magenta active-leg marker on a list row: always on the live TO ident; otherwise
+// follow active-leg highlight state.
+inline bool fplShowActiveNavRow(bool activeHighlight, int legIdx,
+                                int activeLegIdx, const MapLeg& leg,
+                                const std::string& toIdent) {
+  if (fplRowIsNavToTarget(leg, toIdent)) return true;
+  return activeLegIdx >= 0 && legIdx == activeLegIdx && activeHighlight;
+}
+
 // CIFP metadata may under-count; the approach tail includes all legs from start.
 inline int fplNormalizedApproachCount(int approachStart, int approachCount,
                                       int legCount) {
@@ -184,7 +246,7 @@ inline int fplNormalizedApproachCount(int approachStart, int approachCount,
   return approachCount;
 }
 
-// Saved across standalone restarts (waypoint legs with id/lat/lon).
+// Saved across standalone restarts (waypoint legs with id/lat/lon/procedureRole).
 struct PersistedFlightPlan {
   bool active = false;
   bool destinationFilled = false;
@@ -199,7 +261,8 @@ inline bool operator==(const PersistedFlightPlan& a,
   }
   for (std::size_t i = 0; i < a.legs.size(); ++i) {
     if (a.legs[i].id != b.legs[i].id || a.legs[i].lat != b.legs[i].lat ||
-        a.legs[i].lon != b.legs[i].lon) {
+        a.legs[i].lon != b.legs[i].lon ||
+        a.legs[i].procedureRole != b.legs[i].procedureRole) {
       return false;
     }
   }

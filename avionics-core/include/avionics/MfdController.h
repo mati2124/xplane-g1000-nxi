@@ -399,6 +399,7 @@ class MfdController {
   bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
 
   void replaceFlightPlanFromExternal(const std::vector<MapLeg>& plan);
+  PersistedFlightPlan persistedFlightPlanSnapshot() const;
   void restorePersistedFlightPlan(const PersistedFlightPlan& saved);
 
   void setPersistedLoadedApproach(const PersistedLoadedApproach& saved);
@@ -485,6 +486,8 @@ class MfdController {
   // Activation latch for the shell: true once after ENT on ACTIVATE?, copying
   // out the target waypoint so the shell engages the direct course.
   bool consumeDirectToRequest(MapLeg& out);
+  // FPL Activate Leg: ENT on a highlighted waypoint row (Pilot's Guide 5.6).
+  bool consumeActivateLegRequest(int& toLegIndex);
 
   // GCU alphanumeric keypad during waypoint-ident entry (Direct-To / FPL / WPT).
   bool applyGcuEntryKey(char ch);
@@ -696,6 +699,7 @@ class MfdController {
   FmsWaypointEntry* activeWaypointEntry();
   // Mark the edited plan for the shell to pick up.
   void fplPublishEdit();
+  void requestActivateFlightPlanLeg(int toLegIndex);
   // ---- VNAV altitude-constraint entry (ALT column) ----
   // Open the 5-digit entry over the given row, seeded with its constraint.
   void fplAltEntryOpen(int row);
@@ -718,6 +722,8 @@ class MfdController {
   bool radarBezelKey(BezelKey key);
   void wptResetInteraction();
   void nrstResetInteraction();
+  // Highlighted NRST list facility (airport / fix / NDB / VOR), or null.
+  const MapFeature* nrstSelectedFeature() const;
   void mapResetPointer();
   void mapPointerScrollTowardPointer();
   void wptCommitEntry();
@@ -811,6 +817,7 @@ class MfdController {
   std::string fplApproachHeaderLabel_;
   PersistedLoadedApproach persistedApproachRestore_{};
   bool fplCursorOn_ = false;
+  bool fplListCursorFollowsActive_ = true;
   int fplCursorRow_ = 0;
   FplCursorCol fplCursorCol_ = FplCursorCol::Ident;
   FmsWaypointEntry fplEntry_;
@@ -864,6 +871,8 @@ class MfdController {
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;
   MapLeg dtoRequestTarget_;
+  bool fplActivateLegPending_ = false;
+  int fplActivateLegIndex_ = -1;
   bool dtoPreservePlan_ = false;
   int dtoPreserveLegIndex_ = -1;
   int dtoPreserveFplCursorRow_ = -1;

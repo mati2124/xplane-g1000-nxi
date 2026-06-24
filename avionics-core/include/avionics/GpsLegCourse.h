@@ -5,6 +5,8 @@
 
 namespace avionics {
 
+constexpr double kFlightPlanLegMatchNm = 0.75;
+
 // Active GPS leg guidance derived from the flight plan (not X-Plane OBS course).
 struct GpsLegNavigation {
   bool active = false;
@@ -15,6 +17,10 @@ struct GpsLegNavigation {
 bool flightPlanIdentsEqual(const std::string& a, const std::string& b);
 
 int legIndexInPlan(const std::vector<MapLeg>& plan, const std::string& id);
+
+// Matches by ident first, then by position (procedure fixes may use different
+// id strings between the nav database and the stored flight plan).
+int legIndexInPlan(const std::vector<MapLeg>& plan, const MapLeg& target);
 
 // Resolves the active flight-plan leg index from FMA idents (case-insensitive).
 int resolveActiveLegToIndex(const std::vector<MapLeg>& plan,

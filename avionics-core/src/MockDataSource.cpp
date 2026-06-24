@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "avionics/NavMath.h"
+#include "avionics/NavigationComputer.h"
 #include "avionics/MapRange.h"
 
 namespace avionics {
@@ -680,6 +681,9 @@ void MockDataSource::ensureRoute() {
     map_.ownshipLon = kKfmyLon;
     directToActive_ = true;
     directToTarget_ = route_.front();  // KRSW
+    map_.directToOriginValid = true;
+    map_.directToOriginLat = kKfmyLat;
+    map_.directToOriginLon = kKfmyLon;
     data_.headingDeg = static_cast<float>(navBearingDeg(
         kKfmyLat, kKfmyLon, route_.front().lat, route_.front().lon));
   } else {
@@ -713,7 +717,12 @@ void MockDataSource::ensureRoute() {
 void MockDataSource::directTo(MapLeg target) {
   directToActive_ = true;
   directToTarget_ = std::move(target);
-  routeInitialized_ = true;  // direct-to implies we are navigating
+  routeInitialized_ = true;
+  if (map_.positionValid) {
+    map_.directToOriginValid = true;
+    map_.directToOriginLat = map_.ownshipLat;
+    map_.directToOriginLon = map_.ownshipLon;
+  }
 }
 
 void MockDataSource::cancelDirectTo() {
@@ -753,25 +762,6 @@ void MockDataSource::navigateRoute(double dt) {
     const double hdgRad = heading * kPi / 180.0;
     map_.ownshipLat += moveNm * std::cos(hdgRad) / kNmPerDeg;
     map_.ownshipLon += moveNm * std::sin(hdgRad) / (kNmPerDeg * cosLat);
-
-    data_.fmaFromWpt.clear();
-    data_.fmaToWpt = directToTarget_.id;
-    data_.fmaLegDistanceNm = static_cast<float>(distNm);
-    data_.fmaLegBearingDeg = static_cast<float>(brg);
-
-    // On arrival, drop the direct-to and resume the loaded route, sequencing
-    // to the leg after the target when it belongs to the route.
-    if (distNm <= std::max(0.4, moveNm * 1.5)) {
-      directToActive_ = false;
-      map_.directToActive = false;
-      legIndex_ = route_.size() >= 2 ? 1 : 0;
-      for (std::size_t i = 0; i < route_.size(); ++i) {
-        if (route_[i].id == directToTarget_.id) {
-          legIndex_ = (i + 1) % route_.size();
-          break;
-        }
-      }
-    }
     return;
   }
   map_.directToActive = false;
@@ -805,16 +795,26 @@ void MockDataSource::navigateRoute(double dt) {
   const double hdgRad = heading * kPi / 180.0;
   map_.ownshipLat += moveNm * std::cos(hdgRad) / kNmPerDeg;
   map_.ownshipLon += moveNm * std::sin(hdgRad) / (kNmPerDeg * cosLat);
+}
 
-  // Active-leg readout on the FMA (top bar).
-  data_.fmaFromWpt = route_[(legIndex_ + route_.size() - 1) % route_.size()].id;
-  data_.fmaToWpt = target.id;
-  data_.fmaLegDistanceNm = static_cast<float>(distNm);
-  data_.fmaLegBearingDeg = static_cast<float>(brg);
+void MockDataSource::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
+                                        CdiSource cdiSource, float nmPerDot) {
+  map_.directToActive = directToActive_;
+  map_.directTo = directToTarget_;
 
-  // Sequence to the next leg on arrival, looping back to the start.
-  if (distNm <= std::max(0.4, moveNm * 1.5)) {
-    legIndex_ = (legIndex_ + 1) % route_.size();
+  NavigationCallbacks callbacks;
+  callbacks.onDirectToCaptured = [this](int /*activeLegIndex*/) {
+    directToActive_ = false;
+    directToTarget_ = {};
+    map_.directToActive = false;
+    map_.directTo = {};
+  };
+
+  const float scale = nmPerDot > 0.01f ? nmPerDot : 0.5f;
+  runNavigationFrame(navigator, map_, data_, obsMode, cdiSource, scale, callbacks);
+
+  if (data_.fmaActiveLegIndex >= 0) {
+    legIndex_ = static_cast<std::size_t>(data_.fmaActiveLegIndex);
   }
 }
 
@@ -880,7 +880,8 @@ void MockDataSource::refreshFeatures(double dt) {
       navFeatures_->nearbyLandLines(lat, lon, map_.rangeNm, kMaxLandLines,
                                       mapViewHalfExtentNm_);
   map_.cities =
-      navFeatures_->nearbyCities(lat, lon, map_.rangeNm, kMaxCities);
+      navFeatures_->nearbyCities(lat, lon, map_.rangeNm, kMaxCities,
+                                   mapViewHalfExtentNm_);
   map_.obstacles = navFeatures_->nearbyObstacles(lat, lon, kObstacleQueryRangeNm,
                                                  kMaxObstacles);
 }

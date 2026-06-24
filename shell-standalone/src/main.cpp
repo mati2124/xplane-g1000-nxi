@@ -160,6 +160,30 @@ void ApplyConsumedFlightPlan(avionics::XPlaneConnection& xplane,
   mirrorDemoRoute(plan);
 }
 
+// Prefer the GDU the pilot is actively editing; otherwise keep whichever side
+// still has a route (PFD first, matching syncFlightPlanPeer).
+avionics::PersistedFlightPlan AuthoritativeFlightPlanSnapshot(
+    avionics::AvionicsEngine* pfdEngine,
+    avionics::AvionicsEngine* mfdEngine) {
+  avionics::PersistedFlightPlan pfd;
+  avionics::PersistedFlightPlan mfd;
+  if (pfdEngine != nullptr) {
+    pfd = pfdEngine->softkeyController().persistedFlightPlanSnapshot();
+  }
+  if (mfdEngine != nullptr) {
+    mfd = mfdEngine->mfdController().persistedFlightPlanSnapshot();
+  }
+  const bool pfdDraft =
+      pfdEngine != nullptr &&
+      pfdEngine->softkeyController().flightPlanLocalDraft();
+  const bool mfdDraft =
+      mfdEngine != nullptr && mfdEngine->mfdController().fplLocalDraft();
+  if (pfdDraft && pfd.active) return pfd;
+  if (mfdDraft && mfd.active) return mfd;
+  if (pfd.active) return pfd;
+  return mfd;
+}
+
 // Absolute directory containing the running executable, used to find bundled
 // assets in a distributed build. Returns empty on failure (the asset resolver
 // then falls back to the compile-time development paths).
@@ -3130,10 +3154,6 @@ int main(int argc, char** argv) {
     pfdEngine->skipBoot();
     avionics::applyPfdState(pfdEngine->softkeyController(),
                             savedSettings.avionics.pfd);
-    if (savedSettings.persistedApproach.active) {
-      pfdEngine->softkeyController().setPersistedLoadedApproach(
-          savedSettings.persistedApproach);
-    }
     if (savedSettings.persistedFlightPlan.active) {
       pfdEngine->softkeyController().restorePersistedFlightPlan(
           savedSettings.persistedFlightPlan);
@@ -3141,17 +3161,21 @@ int main(int argc, char** argv) {
           xplane, &demoSource, savedSettings.persistedFlightPlan.legs,
           savedSettings.persistedFlightPlan.destinationFilled);
     }
+    if (savedSettings.persistedApproach.active) {
+      pfdEngine->softkeyController().setPersistedLoadedApproach(
+          savedSettings.persistedApproach);
+    }
   }
   if (mfdEngine != nullptr) {
     avionics::applyMfdState(mfdEngine->mfdController(),
                             savedSettings.avionics.mfd);
-    if (savedSettings.persistedApproach.active) {
-      mfdEngine->mfdController().setPersistedLoadedApproach(
-          savedSettings.persistedApproach);
-    }
     if (savedSettings.persistedFlightPlan.active) {
       mfdEngine->mfdController().restorePersistedFlightPlan(
           savedSettings.persistedFlightPlan);
+    }
+    if (savedSettings.persistedApproach.active) {
+      mfdEngine->mfdController().setPersistedLoadedApproach(
+          savedSettings.persistedApproach);
     }
   }
 
@@ -3368,26 +3392,9 @@ int main(int argc, char** argv) {
       mfdEngine->mfdController().setSimbriefState(simbriefState);
     }
 
-    // PFD Direct-To activation (the PFD has its own Direct-To window): engage
-    // the direct course the same way the MFD's window does.
+    // A loaded PROC approach with an ILS frequency tunes NAV1 standby (same as
+    // the MFD's procedure load).
     if (pfdEngine != nullptr) {
-      avionics::MapLeg pfdDto;
-      if (pfdEngine->softkeyController().consumeDirectToRequest(pfdDto)) {
-        xplane.setDirectTo(pfdDto);
-        if (app.demoSource != nullptr &&
-            app.activeSource == app.demoSource) {
-          if (pfdDto.id.empty()) {
-            app.demoSource->cancelDirectTo();
-          } else {
-            app.demoSource->directTo(pfdDto);
-          }
-        }
-      }
-
-      // PFD Active Flight Plan window edits are drained after bridge events below.
-
-      // A loaded PROC approach with an ILS frequency tunes NAV1 standby (same as
-      // the MFD's procedure load).
       avionics::MapProcedure pfdProc;
       if (pfdEngine->softkeyController().consumeProcLoadRequest(pfdProc) &&
           pfdProc.frequencyMhz > 0.0f) {
@@ -3398,21 +3405,6 @@ int main(int argc, char** argv) {
     // FPL page edits override the X-Plane feed's displayed plan, mirroring the
     // SimBrief flow above — drained after bridge events below.
     if (mfdEngine != nullptr) {
-      // Direct-To activation: the X-Plane feed shows the magenta direct line
-      // (display only over UDP).
-      avionics::MapLeg dtoTarget;
-      if (mfdEngine->mfdController().consumeDirectToRequest(dtoTarget)) {
-        xplane.setDirectTo(dtoTarget);
-        if (app.demoSource != nullptr &&
-            app.activeSource == app.demoSource) {
-          if (dtoTarget.id.empty()) {
-            app.demoSource->cancelDirectTo();
-          } else {
-            app.demoSource->directTo(dtoTarget);
-          }
-        }
-      }
-
       avionics::MapProcedure proc;
       if (mfdEngine->mfdController().consumeProcLoadRequest(proc) &&
           proc.frequencyMhz > 0.0f) {
@@ -3454,6 +3446,37 @@ int main(int argc, char** argv) {
         ApplyConsumedFlightPlan(
             xplane, app.demoSource, editedPlan,
             mfdEngine->mfdController().fplDestinationFilled());
+      }
+    }
+
+    // Direct-To after flight-plan edits so approach activate loads the route
+    // before engaging present-position Direct-To to the first approach fix.
+    if (pfdEngine != nullptr) {
+      avionics::MapLeg pfdDto;
+      if (pfdEngine->softkeyController().consumeDirectToRequest(pfdDto)) {
+        xplane.setDirectTo(pfdDto);
+        if (app.demoSource != nullptr &&
+            app.activeSource == app.demoSource) {
+          if (pfdDto.id.empty()) {
+            app.demoSource->cancelDirectTo();
+          } else {
+            app.demoSource->directTo(pfdDto);
+          }
+        }
+      }
+    }
+    if (mfdEngine != nullptr) {
+      avionics::MapLeg dtoTarget;
+      if (mfdEngine->mfdController().consumeDirectToRequest(dtoTarget)) {
+        xplane.setDirectTo(dtoTarget);
+        if (app.demoSource != nullptr &&
+            app.activeSource == app.demoSource) {
+          if (dtoTarget.id.empty()) {
+            app.demoSource->cancelDirectTo();
+          } else {
+            app.demoSource->directTo(dtoTarget);
+          }
+        }
       }
     }
 
@@ -3601,6 +3624,12 @@ int main(int argc, char** argv) {
           app.settings.persistedApproach = approach;
           avionics::SaveAppSettings(app.settings);
         }
+        const avionics::PersistedFlightPlan flightPlan =
+            AuthoritativeFlightPlanSnapshot(pfdEngine, mfdEngine);
+        if (flightPlan != app.settings.persistedFlightPlan) {
+          app.settings.persistedFlightPlan = flightPlan;
+          avionics::SaveAppSettings(app.settings);
+        }
       }
     }
 
@@ -3609,6 +3638,10 @@ int main(int argc, char** argv) {
   // Capture the final window placement for the next launch before the windows
   // go away (always remembered).
   CaptureWindowPositions(app);
+  if (pfdEngine != nullptr) {
+    app.settings.persistedFlightPlan =
+        AuthoritativeFlightPlanSnapshot(pfdEngine, mfdEngine);
+  }
   avionics::SaveAppSettings(app.settings);
 
   // Tear down GL objects while their contexts are still current.

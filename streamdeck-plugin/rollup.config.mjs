@@ -7,5 +7,5 @@ export default {
     format: "esm",
   },
   plugins: [resolve({ preferBuiltins: true })],
-  external: ["node:child_process"],
+  external: ["node:child_process", "node:dgram", "ws"],
 };

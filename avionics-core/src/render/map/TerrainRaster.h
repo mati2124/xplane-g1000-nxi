@@ -30,6 +30,10 @@ inline constexpr float kTerrainMaxRangeNm = kMapRangeMaxNm;
 // Below this range the topo raster samples full-resolution DSF DEM; above it
 // each 1° tile contributes one max-elevation value (continental zoom).
 inline constexpr float kFullDetailTerrainMaxNm = 200.0f;
+// Raster edge length in pixels. Full detail at close range; halved above
+// kFullDetailTerrainMaxNm where each pixel already spans several NM.
+inline constexpr int kTerrainFullRasterSize = 512;
+inline constexpr int kTerrainCoarseRasterSize = 256;
 // Wider MFD map aspect: farthest on-screen corner from center at max range.
 inline constexpr float kTerrainCornerRangeFactor = 3.5f;
 

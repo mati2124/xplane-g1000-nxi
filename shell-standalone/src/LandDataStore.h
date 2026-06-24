@@ -41,7 +41,8 @@ class LandDataStore {
                                        std::size_t maxCount,
                                        float viewHalfExtentNm = 0.0f) const;
   std::vector<MapLandCity> nearbyCities(double lat, double lon, float rangeNm,
-                                        std::size_t maxCount) const;
+                                        std::size_t maxCount,
+                                        float viewHalfExtentNm = 0.0f) const;
 
  private:
   void load();  // background-thread entry point

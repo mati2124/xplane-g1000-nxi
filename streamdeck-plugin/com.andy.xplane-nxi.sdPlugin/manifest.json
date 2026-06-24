@@ -37,6 +37,21 @@
       ],
       "Tooltip": "Kill NXi, rebuild Release, launch PFD + MFD for X-Plane.",
       "UUID": "com.andy.xplane-nxi.restart"
+    },
+    {
+      "Icon": "imgs/actions/kfmy-final/icon",
+      "Name": "KFMY RNAV 05 Final",
+      "Controllers": ["Keypad"],
+      "States": [
+        {
+          "Image": "imgs/actions/kfmy-final/key",
+          "TitleAlignment": "middle",
+          "FontSize": "10",
+          "Title": "KFMY\nRNAV05"
+        }
+      ],
+      "Tooltip": "Load the C172 G1000 on long final for RNAV GPS RWY 05 at KFMY (~90 kt, engine running).",
+      "UUID": "com.andy.xplane-nxi.kfmy-rnav05-final"
     }
   ],
   "UUID": "com.andy.xplane-nxi"

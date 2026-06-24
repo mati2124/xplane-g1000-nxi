@@ -430,6 +430,25 @@ std::vector<MapFeature> NavDataStore::lookupIdent(const std::string& ident,
   return result;
 }
 
+std::vector<MapFeature> NavDataStore::lookupIdentNear(
+    const std::string& ident, double refLat, double refLon,
+    std::size_t maxCount) const {
+  std::vector<MapFeature> matches = lookupIdent(ident, maxCount);
+  if (matches.size() <= 1) return matches;
+
+  const double cosLat = std::max(0.05, std::cos(refLat * kDegToRad));
+  std::sort(matches.begin(), matches.end(),
+            [&](const MapFeature& a, const MapFeature& b) {
+              const double dLatA = a.lat - refLat;
+              const double dLonA = (a.lon - refLon) * cosLat;
+              const double dLatB = b.lat - refLat;
+              const double dLonB = (b.lon - refLon) * cosLat;
+              return (dLatA * dLatA + dLonA * dLonA) <
+                     (dLatB * dLatB + dLonB * dLonB);
+            });
+  return matches;
+}
+
 std::vector<MapApproach> NavDataStore::approachesForAirport(
     const std::string& icao) const {
   if (!loaded() || icao.empty()) return {};

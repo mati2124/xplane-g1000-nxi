@@ -119,7 +119,9 @@ Write-Host "Generating PNG icons..."
     (Join-Path $Source "imgs\plugin\category"),
     (Join-Path $Source "imgs\plugin\marketplace"),
     (Join-Path $Source "imgs\actions\restart\icon"),
-    (Join-Path $Source "imgs\actions\restart\key")
+    (Join-Path $Source "imgs\actions\restart\key"),
+    (Join-Path $Source "imgs\actions\kfmy-final\icon"),
+    (Join-Path $Source "imgs\actions\kfmy-final\key")
   ) `
   -Size 144
 
@@ -142,4 +144,6 @@ Restart-StreamDeckApp
 Write-Host ""
 Write-Host "Look for:"
 Write-Host "  1. A key labeled NXI RESTART on MSFS PH100 (row 3, left) and X-Plane TBM (bottom center)"
-Write-Host "  2. Or drag Restart NXi from the X-Plane NXi action category"
+Write-Host "  2. Or drag actions from the X-Plane NXi category:"
+Write-Host "       - Restart NXi"
+Write-Host "       - KFMY RNAV 05 Final (C172 G1000 long final ~90 kt)"

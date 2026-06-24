@@ -118,9 +118,15 @@ void FlightPlanBridgeClient::clearDirectTo() {
   hasDtoCmd_ = true;
 }
 
+void FlightPlanBridgeClient::writeActiveLeg(int legIndex) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  activeLegCmdIndex_ = legIndex;
+  hasActiveLegCmd_ = true;
+}
+
 bool FlightPlanBridgeClient::pendingCommand() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return hasPlanCmd_ || hasDtoCmd_;
+  return hasPlanCmd_ || hasDtoCmd_ || hasActiveLegCmd_;
 }
 
 void FlightPlanBridgeClient::run() {
@@ -148,6 +154,8 @@ void FlightPlanBridgeClient::flushCommands() {
   bool hasDto = false;
   bool dtoActive = false;
   MapLeg dtoTarget;
+  bool hasActiveLeg = false;
+  int activeLegIndex = -1;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (hasPlanCmd_) {
@@ -160,6 +168,11 @@ void FlightPlanBridgeClient::flushCommands() {
       dtoActive = dtoCmdActive_;
       dtoTarget = dtoCmdTarget_;
       hasDtoCmd_ = false;
+    }
+    if (hasActiveLegCmd_) {
+      hasActiveLeg = true;
+      activeLegIndex = activeLegCmdIndex_;
+      hasActiveLegCmd_ = false;
     }
   }
 
@@ -177,6 +190,14 @@ void FlightPlanBridgeClient::flushCommands() {
       dtoCmdActive_ = dtoActive;
       dtoCmdTarget_ = std::move(dtoTarget);
       hasDtoCmd_ = true;
+    }
+  }
+  if (hasActiveLeg &&
+      !sendWithAck(fpbridge::encodeSetActiveLeg(activeLegIndex))) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!hasActiveLegCmd_) {
+      activeLegCmdIndex_ = activeLegIndex;
+      hasActiveLegCmd_ = true;
     }
   }
 }
