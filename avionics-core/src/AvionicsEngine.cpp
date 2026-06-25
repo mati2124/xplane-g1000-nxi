@@ -12,8 +12,8 @@
 #include "avionics/GlidepathGuidance.h"
 #include "avionics/GpsLegCourse.h"
 #include "avionics/MapData.h"
+#include "avionics/MissedApproachGuidance.h"
 #include "avionics/NavMath.h"
-#include "avionics/TurnAnticipation.h"
 #include "avionics/render/BootScreen.h"
 #include "avionics/render/MultiFunctionDisplay.h"
 #include "avionics/render/PrimaryFlightDisplay.h"
@@ -59,7 +59,21 @@ double alongTrackDistanceNm(const MapData& map, const FlightData& data,
 }
 
 void applyGlidepath(FlightData& data, const MapData& map) {
-  applyGlidepathSolution(data, computeGlidepath(map, data));
+  if (suppressGlidepath(map, data)) {
+    if (data.vdiKind == VerticalDeviationKind::Glidepath ||
+        data.vdiKind == VerticalDeviationKind::Glideslope) {
+      data.vdiKind = VerticalDeviationKind::None;
+      data.vdiValid = false;
+    }
+    return;
+  }
+  const GlidepathSolution gp = computeGlidepath(map, data);
+  if (gp.valid) {
+    applyGlidepathSolution(data, gp);
+  } else if (data.vdiKind == VerticalDeviationKind::Glidepath) {
+    data.vdiKind = VerticalDeviationKind::None;
+    data.vdiValid = false;
+  }
 }
 
 // Computes the active VNAV profile: finds the next constrained, lower waypoint
@@ -67,6 +81,7 @@ void applyGlidepath(FlightData& data, const MapData& map) {
 // derives the required vertical speed, top-of-descent, and path deviation.
 VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
   VnvProfile vnv;
+  if (data.missedApproachActive) return vnv;
   if (!map.positionValid || map.flightPlan.size() < 1) return vnv;
 
   const std::vector<MapLeg>& plan = map.flightPlan;
@@ -238,6 +253,7 @@ void AvionicsEngine::update(double dtSeconds) {
   if (drivesDataSource_ &&
       dataSource_->connectionState() == ConnectionState::Connected) {
     applyActivateLegRequests();
+    applyActivateMissedRequests();
     const FlightData& snap = dataSource_->snapshot();
     dataSource_->applyGpsNavigation(
         navigator_,
@@ -307,6 +323,24 @@ void AvionicsEngine::applyActivateLegRequests() {
   }
   if (softkeyPeer_->mfdController().consumeActivateLegRequest(legIdx)) {
     applyFrom(legIdx);
+  }
+}
+
+void AvionicsEngine::applyActivateMissedRequests() {
+  if (!drivesDataSource_) return;
+
+  auto tryConsume = [this]() -> bool {
+    if (softkeys_.consumeActivateMissedRequest()) return true;
+    if (!softkeyPeer_) return false;
+    return softkeyPeer_->softkeyController().consumeActivateMissedRequest();
+  };
+
+  if (!tryConsume()) return;
+
+  if (!navigator_.activateMissedApproach()) return;
+  const int legIdx = navigator_.activeLegIndex();
+  if (legIdx >= 0) {
+    dataSource_->syncSimulatorActiveLeg(legIdx);
   }
 }
 
@@ -497,6 +531,12 @@ void AvionicsEngine::pressSoftkey(int index) {
     return;
   }
   if (!isLivePageUp()) return;
+  if (page_ == DisplayPage::PrimaryFlightDisplay && index == 4 &&
+      !softkeys_.displayToggle(DisplayToggle::Obs) &&
+      (navigator_.missedApproachSuspended() || navigator_.inHold())) {
+    navigator_.resumeFromAutoSuspend();
+    return;
+  }
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:
       softkeys_.pressKey(index);
@@ -801,10 +841,11 @@ void AvionicsEngine::renderFrame(int widthPx, int heightPx, float pixelRatio) {
   if (connected) {
     const MapData& map = dataSource_->mapSnapshot();
     applyGlidepath(data, map);
-    applyVnav(data, map);
-    applyTurnAnticipation(data, map,
-                          softkeys_.displayToggle(DisplayToggle::Obs),
-                          softkeys_.blinkOn());
+    if (data.missedApproachActive) {
+      applyMissedClimbProfile(data, computeMissedClimbProfile(map, data));
+    } else {
+      applyVnav(data, map);
+    }
   }
   switch (page_) {
     case DisplayPage::PrimaryFlightDisplay:

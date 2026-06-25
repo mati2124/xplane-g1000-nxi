@@ -2,6 +2,7 @@
 #include "FmsDebugOverlay.h"
 #include "FmsRouteProgrammer.h"
 #include "avionics/EisLegacy.h"
+#include "avionics/GpsLegCourse.h"
 #include "avionics/NavigationComputer.h"
 
 #include <algorithm>
@@ -26,6 +27,7 @@
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/MfdController.h"
 #include "avionics/OpenAirParser.h"
+#include "avionics/nav/NearbyFeatureSelect.h"
 
 namespace avionics {
 namespace {
@@ -171,64 +173,12 @@ ResolvedDataRef resolveDataRef(const char* path) {
 // Navaid identifier buffer: the SDK recommends >= 6 chars; 32 is generous.
 constexpr int kNavIdBufferSize = 32;
 
-// Return the features from `src` within rangeNm of (lat, lon), nearest first,
-// capped at maxCount. Shared shape with the standalone NavDataStore::nearby.
+// Return the features from `src` within rangeNm of (lat, lon), capped at
+// maxCount. Shared shape with the standalone NavDataStore::nearby.
 std::vector<MapFeature> filterNearby(const std::vector<MapFeature>& src,
                                      double lat, double lon, float rangeNm,
                                      std::size_t maxCount) {
-  std::vector<MapFeature> result;
-  if (maxCount == 0) return result;
-
-  const double cosLat = std::max(0.05, std::cos(lat * kDegToRad));
-  const double dLat = (rangeNm / kNmPerDeg) * 1.2;
-  const double dLon = (rangeNm / (kNmPerDeg * cosLat)) * 1.2;
-
-  struct Scored {
-    MapFeature feature;
-    double distSq;
-  };
-  std::vector<Scored> scored;
-  for (const MapFeature& f : src) {
-    if (std::fabs(f.lat - lat) > dLat) continue;
-    if (std::fabs(f.lon - lon) > dLon) continue;
-    const double north = (f.lat - lat) * kNmPerDeg;
-    const double east = (f.lon - lon) * kNmPerDeg * cosLat;
-    scored.push_back({f, north * north + east * east});
-  }
-  std::sort(scored.begin(), scored.end(),
-            [](const Scored& a, const Scored& b) { return a.distSq < b.distSq; });
-
-  // Reserve airports and navaids before fixes (mirrors NavDataStore::nearby) so
-  // a wide MFD MAP view keeps the far airports instead of letting the dense fix
-  // class fill the whole budget with the nearest cluster. The map renderer then
-  // declutters airports per-size against the Map Setup "Aviation" ranges.
-  constexpr std::size_t kMaxAirports = 200;
-  constexpr std::size_t kMaxNavaids = 100;
-  result.reserve(std::min(scored.size(), maxCount));
-  std::size_t airports = 0;
-  std::size_t navaids = 0;
-  for (const Scored& s : scored) {
-    if (result.size() >= maxCount) break;
-    const MapFeatureType t = s.feature.type;
-    if (t == MapFeatureType::Airport) {
-      if (airports >= kMaxAirports) continue;
-      ++airports;
-    } else if (t == MapFeatureType::Vor || t == MapFeatureType::Ndb) {
-      if (navaids >= kMaxNavaids) continue;
-      ++navaids;
-    } else {
-      continue;  // fixes/waypoints fill the remaining budget below
-    }
-    result.push_back(s.feature);
-  }
-  for (const Scored& s : scored) {
-    if (result.size() >= maxCount) break;
-    const MapFeatureType t = s.feature.type;
-    if (t == MapFeatureType::Fix || t == MapFeatureType::Waypoint) {
-      result.push_back(s.feature);
-    }
-  }
-  return result;
+  return assembleNearbyMapFeaturesMixed(src, lat, lon, rangeNm, maxCount);
 }
 
 // A single decoded FMS flight-plan entry: identifier plus lat/lon. The flight
@@ -372,6 +322,9 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   heading_ = XPLMFindDataRef(datarefs::kHeadingDegMag);
   pitch_ = XPLMFindDataRef(datarefs::kPitchDeg);
   roll_ = XPLMFindDataRef(datarefs::kRollDeg);
+  flightDirectorPitch_ = XPLMFindDataRef(datarefs::kFlightDirectorPitch);
+  flightDirectorRoll_ = XPLMFindDataRef(datarefs::kFlightDirectorRoll);
+  flightDirectorMode_ = XPLMFindDataRef(datarefs::kFlightDirectorMode);
   verticalSpeed_ = XPLMFindDataRef(datarefs::kVerticalSpeedFpm);
   slip_ = XPLMFindDataRef(datarefs::kSlipDeg);
 
@@ -386,9 +339,11 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   gpsNavId_ = XPLMFindDataRef(datarefs::kGpsNavId);
   gpsHdef_ = XPLMFindDataRef(datarefs::kGpsHdefNmPerDot);
   hsiObsCourse_ = XPLMFindDataRef(datarefs::kHsiObsCourseDegMag);
+  hsiSourceSelect_ = XPLMFindDataRef(datarefs::kHsiSourceSelect);
   overrideGps_ = XPLMFindDataRef(datarefs::kOverrideGps);
   gpsCourseDegMag_ = XPLMFindDataRef(datarefs::kGpsCourseDegMag);
   gpsHdefDot_ = XPLMFindDataRef(datarefs::kGpsHdefDot);
+  gpsDmeDistOverride_ = XPLMFindDataRef(datarefs::kGpsDmeDistOverride);
   nav1NavId_ = XPLMFindDataRef(datarefs::kNav1NavId);
   nav2NavId_ = XPLMFindDataRef(datarefs::kNav2NavId);
   nav1DmeId_ = XPLMFindDataRef(datarefs::kNav1DmeId);
@@ -615,6 +570,14 @@ void DatarefDataSource::update(double dtSeconds) {
   if (heading_) data_.headingDeg = XPLMGetDataf(heading_);
   if (pitch_) data_.pitchDeg = XPLMGetDataf(pitch_);
   if (roll_) data_.rollDeg = XPLMGetDataf(roll_);
+  if (flightDirectorPitch_)
+    data_.fdPitchDeg = XPLMGetDataf(flightDirectorPitch_);
+  if (flightDirectorRoll_) data_.fdRollDeg = XPLMGetDataf(flightDirectorRoll_);
+  if (flightDirectorMode_) {
+    const int fdMode = XPLMGetDatai(flightDirectorMode_);
+    data_.flightDirectorActive = fdMode >= 1;
+    data_.apEngaged = fdMode == 2;
+  }
   if (verticalSpeed_) data_.verticalSpeedFpm = XPLMGetDataf(verticalSpeed_);
   if (slip_) data_.slipSkidDeg = XPLMGetDataf(slip_);
 
@@ -699,6 +662,28 @@ void DatarefDataSource::update(double dtSeconds) {
   syncDisplayBackup(data_, dtSeconds);
 }
 
+void DatarefDataSource::resetGpsCouplingState() {
+  lastSentGpsCourseDeg_ = -999.0f;
+  lastSentGpsHdefDots_ = 999.0f;
+  lastPushedCourseDeg_ = -999.0f;
+  lastGpsCoupledLegIndex_ = -1;
+  lastGpsCoupledToWpt_.clear();
+  lastSentGpsNavId_.clear();
+  lastSentGpsDmeDistNm_ = -1.0f;
+  lastSentGpsHdefNmPerDot_ = -1.0f;
+  lastSentHsiSource_ = -1;
+  lastNavigatorDirectTo_ = false;
+}
+
+void DatarefDataSource::ensureSimCdiSource(CdiSource source) {
+  if (hsiSourceSelect_ == nullptr) return;
+  const int simVal =
+      source == CdiSource::Nav1 ? 0 : source == CdiSource::Nav2 ? 1 : 2;
+  if (simVal == lastSentHsiSource_) return;
+  XPLMSetDatai(hsiSourceSelect_, simVal);
+  lastSentHsiSource_ = simVal;
+}
+
 void DatarefDataSource::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
                                            CdiSource cdiSource, float nmPerDot) {
   float scale = nmPerDot;
@@ -720,14 +705,10 @@ void DatarefDataSource::applyGpsNavigation(FmsNavigator& navigator, bool obsMode
                        callbacks);
   }
 
-  if (shouldSyncActiveLegToSimulator(navigator, data_, obsMode)) {
-    const int idx = data_.fmaActiveLegIndex;
-    if (idx != lastSyncedFmsLegIndex_) {
-      syncSimulatorActiveLeg(idx);
-    }
-  } else {
-    lastSyncedFmsLegIndex_ = -1;
-  }
+  // Do not sync the sim FMS destination on automatic leg sequencing: pushing
+  // XPLMSetDestinationFMSEntry at each waypoint capture makes X-Plane briefly
+  // lose GPS nav validity and drop autopilot NAV mode. Leg sync is reserved for
+  // explicit Activate Leg / Direct-To capture (syncSimulatorActiveLeg).
 
   FmsDebugNavState dbg{};
   dbg.activeLegIndex = data_.fmaActiveLegIndex;
@@ -741,53 +722,33 @@ void DatarefDataSource::applyGpsNavigation(FmsNavigator& navigator, bool obsMode
   dbg.directTo = navigator.directToActive();
   FmsDebugOverlay::updateNavState(dbg);
 
+  ensureSimCdiSource(cdiSource);
+
   if (data_.fmaToWpt.empty() || obsMode || cdiSource != CdiSource::Gps) {
     if (gpsOverrideActive_ && overrideGps_ != nullptr) {
       XPLMSetDatai(overrideGps_, 0);
       gpsOverrideActive_ = false;
       lastSentGpsCourseDeg_ = -999.0f;
       lastSentGpsHdefDots_ = 999.0f;
+      lastSentGpsNavId_.clear();
+      lastGpsCoupledLegIndex_ = -1;
+      lastGpsCoupledToWpt_.clear();
       FmsDebugOverlay::recordWrite("GPS", "override OFF");
     }
     return;
   }
 
-  if (hsiObsCourse_ != nullptr &&
-      std::fabs(data_.courseDeg - lastPushedCourseDeg_) > 0.5f) {
-    XPLMSetDataf(hsiObsCourse_, data_.courseDeg);
-    lastPushedCourseDeg_ = data_.courseDeg;
-  }
-
-  if (overrideGps_ == nullptr || gpsCourseDegMag_ == nullptr ||
-      gpsHdefDot_ == nullptr) {
-    return;
-  }
-  if (!gpsOverrideActive_) {
-    XPLMSetDatai(overrideGps_, 1);
-    gpsOverrideActive_ = true;
-    FmsDebugOverlay::recordWrite("GPS", "override ON");
-  }
-  bool gpsLogged = false;
-  char gpsDetail[96] = {};
-  if (std::fabs(data_.courseDeg - lastSentGpsCourseDeg_) > 0.25f) {
-    XPLMSetDataf(gpsCourseDegMag_, data_.courseDeg);
-    lastSentGpsCourseDeg_ = data_.courseDeg;
-    std::snprintf(gpsDetail, sizeof(gpsDetail), "CRS %.1f", data_.courseDeg);
-    gpsLogged = true;
-  }
-  if (std::fabs(data_.cdiDeviationDots - lastSentGpsHdefDots_) > 0.02f) {
-    XPLMSetDataf(gpsHdefDot_, data_.cdiDeviationDots);
-    lastSentGpsHdefDots_ = data_.cdiDeviationDots;
-    if (gpsLogged) {
-      std::snprintf(gpsDetail + std::strlen(gpsDetail), sizeof(gpsDetail) - std::strlen(gpsDetail),
-                    "  CDI %+.2f", data_.cdiDeviationDots);
-    } else {
-      std::snprintf(gpsDetail, sizeof(gpsDetail), "CDI %+.2f", data_.cdiDeviationDots);
-      gpsLogged = true;
-    }
-  }
-  if (gpsLogged) {
-    FmsDebugOverlay::recordWrite("GPS", gpsDetail);
+  // FMS is programmed in-process (programFmsDirectTo / programFmsRoute); native
+  // sim GPS drives the autopilot. Lateral override_gps broke AP NAV coupling.
+  if (gpsOverrideActive_ && overrideGps_ != nullptr) {
+    XPLMSetDatai(overrideGps_, 0);
+    gpsOverrideActive_ = false;
+    lastSentGpsCourseDeg_ = -999.0f;
+    lastSentGpsHdefDots_ = 999.0f;
+    lastSentGpsNavId_.clear();
+    lastGpsCoupledLegIndex_ = -1;
+    lastGpsCoupledToWpt_.clear();
+    FmsDebugOverlay::recordWrite("GPS", "override OFF (FMS native)");
   }
 }
 
@@ -941,10 +902,15 @@ void DatarefDataSource::setDirectTo(MapLeg target) {
       directToOriginValid_ = false;
       directToOriginPending_ = true;
     }
+    if (!map_.flightPlan.empty()) {
+      applyInPlanDirectToRouteSlice(map_, map_.flightPlan, directTo_);
+    }
+    resetGpsCouplingState();
     programFmsDirectTo(true, directTo_);
   } else {
     directToOriginPending_ = false;
     directToOriginValid_ = false;
+    clearFlightPlanRouteSlice(map_);
     programFmsDirectTo(false, directTo_);
   }
 }
@@ -965,9 +931,7 @@ void DatarefDataSource::onNavigatorDirectToCaptured(int activeLegIndex) {
   if (activeLegIndex >= 0) {
     syncSimulatorActiveLeg(activeLegIndex);
   }
-  lastSentGpsCourseDeg_ = -999.0f;
-  lastSentGpsHdefDots_ = 999.0f;
-  lastPushedCourseDeg_ = -999.0f;
+  resetGpsCouplingState();
 }
 
 void DatarefDataSource::buildNavCache() {
@@ -1067,22 +1031,14 @@ void DatarefDataSource::updateMap(double dtSeconds) {
     map_.directToOriginLon = directToOriginLon_;
   }
 
-  // Active flight-plan route: prefer the last PFD/MFD edit so typed idents are
-  // not replaced by the sim FMS coordinate strings for lat/lon entries.
+  // Active flight-plan route: session-only in the plugin. The NXi FPL editor and
+  // inset map show what the pilot built this X-Plane session (routeOverride_),
+  // not X-Plane's persisted FMS file from a previous launch. The sim FMS is
+  // programmed when the route is complete enough for navigation, but a fresh
+  // X-Plane start should present a blank FPL page like a cold avionics boot.
   map_.flightPlan.clear();
   if (routeOverrideSet_) {
     map_.flightPlan = routeOverride_;
-  } else if (!directToActive_) {
-    const int count = XPLMCountFMSEntries();
-    map_.flightPlan.reserve(static_cast<std::size_t>(count));
-    for (int i = 0; i < count; ++i) {
-      const FmsEntry entry = fmsEntry(i);
-      // Skip empty / unpopulated entries (a 0/0 fix would draw a spurious leg).
-      if (entry.lat == 0.0f && entry.lon == 0.0f) continue;
-      map_.flightPlan.push_back(
-          {static_cast<double>(entry.lat), static_cast<double>(entry.lon),
-           entry.id});
-    }
   }
 
   // Nearby navaids/airports: built once from the nav database, then range-

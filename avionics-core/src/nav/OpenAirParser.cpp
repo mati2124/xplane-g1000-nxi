@@ -14,7 +14,7 @@ constexpr double kDegToRad = kPi / 180.0;
 constexpr double kNmPerDeg = 60.0;
 
 // "Unlimited" ceiling sentinel and the step (degrees) used to tessellate arcs.
-constexpr float kUnlimitedFt = 60000.0f;
+constexpr float kUnlimitedFt = kAirspaceUnlimitedFt;
 constexpr double kArcStepDeg = 5.0;
 
 double cosLatClamped(double latDeg) {

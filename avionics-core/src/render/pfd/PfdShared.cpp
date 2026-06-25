@@ -64,10 +64,14 @@ Layout computeLayout(float w, float h) {
   L.attVisW = X(414.0f);
   L.rollRadius = 193.0f * L.s;
 
-  // HSI rose center (461, 571), tick-ring radius 153.
-  L.hsiCx = X(461.0f);
-  L.hsiCy = Y(571.0f);
-  L.hsiRadius = 153.0f * L.s;
+  // HSI rose center (460, 580), tick-ring radius 160. Measured against the
+  // Garmin NAV III trainer standard-HSI page: the E/W cardinal tick tips lie on
+  // the horizontal diameter at x=299/620 (cx 459.5, dia 321 -> r 160.5) on the
+  // 1024x768 GDU canvas, with that center row at y=580. cx is aligned to the
+  // attitude pivot (460).
+  L.hsiCx = X(460.0f);
+  L.hsiCy = Y(580.0f);
+  L.hsiRadius = 160.0f * L.s;
 
   // HSI Map rose: WT NXi HSIMap places the 350 px compass (tick-ring radius
   // ~175) with its center at (459, 633) -- lower and larger than the rose-mode
@@ -183,7 +187,8 @@ void polarOffset(float angleDeg, float radius, float& x, float& y) {
 
 void drawReadoutBox(Renderer& r, float x, float y, float w, float h,
                     const std::string& text, float textSize, NotchSide notch,
-                    const Color& boxColor, const Color& textColor) {
+                    const Color& boxColor, const Color& textColor,
+                    float textDy) {
   const float midY = y + h * 0.5f;
   const float notchHalfH = h * 0.22f;
   const float notchDepth = h * 0.14f;
@@ -218,7 +223,8 @@ void drawReadoutBox(Renderer& r, float x, float y, float w, float h,
     r.strokePolyline(outline, 5, 2.0f, colors::kWhite);
   }
 
-  r.fillText(x + w * 0.5f, midY, text, textSize, TextAlign::Center, textColor);
+  r.fillText(x + w * 0.5f, midY + textDy, text, textSize, TextAlign::Center,
+             textColor);
 }
 
 void drawTapeBackground(Renderer& r, float x, float y, float w, float h,

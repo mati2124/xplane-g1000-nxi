@@ -7,6 +7,8 @@
 #include <fstream>
 #include <string>
 
+#include "avionics/nav/NearbyFeatureSelect.h"
+
 namespace avionics {
 namespace {
 
@@ -472,56 +474,9 @@ std::string NavDataStore::firstIdentWithPrefix(const std::string& prefix) const 
 std::vector<MapFeature> NavDataStore::nearby(double lat, double lon,
                                              float rangeNm,
                                              std::size_t maxCount) const {
-  std::vector<MapFeature> result;
-  if (!loaded() || maxCount == 0) return result;
-
-  const double cosLat = std::max(0.05, std::cos(lat * kDegToRad));
-  // Generous bounding box (range + 20% margin) for a cheap first-pass reject.
-  const double dLat = (rangeNm / kNmPerDeg) * 1.2;
-  const double dLon = (rangeNm / (kNmPerDeg * cosLat)) * 1.2;
-
-  struct Scored {
-    MapFeature feature;
-    double distSq;
-  };
-
-  auto collect = [&](const std::vector<MapFeature>& src) {
-    std::vector<Scored> scored;
-    for (const MapFeature& f : src) {
-      if (std::fabs(f.lat - lat) > dLat) continue;
-      if (std::fabs(f.lon - lon) > dLon) continue;
-      const double north = (f.lat - lat) * kNmPerDeg;
-      const double east = (f.lon - lon) * kNmPerDeg * cosLat;
-      scored.push_back({f, north * north + east * east});
-    }
-    std::sort(scored.begin(), scored.end(),
-              [](const Scored& a, const Scored& b) { return a.distSq < b.distSq; });
-    return scored;
-  };
-
-  // Reserve capacity for airports and navaids first so dense fix databases do
-  // not crowd them out of the map feature budget (important for NRST lists).
-  // The airport reserve must be deep enough that a wide MFD MAP view (out to
-  // 150 NM) still receives the far airports, not just the nearest cluster --
-  // the renderer then declutters them per-size against the Map Setup ranges.
-  constexpr std::size_t kMaxAirports = 200;
-  constexpr std::size_t kMaxNavaids = 100;
-  auto append = [&](const std::vector<Scored>& scored, std::size_t cap) {
-    for (const Scored& s : scored) {
-      if (result.size() >= maxCount || cap == 0) return;
-      result.push_back(s.feature);
-      --cap;
-    }
-  };
-
-  append(collect(airports_), kMaxAirports);
-  append(collect(navaids_), kMaxNavaids);
-
-  for (const Scored& s : collect(fixes_)) {
-    if (result.size() >= maxCount) break;
-    result.push_back(s.feature);
-  }
-  return result;
+  if (!loaded() || maxCount == 0) return {};
+  return assembleNearbyMapFeatures(airports_, navaids_, fixes_, lat, lon,
+                                   rangeNm, maxCount);
 }
 
 }  // namespace avionics

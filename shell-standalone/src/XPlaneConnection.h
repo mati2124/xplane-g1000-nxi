@@ -79,6 +79,11 @@ class XPlaneConnection : public SimulatorConnection {
   ConnectionState connectionState() const override;
   const char* simulatorName() const override { return "X-PLANE"; }
 
+  // True once after X-Plane drops and reconnects (e.g. sim restart). Clears the
+  // in-session route override; consume from the shell to blank the FPL editors
+  // without overwriting the persisted settings file.
+  bool consumeReconnectFlightPlanClear();
+
   // Show a pilot-built route on the map feed without programming X-Plane's FMS.
   void setLocalFlightPlan(std::vector<MapLeg> route) {
     routeOverride_ = std::move(route);
@@ -111,6 +116,10 @@ class XPlaneConnection : public SimulatorConnection {
   // a present-position Direct-To in X-Plane's FMS; otherwise it drives the
   // display only. An empty id clears the direct course.
   void setDirectTo(MapLeg target);
+  // Restore a saved Direct-To without re-snapshotting present position as the
+  // course origin (used when reloading standalone settings).
+  void restoreDirectTo(MapLeg target, double originLat, double originLon,
+                       bool originValid);
   void clearDirectTo();
 
   void setMapPanCenter(bool active, double lat, double lon) override;
@@ -208,6 +217,13 @@ class XPlaneConnection : public SimulatorConnection {
   // phase (ENR/TERM/APR/OCN) is derived from it each frame; 0 means no usable
   // GPS scale (no active flight plan), which blanks the phase annunciation.
   float gpsHdefNmPerDot_ = 0.0f;
+  // Latest magnetic declination (+E / -W) for true→mag DTK conversion.
+  float magneticVariationDeg_ = 0.0f;
+  // Latest true airframe heading (sim/flightmodel/position/psi). Differenced
+  // against the magnetic heading binding to recover X-Plane's applied variation
+  // with the correct sign, independent of magnetic_variation's convention.
+  float trueHeadingDeg_ = 0.0f;
+  bool haveTrueHeading_ = false;
 
   // Ownship position decoded from RREF (float precision; ~1-2 m at these
   // magnitudes, fine for the inset map). havePosition_ stays false until the
@@ -306,14 +322,23 @@ class XPlaneConnection : public SimulatorConnection {
   float lastSentGpsHdefDots_ = 999.0f;
   int lastSyncedFmsLegIndex_ = -1;
   float lastSentGpsCourseDeg_ = -999.0f;
+  int lastGpsCoupledLegIndex_ = -1;
+  std::string lastGpsCoupledToWpt_;
+  std::string lastSentGpsNavId_;
+  float lastSentGpsDmeDistNm_ = -1.0f;
+  float lastSentGpsHdefNmPerDot_ = -1.0f;
   float lastSentGsTrackVsFpm_ = 99999.0f;
+  int lastSentHsiSource_ = -1;
   bool gpsGlidepathHasSignal_ = false;
   bool gpsGlidepathCaptured_ = false;
   bool gpsGlidepathPitchSteering_ = false;
   bool gpsOverrideActive_ = false;
   bool apOverrideForGsActive_ = false;
   float lastPushedCourseDeg_ = -999.0f;
+  bool lastNavigatorDirectTo_ = false;
 
+  void resetGpsCouplingState();
+  void ensureSimCdiSource(CdiSource source);
   void setGpsOverride(bool active);
   void setApOverrideForGs(bool active);
   void engageGsCapture(const GlidepathSolution& gp);
@@ -326,6 +351,8 @@ class XPlaneConnection : public SimulatorConnection {
   double lastPacketSeconds_ = -1.0;       // < 0 until the first packet arrives
   double sinceResubscribeSeconds_ = 0.0;
   bool everConnected_ = false;
+  bool linkWasPrimed_ = false;
+  bool reconnectFlightPlanClearPending_ = false;
 };
 
 }  // namespace avionics

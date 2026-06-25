@@ -15,34 +15,41 @@ enum class AirspaceStroke { None, Solid, Dashed, Combed };
 struct AirspaceRenderStyle {
   Color color;
   AirspaceStroke stroke;
+  float widthPx;
 };
+
+// Standard airspace boundary stroke width. Class C is drawn a touch heavier so
+// its thin solid maroon ring stays legible against the map's terrain shading.
+constexpr float kAirspaceWidthPx = 1.5f;
+constexpr float kAirspaceClassCWidthPx = 2.5f;
 
 AirspaceRenderStyle airspaceStyle(AirspaceClass cls) {
   switch (cls) {
     case AirspaceClass::ClassB:
-      return {colors::kAirspaceBlue, AirspaceStroke::Solid};
+      return {colors::kAirspaceBlue, AirspaceStroke::Solid, kAirspaceWidthPx};
     case AirspaceClass::ClassC:
-      return {colors::kAirspaceMaroon, AirspaceStroke::Solid};
+      return {colors::kAirspaceMaroon, AirspaceStroke::Solid,
+              kAirspaceClassCWidthPx};
     case AirspaceClass::ClassD:
-      return {colors::kAirspaceBlue, AirspaceStroke::Dashed};
+      return {colors::kAirspaceBlue, AirspaceStroke::Dashed, kAirspaceWidthPx};
     case AirspaceClass::Restricted:
     case AirspaceClass::Prohibited:
     case AirspaceClass::Warning:
     case AirspaceClass::Danger:
     case AirspaceClass::Training:
-      return {colors::kAirspaceBlue, AirspaceStroke::Combed};
+      return {colors::kAirspaceBlue, AirspaceStroke::Combed, kAirspaceWidthPx};
     case AirspaceClass::MOA:
     case AirspaceClass::Alert:
-      return {colors::kAirspaceMaroon, AirspaceStroke::Combed};
+      return {colors::kAirspaceMaroon, AirspaceStroke::Combed, kAirspaceWidthPx};
     case AirspaceClass::TFR:
-      return {colors::kBandRed, AirspaceStroke::Solid};
+      return {colors::kBandRed, AirspaceStroke::Solid, kAirspaceWidthPx};
     case AirspaceClass::Caution:
     case AirspaceClass::TRSA:
     case AirspaceClass::ADIZ:
     case AirspaceClass::Other:
-      return {colors::kLabelText, AirspaceStroke::Dashed};
+      return {colors::kLabelText, AirspaceStroke::Dashed, kAirspaceWidthPx};
     default:
-      return {colors::kLabelText, AirspaceStroke::None};
+      return {colors::kLabelText, AirspaceStroke::None, kAirspaceWidthPx};
   }
 }
 
@@ -194,23 +201,34 @@ void drawCombedBoundary(Renderer& r, const Point* pts, int count,
 }  // namespace
 
 void drawAirspaces(Renderer& r, const MapData& map, const Proj& proj,
-                   float rangeNm, const FlightData& flight) {
+                   float rangeNm, const FlightData& flight, bool pointerActive,
+                   double pointerLat, double pointerLon) {
   // Two declutters match the G1000: a per-class map-range cap hides each
   // airspace once zoomed out past its Map Setup range, and an altitude
   // declutter hides airspace whose vertical band is far from ownship so
   // distant overlying/underlying airspace isn't drawn.
   constexpr float kAltMarginFt = 2000.0f;
+  // The boundary the pan pointer is over is redrawn in white and a touch
+  // heavier, like the real unit highlighting a selected airspace.
+  constexpr float kAirspaceHighlightWidthPx = 3.0f;
   const float ownAlt = flight.altitudeValid ? flight.altitudeFt : 0.0f;
   std::vector<Point> ring;
   for (const MapAirspace& as : map.airspaces) {
     if (as.boundary.size() < 2) continue;
     const AirspaceRenderStyle style = airspaceStyle(as.airspaceClass);
     if (style.stroke == AirspaceStroke::None) continue;
-    if (rangeNm > airspaceMaxDisplayRangeNm(as.airspaceClass)) continue;
-    if (flight.altitudeValid &&
-        (as.floorFt > ownAlt + kAltMarginFt ||
-         as.ceilingFt < ownAlt - kAltMarginFt)) {
-      continue;
+    // A highlighted (cursor-selected) airspace always draws, even past its
+    // declutter range/altitude, so the selection the pointer box reports is
+    // always visible on the map.
+    const bool highlighted =
+        pointerActive && airspaceContainsPoint(as, pointerLat, pointerLon);
+    if (!highlighted) {
+      if (rangeNm > airspaceMaxDisplayRangeNm(as.airspaceClass)) continue;
+      if (flight.altitudeValid &&
+          (as.floorFt > ownAlt + kAltMarginFt ||
+           as.ceilingFt < ownAlt - kAltMarginFt)) {
+        continue;
+      }
     }
     ring.clear();
     ring.reserve(as.boundary.size());
@@ -221,10 +239,13 @@ void drawAirspaces(Renderer& r, const MapData& map, const Proj& proj,
     }
     const int n = static_cast<int>(ring.size());
     const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
+    const Color color = highlighted ? colors::kWhite : style.color;
+    const float widthPx =
+        highlighted ? kAirspaceHighlightWidthPx : style.widthPx;
     if (style.stroke == AirspaceStroke::Combed) {
-      drawCombedBoundary(r, ring.data(), n, 1.5f, style.color, &clip);
+      drawCombedBoundary(r, ring.data(), n, widthPx, color, &clip);
     } else {
-      drawBoundary(r, ring.data(), n, 1.5f, style.color,
+      drawBoundary(r, ring.data(), n, widthPx, color,
                    style.stroke == AirspaceStroke::Dashed, &clip);
     }
   }

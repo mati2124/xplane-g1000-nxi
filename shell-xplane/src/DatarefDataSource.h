@@ -267,6 +267,9 @@ class DatarefDataSource : public DataSource {
   XPLMDataRef heading_ = nullptr;
   XPLMDataRef pitch_ = nullptr;
   XPLMDataRef roll_ = nullptr;
+  XPLMDataRef flightDirectorPitch_ = nullptr;
+  XPLMDataRef flightDirectorRoll_ = nullptr;
+  XPLMDataRef flightDirectorMode_ = nullptr;
   XPLMDataRef verticalSpeed_ = nullptr;
   XPLMDataRef slip_ = nullptr;
 
@@ -380,14 +383,26 @@ class DatarefDataSource : public DataSource {
 
   XPLMDataRef gpsHdef_ = nullptr;
   XPLMDataRef hsiObsCourse_ = nullptr;
+  XPLMDataRef hsiSourceSelect_ = nullptr;
   XPLMDataRef overrideGps_ = nullptr;
   XPLMDataRef gpsCourseDegMag_ = nullptr;
   XPLMDataRef gpsHdefDot_ = nullptr;
+  XPLMDataRef gpsDmeDistOverride_ = nullptr;
   float lastPushedCourseDeg_ = -999.0f;
   float lastSentGpsCourseDeg_ = -999.0f;
   float lastSentGpsHdefDots_ = 999.0f;
+  float lastSentGpsDmeDistNm_ = -1.0f;
+  float lastSentGpsHdefNmPerDot_ = -1.0f;
+  std::string lastSentGpsNavId_;
   int lastSyncedFmsLegIndex_ = -1;
+  int lastGpsCoupledLegIndex_ = -1;
+  std::string lastGpsCoupledToWpt_;
+  int lastSentHsiSource_ = -1;
   bool gpsOverrideActive_ = false;
+  bool lastNavigatorDirectTo_ = false;
+
+  void resetGpsCouplingState();
+  void ensureSimCdiSource(CdiSource source);
 };
 
 }  // namespace avionics

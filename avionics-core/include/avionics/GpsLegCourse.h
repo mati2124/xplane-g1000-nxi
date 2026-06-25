@@ -46,4 +46,10 @@ GpsLegNavigation computeGpsLegNavigation(const MapData& map,
 void applyGpsLegNavigation(FlightData& data, const MapData& map, bool obsMode,
                            CdiSource cdiSource, float nmPerDot);
 
+// Hides bypassed legs before an in-plan Direct-To target on the map route.
+void applyInPlanDirectToRouteSlice(MapData& map, const std::vector<MapLeg>& plan,
+                                   const MapLeg& target);
+
+void clearFlightPlanRouteSlice(MapData& map);
+
 }  // namespace avionics

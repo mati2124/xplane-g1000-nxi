@@ -1,6 +1,7 @@
 #include "render/map/MapViewInternal.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -13,10 +14,25 @@ namespace {
 
 constexpr float kFeatureRangeVorNm = 100.0f;
 constexpr float kFeatureRangeNdbNm = 40.0f;
-constexpr float kFeatureRangeFixNm = 7.5f;
-constexpr int kMaxFixesDrawn = 40;
+constexpr float kFeatureRangeFixNm = kFixMaxRangeNm;
 constexpr int kLargeAirportRunwayFt = 8100;
 constexpr int kMediumAirportRunwayFt = 5000;
+
+bool textRectsOverlap(const TextRect& a, const TextRect& b, float pad) {
+  return !(a.right + pad < b.left || b.right + pad < a.left ||
+           a.bottom + pad < b.top || b.bottom + pad < a.top);
+}
+
+TextRect expandTextRect(const TextRect& tr, float pad) {
+  return {tr.left - pad, tr.top - pad, tr.right + pad, tr.bottom + pad};
+}
+
+struct FixLabelCandidate {
+  std::string id;
+  float x = 0.0f;
+  float y = 0.0f;
+  float distSq = 0.0f;
+};
 
 bool visibleAtRange(MapFeatureType type, float rangeNm) {
   switch (type) {
@@ -111,8 +127,8 @@ bool drawFeature(const MapFeature& f, std::size_t featureIdx,
 }
 
 // Flight-plan, direct-to, and procedure-preview layers draw their own idents
-// on top of nav symbology; skip the white nav label when one of those overlays
-// already labels the same fix.
+// on top of nav symbology; skip the underlying nav symbol and white label when
+// one of those overlays already marks the same fix.
 std::unordered_set<std::string> routeOverlayLabelIds(
     const MapData& map, const MapViewConfig& config) {
   std::unordered_set<std::string> ids;
@@ -143,16 +159,21 @@ void drawNavFeatures(Renderer& r, const MapData& map, const Proj& proj,
 
   const std::unordered_set<std::size_t> airportDrawSet =
       rankedAirportDrawSet(map, config, rangeNm);
+  const std::unordered_set<std::string> routeOverlayIds =
+      routeOverlayLabelIds(map, config);
 
-  int fixesDrawn = 0;
   for (std::size_t i = 0; i < map.features.size(); ++i) {
     const MapFeature& f = map.features[i];
     if (!drawFeature(f, i, airportDrawSet, config, rangeNm)) continue;
-    const bool isFix =
-        f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
-    if (isFix && (!config.style.showFixes || fixesDrawn >= kMaxFixesDrawn)) {
+    if (!f.id.empty() && routeOverlayIds.find(f.id) != routeOverlayIds.end()) {
       continue;
     }
+    const bool isFix =
+        f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
+    if (isFix && !config.style.showFixes) continue;
+    const bool isNavaid =
+        f.type == MapFeatureType::Vor || f.type == MapFeatureType::Ndb;
+    if (isNavaid && !config.style.showNavaids) continue;
 
     float x = 0.0f, y = 0.0f;
     proj.toPx(f.lat, f.lon, x, y);
@@ -160,7 +181,6 @@ void drawNavFeatures(Renderer& r, const MapData& map, const Proj& proj,
         y < config.y - symSize || y > config.y + config.h + symSize) {
       continue;
     }
-    if (isFix) ++fixesDrawn;
     drawMapFeatureSymbol(r, f, x, y, symSize);
   }
 }
@@ -175,15 +195,20 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
   const std::unordered_set<std::string> routeLabelIds =
       routeOverlayLabelIds(map, config);
 
-  int fixesDrawn = 0;
+  const float textSize = labelSize * kMapIdentLabelScale;
+  std::vector<TextRect> placedFixLabels;
+  std::vector<FixLabelCandidate> fixLabels;
+  fixLabels.reserve(128);
+
   for (std::size_t i = 0; i < map.features.size(); ++i) {
     const MapFeature& f = map.features[i];
     if (!drawFeature(f, i, airportDrawSet, config, rangeNm)) continue;
     const bool isFix =
         f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;
-    if (isFix && (!config.style.showFixes || fixesDrawn >= kMaxFixesDrawn)) {
-      continue;
-    }
+    if (isFix && !config.style.showFixes) continue;
+    const bool isNavaid =
+        f.type == MapFeatureType::Vor || f.type == MapFeatureType::Ndb;
+    if (isNavaid && !config.style.showNavaids) continue;
     if (f.id.empty()) continue;
     if (routeLabelIds.find(f.id) != routeLabelIds.end()) continue;
 
@@ -193,14 +218,45 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
         y < config.y - symSize || y > config.y + config.h + symSize) {
       continue;
     }
-    if (isFix) ++fixesDrawn;
-    const float textSize = labelSize * kMapIdentLabelScale;
+
+    if (isFix) {
+      const float dx = x - proj.cx;
+      const float dy = y - proj.cy;
+      fixLabels.push_back({f.id, x, y, dx * dx + dy * dy});
+      continue;
+    }
+
     const float labelY =
         (f.type == MapFeatureType::Airport ? y - symSize * 1.25f
                                            : y - symSize * 1.12f) -
         kMapLabelLiftPx;
     r.fillText(x, labelY, f.id, textSize, TextAlign::Center, colors::kWhite,
                kMapLabelFace);
+  }
+
+  // The PC Trainer labels only a subset of fix symbols: idents that fit without
+  // overlapping other fix labels (flight-plan idents are drawn separately).
+  std::sort(fixLabels.begin(), fixLabels.end(),
+            [](const FixLabelCandidate& a, const FixLabelCandidate& b) {
+              return a.distSq < b.distSq;
+            });
+  placedFixLabels.reserve(fixLabels.size());
+  const float labelPad = textSize * 0.18f;
+  for (const FixLabelCandidate& fix : fixLabels) {
+    const float labelY = fix.y - symSize * 1.12f - kMapLabelLiftPx;
+    const TextRect tr = r.measureTextRect(fix.x, labelY, fix.id, textSize,
+                                          TextAlign::Center, kMapLabelFace);
+    bool clash = false;
+    for (const TextRect& placed : placedFixLabels) {
+      if (textRectsOverlap(tr, placed, labelPad)) {
+        clash = true;
+        break;
+      }
+    }
+    if (clash) continue;
+    r.fillText(fix.x, labelY, fix.id, textSize, TextAlign::Center,
+               colors::kWhite, kMapLabelFace);
+    placedFixLabels.push_back(expandTextRect(tr, labelPad));
   }
 }
 

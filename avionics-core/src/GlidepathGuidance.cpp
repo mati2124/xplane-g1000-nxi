@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "avionics/GpsLegCourse.h"
+#include "avionics/MissedApproachGuidance.h"
 #include "avionics/NavMath.h"
 
 namespace avionics {
@@ -106,6 +107,7 @@ double alongTrackDistanceNm(const MapData& map, const FlightData& data,
 
 GlidepathSolution computeGlidepath(const MapData& map, const FlightData& data) {
   GlidepathSolution gp;
+  if (suppressGlidepath(map, data)) return gp;
   if (!map.positionValid || map.flightPlan.size() < 2) return gp;
   if (data.cdiSource != CdiSource::Gps) return gp;
 

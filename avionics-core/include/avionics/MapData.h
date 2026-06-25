@@ -94,6 +94,17 @@ struct MapFeature {
 // path to these constraints. None = no constraint (the ALT column shows dashes).
 enum class AltConstraintType { None, At, AtOrAbove, AtOrBelow };
 
+enum class HoldTurnDirection { None, Left, Right };
+
+// Published holding pattern from CIFP HM/HA/HF legs (ARINC 424).
+struct MapHoldPattern {
+  bool active = false;
+  float inboundCourseDeg = 0.0f;
+  float legLengthNm = 0.0f;
+  float legTimeMin = 0.0f;
+  HoldTurnDirection turn = HoldTurnDirection::None;
+};
+
 // One vertex of the active flight plan (FMS/GPS route).
 struct MapLeg {
   double lat = 0.0;
@@ -113,6 +124,25 @@ struct MapLeg {
   // Published glidepath angle from CIFP (degrees, positive descent angle).
   // Non-zero on LPV final-segment legs; drives the PFD magenta glidepath diamond.
   float glidePathAngleDeg = 0.0f;
+
+  // Racetrack hold at this fix (missed-approach HM/HA/HF or feeder HF).
+  MapHoldPattern hold;
+
+  // ARINC path terminator when non-standard (CA, FM, VM, DF, TF, ...).
+  std::string pathTerminator;
+  // Published magnetic course for course-to-altitude / heading legs (degrees).
+  float legCourseDeg = 0.0f;
+
+  // Missed-approach initial maneuver without a fix (CA climb, etc.). Not shown
+  // as a separate FPL/map waypoint; flown from the MAPt before the next fix.
+  struct MissedInitialManeuver {
+    bool active = false;
+    std::string pathTerminator;
+    float courseDeg = 0.0f;
+    int altitudeFt = 0;
+    AltConstraintType altitudeConstraint = AltConstraintType::None;
+  };
+  MissedInitialManeuver missedInitial;
 };
 
 // A bare geographic vertex, used for airspace boundary rings.
@@ -143,6 +173,9 @@ enum class AirspaceClass {
   Other
 };
 
+// Ceiling sentinel meaning "no published upper limit" (drawn as "Unlimited").
+inline constexpr float kAirspaceUnlimitedFt = 60000.0f;
+
 // One airspace boundary: a closed ring (the renderer connects the last point
 // back to the first) plus its class and vertical limits. Arcs and circles from
 // the source data are pre-tessellated into the boundary point list. Altitudes
@@ -152,9 +185,72 @@ struct MapAirspace {
   AirspaceClass airspaceClass = AirspaceClass::Other;
   std::string name;
   float floorFt = 0.0f;
-  float ceilingFt = 60000.0f;
+  float ceilingFt = kAirspaceUnlimitedFt;
   std::vector<GeoPoint> boundary;
 };
+
+// True when (lat, lon) lies inside the airspace's lateral boundary ring, by
+// ray-casting over the pre-tessellated vertices (the ring is implicitly closed
+// from the last vertex back to the first). Used by the map pointer to select
+// the airspace under the cursor for highlighting and the description box.
+inline bool airspaceContainsPoint(const MapAirspace& as, double lat,
+                                  double lon) {
+  const std::vector<GeoPoint>& b = as.boundary;
+  const std::size_t n = b.size();
+  if (n < 3) return false;
+  bool inside = false;
+  for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+    const bool straddles = (b[i].lat > lat) != (b[j].lat > lat);
+    if (straddles) {
+      const double xCross = (b[j].lon - b[i].lon) * (lat - b[i].lat) /
+                                (b[j].lat - b[i].lat) +
+                            b[i].lon;
+      if (lon < xCross) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Class label for the map-pointer airspace box and lists ("CL C", "MOA",
+// "RESTRICTED"), matching the G1000 NXi airspace vocabulary. Empty for classes
+// with no lateral boundary on the map (Class A / Other).
+inline const char* airspaceClassLabel(AirspaceClass c) {
+  switch (c) {
+    case AirspaceClass::ClassA:
+      return "CL A";
+    case AirspaceClass::ClassB:
+      return "CL B";
+    case AirspaceClass::ClassC:
+      return "CL C";
+    case AirspaceClass::ClassD:
+      return "CL D";
+    case AirspaceClass::Restricted:
+      return "RESTRICTED";
+    case AirspaceClass::Prohibited:
+      return "PROHIBITED";
+    case AirspaceClass::Danger:
+      return "DANGER";
+    case AirspaceClass::Warning:
+      return "WARNING";
+    case AirspaceClass::Alert:
+      return "ALERT";
+    case AirspaceClass::Caution:
+      return "CAUTION";
+    case AirspaceClass::Training:
+      return "TRAINING";
+    case AirspaceClass::MOA:
+      return "MOA";
+    case AirspaceClass::TRSA:
+      return "TRSA";
+    case AirspaceClass::ADIZ:
+      return "ADIZ";
+    case AirspaceClass::TFR:
+      return "TFR";
+    case AirspaceClass::Other:
+      break;
+  }
+  return "";
+}
 
 // Victor (low) vs jet (high) airway class, filtered by the AWY softkey.
 enum class AirwayLevel { Low, High };
@@ -340,6 +436,10 @@ struct MapData {
   bool directToOriginValid = false;
   double directToOriginLat = 0.0;
   double directToOriginLon = 0.0;
+  // First flight-plan leg shown on the map. In-plan Direct-To hides bypassed
+  // legs before the target; the index persists after capture so SERFS→PINTS does
+  // not reappear when navigating PINTS→AZOMY after a Direct-To PINTS.
+  int flightPlanRouteStartIndex = 0;
   std::vector<MapFeature> features;
   std::vector<MapAirspace> airspaces;
   std::vector<MapAirwaySegment> airways;

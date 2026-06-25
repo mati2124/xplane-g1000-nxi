@@ -3,6 +3,11 @@
 namespace avionics::pfd {
 namespace {
 
+// Degree sign as explicit UTF-8 bytes. MSVC emits a "\u00b0" literal in the
+// system codepage (a lone 0xB0 byte) which the UTF-8 text renderer drops, so
+// the degree symbol must be written out as its UTF-8 encoding.
+constexpr char kDegUtf8[] = "\xC2\xB0";
+
 // Fixed ownship symbol at the rose center: the G1000 NXi HSI airplane
 // silhouette (top-down plan view, nose up toward the lubber line, main wing
 // forward, horizontal stabilizer at the tail). It does not rotate -- the card
@@ -57,21 +62,20 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
   const float headingBoxX =
       hsiMapMode ? X(hsi::kOriginX + hsi::kMapContainerLeft + hsi::kMapHeadingBoxLeft)
                  : cx - headingBoxW * 0.5f;
-  // HSI Map: WT hsi-map-hdg-box at container top + 27 px. Rose: above the ring.
+  // HSI Map: WT hsi-map-hdg-box at container top + 27 px. Rose: 24 px above the
+  // tick-ring top (trainer: box top y=396, rose top y=420 on the 1024 canvas).
   const float headingBoxY =
       hsiMapMode ? Y(hsi::kOriginY + hsi::kMapHeadingBoxTop)
-                 : cy - radius - displayH * 0.052f;
+                 : cy - radius - Y(hsi::kRoseHeadingBoxAboveTopPx);
 
   drawTurnRateIndicator(r, cx, cy, radius, d.turnRateDegPerSec);
 
-  // In HSI Map mode the moving map is drawn behind the rose, so the backing is
-  // translucent to let the map show through; otherwise it is the solid NXi rose.
+  // HSI Map: translucent full-disc backing for the moving map. Standard rose:
+  // no backing -- the terrain/SVT shows through the clear tick ring.
   if (hsiMapMode) {
     Color backing = colors::kRoseBackground;
     backing.a *= 0.45f;
     r.fillCircle(cx, cy, radius, backing);
-  } else {
-    r.fillCircle(cx, cy, radius, colors::kRoseBackground);
   }
 
   const float clipPad = radius * 0.10f;
@@ -173,7 +177,7 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
     drawFailureX(r, headingBoxX, headingBoxY, headingBoxW, headingBoxH, "",
                  displayH);
   } else if (hsiMapMode) {
-    const std::string headingText = formatHeading(headingDeg) + "\u00b0";
+    const std::string headingText = formatHeading(headingDeg) + kDegUtf8;
     const float headingSize = fontPx(wt::kHeadingBox, displayH);
     constexpr FontFace kHeadingFace = FontFace::DejaVuSemiBold;
     const float headingBottom = headingBoxY + headingBoxH;
@@ -189,7 +193,8 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
     const float textY = inkMidYAtRow(
         r, (headingBoxY + headingBottom) * 0.5f, headingBoxY, headingBottom,
         headingBoxX + headingBoxW * 0.5f, headingText, headingSize,
-        TextAlign::Center, kHeadingFace);
+        TextAlign::Center, kHeadingFace) +
+        Y(2.0f);
     r.save();
     r.clip(headingBoxX, headingBoxY, headingBoxW, headingBoxH);
     r.fillText(headingBoxX + headingBoxW * 0.5f, textY, headingText,
@@ -197,8 +202,9 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
     r.restore();
   } else {
     drawReadoutBox(r, headingBoxX, headingBoxY, headingBoxW, headingBoxH,
-                   formatHeading(headingDeg) + "\u00b0",
-                   fontPx(wt::kHeadingBox, displayH), NotchSide::None);
+                   formatHeading(headingDeg) + kDegUtf8,
+                   fontPx(wt::kHeadingBox, displayH), NotchSide::None,
+                   colors::kReadoutBox, colors::kWhite, Y(2.0f));
   }
 
   // Selected heading (HDG) and selected course (DTK/CRS) readouts. Shared HSI
@@ -222,32 +228,48 @@ void drawHsi(Renderer& r, const Layout& L, float cx, float cy, float radius,
                               const std::string& value,
                               const Color& valueColor) {
     r.fillRoundedRect(boxX, refBoxY, refBoxW, refBoxH, refBoxR, colors::kWindBox);
-    const float labelW = r.measureTextWidth(label, refLabelSize, kRefLabelFace);
-    const float valueW = r.measureTextWidth(value, refValueSize, kRefValueFace);
+    // Shrink the label+value pair to fit inside the fixed box so the trailing
+    // degree symbol is never clipped against the box's right edge (our fonts run
+    // a touch wider than WT's, so "HDG 360" + degree can overflow 84 px).
+    float labelSize = refLabelSize;
+    float valueSize = refValueSize;
+    float labelW = r.measureTextWidth(label, labelSize, kRefLabelFace);
+    float valueW = r.measureTextWidth(value, valueSize, kRefValueFace);
+    const float avail = refBoxW - X(4.0f);
+    if (labelW + valueW > avail) {
+      const float scale = avail / (labelW + valueW);
+      labelSize *= scale;
+      valueSize *= scale;
+      labelW = r.measureTextWidth(label, labelSize, kRefLabelFace);
+      valueW = r.measureTextWidth(value, valueSize, kRefValueFace);
+    }
     const float startX = boxX + (refBoxW - labelW - valueW) * 0.5f;
+    // Nudge the HDG/DTK readouts down a touch: the ink-centered baseline reads
+    // slightly high against the box, so bias by a couple of WT canvas pixels.
     const float valueY = inkMidYAtRow(
         r, (refBoxY + refBoxBottom) * 0.5f, refBoxY, refBoxBottom,
-        startX + labelW, value, refValueSize, TextAlign::Left, kRefValueFace);
+        startX + labelW, value, valueSize, TextAlign::Left, kRefValueFace) +
+        Y(2.0f);
     const TextRect valueRect =
-        r.measureTextRect(startX + labelW, valueY, value, refValueSize,
+        r.measureTextRect(startX + labelW, valueY, value, valueSize,
                           TextAlign::Left, kRefValueFace);
     const TextRect labelRect =
-        r.measureTextRect(startX, valueY, label, refLabelSize, TextAlign::Left,
+        r.measureTextRect(startX, valueY, label, labelSize, TextAlign::Left,
                           kRefLabelFace);
     const float labelY = valueY + (valueRect.bottom - labelRect.bottom);
     r.save();
     r.clip(boxX, refBoxY, refBoxW, refBoxH);
-    r.fillText(startX, labelY, label, refLabelSize, TextAlign::Left,
+    r.fillText(startX, labelY, label, labelSize, TextAlign::Left,
                colors::kWhite, kRefLabelFace);
-    r.fillText(startX + labelW, valueY, value, refValueSize, TextAlign::Left,
+    r.fillText(startX + labelW, valueY, value, valueSize, TextAlign::Left,
                valueColor, kRefValueFace);
     r.restore();
   };
 
   if (!powerUp) {
-    drawRefBox(hdgBoxX, "HDG ", formatHeading(selectedHeadingDeg) + "\u00b0",
+    drawRefBox(hdgBoxX, "HDG ", formatHeading(selectedHeadingDeg) + kDegUtf8,
                colors::kCyan);
-    drawRefBox(dtkBoxX, crsLabel, formatHeading(d.courseDeg) + "\u00b0",
+    drawRefBox(dtkBoxX, crsLabel, formatHeading(d.courseDeg) + kDegUtf8,
                navColor);
   }
 

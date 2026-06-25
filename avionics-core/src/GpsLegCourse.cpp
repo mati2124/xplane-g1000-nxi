@@ -216,7 +216,8 @@ GpsLegNavigation computeGpsLegNavigation(const MapData& map,
   int xtkFromIdx = toIdx - 1;
   int xtkToIdx = toIdx;
 
-  const TurnAnticipation ta = computeTurnAnticipation(map, data, obsMode);
+  const TurnAnticipation ta =
+      computeTurnAnticipation(map, data, obsMode, cdiSource);
   if (ta.active && toIdx + 1 < static_cast<int>(plan.size()) &&
       ta.message.find(" now") != std::string::npos) {
     courseFromIdx = toIdx;
@@ -238,7 +239,11 @@ GpsLegNavigation computeGpsLegNavigation(const MapData& map,
   nav.courseDeg = static_cast<float>(navBearingDeg(
       courseFrom.lat, courseFrom.lon, courseTo.lat, courseTo.lon));
 
-  if (xtkFromIdx >= 0) {
+  // During fly-by anticipation the aircraft is still on the inbound leg; see
+  // applyFlyByTurnCourse for why outbound cross-track must not drive the CDI.
+  const bool flyByNow =
+      ta.active && ta.message.find(" now") != std::string::npos;
+  if (xtkFromIdx >= 0 && !flyByNow) {
     const MapLeg& xtkFrom = plan[static_cast<std::size_t>(xtkFromIdx)];
     const MapLeg& xtkTo = plan[static_cast<std::size_t>(xtkToIdx)];
     nav.crossTrackNm = static_cast<float>(crossTrackNm(
@@ -259,9 +264,21 @@ void applyGpsLegNavigation(FlightData& data, const MapData& map, bool obsMode,
     const float scale = std::max(0.05f, nmPerDot);
     data.cdiDeviationDots = std::max(
         -2.5f, std::min(2.5f, nav.crossTrackNm / scale));
+    data.gpsCrossTrackNm = nav.crossTrackNm;
     data.cdiToFlag = true;
     data.navSignalValid = true;
   }
+}
+
+void applyInPlanDirectToRouteSlice(MapData& map,
+                                   const std::vector<MapLeg>& plan,
+                                   const MapLeg& target) {
+  const int dtoIdx = legIndexInPlan(plan, target);
+  if (dtoIdx > 0) map.flightPlanRouteStartIndex = dtoIdx;
+}
+
+void clearFlightPlanRouteSlice(MapData& map) {
+  map.flightPlanRouteStartIndex = 0;
 }
 
 }  // namespace avionics

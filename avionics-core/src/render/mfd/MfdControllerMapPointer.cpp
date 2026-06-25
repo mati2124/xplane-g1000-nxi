@@ -208,6 +208,26 @@ const MapObstacle* MfdController::mapPointerObstacle() const {
   return best;
 }
 
+std::vector<const MapAirspace*> MfdController::mapPointerAirspaces() const {
+  std::vector<const MapAirspace*> out;
+  if (!mapPointerActive_ || mapData_ == nullptr) return out;
+  // Cap so an overlapping stack of special-use airspace stays readable in the
+  // pointer box (the real unit shows a short list, not the whole stack).
+  constexpr std::size_t kMaxPointerAirspaces = 4;
+  for (const MapAirspace& as : mapData_->airspaces) {
+    // Classes with no lateral boundary on the map aren't selectable.
+    if (as.airspaceClass == AirspaceClass::Other ||
+        as.airspaceClass == AirspaceClass::ClassA) {
+      continue;
+    }
+    if (airspaceContainsPoint(as, mapPointerLat_, mapPointerLon_)) {
+      out.push_back(&as);
+      if (out.size() >= kMaxPointerAirspaces) break;
+    }
+  }
+  return out;
+}
+
 bool MfdController::mapBezelKey(BezelKey key) {
   if (page() != MfdPage::NavigationMap) return false;
 

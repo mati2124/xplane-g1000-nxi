@@ -5,17 +5,10 @@
 #include <string>
 #include <vector>
 
+#include "avionics/MapRange.h"
+
 namespace avionics::mapview {
 namespace {
-
-constexpr float kRunwayDiagramMaxRangeNm = 5.0f;
-// Taxiways appear at the same range as the runway diagram so the airport's
-// pavement shows as one picture the moment you zoom in, rather than the
-// taxiways lagging a zoom step behind the runways.
-constexpr float kTaxiwayDiagramMaxRangeNm = 5.0f;
-// SafeTaxi identifier labels (runway numbers, taxiway letters) only appear at
-// close range so they don't clutter the diagram when the whole field is small.
-constexpr float kAirportLabelMaxRangeNm = 2.5f;
 
 constexpr Color kRunwayFill{0.75f, 0.75f, 0.78f, 1.0f};
 // Dashed black runway centerline, shown at close range like the real unit.
@@ -75,7 +68,7 @@ void drawRunwayNumber(Renderer& r, float ex, float ey, float dirX, float dirY,
 
 void drawTaxiways(Renderer& r, const MapData& map, const Proj& proj,
                   float rangeNm) {
-  if (rangeNm > kTaxiwayDiagramMaxRangeNm) return;
+  if (rangeNm > kAirportDiagramMaxRangeNm) return;
   std::vector<Point> pts;
   for (const MapPavement& pav : map.taxiways) {
     const std::size_t count =
@@ -97,9 +90,8 @@ void drawTaxiways(Renderer& r, const MapData& map, const Proj& proj,
 
 void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
                  float rangeNm, float labelSize) {
-  if (rangeNm > kRunwayDiagramMaxRangeNm) return;
+  if (rangeNm > kAirportDiagramMaxRangeNm) return;
   constexpr float kMetersPerNm = 1852.0f;
-  const bool showNumbers = rangeNm <= kAirportLabelMaxRangeNm;
   const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
   for (const MapRunway& rwy : map.runways) {
     float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
@@ -127,8 +119,8 @@ void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
     }
     r.fillPolygon(quad, 4, kRunwayFill);
     // Dashed centerline, inset from each threshold so it reads like the painted
-    // runway centerline (only at close range, with the numbers).
-    if (showNumbers && len > labelSize * 4.0f) {
+    // runway centerline (with the runway-end numbers at SafeTaxi range).
+    if (len > labelSize * 4.0f) {
       const float ux = dx / len;
       const float uy = dy / len;
       const float inset = std::min(len * 0.25f, halfW * 3.0f);
@@ -138,7 +130,7 @@ void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
                            kRunwayCenterline, &clip);
     }
     // Only label runways long enough on screen to hold their numbers.
-    if (showNumbers && len > labelSize * 4.0f) {
+    if (len > labelSize * 4.0f) {
       drawRunwayNumber(r, ax, ay, dx, dy, rwy.idA, labelSize);
       drawRunwayNumber(r, bx, by, -dx, -dy, rwy.idB, labelSize);
     }
@@ -147,7 +139,7 @@ void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
 
 void drawTaxiwayLabels(Renderer& r, const MapData& map, const Proj& proj,
                        float rangeNm, float labelSize) {
-  if (rangeNm > kAirportLabelMaxRangeNm) return;
+  if (rangeNm > kAirportDiagramMaxRangeNm) return;
   const float fontPx = labelSize * 0.72f;
   for (const MapTaxiwayLabel& label : map.taxiwayLabels) {
     if (label.text.empty()) continue;

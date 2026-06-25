@@ -154,12 +154,21 @@ void drawProcSubListPopup(Renderer& r, const WindowFrame& f, float h,
   const float size = fontPx(wt::kInfoValue, h);
   const float pad = fontPx(5.0f, h);
   constexpr int kMaxApproachVisibleRows = 7;
-  constexpr int kMaxTransitionVisibleRows = 4;
+  constexpr int kMaxTransitionVisibleRows = 5;
   const int maxVisibleRows =
       transitionList ? kMaxTransitionVisibleRows : kMaxApproachVisibleRows;
+  const int total = static_cast<int>(items.size());
+  const int visible = std::min(maxVisibleRows, total);
   float rowH = 0.0f;
   if (transitionList) {
-    rowH = fontPx(24.0f, h);
+    // Always show up to 5 transitions; size the rows to fit the band between
+    // the airport header and the buttons so the popup grows up over part of
+    // the airport name (matches the trainer) while keeping 5 rows visible.
+    // Any transitions beyond the visible rows scroll.
+    const float band = (maxBottomY - pad) - (f.contentTop + pad);
+    const float fitRowH =
+        (band - pad * 2.0f) / static_cast<float>(std::max(1, visible));
+    rowH = std::clamp(fitRowH, fontPx(20.0f, h), fontPx(30.0f, h));
   } else {
     const float popupTop = f.contentTop + fontPx(12.0f, h);
     const float maxPopupH = maxBottomY - pad - popupTop;
@@ -167,8 +176,6 @@ void drawProcSubListPopup(Renderer& r, const WindowFrame& f, float h,
            static_cast<float>(kMaxApproachVisibleRows);
     rowH = std::clamp(rowH, fontPx(22.0f, h), fontPx(30.0f, h));
   }
-  const int total = static_cast<int>(items.size());
-  const int visible = std::min(maxVisibleRows, total);
   const int selected = std::min(std::max(0, ui.procListSelected()), total - 1);
   int first = 0;
   if (total > visible) {

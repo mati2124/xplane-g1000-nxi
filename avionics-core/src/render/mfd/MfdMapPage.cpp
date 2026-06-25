@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "avionics/Color.h"
 #include "avionics/NavMath.h"
+#include "avionics/Terrain.h"
 #include "avionics/render/MapSymbols.h"
 #include "render/map/MapProjection.h"
 #include "render/map/MapViewInternal.h"
@@ -17,14 +19,6 @@
 namespace avionics::mfd {
 
 namespace {
-
-// Compact label-left / value-right row used by the Map Pointer information box.
-void drawPointerRow(Renderer& r, float x, float w, float cy, const char* label,
-                    const std::string& value, float sizePx,
-                    const Color& valueColor) {
-  r.fillText(x, cy, label, sizePx, TextAlign::Left, colors::kTitleGray);
-  r.fillText(x + w, cy, value, sizePx, TextAlign::Right, valueColor);
-}
 
 Color obstaclePointerColor(const MapObstacle& ob, const FlightData& d) {
   if (!d.altitudeValid) return colors::kWhite;
@@ -46,6 +40,108 @@ float pointerRotationDeg(MapOrientation orientation, const FlightData& d) {
       break;
   }
   return 0.0f;
+}
+
+// One vertical bound of an airspace as the NXi prints it: "Surface" at the
+// ground, "Unlimited" for no published ceiling, else "<alt>FT msl".
+std::string airspaceLevelText(float ft) {
+  if (ft <= 0.5f) return "Surface";
+  if (ft >= kAirspaceUnlimitedFt) return "Unlimited";
+  char buf[24];
+  std::snprintf(buf, sizeof(buf), "%dFT msl",
+                static_cast<int>(std::lround(ft)));
+  return buf;
+}
+
+// One text line of the near-cursor selection box. `groupStart` adds a small gap
+// above the line so distinct items (the feature, each airspace) read apart.
+struct PointerInfoLine {
+  std::string text;
+  float sizePx;
+  Color color;
+  bool groupStart;
+};
+
+// Selection box beside the pan cursor (Pilot's Guide, Map Panning): describes
+// whatever the pointer is over -- the highlighted feature (ident + facility
+// name) and/or each airspace the cursor lies within (name, class, vertical
+// limits) -- right at the cursor, the way the real unit does, rather than in the
+// fixed top-left readout. The feature's cyan ring and the airspace boundary
+// highlight are drawn elsewhere.
+void drawPointerSelectionBox(Renderer& r, const MfdController& ui,
+                             const MapFeature* feature, float x, float y,
+                             float w, float h, float ptrX, float ptrY,
+                             float displayH) {
+  const std::vector<const MapAirspace*> airspaces = ui.mapPointerAirspaces();
+  if (feature == nullptr && airspaces.empty()) return;
+
+  const float textSize = mfdFontPx(15.0f, displayH);
+  const float identSize = mfdFontPx(18.0f, displayH);
+
+  // Flatten the selection into display lines up front so the box height and the
+  // draw pass agree (a missing facility name simply drops that line).
+  std::vector<PointerInfoLine> lines;
+  if (feature != nullptr) {
+    lines.push_back({feature->id, identSize, mapFeatureColor(*feature), true});
+    if (!feature->name.empty()) {
+      lines.push_back({feature->name, textSize, colors::kWhite, false});
+    }
+  }
+  for (const MapAirspace* as : airspaces) {
+    bool first = true;
+    auto addLine = [&](std::string s) {
+      lines.push_back({std::move(s), textSize, colors::kWhite, first});
+      first = false;
+    };
+    if (!as->name.empty()) addLine(as->name);
+    addLine(airspaceClassLabel(as->airspaceClass));
+    addLine(airspaceLevelText(as->floorFt) + " to " +
+            airspaceLevelText(as->ceilingFt));
+  }
+  if (lines.empty()) return;
+
+  const float pad = mfdFontPx(7.0f, displayH);
+  const float groupGap = mfdFontPx(6.0f, displayH);
+  auto lineHeight = [](float sizePx) { return sizePx * 1.35f; };
+
+  // Size the box to its widest line (measured in the bold face it draws in) so
+  // it only spans the text, not a fixed slice of the map.
+  float boxH = pad * 2.0f;
+  float maxLineW = 0.0f;
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    if (i > 0 && lines[i].groupStart) boxH += groupGap;
+    boxH += lineHeight(lines[i].sizePx);
+    maxLineW = std::max(maxLineW,
+                        r.measureTextWidth(lines[i].text, lines[i].sizePx,
+                                           FontFace::RobotoBold));
+  }
+  const float boxW = std::min(maxLineW + pad * 2.0f, w * 0.45f);
+
+  // Anchor beside the cursor tip, clamped to stay within the map viewport.
+  float boxX = ptrX + mfdFontPx(16.0f, displayH);
+  float boxY = ptrY - boxH * 0.5f;
+  boxX = std::clamp(boxX, x + pad, x + w - boxW - pad);
+  boxY = std::clamp(boxY, y + pad, y + h - boxH - pad);
+
+  r.fillRect(boxX, boxY, boxW, boxH, Color{0.0f, 0.0f, 0.0f, 0.82f});
+  r.strokeLine(boxX, boxY, boxX + boxW, boxY, 1.0f, colors::kPanelBorder);
+  r.strokeLine(boxX, boxY + boxH, boxX + boxW, boxY + boxH, 1.0f,
+               colors::kPanelBorder);
+  r.strokeLine(boxX, boxY, boxX, boxY + boxH, 1.0f, colors::kPanelBorder);
+  r.strokeLine(boxX + boxW, boxY, boxX + boxW, boxY + boxH, 1.0f,
+               colors::kPanelBorder);
+
+  // The selection description renders in the bold face, like the real unit.
+  FontScope boldScope(r, FontFace::RobotoBold);
+  const float innerX = boxX + pad;
+  float ty = boxY + pad;
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    if (i > 0 && lines[i].groupStart) ty += groupGap;
+    const float lh = lineHeight(lines[i].sizePx);
+    r.fillText(innerX, ty + lh * 0.5f, lines[i].text, lines[i].sizePx,
+               TextAlign::Left, lines[i].color);
+    ty += lh;
+  }
 }
 
 }  // namespace
@@ -120,6 +216,10 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
     config.hasCenterOverride = true;
     config.centerLat = ui.mapPanViewCenterLat();
     config.centerLon = ui.mapPanViewCenterLon();
+    // Let the airspace layer highlight whatever the cursor is over.
+    config.pointerActive = true;
+    config.pointerLat = ui.mapPointerLat();
+    config.pointerLon = ui.mapPointerLon();
   }
   MapView::render(r, map, d, config, displayH);
 
@@ -171,21 +271,20 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
     mapview::drawMapPointer(r, ptrX, ptrY, displayH,
                             ui.mapPointerFlashInverted());
 
-    // Information box, top-center (clear of the range and orientation labels).
+    // Pointer information box, anchored top-left like the real unit (Pilot's
+    // Guide, Map Panning): a fixed two-row readout of the cursor's bearing and
+    // distance from present position, the ground elevation under it, and its
+    // coordinates -- it does NOT float by the cursor. Whatever the cursor is
+    // actually over (a feature or airspace) is described in a box at the cursor
+    // instead (drawPointerSelectionBox); obstacles get their MSL/AGL tag there.
     if (map.positionValid) {
-      const float pad = mfdFontPx(8.0f, displayH);
+      const float pad = mfdFontPx(7.0f, displayH);
       const float labelSize = mfdFontPx(15.0f, displayH);
-      const float identSize = mfdFontPx(20.0f, displayH);
       const float rowH = labelSize * 1.4f;
-      const bool hasFeat = sel != nullptr;
-      const bool hasOb = selectedObstacle != nullptr;
-      const float boxW = w * 0.30f;
-      const float boxX = x + w * 0.5f - boxW * 0.5f;
-      const float boxY = y + h * 0.04f;
-      const float extraRows = hasOb ? 1.0f : 0.0f;
-      const float boxH =
-          pad * 2.0f + (hasFeat ? identSize * 1.35f : 0.0f) +
-          rowH * (4.0f + extraRows);
+      const float boxW = w * 0.34f;
+      const float boxX = x + pad;
+      const float boxY = y + pad;
+      const float boxH = pad * 2.0f + rowH * 2.0f;
 
       r.fillRect(boxX, boxY, boxW, boxH, Color{0.0f, 0.0f, 0.0f, 0.82f});
       r.strokeLine(boxX, boxY, boxX + boxW, boxY, 1.0f, colors::kPanelBorder);
@@ -195,56 +294,67 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
       r.strokeLine(boxX + boxW, boxY, boxX + boxW, boxY + boxH, 1.0f,
                    colors::kPanelBorder);
 
+      // The whole readout renders in the bold face, like the real unit.
+      FontScope boldScope(r, FontFace::RobotoBold);
       const float innerX = boxX + pad;
       const float innerW = boxW - 2.0f * pad;
       float ty = boxY + pad;
-      if (hasFeat) {
-        r.fillText(boxX + boxW * 0.5f, ty + identSize * 0.5f, sel->id,
-                   identSize, TextAlign::Center, mapFeatureColor(*sel));
-        ty += identSize * 1.35f;
-      } else if (hasOb) {
-        char elevBuf[24];
-        std::snprintf(elevBuf, sizeof(elevBuf), "ELEV %dFT",
-                      static_cast<int>(std::lround(selectedObstacle->mslFt)));
-        r.fillText(boxX + boxW * 0.5f, ty + identSize * 0.5f, elevBuf,
-                   identSize, TextAlign::Center,
-                   obstaclePointerColor(*selectedObstacle, d));
-        ty += identSize * 1.35f;
-      }
 
       const double brg =
           navBearingDeg(map.ownshipLat, map.ownshipLon, ptLat, ptLon);
       const double dis =
           navDistanceNm(map.ownshipLat, map.ownshipLon, ptLat, ptLon);
+
+      // Column anchors within the box: the DIS/ELEV value column, the BRG
+      // label+value column, then the lat/lon stacked at the right edge.
+      const float col1ValX = innerX + innerW * 0.30f;
+      const float col2LabelX = innerX + innerW * 0.37f;
+      const float col2ValX = innerX + innerW * 0.62f;
+      const float rightX = innerX + innerW;
+
       char buf[24];
+      // Row 1: DIS .. BRG .. latitude.
+      float cy = ty + rowH * 0.5f;
+      r.fillText(innerX, cy, "DIS", labelSize, TextAlign::Left,
+                 colors::kTitleGray);
+      std::snprintf(buf, sizeof(buf), dis < 100.0 ? "%.1fNM" : "%.0fNM", dis);
+      r.fillText(col1ValX, cy, buf, labelSize, TextAlign::Right, colors::kCyan);
+      r.fillText(col2LabelX, cy, "BRG", labelSize, TextAlign::Left,
+                 colors::kTitleGray);
       std::snprintf(buf, sizeof(buf), "%03d%s",
                     static_cast<int>(std::lround(brg)) % 360, kDeg);
-      drawPointerRow(r, innerX, innerW, ty + rowH * 0.5f, "BRG", buf, labelSize,
-                     colors::kWhite);
-      ty += rowH;
-      std::snprintf(buf, sizeof(buf), dis < 100.0 ? "%.1fNM" : "%.0fNM", dis);
-      drawPointerRow(r, innerX, innerW, ty + rowH * 0.5f, "DIS", buf, labelSize,
-                     colors::kWhite);
+      r.fillText(col2ValX, cy, buf, labelSize, TextAlign::Right, colors::kCyan);
+      r.fillText(rightX, cy, formatLatLon(ptLat, true), labelSize,
+                 TextAlign::Right, colors::kCyan);
       ty += rowH;
 
-      r.fillText(boxX + boxW * 0.5f, ty + rowH * 0.5f,
-                 formatLatLon(ptLat, true), labelSize, TextAlign::Center,
-                 colors::kWhite);
-      ty += rowH;
-      r.fillText(boxX + boxW * 0.5f, ty + rowH * 0.5f,
-                 formatLatLon(ptLon, false), labelSize, TextAlign::Center,
-                 colors::kWhite);
-      if (hasOb) {
-        ty += rowH;
-        char obBuf[32];
-        std::snprintf(obBuf, sizeof(obBuf), "%dFT MSL / %dFT AGL",
-                      static_cast<int>(std::lround(selectedObstacle->mslFt)),
-                      static_cast<int>(std::lround(selectedObstacle->aglFt)));
-        r.fillText(boxX + boxW * 0.5f, ty + rowH * 0.5f, obBuf, labelSize,
-                   TextAlign::Center,
-                   obstaclePointerColor(*selectedObstacle, d));
+      // Row 2: ELEV (ground under the cursor) .. longitude.
+      cy = ty + rowH * 0.5f;
+      const float elevFt =
+          map.terrain != nullptr
+              ? map.terrain->elevationFt(ptLat, ptLon)
+              : std::numeric_limits<float>::quiet_NaN();
+      std::string elevStr;
+      if (std::isnan(elevFt)) {
+        elevStr = "___FT";
+      } else {
+        char elevBuf[16];
+        std::snprintf(elevBuf, sizeof(elevBuf), "%dFT",
+                      static_cast<int>(std::lround(elevFt)));
+        elevStr = elevBuf;
       }
+      r.fillText(innerX, cy, "ELEV", labelSize, TextAlign::Left,
+                 colors::kTitleGray);
+      r.fillText(col1ValX, cy, elevStr, labelSize, TextAlign::Right,
+                 colors::kCyan);
+      r.fillText(rightX, cy, formatLatLon(ptLon, false), labelSize,
+                 TextAlign::Right, colors::kCyan);
     }
+
+    // Whatever the cursor is over (feature and/or airspace): description box
+    // beside the cursor tip (the feature ring and airspace boundary are
+    // highlighted on the map itself).
+    drawPointerSelectionBox(r, ui, sel, x, y, w, h, ptrX, ptrY, displayH);
   }
 }
 

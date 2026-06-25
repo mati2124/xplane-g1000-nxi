@@ -93,9 +93,9 @@ inline constexpr int kPfdWindowCount = 7;  // including None
 
 // PFD Procedures window (PROC bezel key, Pilot's Guide 5.8 "Procedures"): the
 // menu options, verbatim and in order, from the real unit (Working Title
-// PFDProc). The three "Activate ..." items require a loaded/activatable
-// approach, which this suite does not model, so they are shown disabled; the
-// three "Select ..." items open the procedure-selection sub-window.
+// PFDProc). Activate Vector-to-Final is not modeled yet; Activate Approach and
+// Activate Missed Approach are wired when a loaded approach (and missed segment)
+// is available.
 enum class ProcMenuAction {
   ActivateVtf,
   ActivateApproach,
@@ -350,6 +350,7 @@ class SoftkeyController {
   // from the simulator feed (partial plans stay in-app only).
   bool flightPlanLocalDraft() const { return fplLocalDraft_; }
   PersistedFlightPlan persistedFlightPlanSnapshot() const;
+  PersistedDirectTo persistedDirectToSnapshot() const;
   void restorePersistedFlightPlan(const PersistedFlightPlan& saved);
   // Adopt a route pushed from outside the FPL editor (SimBrief OFP, sim FMS).
   void replaceFlightPlanFromExternal(const std::vector<MapLeg>& plan);
@@ -506,6 +507,9 @@ class SoftkeyController {
   bool consumeDirectToRequest(MapLeg& out);
   // FPL Activate Leg: ENT on a highlighted waypoint row (Pilot's Guide 5.6).
   bool consumeActivateLegRequest(int& toLegIndex);
+  // PROC Activate Missed Approach: queues activation on the FMS navigator.
+  void requestActivateMissedApproach();
+  bool consumeActivateMissedRequest();
 
   // ---- Page Menu (MENU key on an open PFD popout, Pilot's Guide Fig. 1-10) ----
   // Context-sensitive options for the active popout window. With no popout
@@ -924,6 +928,11 @@ class SoftkeyController {
   int fplApproachLegStart_ = 0;
   int fplApproachLegCount_ = 0;
   PersistedLoadedApproach persistedApproachRestore_{};
+  // A restored plan keeps only per-leg roles; the procedure's holds, altitudes,
+  // and glidepath are re-attached by re-expanding the CIFP approach once nav data
+  // is ready. Set on restore, cleared once the re-expansion has been applied (or
+  // is known to be unmatchable).
+  bool fplApproachRestorePending_ = false;
   MapProcedure procSelectedProcedure() const;
   std::string formatApproachLabel(const MapProcedure& proc) const;
   void procOpenApproachSelect();
@@ -951,6 +960,7 @@ class SoftkeyController {
   MapLeg dtoRequestTarget_;
   bool fplActivateLegPending_ = false;
   int fplActivateLegIndex_ = -1;
+  bool missedActivatePending_ = false;
   // Direct-To from a highlighted FPL leg: keep the plan and fly direct to that
   // fix (skip), rather than replacing the plan with a single leg.
   bool dtoPreservePlan_ = false;

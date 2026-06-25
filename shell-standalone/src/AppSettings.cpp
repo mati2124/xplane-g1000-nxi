@@ -38,6 +38,14 @@ constexpr const char* kKeyApproachKind = "approachKind";
 constexpr const char* kKeyApproachLos = "approachLos";
 constexpr const char* kKeyFplActive = "fplActive";
 constexpr const char* kKeyFplDestFilled = "fplDestFilled";
+constexpr const char* kKeyFplApproachStart = "fplApproachStart";
+constexpr const char* kKeyFplApproachCount = "fplApproachCount";
+constexpr const char* kKeyFplApproachAirport = "fplApproachAirport";
+constexpr const char* kKeyDtoActive = "dtoActive";
+constexpr const char* kKeyDtoTarget = "dtoTarget";
+constexpr const char* kKeyDtoOriginLat = "dtoOriginLat";
+constexpr const char* kKeyDtoOriginLon = "dtoOriginLon";
+constexpr const char* kKeyDtoOriginValid = "dtoOriginValid";
 
 // Stable text tokens for the persisted DebugDataSource selection.
 constexpr const char* kSourceXPlane = "xplane";
@@ -244,6 +252,40 @@ AppSettings LoadAppSettings() {
       settings.persistedFlightPlan.active = ParseBool(value, false);
     } else if (key == kKeyFplDestFilled) {
       settings.persistedFlightPlan.destinationFilled = ParseBool(value, false);
+    } else if (key == kKeyFplApproachStart) {
+      try {
+        settings.persistedFlightPlan.approachLegStart = std::stoi(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyFplApproachCount) {
+      try {
+        settings.persistedFlightPlan.approachLegCount = std::stoi(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyFplApproachAirport) {
+      settings.persistedFlightPlan.approachAirportIcao = value;
+    } else if (key == kKeyDtoActive) {
+      settings.persistedDirectTo.active = ParseBool(value, false);
+      if (!settings.persistedDirectTo.active) {
+        settings.persistedDirectTo = {};
+      }
+    } else if (key == kKeyDtoTarget) {
+      MapLeg leg;
+      if (ParsePersistedFlightPlanLeg(value, leg)) {
+        settings.persistedDirectTo.target = std::move(leg);
+      }
+    } else if (key == kKeyDtoOriginLat) {
+      try {
+        settings.persistedDirectTo.originLat = std::stod(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyDtoOriginLon) {
+      try {
+        settings.persistedDirectTo.originLon = std::stod(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyDtoOriginValid) {
+      settings.persistedDirectTo.originValid = ParseBool(value, false);
     } else if (key.rfind("fplLeg", 0) == 0 && key.size() > 6) {
       const int idx = std::atoi(key.c_str() + 6);
       if (idx >= 0 && idx < 64) {
@@ -265,6 +307,15 @@ AppSettings LoadAppSettings() {
     }
   }
   settings.hasWindowPos = coordsValid && windowCoords == 4;
+  if (settings.persistedApproach.active &&
+      !settings.persistedFlightPlan.approachMeta.active) {
+    settings.persistedFlightPlan.approachMeta = settings.persistedApproach;
+    if (!settings.persistedApproach.airportIcao.empty()) {
+      settings.persistedFlightPlan.approachAirportIcao =
+          settings.persistedApproach.airportIcao;
+    }
+  }
+  enrichPersistedFlightPlanFromLegs(settings.persistedFlightPlan);
   settings.loaded = true;
   return settings;
 }
@@ -298,30 +349,67 @@ void SaveAppSettings(const AppSettings& settings) {
       << (settings.demoAvionicsPowerOn ? '1' : '0') << '\n';
   out << kKeyDemoCasMessages << '='
       << (settings.demoCasMessagesOn ? '1' : '0') << '\n';
-  out << kKeyApproachActive << '='
-      << (settings.persistedApproach.active ? '1' : '0') << '\n';
-  out << kKeyApproachAirport << '=' << settings.persistedApproach.airportIcao
-      << '\n';
-  out << kKeyApproachType << '='
-      << static_cast<int>(settings.persistedApproach.type) << '\n';
-  out << kKeyApproachName << '=' << settings.persistedApproach.name << '\n';
-  out << kKeyApproachTransition << '='
-      << settings.persistedApproach.transition << '\n';
-  out << kKeyApproachRunway << '=' << settings.persistedApproach.runway << '\n';
-  out << kKeyApproachKind << '=' << settings.persistedApproach.approachKind
-      << '\n';
-  out << kKeyApproachLos << '='
-      << settings.persistedApproach.levelOfService << '\n';
   out << kKeyFplActive << '='
       << (settings.persistedFlightPlan.active ? '1' : '0') << '\n';
   out << kKeyFplDestFilled << '='
       << (settings.persistedFlightPlan.destinationFilled ? '1' : '0')
       << '\n';
+  if (settings.persistedFlightPlan.approachLegCount > 0) {
+    out << kKeyFplApproachStart << '='
+        << settings.persistedFlightPlan.approachLegStart << '\n';
+    out << kKeyFplApproachCount << '='
+        << settings.persistedFlightPlan.approachLegCount << '\n';
+    out << kKeyFplApproachAirport << '='
+        << settings.persistedFlightPlan.approachAirportIcao << '\n';
+    const PersistedLoadedApproach& am =
+        settings.persistedFlightPlan.approachMeta.active
+            ? settings.persistedFlightPlan.approachMeta
+            : settings.persistedApproach;
+    out << kKeyApproachActive << '=' << (am.active ? '1' : '0') << '\n';
+    out << kKeyApproachAirport << '=' << am.airportIcao << '\n';
+    out << kKeyApproachType << '=' << static_cast<int>(am.type) << '\n';
+    out << kKeyApproachName << '=' << am.name << '\n';
+    out << kKeyApproachTransition << '=' << am.transition << '\n';
+    out << kKeyApproachRunway << '=' << am.runway << '\n';
+    out << kKeyApproachKind << '=' << am.approachKind << '\n';
+    out << kKeyApproachLos << '=' << am.levelOfService << '\n';
+  } else {
+    out << kKeyApproachActive << '='
+        << (settings.persistedApproach.active ? '1' : '0') << '\n';
+    out << kKeyApproachAirport << '=' << settings.persistedApproach.airportIcao
+        << '\n';
+    out << kKeyApproachType << '='
+        << static_cast<int>(settings.persistedApproach.type) << '\n';
+    out << kKeyApproachName << '=' << settings.persistedApproach.name << '\n';
+    out << kKeyApproachTransition << '='
+        << settings.persistedApproach.transition << '\n';
+    out << kKeyApproachRunway << '=' << settings.persistedApproach.runway
+        << '\n';
+    out << kKeyApproachKind << '=' << settings.persistedApproach.approachKind
+        << '\n';
+    out << kKeyApproachLos << '='
+        << settings.persistedApproach.levelOfService << '\n';
+  }
   for (std::size_t i = 0; i < settings.persistedFlightPlan.legs.size(); ++i) {
     out << "fplLeg" << i << '='
         << FormatPersistedFlightPlanLeg(
                settings.persistedFlightPlan.legs[i])
         << '\n';
+  }
+  if (settings.persistedDirectTo.active &&
+      !settings.persistedDirectTo.target.id.empty()) {
+    out << kKeyDtoActive << "=1\n";
+    out << kKeyDtoTarget << '='
+        << FormatPersistedFlightPlanLeg(settings.persistedDirectTo.target)
+        << '\n';
+    out << kKeyDtoOriginLat << '=' << settings.persistedDirectTo.originLat
+        << '\n';
+    out << kKeyDtoOriginLon << '=' << settings.persistedDirectTo.originLon
+        << '\n';
+    out << kKeyDtoOriginValid << '='
+        << (settings.persistedDirectTo.originValid ? '1' : '0') << '\n';
+  } else {
+    out << kKeyDtoActive << "=0\n";
   }
   // Window coordinates are only written once a position has been captured, so
   // a fresh install never restores a bogus (0, 0) placement.

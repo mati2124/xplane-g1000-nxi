@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "avionics/NavMath.h"
+
 namespace avionics {
 namespace {
 
@@ -151,6 +153,79 @@ float parseVerticalAngleDegField(const std::string& raw) {
   return static_cast<float>(std::fabs(v));
 }
 
+// ARINC APPCH magnetic course (DDD.d): 0510 -> 51.0 deg, 1740 -> 174.0 deg.
+float parseMagneticCourseField(const std::string& raw) {
+  const std::string s = trim(raw);
+  if (s.empty()) return 0.0f;
+  const double v = std::strtod(s.c_str(), nullptr);
+  if (v <= 0.0) return 0.0f;
+  return static_cast<float>(v / 10.0);
+}
+
+// Leg length in NM (0040 -> 4.0) or time in minutes (T010 -> 1.0).
+void parseLegLengthOrTimeField(const std::string& raw, float& legLengthNm,
+                               float& legTimeMin) {
+  const std::string s = trim(raw);
+  if (s.empty()) return;
+  if (s.size() >= 2 &&
+      (s[0] == 'T' || s[0] == 't')) {
+    const double v = std::strtod(s.substr(1).c_str(), nullptr);
+    if (v > 0.0) legTimeMin = static_cast<float>(v / 10.0);
+    return;
+  }
+  const double v = std::strtod(s.c_str(), nullptr);
+  if (v > 0.0) legLengthNm = static_cast<float>(v / 10.0);
+}
+
+HoldTurnDirection parseHoldTurnDirection(const CifpLeg& leg) {
+  const std::string turn = upperCopy(trim(leg.turnDirection));
+  if (turn == "L") return HoldTurnDirection::Left;
+  if (turn == "R") return HoldTurnDirection::Right;
+  const std::string desc = upperCopy(trim(leg.waypointDesc));
+  if (!desc.empty()) {
+    const char c = desc.back();
+    if (c == 'L') return HoldTurnDirection::Left;
+    if (c == 'R') return HoldTurnDirection::Right;
+  }
+  return HoldTurnDirection::None;
+}
+
+bool isHoldTerminator(const std::string& term) {
+  return term == "HM" || term == "HA" || term == "HF";
+}
+
+bool isCourseLegWithoutFix(const CifpLeg& leg) {
+  if (looksLikeFix(leg.fixIdent)) return false;
+  return leg.pathTerminator == "CA" || leg.pathTerminator == "FM" ||
+         leg.pathTerminator == "VM" || leg.pathTerminator == "VI" ||
+         leg.pathTerminator == "VA";
+}
+
+void applyPathTerminatorFields(const CifpLeg& leg, MapLeg& ml) {
+  ml.pathTerminator = leg.pathTerminator;
+  if (leg.magneticCourseDeg > 0.0f) {
+    ml.legCourseDeg = normalizeHeadingDeg(leg.magneticCourseDeg);
+  }
+}
+
+// ARINC 424 HM/HA/HF magnetic course is the inbound course to the holding fix.
+void applyHoldFromCifpLeg(const CifpLeg& leg, MapLeg& ml) {
+  if (!isHoldTerminator(leg.pathTerminator)) return;
+  const HoldTurnDirection turn = parseHoldTurnDirection(leg);
+  if (turn == HoldTurnDirection::None) return;
+
+  ml.hold.active = true;
+  ml.hold.turn = turn;
+  ml.hold.legLengthNm = leg.legLengthNm;
+  ml.hold.legTimeMin = leg.legTimeMin;
+  if (ml.hold.legLengthNm <= 0.0f && ml.hold.legTimeMin <= 0.0f) {
+    ml.hold.legLengthNm = 4.0f;
+  }
+  if (leg.magneticCourseDeg > 0.0f) {
+    ml.hold.inboundCourseDeg = normalizeHeadingDeg(leg.magneticCourseDeg);
+  }
+}
+
 void applyArincAltitudeConstraint(const CifpLeg& leg, MapLeg& ml) {
   const int alt1 = leg.altitude1Ft;
   const int alt2 = leg.altitude2Ft;
@@ -194,6 +269,22 @@ void applyArincAltitudeConstraint(const CifpLeg& leg, MapLeg& ml) {
       break;
   }
   ml.altitudeDesignated = false;
+}
+
+void applyMissedInitialFromCifpLeg(const CifpLeg& leg, MapLeg& mapt) {
+  mapt.missedInitial.active = true;
+  mapt.missedInitial.pathTerminator = leg.pathTerminator;
+  if (leg.magneticCourseDeg > 0.0f) {
+    mapt.missedInitial.courseDeg = normalizeHeadingDeg(leg.magneticCourseDeg);
+  }
+  MapLeg temp;
+  if (leg.kind == ProcedureType::Approach) {
+    applyArincAltitudeConstraint(leg, temp);
+    if (temp.altitudeConstraintFt > 0) {
+      mapt.missedInitial.altitudeFt = temp.altitudeConstraintFt;
+      mapt.missedInitial.altitudeConstraint = temp.altitudeConstraint;
+    }
+  }
 }
 
 std::string roleFromWaypointDesc(const std::string& raw) {
@@ -545,9 +636,16 @@ CifpAirportProcedures parseCifp(std::istream& in, const std::string& icao) {
     leg.transition = trim(fields[3]);
     if (fields.size() > 4) leg.fixIdent = trim(fields[4]);
     if (fields.size() > 8) leg.waypointDesc = trim(fields[8]);
+    if (fields.size() > 9) leg.turnDirection = trim(fields[9]);
     if (fields.size() > 11) leg.pathTerminator = trim(fields[11]);
     if (fields.size() > 10) {
       leg.rnp = static_cast<float>(std::strtod(fields[10].c_str(), nullptr));
+    }
+    if (fields.size() > 20) {
+      leg.magneticCourseDeg = parseMagneticCourseField(fields[20]);
+    }
+    if (fields.size() > 21) {
+      parseLegLengthOrTimeField(fields[21], leg.legLengthNm, leg.legTimeMin);
     }
     if (fields.size() > 35) leg.gpsFmsIndication = trim(fields[35]);
     if (fields.size() > 36) leg.qualifier1 = trim(fields[36]);
@@ -584,11 +682,35 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
   std::vector<MapLeg> result;
   if (name.empty() || transition.empty() || lookup == nullptr) return result;
 
+  // When `transition` names a published IAF that lives inside a route-A/B
+  // feeder (the chart keys the transition off the IAF, not the CIFP feeder
+  // entry fix), include that feeder from the IAF leg onward, dropping the
+  // pre-IAF enroute entry fix (e.g. selecting BUTLY drops CITAG on KFMY R05).
+  std::unordered_map<std::string, int> feederFromSeq;
+  for (const CifpLeg& leg : data.legs) {
+    if (leg.kind != type || leg.procedureName != name) continue;
+    if (leg.routeType != "A" && leg.routeType != "B") continue;
+    if (leg.fixIdent != transition || approachLegRole(leg) != "iaf") continue;
+    const std::string feeder = trim(leg.transition);
+    if (feeder.empty()) continue;
+    const auto it = feederFromSeq.find(feeder);
+    if (it == feederFromSeq.end() || leg.sequence < it->second) {
+      feederFromSeq[feeder] = leg.sequence;
+    }
+  }
+
   std::vector<CifpLeg> selected;
   for (const CifpLeg& leg : data.legs) {
-    if (legMatchesSelection(leg, type, name, transition)) {
-      selected.push_back(leg);
+    bool match = legMatchesSelection(leg, type, name, transition);
+    // Same feeder name can recur on other approaches (e.g. a PINTS feeder on
+    // both KFMY R05 and R13), so the feeder branch must stay within this
+    // procedure or sibling-runway legs leak in (QUZSY from R13 PINTS).
+    if (!match && leg.kind == type && leg.procedureName == name &&
+        (leg.routeType == "A" || leg.routeType == "B")) {
+      const auto it = feederFromSeq.find(trim(leg.transition));
+      if (it != feederFromSeq.end() && leg.sequence >= it->second) match = true;
     }
+    if (match) selected.push_back(leg);
   }
   std::sort(selected.begin(), selected.end(),
             [](const CifpLeg& a, const CifpLeg& b) {
@@ -610,9 +732,23 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
       lastRouteType = leg.routeType;
     }
     if (!navigableTerminator(leg.pathTerminator)) continue;
+    if (isCourseLegWithoutFix(leg) && !result.empty()) {
+      applyMissedInitialFromCifpLeg(leg, result.back());
+      continue;
+    }
     if (!looksLikeFix(leg.fixIdent)) continue;
     const std::string role = approachLegRole(leg);
+    const bool holdLeg = isHoldTerminator(leg.pathTerminator);
     if (!added.insert(leg.fixIdent).second) {
+      if (holdLeg) {
+        for (MapLeg& existing : result) {
+          if (existing.id != leg.fixIdent) continue;
+          applyHoldFromCifpLeg(leg, existing);
+          if (!role.empty()) existing.procedureRole = role;
+          break;
+        }
+        continue;
+      }
       // Feeder holds (route A/B, HF/HA) often share a fix with the final-segment
       // IAF (route R/I, IF). Keep one leg; the final-segment row carries IAF/FAF
       // roles and altitude constraints (e.g. KPGD RNAV R04 BULOW transition).
@@ -641,11 +777,15 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     ml.lat = lat;
     ml.lon = lon;
     ml.procedureRole = role;
+    applyPathTerminatorFields(leg, ml);
     if (leg.kind == ProcedureType::Approach) {
       applyArincAltitudeConstraint(leg, ml);
       if (leg.verticalAngleDeg > 0.0f) {
         ml.glidePathAngleDeg = leg.verticalAngleDeg;
       }
+    }
+    if (holdLeg) {
+      applyHoldFromCifpLeg(leg, ml);
     }
     result.push_back(std::move(ml));
   }
@@ -666,6 +806,11 @@ bool isDirectIafRouteType(const std::string& routeType) {
 std::vector<ApproachTransitionOption> listApproachTransitions(
     const CifpAirportProcedures& data, const std::string& approachName) {
   std::unordered_set<std::string> transitionNames;
+  std::unordered_set<std::string> iafNamesSet;
+  // FAA CIFP names a route-A/B feeder after its enroute entry fix (e.g. KFMY
+  // R05 "CITAG"/"PINTS" on V225/V579). Both the named feeder and the published
+  // IAF inside it (BUTLY, AZOMY) are selectable transitions on the real
+  // avionics, so offer both; only the IAF fix carries the "iaf" suffix.
   for (const CifpLeg& leg : data.legs) {
     if (leg.kind != ProcedureType::Approach || leg.procedureName != approachName) {
       continue;
@@ -673,23 +818,29 @@ std::vector<ApproachTransitionOption> listApproachTransitions(
     const std::string trans = trim(leg.transition);
     if (leg.routeType == "A" || leg.routeType == "B") {
       if (isNamedApproachTransition(trans)) transitionNames.insert(trans);
+      if (approachLegRole(leg) == "iaf" && looksLikeFix(leg.fixIdent)) {
+        transitionNames.insert(leg.fixIdent);
+        iafNamesSet.insert(leg.fixIdent);
+      }
       continue;
     }
     // Final-segment IAF (e.g. ZEPIG on ILS I04) with no named feeder route.
     if (trans.empty() && isDirectIafRouteType(leg.routeType) &&
         approachLegRole(leg) == "iaf" && looksLikeFix(leg.fixIdent)) {
       transitionNames.insert(leg.fixIdent);
+      iafNamesSet.insert(leg.fixIdent);
     }
   }
 
-  std::vector<std::string> iafNames(transitionNames.begin(), transitionNames.end());
-  std::sort(iafNames.begin(), iafNames.end());
+  std::vector<std::string> names(transitionNames.begin(), transitionNames.end());
+  std::sort(names.begin(), names.end());
 
   std::vector<ApproachTransitionOption> options;
-  options.reserve(iafNames.size() + 1);
+  options.reserve(names.size() + 1);
   options.push_back({"VECTORS", "VECTORS"});
-  for (const std::string& name : iafNames) {
-    options.push_back({name, name + " iaf"});
+  for (const std::string& name : names) {
+    const bool isIaf = iafNamesSet.count(name) > 0;
+    options.push_back({name, isIaf ? name + " iaf" : name});
   }
   return options;
 }

@@ -139,6 +139,7 @@ class AvionicsEngine {
   void syncFlightPlanPeer();
   void syncFlightPlanApproachPeer();
   void applyActivateLegRequests();
+  void applyActivateMissedRequests();
 
   // Whether this GDU's bus is powered, per the real-world power tree: the PFD
   // needs the battery/master bus; the MFD additionally needs the avionics

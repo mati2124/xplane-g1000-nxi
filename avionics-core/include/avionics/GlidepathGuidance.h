@@ -11,9 +11,16 @@ inline constexpr float kGlidepathDegPerDot = 0.35f;
 inline constexpr double kGlidepathMaxDistNm = 15.0;
 // GS capture when armed and within this many dots of the computed path.
 inline constexpr float kGlidepathCaptureMaxDots = 1.25f;
+// Capture is only allowed within this vertical window of the path so the AP
+// intercepts the glidepath from (near) level flight rather than latching on far
+// below it: at long final range the 1.25-dot window spans hundreds of feet, so
+// without an absolute-altitude gate the AP would capture well low and then sag
+// down the path. Slightly above is allowed for a normal from-above intercept.
+inline constexpr float kGlidepathCaptureAbovePathFt = 100.0f;
+inline constexpr float kGlidepathCaptureBelowPathFt = 150.0f;
 // VS trim while GS is captured: fpm added per degree above/below path (+ = above).
 // Angle-based gain keeps correction consistent with the VDI at all distances.
-inline constexpr float kGlidepathVsGainFpmPerDeg = 650.0f;
+inline constexpr float kGlidepathVsGainFpmPerDeg = 1150.0f;
 
 struct GlidepathSolution {
   bool valid = false;

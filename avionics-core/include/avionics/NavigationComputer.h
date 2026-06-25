@@ -10,15 +10,19 @@ namespace avionics {
 
 bool flightPlansEqual(const std::vector<MapLeg>& a, const std::vector<MapLeg>& b);
 
-void syncNavigatorFlightPlan(FmsNavigator& nav, const std::vector<MapLeg>& plan);
+void syncNavigatorFlightPlan(FmsNavigator& nav, const MapData& map);
 void syncNavigatorDirectTo(FmsNavigator& nav, const MapData& map);
 
-// Applies fly-by turn anticipation to the outbound leg DTK when the turn is
-// active ("… now" in the turn-anticipation message).
+// Applies fly-by turn smoothing to the outbound leg. Before the leg sequences
+// it steers the outbound DTK with a centered CDI ("… now" in the
+// turn-anticipation message); after it sequences it clamps the outbound
+// cross-track while the aircraft is still completing the turn, so the injected
+// GPS CDI never pegs full scale and X-Plane keeps NAV engaged through sharp
+// fly-bys. nmPerDot is the active GPS sensitivity used to size the clamp.
 NavigationSolution applyFlyByTurnCourse(NavigationSolution sol,
                                         const MapData& map,
                                         const FlightData& data, bool obsMode,
-                                        CdiSource cdiSource);
+                                        CdiSource cdiSource, float nmPerDot);
 
 void clearNavigationFields(FlightData& data);
 

@@ -41,6 +41,31 @@ inline std::vector<MapLeg> makeRnavFinalApproachPlan() {
   return plan;
 }
 
+// RNAV final with a two-fix missed segment (MAPt -> MAHP hold).
+inline std::vector<MapLeg> makeRnavApproachWithMissedPlan() {
+  std::vector<MapLeg> plan = makeRnavFinalApproachPlan();
+  MapLeg missed1;
+  missed1.id = "IBITE";
+  missed1.lat = 26.105000;
+  missed1.lon = -81.200000;
+  missed1.altitudeConstraintFt = 2600;
+  missed1.altitudeConstraint = AltConstraintType::AtOrAbove;
+
+  MapLeg mahp;
+  mahp.id = "SERFS";
+  mahp.lat = 26.110000;
+  mahp.lon = -81.200000;
+  mahp.procedureRole = "mahp";
+  mahp.hold.active = true;
+  mahp.hold.inboundCourseDeg = 174.0f;
+  mahp.hold.legLengthNm = 4.0f;
+  mahp.hold.turn = HoldTurnDirection::Right;
+
+  plan.push_back(missed1);
+  plan.push_back(mahp);
+  return plan;
+}
+
 inline MapData makeMapAt(double lat, double lon,
                          const std::vector<MapLeg>& plan) {
   MapData map;

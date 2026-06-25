@@ -88,7 +88,7 @@ TEST(CifpParserTest, KpgdR04GlidepathFromExpandedProcedure) {
   ASSERT_GE(legs.size(), 4);
 
   const MapLeg& yencu = legs[static_cast<std::size_t>(legIndexById(legs, "YENCU"))];
-  const MapLeg& rw04 = legs.back();
+  const MapLeg& rw04 = legs[static_cast<std::size_t>(legIndexById(legs, "RW04"))];
 
   MapData map;
   map.positionValid = true;
@@ -111,17 +111,77 @@ TEST(CifpParserTest, KpgdR04GlidepathFromExpandedProcedure) {
   EXPECT_LT(gp.pathAltitudeFt, 2500.0f);
 }
 
-TEST(CifpParserTest, ListsCitagTransitionForKfmyR05) {
+TEST(CifpParserTest, ListsTransitionsForKfmyR05) {
   std::ifstream in(fixturePath("KFMY_R05_CITAG.dat"));
   ASSERT_TRUE(in.good());
   const CifpAirportProcedures data = parseCifp(in, "KFMY");
   const std::vector<ApproachTransitionOption> transitions =
       listApproachTransitions(data, "R05");
+  bool foundButly = false;
+  bool foundAzomy = false;
+  bool foundUzawo = false;
   bool foundCitag = false;
+  bool foundPints = false;
   for (const ApproachTransitionOption& opt : transitions) {
+    if (opt.id == "BUTLY") foundButly = true;
+    if (opt.id == "AZOMY") foundAzomy = true;
+    if (opt.id == "UZAWO") foundUzawo = true;
     if (opt.id == "CITAG") foundCitag = true;
+    if (opt.id == "PINTS") foundPints = true;
   }
+  // Both the named feeders (CITAG, PINTS) and the published IAFs (BUTLY,
+  // AZOMY) plus the IF (UZAWO) are selectable transitions.
+  EXPECT_TRUE(foundButly);
+  EXPECT_TRUE(foundAzomy);
+  EXPECT_TRUE(foundUzawo);
   EXPECT_TRUE(foundCitag);
+  EXPECT_TRUE(foundPints);
+}
+
+TEST(CifpParserTest, ExpandsKfmyR05ButlyIafDropsFeederEntry) {
+  std::ifstream in(fixturePath("KFMY_R05_CITAG.dat"));
+  ASSERT_TRUE(in.good());
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  CifpFixTable fixes = kfmyR05FixTable();
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "R05", "BUTLY",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 4u);
+
+  // The approach starts at the IAF; the enroute feeder entry fixes are dropped.
+  EXPECT_EQ(legIndexById(legs, "CITAG"), -1);
+  EXPECT_EQ(legIndexById(legs, "PINTS"), -1);
+  EXPECT_EQ(legIndexById(legs, "AZOMY"), -1);
+
+  const int butlyIdx = legIndexById(legs, "BUTLY");
+  const int uzawoIdx = legIndexById(legs, "UZAWO");
+  const int gramsIdx = legIndexById(legs, "GRAMS");
+  const int rwIdx = legIndexById(legs, "RW05");
+  EXPECT_EQ(butlyIdx, 0);
+  EXPECT_GT(uzawoIdx, butlyIdx);
+  EXPECT_GT(gramsIdx, uzawoIdx);
+  EXPECT_GT(rwIdx, gramsIdx);
+}
+
+TEST(CifpParserTest, ExpandsKfmyR05AzomyIafFeedsUzawoNotSiblingRunway) {
+  std::ifstream in(fixturePath("KFMY_R05_CITAG.dat"));
+  ASSERT_TRUE(in.good());
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  CifpFixTable fixes = kfmyR05FixTable();
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "R05", "AZOMY",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 4u);
+
+  // AZOMY feeds UZAWO; the sibling R13 PINTS feeder (QUZSY) must not leak in.
+  EXPECT_EQ(legIndexById(legs, "QUZSY"), -1);
+  EXPECT_EQ(legIndexById(legs, "PINTS"), -1);
+  EXPECT_EQ(legIndexById(legs, "CITAG"), -1);
+
+  const int azomyIdx = legIndexById(legs, "AZOMY");
+  const int uzawoIdx = legIndexById(legs, "UZAWO");
+  EXPECT_EQ(azomyIdx, 0);
+  EXPECT_EQ(uzawoIdx, 1);
 }
 
 TEST(CifpParserTest, ExpandsKfmyR05CitagFeederSegment) {
@@ -146,6 +206,59 @@ TEST(CifpParserTest, ExpandsKfmyR05CitagFeederSegment) {
   EXPECT_GT(rwIdx, gramsIdx);
   EXPECT_EQ(legs[static_cast<std::size_t>(gramsIdx)].procedureRole, "faf");
   EXPECT_EQ(legs[static_cast<std::size_t>(rwIdx)].procedureRole, "mapt");
+}
+
+TEST(CifpParserTest, ExpandsKfmyR05CitagMissedApproachHold) {
+  std::ifstream in(fixturePath("KFMY_R05_CITAG.dat"));
+  ASSERT_TRUE(in.good());
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  CifpFixTable fixes = kfmyR05FixTable();
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "R05", "CITAG",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 8u);
+
+  const int ibiteIdx = legIndexById(legs, "IBITE");
+  const int serfsIdx = legIndexById(legs, "SERFS");
+  const int rwIdx = legIndexById(legs, "RW05");
+  EXPECT_GT(ibiteIdx, rwIdx);
+  EXPECT_EQ(serfsIdx, ibiteIdx + 1);
+
+  const MapLeg& serfs = legs[static_cast<std::size_t>(serfsIdx)];
+  EXPECT_TRUE(serfs.hold.active);
+  EXPECT_EQ(serfs.hold.turn, HoldTurnDirection::Right);
+  EXPECT_NEAR(serfs.hold.inboundCourseDeg, 174.0f, 0.1f);
+  EXPECT_NEAR(serfs.hold.legLengthNm, 4.0f, 0.1f);
+  EXPECT_EQ(serfs.procedureRole, "mahp");
+
+  const MapLeg& rw = legs[static_cast<std::size_t>(rwIdx)];
+  EXPECT_TRUE(rw.missedInitial.active);
+  EXPECT_EQ(rw.missedInitial.pathTerminator, "CA");
+  EXPECT_NEAR(rw.missedInitial.courseDeg, 51.0f, 0.1f);
+  EXPECT_EQ(rw.missedInitial.altitudeFt, 265);
+  EXPECT_EQ(ibiteIdx, rwIdx + 1);
+}
+
+TEST(CifpParserTest, ExpandsKpgdR04BulowMissedApproachHold) {
+  const CifpAirportProcedures data = loadKpgdFixture();
+  CifpFixTable fixes = kpgdR04FixTable();
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "R04", "BULOW",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 6u);
+
+  const int dogleIdx = legIndexById(legs, "DOGLE");
+  const int jocksIdx = legIndexById(legs, "JOCKS");
+  const int rwIdx = legIndexById(legs, "RW04");
+  EXPECT_GT(dogleIdx, rwIdx);
+  EXPECT_EQ(jocksIdx, dogleIdx + 1);
+
+  const MapLeg& jocks = legs[static_cast<std::size_t>(jocksIdx)];
+  EXPECT_TRUE(jocks.hold.active);
+  EXPECT_EQ(jocks.hold.turn, HoldTurnDirection::Left);
+  EXPECT_NEAR(jocks.hold.inboundCourseDeg, 293.0f, 0.1f);
+  EXPECT_NEAR(jocks.hold.legLengthNm, 4.0f, 0.1f);
+  EXPECT_EQ(jocks.procedureRole, "mahp");
 }
 
 TEST(CifpParserTest, KpgdR04LegSequenceNearFaf) {

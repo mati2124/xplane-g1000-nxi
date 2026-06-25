@@ -14,6 +14,22 @@
 namespace avionics {
 
 void SoftkeyController::syncFlightPlanLegs(const MapData& map, bool navDirectTo) {
+  if (fplApproachRestorePending_ && navSource_ != nullptr &&
+      navSource_->ready()) {
+    // The destination airport may need inferring before the CIFP approach can be
+    // re-expanded (older saved plans, or coordinate idents from the sim FMS).
+    if (persistedApproachRestore_.airportIcao.empty() &&
+        fplApproachLegCount_ > 0) {
+      const std::string icao = inferApproachAirportFromProcedureLegs(
+          navSource_, fplLegs_, fplApproachLegStart_, fplApproachLegCount_);
+      if (!icao.empty()) {
+        persistedApproachRestore_.airportIcao = icao;
+        persistedApproachRestore_.active = true;
+      }
+    }
+    tryRestorePersistedApproach();
+  }
+
   const bool mapChanged = !flightPlanLegsEqual(map.flightPlan, fplLastMapPlan_);
   if (mapChanged) {
     fplLastMapPlan_ = map.flightPlan;
@@ -390,6 +406,18 @@ bool SoftkeyController::consumeActivateLegRequest(int& toLegIndex) {
   return toLegIndex >= 0;
 }
 
+void SoftkeyController::requestActivateMissedApproach() {
+  if (!hasMissedApproachLegs(fplLegs_)) return;
+  missedActivatePending_ = true;
+}
+
+bool SoftkeyController::consumeActivateMissedRequest() {
+  if (!missedActivatePending_) return false;
+  if (fplEditPending_) return false;
+  missedActivatePending_ = false;
+  return true;
+}
+
 FmsWaypointEntry* SoftkeyController::activeWaypointEntry() {
   if (dtoOpen_ && dtoEntry_.active && !dtoArmed_) return &dtoEntry_;
   if (fplEntry_.active) return &fplEntry_;
@@ -410,6 +438,9 @@ bool SoftkeyController::applyGcuEntryKey(char ch) {
 void SoftkeyController::setPersistedLoadedApproach(
     const PersistedLoadedApproach& saved) {
   persistedApproachRestore_ = saved;
+  if (saved.active && !saved.name.empty()) {
+    fplApproachRestorePending_ = true;
+  }
   tryRestorePersistedApproach();
 }
 
@@ -440,12 +471,26 @@ void SoftkeyController::tryRestorePersistedApproach() {
   if (expanded.empty()) return;
 
   int start = 0;
-  if (!findLegSequenceInPlan(fplLegs_, expanded, start)) return;
+  if (!findLegSequenceInPlan(fplLegs_, expanded, start)) {
+    // The saved legs do not contain this approach as a contiguous block; the
+    // CIFP holds/altitudes cannot be re-attached, so stop retrying every frame.
+    fplApproachRestorePending_ = false;
+    return;
+  }
 
+  const bool wasRestorePending = fplApproachRestorePending_;
   fplApproachLegStart_ = start;
   fplApproachLegCount_ = static_cast<int>(expanded.size());
   fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
   mergeProcedureLegMetadata(fplLegs_, start, expanded);
+  // Holds, altitude constraints, and glidepath are now re-attached.
+  fplApproachRestorePending_ = false;
+  // The restored route was pushed to the drawn map before these procedure
+  // details existed (holds are not persisted per-leg); re-publish so the route
+  // override and peer GDU pick up the re-attached holds.
+  if (wasRestorePending) {
+    flightPlanPublishEdit();
+  }
 }
 
 void SoftkeyController::reinferApproachFromProcedureLegs() {
@@ -511,7 +556,23 @@ PersistedFlightPlan SoftkeyController::persistedFlightPlanSnapshot() const {
   out.active = true;
   out.destinationFilled = fplDestinationFilled_;
   out.legs = fplLegs_;
+  if (fplApproachLegCount_ > 0) {
+    out.approachLegStart = fplApproachLegStart_;
+    out.approachLegCount = fplApproachLegCount_;
+    out.approachAirportIcao = flightPlanApproachAirportIcao();
+    if (!fplLoadedApproach_.name.empty()) {
+      out.approachMeta =
+          persistedFromMapProcedure(fplLoadedApproach_, out.approachAirportIcao);
+    } else if (persistedApproachRestore_.active) {
+      out.approachMeta = persistedApproachRestore_;
+    }
+  }
   return out;
+}
+
+PersistedDirectTo SoftkeyController::persistedDirectToSnapshot() const {
+  if (mapData_ == nullptr) return {};
+  return persistedDirectToFromMap(*mapData_);
 }
 
 void SoftkeyController::restorePersistedFlightPlan(
@@ -527,10 +588,39 @@ void SoftkeyController::restorePersistedFlightPlan(
   fplCursorRow_ = 0;
   fplLastPublished_ = saved.legs;
   fplLastMapPlan_ = saved.legs;
-  tryRestorePersistedApproach();
+  fplApproachRestorePending_ = false;
+  if (saved.approachLegCount > 0) {
+    fplApproachLegStart_ = saved.approachLegStart;
+    fplApproachLegCount_ = saved.approachLegCount;
+    persistedApproachRestore_ = saved.approachMeta;
+    if (!saved.approachAirportIcao.empty()) {
+      persistedApproachRestore_.airportIcao = saved.approachAirportIcao;
+      persistedApproachRestore_.active = true;
+    }
+    if (!fplDestinationFilled_ && fplApproachLegCount_ > 0) {
+      fplDestinationFilled_ = true;
+    }
+  }
   if (fplApproachLegCount_ <= 0) {
     reinferApproachFromProcedureLegs();
   }
+  if (fplApproachLegCount_ > 0 && persistedApproachRestore_.name.empty()) {
+    inferApproachMetadataFromLegs(fplLegs_, fplApproachLegStart_,
+                                persistedApproachRestore_);
+  }
+  if (fplApproachLegCount_ > 0 && fplLoadedApproach_.name.empty() &&
+      persistedApproachRestore_.active &&
+      !persistedApproachRestore_.name.empty()) {
+    fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
+  }
+  // Re-expand the CIFP approach (holds, altitude constraints, and glidepath are
+  // not persisted per-leg) so they are re-attached after a restart. Arm it from
+  // the now-final metadata and attempt immediately in case nav data is already
+  // loaded; syncFlightPlanLegs retries until nav data is ready.
+  fplApproachRestorePending_ = fplApproachLegCount_ > 0 &&
+                               persistedApproachRestore_.active &&
+                               !persistedApproachRestore_.name.empty();
+  tryRestorePersistedApproach();
 }
 
 void SoftkeyController::replaceFlightPlanFromExternal(

@@ -51,6 +51,7 @@
 #include "ProcedureStore.h"
 #include "FlightPlanBridge.h"
 #include "FmsDebugOverlay.h"
+#include "FmsRouteProgrammer.h"
 #include "UpdateNotify.h"
 #include "avionics/AssetPaths.h"
 #include "avionics/ChecklistStore.h"
@@ -2061,6 +2062,10 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
       std::make_unique<avionics::ProcedureStore>(*g_navDataStore);
   g_navMapData = std::make_unique<avionics::PluginNavMapData>(
       g_dataSource.get(), g_procedureStore.get());
+
+  // X-Plane persists the pilot FMS across restarts; clear it so the NXi FPL
+  // editor starts blank and the standalone bridge does not echo yesterday's route.
+  avionics::programFmsRoute({});
 
   g_flightPlanBridge = std::make_unique<avionics::FlightPlanBridge>(
       avionics::fpbridge::kDefaultPort);

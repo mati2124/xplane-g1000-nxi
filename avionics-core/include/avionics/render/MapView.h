@@ -22,9 +22,12 @@ enum class TerrainDisplay { Off, Topo, Rel };
 enum class AirwayDisplay { Off, All, Low, High };
 
 // Map declutter level, matching the NXi Detail softkey cycle (Pilot's Guide:
-// "Detail All, Detail 3, Detail 2 and Detail 1"). Detail3 removes land data,
-// Detail2 also removes airspace/airways, Detail1 leaves only the active
-// flight plan (and ownship).
+// "Detail All, Detail 3, Detail 2 and Detail 1"). Per Table 5-4: Detail3
+// removes the man-made land data (cities, roads, railroads, state/province
+// boundaries), Detail2 also removes NAVAIDs/intersections/SUA/airways/
+// obstacles, Detail1 leaves only the active flight plan (and ownship).
+// Topographic water (rivers, lakes, coastlines) is part of the Topo layer and
+// is never decluttered by the Detail softkey.
 enum class MapDetail { All, Detail3, Detail2, Detail1 };
 
 struct MapViewStyle {
@@ -50,12 +53,17 @@ struct MapViewStyle {
   // Max map range (NM) at which the NEXRAD overlay is drawn (Map Setup
   // "NEXRAD Data" range). Declutters when zoomed out past this step.
   float nexradRangeNm = kNexradMapRangeDefaultNm;
-  // Land data: rivers/lakes, roads, cities, borders (Map Setup "Land" group).
+  // Topographic base: ocean fill, landmass/coastline fills, lakes, rivers, and
+  // national boundaries. This is the NXi Topo layer (TOPO softkey) -- it is
+  // NEVER removed by the Detail/declutter softkey (Table 5-4 lists no water).
   bool showLand = true;
-  // Runway diagrams at airports once zoomed below ~5 NM range.
+  // Man-made "land data" culture: cities, roads, railroads, and state/province
+  // boundaries (Map Setup "Land" group). Decluttered first, at Detail 3.
+  bool showLandData = true;
+  // Runway diagrams at airports once zoomed to the 1.5 NM range step or closer.
   bool showRunways = true;
   // Taxiway / apron pavement (SafeTaxi-style diagram), drawn under the runway
-  // diagrams once zoomed below ~5 NM range (same as the runways).
+  // diagrams at the same close range as the runways.
   bool showTaxiways = true;
   // Obstacle symbols (requires the optional FAA DOF data to be loaded).
   bool showObstacles = true;
@@ -81,8 +89,13 @@ struct MapViewStyle {
   bool showLabels = true;
   // Intersections / VFR waypoints. The small embedded airport maps turn these
   // off (like the G1000's detail declutter) -- at close range the fix class is
-  // dense enough to bury the airport the window is meant to show.
+  // dense enough to bury the airport the window is meant to show. Decluttered
+  // at Detail 2 (Table 5-4: Intersections, VRPs, User Waypoints).
   bool showFixes = true;
+  // VOR / NDB NAVAID symbols. Decluttered at Detail 2 (Table 5-4: VORs, NDBs,
+  // NAVAIDs). Airports are gated separately by the size-class flags so they
+  // survive until Detail 1.
+  bool showNavaids = true;
   // Airport declutter by Garmin size class (Map Setup "Aviation" group): each
   // size shows only at/below its own max map range. The renderer classifies an
   // airport from its longest runway (>= 8100 ft Large, >= 5000 ft or towered
@@ -129,6 +142,13 @@ struct MapViewConfig {
   // Obstacle selected by the map pointer: skip its always-on MSL label (the
   // detailed MSL/AGL tag is drawn at the pointer instead).
   const MapObstacle* selectedObstacle = nullptr;
+  // Map pointer (pan cursor) geographic position. When active, the airspace
+  // layer highlights the boundary of any airspace the cursor lies within (and
+  // draws it even if it would otherwise declutter), matching the real unit's
+  // airspace selection.
+  bool pointerActive = false;
+  double pointerLat = 0.0;
+  double pointerLon = 0.0;
   MapViewStyle style;
 };
 
@@ -164,20 +184,34 @@ inline MapDetail nextMapDetail(MapDetail d) {
   return MapDetail::All;
 }
 
-// Applies a Detail (declutter) level to a style, per the Pilot's Guide:
-// Detail 3 removes land data, Detail 2 also removes airspace (SUA) and
-// airways, Detail 1 leaves only the active flight plan.
+// Applies a Detail (declutter) level to a style, per the Pilot's Guide
+// Table 5-4 ("Navigation Map Items Decluttered for each Detail Level"):
+//   Detail 3: cities, roads, railroads, state/province boundaries.
+//   Detail 2: also NAVAIDs, intersections/VRPs/user waypoints, lat/lon grid,
+//             Class B/C/D + other airspace (SUA), and obstacles.
+//   Detail 1: everything except the active flight plan (airports, runway/taxi
+//             diagrams, and datalink weather).
+// Topographic water (rivers, lakes, coastlines) is part of the Topo layer and
+// is intentionally NOT touched here -- the Detail softkey never removes it.
 inline void applyMapDetail(MapViewStyle& style, MapDetail detail) {
   const int level = static_cast<int>(detail);
-  if (level >= static_cast<int>(MapDetail::Detail3)) style.showLand = false;
+  if (level >= static_cast<int>(MapDetail::Detail3)) {
+    style.showLandData = false;
+  }
   if (level >= static_cast<int>(MapDetail::Detail2)) {
+    style.showNavaids = false;
+    style.showFixes = false;
     style.showAirspace = false;
     style.airways = AirwayDisplay::Off;
-    style.showObstacles = false;  // Table 5-4: obstacles declutter at Detail 2
+    style.showObstacles = false;
   }
   if (level >= static_cast<int>(MapDetail::Detail1)) {
-    style.showFeatures = false;
-    style.showFixes = false;
+    style.showLargeAirports = false;
+    style.showMediumAirports = false;
+    style.showSmallAirports = false;
+    style.showRunways = false;
+    style.showTaxiways = false;
+    style.showWeather = false;
   }
 }
 

@@ -7,6 +7,8 @@
 
 #include "avionics/Datarefs.h"
 #include "avionics/GlidepathGuidance.h"
+#include "avionics/GpsLegCourse.h"
+#include "avionics/MissedApproachGuidance.h"
 #include "avionics/NavigationComputer.h"
 #include "avionics/MapRange.h"
 #include "avionics/NavMath.h"
@@ -42,8 +44,10 @@ constexpr int kFailureInop = 6;
 // Autopilot mode-status enum values shared by all *_status datarefs.
 constexpr int kApModeArmed = 1;
 constexpr int kApModeActive = 2;
-// sim/cockpit/autopilot/autopilot_state vertical-mode bits (see X-Plane docs).
-constexpr float kApStateVsEngaged = 16.0f;
+// sim/cockpit2/autopilot/altitude_mode enum: 4 = vertical speed. Used to drive
+// the glidepath descent deterministically (the autopilot_state bitfield writes
+// toggle/clobber other modes, so it cannot be safely re-sent each frame).
+constexpr float kAltModeVerticalSpeed = 4.0f;
 // Re-send glidepath steering VS when the target moves by more than this (fpm).
 constexpr float kGsTrackVsSendDeadbandFpm = 3.0f;
 
@@ -123,6 +127,10 @@ const DatarefBinding kBindings[] = {
     {datarefs::kHeadingDegMag, 1.0f, &FlightData::headingDeg, Smooth::Angle},
     {datarefs::kPitchDeg, 1.0f, &FlightData::pitchDeg, Smooth::Linear},
     {datarefs::kRollDeg, 1.0f, &FlightData::rollDeg, Smooth::Linear},
+    {datarefs::kFlightDirectorPitch, 1.0f, &FlightData::fdPitchDeg,
+     Smooth::Linear},
+    {datarefs::kFlightDirectorRoll, 1.0f, &FlightData::fdRollDeg,
+     Smooth::Linear},
     {datarefs::kVerticalSpeedFpm, 1.0f, &FlightData::verticalSpeedFpm,
      Smooth::Linear},
     {datarefs::kSlipDeg, 1.0f, &FlightData::slipSkidDeg, Smooth::Linear},
@@ -287,12 +295,16 @@ constexpr int kGpsSensitivityIndex = kApModeBaseIndex + kApModeCount;
 // map consumes them separately.
 constexpr int kLatitudeIndex = kGpsSensitivityIndex + 1;
 constexpr int kLongitudeIndex = kLatitudeIndex + 1;
+constexpr int kMagVariationIndex = kLongitudeIndex + 1;
+// True airframe heading; differenced against the magnetic heading binding to
+// recover X-Plane's applied variation with the correct sign.
+constexpr int kTrueHeadingIndex = kMagVariationIndex + 1;
 
 // TCAS traffic targets for the map overlay: per-element subscriptions into the
 // target position arrays (element 0 is ownship, so targets start at 1).
 constexpr int kTrafficTargetCount = 8;
 constexpr int kTrafficFieldCount = 4;  // lat, lon, ele, vertical_speed
-constexpr int kTrafficBaseIndex = kLongitudeIndex + 1;
+constexpr int kTrafficBaseIndex = kTrueHeadingIndex + 1;
 
 enum NavInstrRef {
   kNav1Vdef = 0,
@@ -350,8 +362,9 @@ constexpr std::size_t kMaxMapAirways = 500;
 // Runway diagrams only draw at short ranges, so their query stays tight.
 constexpr float kRunwayQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxMapRunways = 120;
-// Taxiway pavement only draws very close in (<= 2.5 NM), so its query is
-// tighter still and the polygon count is capped to keep the rebuild cheap.
+// Taxiway pavement only draws at the 1.5 NM SafeTaxi step; the query radius
+// stays wider so data is ready when the pilot zooms in, and the polygon count
+// is capped to keep the rebuild cheap.
 constexpr float kTaxiwayQueryRangeNm = 10.0f;
 constexpr std::size_t kMaxMapTaxiways = 600;
 constexpr float kTaxiwayLabelQueryRangeNm = 10.0f;
@@ -688,6 +701,8 @@ void XPlaneConnection::sendSubscriptions(int frequencyHz) {
   subscribe(kGpsSensitivityIndex, datarefs::kGpsHdefNmPerDot);
   subscribe(kLatitudeIndex, datarefs::kLatitudeDeg);
   subscribe(kLongitudeIndex, datarefs::kLongitudeDeg);
+  subscribe(kMagVariationIndex, datarefs::kMagneticVariationDeg);
+  subscribe(kTrueHeadingIndex, datarefs::kHeadingDegTrue);
 
   // TCAS target arrays, one subscription per element ("path[i]").
   char path[128];
@@ -796,6 +811,11 @@ void XPlaneConnection::drainSocket() {
       } else if (index == kLongitudeIndex) {
         ownshipLonDeg_ = value;
         haveLon_ = true;
+      } else if (index == kMagVariationIndex) {
+        magneticVariationDeg_ = value;
+      } else if (index == kTrueHeadingIndex) {
+        trueHeadingDeg_ = value;
+        haveTrueHeading_ = true;
       } else if (index >= kTrafficBaseIndex &&
                  index < kTrafficBaseIndex +
                              kTrafficTargetCount * kTrafficFieldCount) {
@@ -874,6 +894,9 @@ void XPlaneConnection::update(double dtSeconds) {
 
   if (state == ConnectionState::Connected) {
     if (!primed_) {
+      // Reconnect only after we had a live link earlier in this standalone
+      // session (sim restart), not the first UDP packets after a fresh launch.
+      const bool reconnect = linkWasPrimed_;
       // First fresh data after (re)connecting: jump straight to it so the
       // gauges don't visibly ease in from their defaults / last-known values.
       data_ = target_;
@@ -887,6 +910,11 @@ void XPlaneConnection::update(double dtSeconds) {
       }
       syncEisLegacyFields(data_);
       primed_ = true;
+      linkWasPrimed_ = true;
+      if (reconnect) {
+        setRouteOverride({});
+        reconnectFlightPlanClearPending_ = true;
+      }
     } else {
       // alpha = 1 - e^(-dt/tau): the fraction of the remaining gap to close
       // this frame, framerate-independent.
@@ -944,7 +972,6 @@ void XPlaneConnection::update(double dtSeconds) {
     data_.utcDayOfYear = target_.utcDayOfYear;
     updateZuluClock(dtSeconds);
     updateMap(dtSeconds);
-    updateGpsGlidepathCoupling();
     updateFmaModes();
     syncDisplayBackup(data_, dtSeconds);
   } else {
@@ -1004,6 +1031,8 @@ std::vector<MapLeg> XPlaneConnection::displayedFlightPlan() const {
 }
 
 void XPlaneConnection::setDirectTo(MapLeg target) {
+  const std::string prevDirectToId = directTo_.id;
+  const bool navActive = apModeStatus_[kApNav] == kApModeActive;
   directTo_ = std::move(target);
   directToActive_ = !directTo_.id.empty();
   if (directToActive_) {
@@ -1017,16 +1046,61 @@ void XPlaneConnection::setDirectTo(MapLeg target) {
       directToOriginValid_ = false;
       directToOriginPending_ = true;
     }
+    const std::vector<MapLeg> plan = displayedFlightPlan();
+    if (!plan.empty()) {
+      applyInPlanDirectToRouteSlice(map_, plan, directTo_);
+    }
+    resetGpsCouplingState();
+    // With AP NAV already coupled, the next frame steers the Direct-To course
+    // through override_gps, so keep override on: releasing it (or reprogramming
+    // the sim FMS below) is a GPS-validity event that drops NAV right as the
+    // pilot expects the leg to start tracking. Only when NAV is not yet active
+    // do we release override so X-Plane's own GPS (programmed via the bridge)
+    // can provide the deviation used to arm NAV.
+    if (fmsWriteEnabled_ && !navActive) setGpsOverride(false);
   } else {
     directToOriginPending_ = false;
     directToOriginValid_ = false;
+    clearFlightPlanRouteSlice(map_);
   }
   if (fmsWriteEnabled_) {
     if (directToActive_) {
-      fmsBridge_.writeDirectTo(directTo_);
+      // Reprogramming X-Plane's FMS to the same fix drops GPS nav briefly; skip
+      // it when already Direct-To to this ident, and skip it entirely while AP
+      // NAV is coupled -- override_gps steers the leg, so the sim FMS is unused
+      // for the autopilot and reprogramming would only drop NAV.
+      const bool sameDirectToTarget =
+          !prevDirectToId.empty() &&
+          flightPlanIdentsEqual(prevDirectToId, directTo_.id);
+      if (!sameDirectToTarget && !navActive) {
+        fmsBridge_.writeDirectTo(directTo_);
+      }
     } else {
       fmsBridge_.clearDirectTo();
     }
+  }
+}
+
+void XPlaneConnection::restoreDirectTo(MapLeg target, double originLat,
+                                     double originLon, bool originValid) {
+  if (target.id.empty()) {
+    setDirectTo({});
+    return;
+  }
+  directTo_ = std::move(target);
+  directToActive_ = true;
+  directToOriginLat_ = originLat;
+  directToOriginLon_ = originLon;
+  directToOriginValid_ = originValid;
+  directToOriginPending_ = !originValid;
+  const std::vector<MapLeg> plan = displayedFlightPlan();
+  if (!plan.empty()) {
+    applyInPlanDirectToRouteSlice(map_, plan, directTo_);
+  }
+  resetGpsCouplingState();
+  if (fmsWriteEnabled_) setGpsOverride(false);
+  if (fmsWriteEnabled_) {
+    fmsBridge_.writeDirectTo(directTo_);
   }
 }
 
@@ -1049,12 +1123,22 @@ void XPlaneConnection::releaseDirectToOverride() {
 
 void XPlaneConnection::onNavigatorDirectToCaptured(int activeLegIndex) {
   releaseDirectToOverride();
-  if (fmsWriteEnabled_ && activeLegIndex >= 0) {
-    syncSimulatorActiveLeg(activeLegIndex);
+  if (fmsWriteEnabled_) {
+    // With NAV already tracking, override_gps takes over steering the planned
+    // leg on this same frame, so the sim FMS is irrelevant for the autopilot.
+    // Leave it untouched: both clearing the Direct-To and writing the new active
+    // leg reprogram X-Plane's FMS destination, which is a GPS-validity event
+    // that drops AP NAV mode right at the capture. Only when NAV is off do we
+    // reprogram the sim FMS (clear Direct-To, then program the captured leg) so
+    // the sim's own GPS is valid for the pilot to arm NAV on the route.
+    if (apModeStatus_[kApNav] != kApModeActive) {
+      fmsBridge_.clearDirectTo();
+      if (activeLegIndex >= 0) {
+        syncSimulatorActiveLeg(activeLegIndex);
+      }
+    }
   }
-  lastSentGpsCourseDeg_ = -999.0f;
-  lastSentGpsHdefDots_ = 999.0f;
-  lastPushedCourseDeg_ = -999.0f;
+  resetGpsCouplingState();
 }
 
 void XPlaneConnection::ensureDirectToCoords() {
@@ -1122,8 +1206,12 @@ void XPlaneConnection::updateMap(double dtSeconds) {
   } else {
     map_.flightPlan.clear();
   }
+  if (map_.flightPlanRouteStartIndex >=
+      static_cast<int>(map_.flightPlan.size())) {
+    map_.flightPlanRouteStartIndex = 0;
+  }
 
-  // Nearby navaids/fixes from the parsed nav database. Rebuild on a throttled
+  // Nearby navaids/fixes from the parsed nav database.
   // timer rather than every frame, since the database spans the whole world.
   // When the MFD Map Pointer is active the queries follow the pointer instead
   // of ownship so the panned-to area has data (see setMapPanCenter()).
@@ -1221,6 +1309,9 @@ void XPlaneConnection::updateFmaModes() {
   // The lateral nav label follows the selected CDI source (GPS vs a VOR/LOC).
   const std::string navLabel =
       (data_.cdiSource == CdiSource::Gps) ? "GPS" : "VOR";
+  // RNAV GPS glidepath annunciates GP; ILS/localizer glideslope is GS.
+  const std::string vertApproachLabel =
+      (data_.cdiSource == CdiSource::Gps) ? "GP" : "GS";
 
   // Lateral: the highest-priority captured mode is green, an armed mode is the
   // white prefix beside it.
@@ -1251,8 +1342,15 @@ void XPlaneConnection::updateFmaModes() {
   std::string vertActive;
   int vertValue = 0;
   std::string vertUnits;
-  if (gpsGlidepathCaptured_ || mode(kApGlideslope) == kApModeActive) {
-    vertActive = "GS";
+  // Past the MAPt / once missed is active the approach is over: the glidepath is
+  // suppressed, so do not annunciate GP even if the sim's glideslope_status
+  // packet still reports a stale capture (it would otherwise flash against our
+  // per-frame reset). The display is authoritative here.
+  const bool glidepathActive =
+      (gpsGlidepathCaptured_ || mode(kApGlideslope) == kApModeActive) &&
+      !suppressGlidepath(map_, data_);
+  if (glidepathActive) {
+    vertActive = vertApproachLabel;
   } else if (mode(kApAltitudeHold) == kApModeActive) {
     vertActive = "ALT";
     vertValue = static_cast<int>(std::lround(data_.selectedAltitudeFt));
@@ -1282,8 +1380,15 @@ void XPlaneConnection::updateFmaModes() {
   // armed; an armed glideslope occupies the rightmost approach-armed slot.
   data_.fmaVerticalArmed =
       (mode(kApAltitudeArmed) != 0) ? "ALTS" : std::string();
+  // Once the glidepath is captured (green GP active) it can no longer be armed.
+  // We fly GPS glidepaths via override, so the sim's glideslope_status keeps
+  // reporting "armed" every packet; without this gate the white armed GP would
+  // flicker against the green active GP as the status flips between frames.
   data_.fmaVerticalApproachArmed =
-      (mode(kApGlideslope) == kApModeArmed) ? "GS" : std::string();
+      (mode(kApGlideslope) == kApModeArmed && !gpsGlidepathCaptured_ &&
+       !suppressGlidepath(map_, data_))
+          ? vertApproachLabel
+          : std::string();
 }
 
 void XPlaneConnection::updateNavInstrumentation() {
@@ -1319,6 +1424,27 @@ void XPlaneConnection::updateNavInstrumentation() {
   }
 }
 
+void XPlaneConnection::resetGpsCouplingState() {
+  lastSentGpsCourseDeg_ = -999.0f;
+  lastSentGpsHdefDots_ = 999.0f;
+  lastPushedCourseDeg_ = -999.0f;
+  lastGpsCoupledLegIndex_ = -1;
+  lastGpsCoupledToWpt_.clear();
+  lastSentGpsNavId_.clear();
+  lastSentGpsDmeDistNm_ = -1.0f;
+  lastSentGpsHdefNmPerDot_ = -1.0f;
+  lastSentHsiSource_ = -1;
+  lastNavigatorDirectTo_ = false;
+}
+
+void XPlaneConnection::ensureSimCdiSource(CdiSource source) {
+  const int simVal =
+      source == CdiSource::Nav1 ? 0 : source == CdiSource::Nav2 ? 1 : 2;
+  if (simVal == lastSentHsiSource_) return;
+  sendDataref(datarefs::kHsiSourceSelect, static_cast<float>(simVal));
+  lastSentHsiSource_ = simVal;
+}
+
 void XPlaneConnection::setGpsOverride(bool active) {
   if (gpsOverrideActive_ == active) return;
   gpsOverrideActive_ = active;
@@ -1335,7 +1461,7 @@ void XPlaneConnection::engageGsCapture(const GlidepathSolution& gp) {
   // X-Plane's built-in GS pitch tracker is sluggish on injected GPS vdef, so
   // capture with VS hold under override and steer to our angle-based target.
   setApOverrideForGs(true);
-  sendDataref(datarefs::kAutopilotState, kApStateVsEngaged);
+  sendDataref(datarefs::kApAltitudeMode, kAltModeVerticalSpeed);
   sendDataref(datarefs::kSelectedVerticalSpeedFpm, gp.targetVerticalSpeedFpm);
   lastSentGsTrackVsFpm_ = gp.targetVerticalSpeedFpm;
   apModeStatus_[kApGlideslope] = kApModeActive;
@@ -1345,7 +1471,9 @@ void XPlaneConnection::engageGsCapture(const GlidepathSolution& gp) {
 
 void XPlaneConnection::updateGpsGlidepathCoupling() {
   auto clearCoupling = [&]() {
-    setGpsOverride(false);
+    // Lateral GPS override is owned by applyGpsNavigation(); only clear GS state
+    // here. Turning override_gps off every frame made X-Plane drop NAV mode when
+    // the sim FMS sequenced at a fix capture.
     gpsGlidepathCaptured_ = false;
     gpsGlidepathPitchSteering_ = false;
     if (apModeStatus_[kApGlideslope] != kApModeActive) {
@@ -1357,28 +1485,45 @@ void XPlaneConnection::updateGpsGlidepathCoupling() {
   };
 
   if (connectionState() != ConnectionState::Connected) {
+    data_.gpCouplingDebug = "no link";
     clearCoupling();
     return;
   }
 
   // Only synthesize a GPS glidepath for RNAV; ILS GS comes from the NAV radios.
   if (data_.cdiSource != CdiSource::Gps) {
+    data_.gpCouplingDebug = "CDI not GPS";
     clearCoupling();
     return;
   }
 
-  const int gsStatus = apModeStatus_[kApGlideslope];
-  if (gsStatus == 0 && !gpsGlidepathCaptured_) {
+  if (suppressGlidepath(map_, data_)) {
+    // Reaching the MAPt (SUSP) or going missed ends the approach: drop the
+    // synthesized glidepath and hand vertical control back to the pilot. We do
+    // NOT command a climb -- on the real G1000 the pilot selects a vertical
+    // mode (VS/FLC) and adds power for the missed. Forcing VS + a VS reference
+    // under override_autopilot every frame locked the pilot out of changing the
+    // VS value or mode. Clearing the faked GS capture also drops the green "GP"
+    // from the FMA (it was held active by engageGsCapture, not the sim).
+    data_.gpCouplingDebug = data_.missedApproachActive ? "missed (pilot vertical)"
+                                                       : "GP suppressed (MAPt)";
+    apModeStatus_[kApGlideslope] = 0;
     clearCoupling();
     return;
   }
 
   const GlidepathSolution gp = computeGlidepath(map_, data_);
   if (!gp.valid) {
+    data_.gpCouplingDebug = "GP invalid (legs/GPA/TDZE/dist)";
     clearCoupling();
     return;
   }
 
+  // Publish the synthesized GPS glideslope continuously (under override) so
+  // X-Plane's autopilot can ARM the glideslope when the pilot presses APR.
+  // X-Plane keeps glideslope_status at 0 for a GPS source until it sees
+  // gps_has_glideslope, so gating this on an already-armed GS would deadlock:
+  // the signal that lets it arm would never be sent until after it had armed.
   // X-Plane ignores gps_has_glideslope / gps_vdef_dot unless override_gps is on.
   setGpsOverride(true);
   sendDataref(datarefs::kGpsHasGlideslope, 1.0f);
@@ -1388,10 +1533,13 @@ void XPlaneConnection::updateGpsGlidepathCoupling() {
   }
   gpsGlidepathHasSignal_ = true;
 
+  const int gsStatus = apModeStatus_[kApGlideslope];
+
   if (gsStatus == kApModeArmed) {
-    // Descending onto the path from slightly above (LPV-style intercept).
+    // Capture only near the path (LPV-style intercept), not far below it.
     const bool interceptable =
-        gp.altitudeErrorFt <= 100.0f && gp.altitudeErrorFt >= -2000.0f;
+        gp.altitudeErrorFt <= kGlidepathCaptureAbovePathFt &&
+        gp.altitudeErrorFt >= -kGlidepathCaptureBelowPathFt;
     const bool inEnvelope =
         std::fabs(gp.deviationDots) <= kGlidepathCaptureMaxDots;
     if (interceptable && inEnvelope) {
@@ -1401,7 +1549,7 @@ void XPlaneConnection::updateGpsGlidepathCoupling() {
 
   if ((gpsGlidepathCaptured_ || gsStatus == kApModeActive) && data_.apEngaged) {
     setApOverrideForGs(true);
-    sendDataref(datarefs::kAutopilotState, kApStateVsEngaged);
+    sendDataref(datarefs::kApAltitudeMode, kAltModeVerticalSpeed);
     if (std::fabs(gp.targetVerticalSpeedFpm - lastSentGsTrackVsFpm_) >
         kGsTrackVsSendDeadbandFpm) {
       sendDataref(datarefs::kSelectedVerticalSpeedFpm, gp.targetVerticalSpeedFpm);
@@ -1417,6 +1565,19 @@ void XPlaneConnection::updateGpsGlidepathCoupling() {
       setApOverrideForGs(false);
     }
   }
+
+  char buf[180];
+  const bool interceptable =
+      gp.altitudeErrorFt <= kGlidepathCaptureAbovePathFt &&
+      gp.altitudeErrorFt >= -kGlidepathCaptureBelowPathFt;
+  const bool inEnvelope =
+      std::fabs(gp.deviationDots) <= kGlidepathCaptureMaxDots;
+  const char* capState = gpsGlidepathCaptured_ ? "CAP" : "track";
+  std::snprintf(buf, sizeof(buf),
+                "%s GS=%d err=%+.0fft dots=%+.1f int=%d env=%d", capState,
+                gsStatus, gp.altitudeErrorFt, gp.deviationDots,
+                interceptable ? 1 : 0, inEnvelope ? 1 : 0);
+  data_.gpCouplingDebug = buf;
 }
 
 ConnectionState XPlaneConnection::connectionState() const {
@@ -1425,6 +1586,12 @@ ConnectionState XPlaneConnection::connectionState() const {
     return ConnectionState::Disconnected;
   }
   return ConnectionState::Connected;
+}
+
+bool XPlaneConnection::consumeReconnectFlightPlanClear() {
+  if (!reconnectFlightPlanClearPending_) return false;
+  reconnectFlightPlanClearPending_ = false;
+  return true;
 }
 
 namespace {
@@ -1604,7 +1771,8 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
                                           CdiSource cdiSource, float nmPerDot) {
   if (connectionState() != ConnectionState::Connected) return;
 
-  const float scale = nmPerDot > 0.01f ? nmPerDot : gpsHdefNmPerDot_;
+  float scale = nmPerDot > 0.01f ? nmPerDot : gpsHdefNmPerDot_;
+  if (scale <= 0.01f) scale = 0.5f;
   NavigationCallbacks callbacks;
   callbacks.onDirectToCaptured =
       [this](int legIdx) { onNavigatorDirectToCaptured(legIdx); };
@@ -1618,13 +1786,31 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
                        callbacks);
   }
 
-  if (shouldSyncActiveLegToSimulator(navigator, data_, obsMode)) {
-    const int idx = data_.fmaActiveLegIndex;
-    if (idx != lastSyncedFmsLegIndex_) {
-      syncSimulatorActiveLeg(idx);
-    }
-  } else {
+  // Automatic leg sequencing must NOT push the active leg into X-Plane's FMS.
+  // Lateral steering is injected via override_gps (below), so the sim FMS leg is
+  // not needed for the autopilot; writing a new destination briefly invalidates
+  // sim GPS and drops AP NAV mode mid-turn (see plugin DatarefDataSource and
+  // updateGpsGlidepathCoupling). Only explicit Activate Leg (AvionicsEngine) and
+  // Direct-To capture (onNavigatorDirectToCaptured) sync the sim leg, since
+  // those are deliberate discontinuities the pilot initiated.
+  if (!shouldSyncActiveLegToSimulator(navigator, data_, obsMode) &&
+      !navigator.directToActive()) {
     lastSyncedFmsLegIndex_ = -1;
+  }
+
+  ensureSimCdiSource(cdiSource);
+
+  // FMS DTK is computed true; G1000 and X-Plane GPS/AP datarefs are magnetic.
+  // Derive the variation from X-Plane's own true heading (psi) minus the
+  // magnetic heading we already read: var_east = true - mag. This is sign-safe
+  // and matches the exact declination X-Plane applies, so the AP no longer
+  // tracks offset (left) of course. Fall back to the magnetic_variation dataref
+  // only until the first true-heading packet arrives.
+  if (cdiSource == CdiSource::Gps && !obsMode && !data_.fmaToWpt.empty()) {
+    const float variationDegEast =
+        haveTrueHeading_ ? angleDelta(trueHeadingDeg_, target_.headingDeg)
+                         : magneticVariationDeg_;
+    data_.courseDeg = trueToMagneticDeg(data_.courseDeg, variationDegEast);
   }
 
   target_.courseDeg = data_.courseDeg;
@@ -1635,7 +1821,39 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
       setGpsOverride(false);
       lastSentGpsCourseDeg_ = -999.0f;
       lastSentGpsHdefDots_ = 999.0f;
+      lastGpsCoupledLegIndex_ = -1;
+      lastGpsCoupledToWpt_.clear();
     }
+    updateGpsGlidepathCoupling();
+    return;
+  }
+
+  // Lateral GPS steering is injected via override_gps so that, once the AP is
+  // tracking GPS, it follows our computed course/cross-track through fly-by
+  // turns, leg sequencing, and Direct-To legs without FMS-write NAV drops.
+  //
+  // A Direct-To leg steers exactly like a planned leg: the navigator already
+  // computes the direct course and cross-track to the fix (the same solution
+  // the HSI shows), so as long as AP NAV is active we inject it via override
+  // rather than relying on X-Plane's native FMS Direct-To, which only steers
+  // when the in-sim plugin bridge is present and does not always produce valid
+  // GPS guidance for an in-approach fix. Before NAV is armed/captured the sim's
+  // own GPS (programmed by the bridge) provides the deviation used to arm.
+  //
+  // Without FMS write (--no-fms-write) there is no sim route to steer from, so
+  // override always injects our guidance (including before NAV capture).
+  const bool navRollActive = apModeStatus_[kApNav] == kApModeActive;
+  const bool steerWithOverride = fmsWriteEnabled_ ? navRollActive : true;
+  if (!steerWithOverride) {
+    if (!gpsGlidepathHasSignal_) setGpsOverride(false);
+    lastSentGpsCourseDeg_ = -999.0f;
+    lastSentGpsHdefDots_ = 999.0f;
+    lastSentGpsHdefNmPerDot_ = -1.0f;
+    lastSentGpsDmeDistNm_ = -1.0f;
+    lastSentGpsNavId_.clear();
+    lastGpsCoupledLegIndex_ = -1;
+    lastGpsCoupledToWpt_.clear();
+    lastNavigatorDirectTo_ = navigator.directToActive();
     return;
   }
 
@@ -1644,21 +1862,57 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
     lastPushedCourseDeg_ = data_.courseDeg;
   }
 
+  // Fly-by may already have slewed DTK before capture, so course/hdef can sit
+  // inside the deadband when fmaToWpt changes. X-Plane still treats a new
+  // destination as a GPS validity event; refresh all steering data anyway.
+  const bool legTransition =
+      data_.fmaActiveLegIndex >= 0 &&
+      data_.fmaActiveLegIndex != lastGpsCoupledLegIndex_;
+  const bool toWptChanged = data_.fmaToWpt != lastGpsCoupledToWpt_;
+  const bool navigatorDirectTo = navigator.directToActive();
+  const bool directToEngaged =
+      navigatorDirectTo && !lastNavigatorDirectTo_;
+  lastNavigatorDirectTo_ = navigatorDirectTo;
+  const bool forceGpsRefresh =
+      legTransition || toWptChanged || directToEngaged;
+  if (data_.fmaActiveLegIndex >= 0) {
+    lastGpsCoupledLegIndex_ = data_.fmaActiveLegIndex;
+  }
+  lastGpsCoupledToWpt_ = data_.fmaToWpt;
+
   setGpsOverride(true);
-  if (std::fabs(data_.courseDeg - lastSentGpsCourseDeg_) > 0.25f) {
+  if (forceGpsRefresh || std::fabs(scale - lastSentGpsHdefNmPerDot_) > 0.01f) {
+    sendDataref(datarefs::kGpsHdefNmPerDot, scale);
+    lastSentGpsHdefNmPerDot_ = scale;
+  }
+  if (forceGpsRefresh ||
+      std::fabs(data_.courseDeg - lastSentGpsCourseDeg_) > 0.25f) {
     sendDataref(datarefs::kGpsCourseDegMag, data_.courseDeg);
     lastSentGpsCourseDeg_ = data_.courseDeg;
   }
-  if (std::fabs(data_.cdiDeviationDots - lastSentGpsHdefDots_) > 0.02f) {
+  if (forceGpsRefresh ||
+      std::fabs(data_.cdiDeviationDots - lastSentGpsHdefDots_) > 0.02f) {
     sendDataref(datarefs::kGpsHdefDot, data_.cdiDeviationDots);
     lastSentGpsHdefDots_ = data_.cdiDeviationDots;
   }
+  if (forceGpsRefresh ||
+      std::fabs(data_.fmaLegDistanceNm - lastSentGpsDmeDistNm_) > 0.01f) {
+    sendDataref(datarefs::kGpsDmeDistOverride,
+                data_.fmaLegDistanceNm * kMetersPerNm);
+    lastSentGpsDmeDistNm_ = data_.fmaLegDistanceNm;
+  }
+  if (forceGpsRefresh || data_.fmaToWpt != lastSentGpsNavId_) {
+    if (webApi_.writeGpsNavId(data_.fmaToWpt)) {
+      lastSentGpsNavId_ = data_.fmaToWpt;
+    }
+  }
+
+  updateGpsGlidepathCoupling();
 }
 
 void XPlaneConnection::syncSimulatorActiveLeg(int legIndex) {
   if (!fmsWriteEnabled_) return;
-  const std::vector<MapLeg>& plan =
-      routeOverrideSet_ ? routeOverride_ : map_.flightPlan;
+  const std::vector<MapLeg> plan = displayedFlightPlan();
   if (plan.empty()) return;
   if (directToActive_) clearDirectTo();
   fmsBridge_.writeActiveLeg(legIndex);

@@ -12,6 +12,12 @@ inline constexpr const char* kAltitudeFt =
     "sim/cockpit2/gauges/indicators/altitude_ft_pilot";
 inline constexpr const char* kHeadingDegMag =
     "sim/cockpit2/gauges/indicators/heading_electric_deg_mag_pilot";
+// True airframe heading. Paired with kHeadingDegMag it yields the exact
+// magnetic variation X-Plane is applying (var_east = true - mag), which is the
+// sign-safe source for true->magnetic DTK conversion (the magnetic_variation
+// dataref's sign convention is documented inconsistently).
+inline constexpr const char* kHeadingDegTrue =
+    "sim/flightmodel/position/psi";
 inline constexpr const char* kPitchDeg =
     "sim/cockpit2/gauges/indicators/pitch_electric_deg_pilot";
 inline constexpr const char* kRollDeg =
@@ -29,6 +35,9 @@ inline constexpr const char* kLatitudeDeg =
     "sim/flightmodel/position/latitude";
 inline constexpr const char* kLongitudeDeg =
     "sim/flightmodel/position/longitude";
+// Magnetic declination at the aircraft position (deg; +E / -W).
+inline constexpr const char* kMagneticVariationDeg =
+    "sim/flightmodel/position/magnetic_variation";
 
 // Track / turn rate (deg, deg/sec).
 inline constexpr const char* kGroundTrackDegMag =
@@ -170,6 +179,11 @@ inline constexpr const char* kGpsDistanceNm =
     "sim/cockpit2/radios/indicators/gps_dme_distance_nm";
 inline constexpr const char* kGpsBearingDegMag =
     "sim/cockpit2/radios/indicators/gps_bearing_deg_mag";
+// Writable GPS-computer outputs (require override_gps). The indicator datarefs
+// above are read-only; AP validity uses these when the GPS is overridden.
+// Value is slant range in meters (not NM); convert with NavMath::kMetersPerNm.
+inline constexpr const char* kGpsDmeDistOverride =
+    "sim/cockpit/radios/gps_dme_dist_m";
 // GPS lateral CDI sensitivity in nautical miles per dot of deflection. X-Plane
 // has no direct ENR/TERM/APR enum; the G1000 derives the annunciated flight
 // phase from the active CDI scale (the GPS auto-slews it by phase of flight).
@@ -197,6 +211,12 @@ inline constexpr const char* kOverrideGps =
 // Bitmask autopilot mode control; use with kOverrideAutopilot to engage GS.
 inline constexpr const char* kAutopilotState =
     "sim/cockpit/autopilot/autopilot_state";
+// Vertical autopilot mode enum (deterministic, writable with kOverrideAutopilot
+// only): 3=pitch, 4=vertical speed, 5=level change, 6=altitude hold,
+// 8=glideslope, 9=VNAV path. Unlike the autopilot_state bitfield this is an
+// absolute assignment, so it is safe to re-send every frame.
+inline constexpr const char* kApAltitudeMode =
+    "sim/cockpit2/autopilot/altitude_mode";
 inline constexpr const char* kOverrideAutopilot =
     "sim/operation/override/override_autopilot";
 // Override the heading flown in NAV mode and write nav_steer_deg_mag (X-Plane
@@ -222,6 +242,12 @@ inline constexpr const char* kTransponderMode =
 // 2=FD on with autopilot servos.
 inline constexpr const char* kFlightDirectorMode =
     "sim/cockpit2/autopilot/flight_director_mode";
+// Single-cue command bar steering commands (degrees). Read each frame; the PFD
+// draws the error against current pitch/roll so the pilot flies into the bars.
+inline constexpr const char* kFlightDirectorPitch =
+    "sim/cockpit/autopilot/flight_director_pitch";
+inline constexpr const char* kFlightDirectorRoll =
+    "sim/cockpit/autopilot/flight_director_roll";
 inline constexpr const char* kYawDamperOn =
     "sim/cockpit/switches/yaw_damper_on";
 
@@ -289,11 +315,14 @@ inline constexpr const char* kFuelFlowKgSec =
     "sim/cockpit2/engine/indicators/fuel_flow_kg_sec[0]";
 inline constexpr const char* kOilPressurePsi =
     "sim/cockpit2/engine/indicators/oil_pressure_psi[0]";
+// cockpit2 engine indicators are often unset on the default C172 G1000; the
+// flight-model paths below track the simulated engine for the Nav III EIS strip.
 inline constexpr const char* kOilTemperatureDegC =
-    "sim/cockpit2/engine/indicators/oil_temperature_deg_C[0]";
+    "sim/flightmodel/engine/ENGN_oil_temp_c[0]";  // deg F on C172 (acf_oilT_is_C=0)
 inline constexpr const char* kEgtDegC =
-    "sim/cockpit2/engine/indicators/EGT_deg_C[0]";
-inline constexpr const char* kVacuumRatio = "sim/cockpit/misc/vacuum";
+    "sim/flightmodel2/engines/EGT_deg_C[0]";  // labeled degC but reads degF on C172
+inline constexpr const char* kVacuumRatio =
+    "sim/cockpit2/gauges/indicators/suction_1_ratio";  // labeled ratio but reads inHg
 inline constexpr const char* kFuelQuantityLeftKg =
     "sim/cockpit2/fuel/fuel_quantity[0]";
 inline constexpr const char* kFuelQuantityRightKg =

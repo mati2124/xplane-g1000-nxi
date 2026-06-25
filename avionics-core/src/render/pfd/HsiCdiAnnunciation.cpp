@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <string>
 
 #include "render/pfd/HsiInternal.h"
@@ -30,23 +32,43 @@ void drawCdiSource(Renderer& r, float cx, float cy, float radius,
   // "GPS   TERM"). When OBS mode is on, automatic waypoint sequencing is
   // suspended and "OBS"/"SUSP" annunciate (G1000 NXi Pilot's Guide, OBS).
   const bool obs = ui.displayToggle(DisplayToggle::Obs);
+  const bool susp = obs || d.gpsSequencingSuspended;
   Color c;
   bool isGps;
   const char* text = cdiSourceLabel(d, obs, c, isGps);
-  const float size = fontPx(wt::kHsiSource, displayH);
+  // Source/phase annunciation reuses the 18 px HSI annunciation size (matching
+  // the HSI Map course band); the rose presentation previously used the smaller
+  // 14 px reference-box label size, which read too small against the rose.
+  const float size = fontPx(wt::kHsiBug, displayH);
   const float y = cy - radius * 0.20f;
+  // Source and flight-phase annunciations are drawn in the heavy face, matching
+  // the HSI Map course band (RobotoBold) and the bold NXi rose annunciations.
+  constexpr FontFace kAnnunFace = FontFace::RobotoBold;
   if (isGps) {
-    r.fillText(cx - radius * 0.27f, y, text, size, TextAlign::Center, c);
-    const std::string phase = obs ? "SUSP" : d.gpsFlightPhase;
+    r.fillText(cx - radius * 0.27f, y, text, size, TextAlign::Center, c,
+               kAnnunFace);
+    const std::string phase = susp ? "SUSP" : d.gpsFlightPhase;
     if (!phase.empty()) {
       // Per the G1000 Pilot's Guide (Table 2-3), the flight-phase annunciation
       // is normally magenta (amber only under cautionary conditions), matching
       // the GPS source color rather than the cyan used for selected references.
       r.fillText(cx + radius * 0.27f, y, phase, size, TextAlign::Center,
+                 colors::kMagenta, kAnnunFace);
+    }
+
+    // Cross-track error (XTK): when navigating GPS and the lateral deviation is
+    // off-scale (more than two dots, i.e. the CDI is pegged), the NXi shows the
+    // numeric cross-track distance below the white aircraft symbol (G1000 NXi
+    // Pilot's Guide, HSI). It is hidden while the needle is on-scale.
+    if (d.navSignalValid && std::fabs(d.cdiDeviationDots) > 2.0f) {
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), "%.1fNM",
+                    std::fabs(d.gpsCrossTrackNm));
+      r.fillText(cx, cy + radius * 0.30f, buf, size, TextAlign::Center,
                  colors::kMagenta);
     }
   } else {
-    r.fillText(cx, y, text, size, TextAlign::Center, c);
+    r.fillText(cx, y, text, size, TextAlign::Center, c, kAnnunFace);
   }
 }
 
@@ -77,6 +99,7 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
   constexpr FontFace kAnnunFace = FontFace::RobotoBold;
 
   const bool obs = ui.displayToggle(DisplayToggle::Obs);
+  const bool susp = obs || d.gpsSequencingSuspended;
   Color srcColor;
   bool isGps;
   const char* srcText = cdiSourceLabel(d, obs, srcColor, isGps);
@@ -141,9 +164,9 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
   }
 
   // Flight-phase / sensitivity box (right). For GPS this is the phase (e.g.
-  // TERM/ENR); OBS suspends sequencing, annunciating SUSP. VOR/LOC has none.
+  // TERM/ENR); OBS or MAPt suspend annunciates SUSP. VOR/LOC has none.
   const std::string phase =
-      isGps ? (obs ? "SUSP" : d.gpsFlightPhase) : std::string();
+      isGps ? (susp ? "SUSP" : d.gpsFlightPhase) : std::string();
   if (!phase.empty()) {
     r.fillRoundedRect(phaseX, bandY, phaseW, bandH, radius, colors::kWindBox);
     const float textY = inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY,

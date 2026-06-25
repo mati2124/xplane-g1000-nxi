@@ -328,10 +328,13 @@ void SoftkeyController::buildProcMenu() {
       fplApproachLegCount_ > 0 &&
       fplApproachLegStart_ >= 0 &&
       fplApproachLegStart_ < static_cast<int>(fplLegs_.size());
+  const bool missedAvailable =
+      approachLoaded && hasMissedApproachLegs(fplLegs_);
   procMenuItems_ = {
       {"Activate Vector-to-Final", ProcMenuAction::ActivateVtf, false},
       {"Activate Approach", ProcMenuAction::ActivateApproach, approachLoaded},
-      {"Activate Missed Approach", ProcMenuAction::ActivateMissed, false},
+      {"Activate Missed Approach", ProcMenuAction::ActivateMissed,
+       missedAvailable},
       {"Select Approach", ProcMenuAction::SelectApproach, true},
       {"Select Arrival", ProcMenuAction::SelectArrival, true},
       {"Select Departure", ProcMenuAction::SelectDeparture, true},
@@ -767,6 +770,9 @@ void SoftkeyController::procLoadSelected(const std::string& name,
       navSource_->expandProcedure(icao, procCategory_, name, transition);
   if (legs.empty()) return;
   if (procCategory_ == ProcedureType::Approach) {
+    // Replace any previously loaded approach rather than appending a second copy
+    // (which duplicates the missed-approach legs).
+    removeLoadedApproachLegs(fplLegs_, fplApproachLegStart_, fplApproachLegCount_);
     fplApproachLegCount_ = static_cast<int>(legs.size());
   } else {
     fplApproachLegStart_ = 0;
@@ -885,8 +891,12 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
               window_ = PfdWindow::None;
             }
             return true;
+          case ProcMenuAction::ActivateMissed:
+            requestActivateMissedApproach();
+            window_ = PfdWindow::None;
+            return true;
           default:
-            return true;  // VTF / missed-approach items are inert in this suite
+            return true;  // VTF is inert in this suite
         }
       }
       case BezelKey::Clr:

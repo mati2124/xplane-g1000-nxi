@@ -54,6 +54,18 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
 void mergeProcedureLegMetadata(std::vector<MapLeg>& plan, int start,
                                const std::vector<MapLeg>& procedureLegs);
 
+// Erases a currently-loaded approach block so loading a new approach replaces it
+// instead of appending a second copy (which would duplicate the missed-approach
+// legs). No-op when the block is empty or out of range.
+void removeLoadedApproachLegs(std::vector<MapLeg>& legs, int approachStart,
+                              int approachCount);
+
+// Heals a plan whose loaded approach was accidentally appended twice: removes a
+// trailing leg block that exactly repeats (by ident) the block before it when
+// that block carries procedure roles (i.e. is an approach). Returns true if any
+// duplicate copy was removed.
+bool collapseDuplicateApproachTail(std::vector<MapLeg>& legs);
+
 MapProcedure mapProcedureFromPersisted(const PersistedLoadedApproach& saved);
 
 PersistedLoadedApproach persistedFromMapProcedure(const MapProcedure& proc,
@@ -92,6 +104,23 @@ inline bool operator==(const FlightPlanApproachState& a,
 inline bool operator!=(const FlightPlanApproachState& a,
                        const FlightPlanApproachState& b) {
   return !(a == b);
+}
+
+// Index of the MAPt leg in a loaded approach (-1 when none). Scans from the end
+// so a repeated fix id in the missed segment does not win over the runway MAPt.
+inline int findMaptLegIndex(const std::vector<MapLeg>& legs) {
+  for (int i = static_cast<int>(legs.size()) - 1; i >= 0; --i) {
+    if (legs[static_cast<std::size_t>(i)].procedureRole == "mapt") {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// True when the plan carries at least one fix after the MAPt (missed segment).
+inline bool hasMissedApproachLegs(const std::vector<MapLeg>& legs) {
+  const int maptIdx = findMaptLegIndex(legs);
+  return maptIdx >= 0 && maptIdx + 1 < static_cast<int>(legs.size());
 }
 
 // X-Plane FMS lat/lon entries use a coordinate-style id (e.g. "+27-81") when
@@ -246,16 +275,56 @@ inline int fplNormalizedApproachCount(int approachStart, int approachCount,
   return approachCount;
 }
 
+// Active GPS Direct-To, saved across standalone restarts so the magenta
+// course and FMA TO fix survive a relaunch.
+struct PersistedDirectTo {
+  bool active = false;
+  MapLeg target;
+  double originLat = 0.0;
+  double originLon = 0.0;
+  bool originValid = false;
+};
+
+inline bool operator==(const PersistedDirectTo& a, const PersistedDirectTo& b) {
+  return a.active == b.active && a.target.id == b.target.id &&
+         a.target.lat == b.target.lat && a.target.lon == b.target.lon &&
+         a.originLat == b.originLat && a.originLon == b.originLon &&
+         a.originValid == b.originValid;
+}
+
+inline bool operator!=(const PersistedDirectTo& a, const PersistedDirectTo& b) {
+  return !(a == b);
+}
+
+inline PersistedDirectTo persistedDirectToFromMap(const MapData& map) {
+  PersistedDirectTo out;
+  if (!map.directToActive || map.directTo.id.empty()) return out;
+  out.active = true;
+  out.target = map.directTo;
+  out.originLat = map.directToOriginLat;
+  out.originLon = map.directToOriginLon;
+  out.originValid = map.directToOriginValid;
+  return out;
+}
+
 // Saved across standalone restarts (waypoint legs with id/lat/lon/procedureRole).
 struct PersistedFlightPlan {
   bool active = false;
   bool destinationFilled = false;
   std::vector<MapLeg> legs;
+  int approachLegStart = -1;
+  int approachLegCount = 0;
+  std::string approachAirportIcao;
+  PersistedLoadedApproach approachMeta;
 };
 
 inline bool operator==(const PersistedFlightPlan& a,
                        const PersistedFlightPlan& b) {
   if (a.active != b.active || a.destinationFilled != b.destinationFilled ||
+      a.approachLegStart != b.approachLegStart ||
+      a.approachLegCount != b.approachLegCount ||
+      a.approachAirportIcao != b.approachAirportIcao ||
+      a.approachMeta != b.approachMeta ||
       a.legs.size() != b.legs.size()) {
     return false;
   }
@@ -273,5 +342,20 @@ inline bool operator!=(const PersistedFlightPlan& a,
                        const PersistedFlightPlan& b) {
   return !(a == b);
 }
+
+class NavFeatureSource;
+
+// Infer procedure metadata (runway, RNAV name, LPV) from tagged approach legs.
+bool inferApproachMetadataFromLegs(const std::vector<MapLeg>& legs,
+                                   int approachStart,
+                                   PersistedLoadedApproach& meta);
+
+// Nearest airport symbol to the MAP/fix leg (destination ICAO for the header).
+std::string inferApproachAirportFromProcedureLegs(
+    const NavFeatureSource* nav, const std::vector<MapLeg>& legs,
+    int approachStart, int approachCount);
+
+// Fill approach grouping from legs when older settings lack approach* keys.
+void enrichPersistedFlightPlanFromLegs(PersistedFlightPlan& plan);
 
 }  // namespace avionics

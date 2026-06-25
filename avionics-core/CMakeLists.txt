@@ -15,8 +15,11 @@ add_library(avionics-core STATIC
   src/PersistentState.cpp
   src/FlightPlanPersistence.cpp
   src/GlidepathGuidance.cpp
+  src/MissedApproachGuidance.cpp
   src/GpsLegCourse.cpp
   src/FmsNavigator.cpp
+  src/HoldNavigation.cpp
+  src/HoldGeometry.cpp
   src/NavigationComputer.cpp
   src/TurnAnticipation.cpp
   src/FplRouteEdit.cpp
@@ -70,6 +73,7 @@ add_library(avionics-core STATIC
   src/nav/FmsWaypointEntry.cpp
   src/nav/CifpParser.cpp
   src/nav/OpenAirParser.cpp
+  src/nav/NearbyFeatureSelect.cpp
   src/nav/Terrain.cpp
   src/nav/WeatherRadar.cpp
   src/nav/NexradWeatherRadar.cpp

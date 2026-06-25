@@ -57,27 +57,28 @@ void drawAirspeedColorBands(Renderer& r, float tapeX, float tapeW,
 void drawVspeedBugs(Renderer& r, float tapeX, float tapeW, float stripTop,
                     float stripH, float cy, float displayH, float airspeed,
                     const SoftkeyController& ui) {
-  // V-speed reference bugs (GLIDE/VR/VX/VY) sit along the RIGHT (inner) edge of
-  // the airspeed scale as black bugs with cyan letters, per the G1000 NXi.
-  // Each bug is shown only while enabled in the Timer/References window.
+  // V-speed reference bugs (GLIDE/VR/VX/VY) sit just to the RIGHT of the tape
+  // border (G1000 Pilot's Guide airspeed figures): a black tab with a cyan
+  // letter protrudes into the gap toward the attitude window, with the cyan
+  // accent on the tape-facing edge.
   const float ppu = stripH / kAirspeedViewableKnots;
-  const float innerX = tapeX + tapeW;
+  const float outerX = tapeX + tapeW;
   const float labelSize = fontPx(wt::kTapeLabel, displayH) * 0.85f;
-  const float bugW = tapeW * 0.20f;
+  const float bugW = tapeW * kVspeedBugWidthFraction;
   const float bugH = labelSize * 1.25f;
 
   r.save();
-  r.clip(tapeX, stripTop, tapeW, stripH);
+  r.clip(tapeX, stripTop, tapeW + bugW, stripH);
   for (int i = 0; i < kVSpeedRefCount; ++i) {
     if (!ui.vspeedEnabled(static_cast<VspeedRef>(i))) continue;
     const VSpeedRef& v = kVSpeedRefs[i];
     const float vKt = ui.vspeedValueKt(static_cast<VspeedRef>(i));
     const float y = cy - (vKt - airspeed) * ppu;
     if (y < stripTop || y > stripTop + stripH) continue;
-    const float bx = innerX - bugW;
+    const float bx = outerX;
     const float by = y - bugH * 0.5f;
     r.fillRect(bx, by, bugW, bugH, colors::kReadoutBox);
-    const Point edge[2] = {{innerX, by}, {innerX, by + bugH}};
+    const Point edge[2] = {{outerX, by}, {outerX, by + bugH}};
     r.strokePolyline(edge, 2, 2.5f, colors::kCyan);
     r.fillText(bx + bugW * 0.5f, y, v.bugLabel, labelSize, TextAlign::Center,
                colors::kCyan);
@@ -308,16 +309,18 @@ void drawVspeedList(Renderer& r, float tapeX, float tapeW, float stripTop,
 
   const float labelSize = fontPx(wt::kTapeLabel, displayH) * 0.9f;
   const float rowH = labelSize * 1.5f;
+  const float bugW = tapeW * kVspeedBugWidthFraction;
+  const float outerX = tapeX + tapeW;
   const int rows = static_cast<int>(order.size());
   float y = stripTop + stripH - rowH * (rows + 0.5f);
   for (int k = 0; k < rows; ++k) {
     const VSpeedRef& v = kVSpeedRefs[order[k]];
     const float vKt = ui.vspeedValueKt(static_cast<VspeedRef>(order[k]));
     const float rowCy = y + rowH * 0.5f;
-    r.fillText(tapeX + tapeW * 0.18f, rowCy, v.bugLabel, labelSize,
+    r.fillText(outerX + bugW * 0.15f, rowCy, v.bugLabel, labelSize,
                TextAlign::Left, colors::kCyan);
-    r.fillText(tapeX + tapeW * 0.92f, rowCy, formatInt(vKt), labelSize,
-               TextAlign::Right, colors::kWhite);
+    r.fillText(outerX + bugW * 1.05f, rowCy, formatInt(vKt), labelSize,
+               TextAlign::Left, colors::kWhite);
     y += rowH;
   }
 }

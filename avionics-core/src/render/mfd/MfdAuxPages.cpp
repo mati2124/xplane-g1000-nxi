@@ -355,7 +355,7 @@ void drawGpsStatusPage(Renderer& r, const FlightData& d, const MapData& map,
     const float statusH = col1.h * 0.55f;
     Rect inner = drawGroupBox(r, Rect{col1.x, col1.y, col1.w, statusH},
                               "GPS Status", displayH);
-    const float rowH = inner.h / 6.0f;
+    const float rowH = inner.h / 7.0f;
     float fy = inner.y;
     fy = drawField(r, inner, fy, rowH, "SOLUTION", gpsOk ? "3D NAV" : "ACQUIRING",
                    displayH,
@@ -382,6 +382,24 @@ void drawGpsStatusPage(Renderer& r, const FlightData& d, const MapData& map,
                    colors::kActiveGreen);
     fy = drawField(r, inner, fy, rowH, "VERTICAL", d.fmaVerticalActive,
                    displayH, colors::kActiveGreen);
+    // GP DEBUG (temporary glidepath/AP coupling diagnostic): the value string
+    // can be long, so it gets its own full-width row drawn left-aligned and
+    // shrunk to fit the column. Right-aligning it via drawField made it spill
+    // left across the page and overlap the fields above.
+    {
+      const float labelCy = fy + rowH * 0.5f;
+      r.fillText(inner.x, labelCy, "GP DEBUG", mfdFontPx(kWtFieldLabel, displayH),
+                 TextAlign::Left, colors::kTitleGray);
+      fy += rowH;
+      const std::string dbg =
+          d.gpCouplingDebug.empty() ? std::string(kDash) : d.gpCouplingDebug;
+      float dbgSize = mfdFontPx(kWtFieldValue, displayH) * 0.85f;
+      const float dbgW = r.measureTextWidth(dbg, dbgSize);
+      if (dbgW > inner.w && dbgW > 0.0f) dbgSize *= inner.w / dbgW;
+      r.fillText(inner.x, fy + rowH * 0.5f, dbg, dbgSize, TextAlign::Left,
+                 colors::kTitleGray);
+      fy += rowH;
+    }
 
     Rect accInner = drawGroupBox(
         r, Rect{col1.x, col1.y + statusH + grid.px(10.0f), col1.w,

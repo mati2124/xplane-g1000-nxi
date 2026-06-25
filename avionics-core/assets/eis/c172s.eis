@@ -84,11 +84,11 @@ GAUGE ELECTRICAL
 
 # X-Plane dataref bindings (scale/offset convert native units to display units).
 BIND eng.rpm sim/cockpit2/engine/indicators/engine_speed_rpm[0] 1 0
-BIND eng.fuel_flow sim/cockpit2/engine/indicators/fuel_flow_kg_sec[0] 132.275554 0
+BIND eng.fuel_flow sim/cockpit2/engine/indicators/fuel_flow_kg_sec[0] 1323.8784 0
 BIND eng.oil_pres sim/cockpit2/engine/indicators/oil_pressure_psi[0] 1 0
-BIND eng.oil_temp sim/cockpit2/engine/indicators/oil_temperature_deg_C[0] 1.8 32
-BIND eng.egt sim/cockpit2/engine/indicators/EGT_deg_C[0] 1.8 32
-BIND eng.vacuum sim/cockpit/misc/vacuum 5 0
+BIND eng.oil_temp sim/flightmodel/engine/ENGN_oil_temp_c[0] 1 0
+BIND eng.egt sim/flightmodel2/engines/EGT_deg_C[0] 1 0
+BIND eng.vacuum sim/cockpit2/gauges/indicators/suction_1_ratio 1 0
 BIND fuel.qty_left sim/cockpit2/fuel/fuel_quantity[0] 0.367744 0
 BIND fuel.qty_right sim/cockpit2/fuel/fuel_quantity[1] 0.367744 0
 BIND eng.hours sim/cockpit2/clock_timer/hobbs_time_hours 1 0

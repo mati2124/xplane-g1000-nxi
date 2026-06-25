@@ -120,6 +120,27 @@ void drawFmaLegArrow(Renderer& r, float tipX, float cy, float size) {
   r.fillPolygon(pts, 7, colors::kMagenta);
 }
 
+// Holding-pattern racetrack icon for the Navigation Status Box active-leg field
+// (G1000 NXi PFD status bar symbol table, Pilot's Guide Fig 5-3). A small
+// capsule with a directional arrowhead riding the top edge, mirrored for left
+// vs right holds. Returns the x just past the icon.
+float drawHoldIcon(Renderer& r, float x, float cy, float size, bool rightTurn,
+                   const Color& color) {
+  const float w = size * 1.02f;
+  const float h = size * 0.62f;
+  const float top = cy - h * 0.5f;
+  const float stroke = std::max(1.5f, size * 0.11f);
+  r.strokeRoundedRect(x, top, w, h, h * 0.5f, stroke, color);
+  const float ah = size * 0.20f;
+  const float axc = x + w * 0.5f;
+  const float dir = rightTurn ? 1.0f : -1.0f;
+  const Point tri[3] = {{axc + dir * ah, top},
+                        {axc - dir * ah * 0.15f, top - ah * 0.9f},
+                        {axc - dir * ah * 0.15f, top + ah * 0.9f}};
+  r.fillPolygon(tri, 3, color);
+  return x + w;
+}
+
 // Green VS reference arrow (up/down) beside the active vertical mode (WT FMA).
 void drawFmaVsArrow(Renderer& r, float cx, float cy, float size, bool up) {
   const float dir = up ? -1.0f : 1.0f;
@@ -133,8 +154,10 @@ void drawFmaVsArrow(Renderer& r, float cx, float cy, float size, bool up) {
 // CenterBarTopLeft / CenterBarTopRight). Active leg with a magenta arrow, plus
 // DIS/BRG to the next waypoint (G1000 NXi Pilot's Guide, Flight Management).
 void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
-                      float h, const FlightData& d) {
-  const bool showTurnAnnun = !d.navStatusAnnunciation.empty();
+                      float h, const FlightData& d, const SoftkeyController& ui) {
+  const bool showTurnAnnun =
+      !d.navStatusAnnunciation.empty() &&
+      (!d.navStatusAnnunciationFlash || ui.blinkOn());
   const float legW = centerW * (284.0f / 506.0f);
   const float dataL = centerL + legW;
   // Center the row on its visual ink: text is nudged below the geometric
@@ -154,19 +177,32 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
   // valid datalink and an active leg; DIS/BRG below are always shown.
   const bool hasLeg = d.dataLinkValid && !d.fmaToWpt.empty();
 
-  if (d.dataLinkValid) {
-    if (showTurnAnnun) {
-      const float legWidth = r.measureTextWidth(d.navStatusAnnunciation, dataSize);
-      const float x = centerL + std::max(centerW * 0.01f, (legW - legWidth) * 0.5f);
-      putText(r, x, cy, d.navStatusAnnunciation, dataSize, colors::kMagenta);
-    } else {
-    // No FROM waypoint with an active TO means a GPS Direct-To: show the
-    // Direct-To icon followed by the target identifier instead of a FROM -> TO
-    // leg.
-    const bool directTo = d.fmaFromWpt.empty() && !d.fmaToWpt.empty();
+  if (d.dataLinkValid && showTurnAnnun) {
+    // A turn-anticipation advisory / waypoint alert replaces the active-leg
+    // field on the real NXi while DIS/BRG stay visible on the right. Keep it
+    // within the leg field, shrinking the font when the message (e.g.
+    // "Turn left to 046° in 9 seconds") is wider than the field allows.
+    const float availW = legW * 0.94f;
+    const float fullW = r.measureTextWidth(d.navStatusAnnunciation, dataSize);
+    const float annunSize =
+        (fullW > availW && fullW > 0.0f) ? dataSize * (availW / fullW) : dataSize;
+    const float annunW = r.measureTextWidth(d.navStatusAnnunciation, annunSize);
+    const float x = centerL + std::max(legW * 0.02f, (legW - annunW) * 0.5f);
+    putText(r, x, cy, d.navStatusAnnunciation, annunSize, colors::kMagenta);
+  } else if (d.dataLinkValid) {
+    {
+    // A holding-pattern leg shows the racetrack symbol + fix; a Direct-To (no
+    // FROM with an active TO) shows the Direct-To icon + target. Otherwise the
+    // usual FROM -> TO leg (G1000 NXi Pilot's Guide Fig 5-3 status-bar symbols).
+    const bool hold = d.fmaLegIsHold && !d.fmaToWpt.empty();
+    const bool directTo =
+        !hold && d.fmaFromWpt.empty() && !d.fmaToWpt.empty();
 
     float legWidth = 0.0f;
-    if (directTo) {
+    if (hold) {
+      legWidth += dataSize * 1.20f;  // racetrack icon + gap
+      legWidth += r.measureTextWidth(d.fmaToWpt, dataSize);
+    } else if (directTo) {
       legWidth += dataSize * 0.95f;  // Direct-To icon + gap
       legWidth += r.measureTextWidth(d.fmaToWpt, dataSize);
     } else {
@@ -180,7 +216,12 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
       }
     }
     float x = centerL + std::max(centerW * 0.01f, (legW - legWidth) * 0.5f);
-    if (directTo) {
+    if (hold) {
+      x = drawHoldIcon(r, x, cy, dataSize, d.fmaLegHoldRightTurn,
+                       colors::kMagenta);
+      x += dataSize * 0.22f;
+      putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
+    } else if (directTo) {
       x = drawDirectToIcon(r, x, cy, dataSize, colors::kMagenta);
       x += dataSize * 0.18f;
       putText(r, x, cy, d.fmaToWpt, dataSize, colors::kMagenta);
@@ -373,7 +414,7 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
   // frequency cells) so its text reads as bold as the real unit.
   {
     FontScope centerFont(r, FontFace::DejaVuSemiBold);
-    drawNavStatusBox(r, centerL, centerW, centerRowH, h, d);
+    drawNavStatusBox(r, centerL, centerW, centerRowH, h, d, ui);
     drawAfcsStatusBox(r, centerL, centerRowH, centerW, centerRowH, h, d);
   }
 }

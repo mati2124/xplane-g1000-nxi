@@ -29,6 +29,11 @@ struct CifpLeg {
   int altitude1Ft = 0;            // APPCH col 24 (ARINC 5.30)
   int altitude2Ft = 0;            // APPCH col 25 (ARINC 5.30)
   float verticalAngleDeg = 0.0f;  // APPCH col 29 (ARINC 5.70), positive descent
+  // APPCH cols 20-21: magnetic course (DDD.d deg) and leg length (NM) or time.
+  float magneticCourseDeg = 0.0f;
+  float legLengthNm = 0.0f;
+  float legTimeMin = 0.0f;
+  std::string turnDirection;  // L/R/E from col 10 when present
 };
 
 // Parsed terminal procedures for one airport.

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "avionics/GpsLegCourse.h"
 #include "avionics/NavMath.h"
 #include "avionics/NavigationComputer.h"
 #include "avionics/MapRange.h"
@@ -671,7 +672,9 @@ void MockDataSource::ensureRoute() {
   }
   map_.flightPlan = route_;
   map_.rangeNm = 10.0f;
-  legIndex_ = 1;
+  if (!navigationPinned_) {
+    legIndex_ = 1;
+  }
 
   if (usingDefault) {
     // Built-in demo: start near Page Field and fly a GPS Direct-To straight to
@@ -686,13 +689,15 @@ void MockDataSource::ensureRoute() {
     map_.directToOriginLon = kKfmyLon;
     data_.headingDeg = static_cast<float>(navBearingDeg(
         kKfmyLat, kKfmyLon, route_.front().lat, route_.front().lon));
-  } else {
+  } else if (!navigationPinned_ || !map_.positionValid) {
     map_.ownshipLat = route_.front().lat;
     map_.ownshipLon = route_.front().lon;
     data_.headingDeg = static_cast<float>(navBearingDeg(
         route_[0].lat, route_[0].lon, route_[1].lat, route_[1].lon));
   }
-  map_.positionValid = true;
+  if (!map_.positionValid) {
+    map_.positionValid = true;
+  }
 
   // Hand-placed demo nav data is used ONLY when no real nav source is wired in
   // (e.g. a bare unit test). When a source is set -- which the standalone shell
@@ -712,11 +717,17 @@ void MockDataSource::ensureRoute() {
   map_.navDatabase = navDatabaseInfoForCycle(currentAiracCycle());
 
   routeInitialized_ = true;
+  if (navigationPinned_) {
+    syncFmaFromLegIndex();
+  }
 }
 
 void MockDataSource::directTo(MapLeg target) {
   directToActive_ = true;
   directToTarget_ = std::move(target);
+  if (!map_.flightPlan.empty()) {
+    applyInPlanDirectToRouteSlice(map_, map_.flightPlan, directToTarget_);
+  }
   routeInitialized_ = true;
   if (map_.positionValid) {
     map_.directToOriginValid = true;
@@ -725,12 +736,62 @@ void MockDataSource::directTo(MapLeg target) {
   }
 }
 
+void MockDataSource::restoreDirectTo(MapLeg target, double originLat,
+                                     double originLon, bool originValid) {
+  if (target.id.empty()) {
+    cancelDirectTo();
+    return;
+  }
+  directToActive_ = true;
+  directToTarget_ = std::move(target);
+  if (!map_.flightPlan.empty()) {
+    applyInPlanDirectToRouteSlice(map_, map_.flightPlan, directToTarget_);
+  }
+  routeInitialized_ = true;
+  map_.directToOriginValid = originValid;
+  map_.directToOriginLat = originLat;
+  map_.directToOriginLon = originLon;
+}
+
 void MockDataSource::cancelDirectTo() {
   directToActive_ = false;
   map_.directToActive = false;
+  clearFlightPlanRouteSlice(map_);
+}
+
+void MockDataSource::setOwnshipPosition(double lat, double lon, float headingDeg) {
+  map_.ownshipLat = lat;
+  map_.ownshipLon = lon;
+  map_.positionValid = true;
+  data_.headingDeg = headingDeg;
+  if (navFeatures_ != nullptr) {
+    mapPanDirty_ = true;
+  }
+}
+
+void MockDataSource::setActiveLegIndex(int index) {
+  if (index < 0 || index >= static_cast<int>(route_.size())) return;
+  legIndex_ = static_cast<std::size_t>(index);
+  syncFmaFromLegIndex();
+}
+
+void MockDataSource::syncFmaFromLegIndex() {
+  if (route_.empty()) return;
+  data_.fmaActiveLegIndex = static_cast<int>(legIndex_);
+  if (legIndex_ > 0) {
+    data_.fmaFromWpt = route_[legIndex_ - 1].id;
+    data_.fmaToWpt = route_[legIndex_].id;
+  } else {
+    data_.fmaFromWpt.clear();
+    data_.fmaToWpt = route_.front().id;
+  }
 }
 
 void MockDataSource::navigateRoute(double dt) {
+  if (navigationPinned_) {
+    syncFmaFromLegIndex();
+    return;
+  }
   // GPS Direct-To overrides route sequencing: fly straight to the target and
   // publish the magenta direct course for the map.
   if (directToActive_) {
@@ -801,6 +862,11 @@ void MockDataSource::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
                                         CdiSource cdiSource, float nmPerDot) {
   map_.directToActive = directToActive_;
   map_.directTo = directToTarget_;
+
+  if (navigationPinned_) {
+    syncFmaFromLegIndex();
+    return;
+  }
 
   NavigationCallbacks callbacks;
   callbacks.onDirectToCaptured = [this](int /*activeLegIndex*/) {

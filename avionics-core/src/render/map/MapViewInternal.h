@@ -58,6 +58,11 @@ constexpr FontFace kMapLabelFace = FontFace::DejaVuSemiBold;
 constexpr float kMapIdentLabelScale = 1.0f;
 // Extra scale for ranked geo/hydro place names on the continental chart.
 constexpr float kMapGeoLabelScale = 1.10f;
+// Active flight-plan course line width (768-px canvas units). The PC Trainer
+// draws a noticeably heavier white/magenta route than the 1–2 px airways.
+constexpr float kFlightPlanRouteWidthWt = 4.0f;
+// Missed-approach / hold preview (inactive until the MAP is sequenced).
+constexpr float kMissedApproachRouteWidthWt = 1.5f;
 
 // Ownship airplane symbol size, in the same 768-px-canvas units. The G1000 NXi
 // ownship icon is drawn noticeably larger than the nav-feature symbols so the
@@ -265,9 +270,13 @@ float drawChromeLabel(Renderer& r, float x, float y, const char* text,
 // declutter. Drawn right above the map background so everything overlays it.
 // Chart land/ocean fills draw beneath the topo raster; the raster composites
 // over them with transparent pixels where DEM data is not yet available.
+// `showCulture` keeps the topographic water/coastline (landmass, lakes,
+// rivers, national borders) but suppresses the man-made "land data" lines
+// (roads, railroads, state/province boundaries) when decluttered at Detail 3.
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
                   float rangeNm, bool skipLandMassFill = false,
-                  float viewHalfExtentNm = 0.0f, float displayRangeNm = 0.0f);
+                  float viewHalfExtentNm = 0.0f, float displayRangeNm = 0.0f,
+                  bool showCulture = true);
 
 // Populated places: a dot plus name, decluttered by city rank vs. range.
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,
@@ -277,9 +286,11 @@ void drawCities(Renderer& r, const MapData& map, const Proj& proj,
 void drawCityDots(Renderer& r, const MapData& map, const Proj& proj, float rangeNm,
                   float symSize);
 
-// Geo/city name labels (white/cyan, drawn on top of map symbology).
+// Geo/city name labels (white/cyan, drawn on top of map symbology). Hydro and
+// region labels are topographic and always drawn; city labels are man-made
+// land data and suppressed when `showCities` is false (Detail 3 declutter).
 void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
-                        float rangeNm, float labelSize);
+                        float rangeNm, float labelSize, bool showCities = true);
 
 // Airways declutter above their max range. Low-altitude routes draw first;
 // high-altitude Jet/Q-routes draw on top when both are shown (Fig 5-15).
@@ -289,7 +300,8 @@ void drawAirways(Renderer& r, const MapData& map, const Proj& proj,
 // Special-use and controlled airspace boundaries (Class B/C/D, restricted/MOA),
 // with per-class range and altitude declutter.
 void drawAirspaces(Renderer& r, const MapData& map, const Proj& proj,
-                   float rangeNm, const FlightData& flight);
+                   float rangeNm, const FlightData& flight, bool pointerActive,
+                   double pointerLat, double pointerLon);
 
 // Taxiway/apron diagram (SafeTaxi pavement), drawn under the runway quads.
 void drawTaxiways(Renderer& r, const MapData& map, const Proj& proj,

@@ -160,6 +160,18 @@ void ApplyConsumedFlightPlan(avionics::XPlaneConnection& xplane,
   mirrorDemoRoute(plan);
 }
 
+void ApplyRestoredDirectTo(avionics::XPlaneConnection& xplane,
+                           avionics::MockDataSource* demoSource,
+                           const avionics::PersistedDirectTo& saved) {
+  if (!saved.active || saved.target.id.empty()) return;
+  xplane.restoreDirectTo(saved.target, saved.originLat, saved.originLon,
+                         saved.originValid);
+  if (demoSource != nullptr) {
+    demoSource->restoreDirectTo(saved.target, saved.originLat, saved.originLon,
+                               saved.originValid);
+  }
+}
+
 // Prefer the GDU the pilot is actively editing; otherwise keep whichever side
 // still has a route (PFD first, matching syncFlightPlanPeer).
 avionics::PersistedFlightPlan AuthoritativeFlightPlanSnapshot(
@@ -180,6 +192,21 @@ avionics::PersistedFlightPlan AuthoritativeFlightPlanSnapshot(
       mfdEngine != nullptr && mfdEngine->mfdController().fplLocalDraft();
   if (pfdDraft && pfd.active) return pfd;
   if (mfdDraft && mfd.active) return mfd;
+  if (pfd.active) return pfd;
+  return mfd;
+}
+
+avionics::PersistedDirectTo AuthoritativeDirectToSnapshot(
+    avionics::AvionicsEngine* pfdEngine,
+    avionics::AvionicsEngine* mfdEngine) {
+  avionics::PersistedDirectTo pfd;
+  avionics::PersistedDirectTo mfd;
+  if (pfdEngine != nullptr) {
+    pfd = pfdEngine->softkeyController().persistedDirectToSnapshot();
+  }
+  if (mfdEngine != nullptr) {
+    mfd = mfdEngine->mfdController().persistedDirectToSnapshot();
+  }
   if (pfd.active) return pfd;
   return mfd;
 }
@@ -542,6 +569,10 @@ struct AppState {
   // Persisted user preferences, written back whenever the user changes the
   // feed or flips one of the View menu toggles.
   avionics::AppSettings settings;
+  // Set when the pilot edits the FPL (or SimBrief loads a route). Persist loop
+  // and shutdown write persistedFlightPlan only when dirty so a sim reconnect
+  // clear does not overwrite the saved route for the next standalone restart.
+  bool flightPlanPersistDirty = false;
   // In-progress CLR press-and-hold (CLR DFLT MAP): the engine whose CLR bezel
   // key the mouse went down on, and when. Cleared on release or once the hold
   // function fires.
@@ -1583,6 +1614,38 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::Proc);
     for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
     engine.pressBezelKey(avionics::BezelKey::Ent);  // "Select Approach"
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdserfshold") == 0) {
+    // KFMY RNAV R05 CITAG missed-approach hold at SERFS (trainer screenshot013).
+    const std::vector<avionics::MapLeg> legs =
+        navMapData.expandProcedure("KFMY", avionics::ProcedureType::Approach,
+                                   "R05", "CITAG");
+    if (!legs.empty()) {
+      int rwIdx = -1;
+      dataSource.setRoute(legs);
+      dataSource.setChartRangeNm(15.0f);
+      dataSource.update(0.0);
+      for (std::size_t i = 0; i < legs.size(); ++i) {
+        if (legs[i].id == "RW05") {
+          rwIdx = static_cast<int>(i);
+          break;
+        }
+      }
+      dataSource.setOwnshipPosition(26.583633, -81.870277, 354.0f);
+      if (rwIdx >= 0) {
+        dataSource.setActiveLegIndex(rwIdx);
+      }
+      dataSource.setNavigationPinned(true);
+      dataSource.update(0.0);
+      engine.mfdController().replaceFlightPlanFromExternal(legs);
+      engine.softkeyController().replaceFlightPlanFromExternal(legs);
+      engine.update(0.0);
+    }
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.mfdController().setRangeFromNm(15.0f);
+    engine.update(0.0);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfd") == 0) {
@@ -3157,14 +3220,19 @@ int main(int argc, char** argv) {
     if (savedSettings.persistedFlightPlan.active) {
       pfdEngine->softkeyController().restorePersistedFlightPlan(
           savedSettings.persistedFlightPlan);
+      if (savedSettings.persistedFlightPlan.approachMeta.active) {
+        pfdEngine->softkeyController().setPersistedLoadedApproach(
+            savedSettings.persistedFlightPlan.approachMeta);
+      }
       ApplyConsumedFlightPlan(
           xplane, &demoSource, savedSettings.persistedFlightPlan.legs,
           savedSettings.persistedFlightPlan.destinationFilled);
-    }
-    if (savedSettings.persistedApproach.active) {
+    } else if (savedSettings.persistedApproach.active) {
       pfdEngine->softkeyController().setPersistedLoadedApproach(
           savedSettings.persistedApproach);
     }
+    ApplyRestoredDirectTo(xplane, &demoSource,
+                          savedSettings.persistedDirectTo);
   }
   if (mfdEngine != nullptr) {
     avionics::applyMfdState(mfdEngine->mfdController(),
@@ -3172,8 +3240,11 @@ int main(int argc, char** argv) {
     if (savedSettings.persistedFlightPlan.active) {
       mfdEngine->mfdController().restorePersistedFlightPlan(
           savedSettings.persistedFlightPlan);
-    }
-    if (savedSettings.persistedApproach.active) {
+      if (savedSettings.persistedFlightPlan.approachMeta.active) {
+        mfdEngine->mfdController().setPersistedLoadedApproach(
+            savedSettings.persistedFlightPlan.approachMeta);
+      }
+    } else if (savedSettings.persistedApproach.active) {
       mfdEngine->mfdController().setPersistedLoadedApproach(
           savedSettings.persistedApproach);
     }
@@ -3375,6 +3446,7 @@ int main(int argc, char** argv) {
             static_cast<int>(simbriefResult.legs.size());
         // The OFP becomes the displayed flight plan on the X-Plane feed.
         xplane.setRouteOverride(simbriefResult.legs);
+        app.flightPlanPersistDirty = true;
         if (pfdEngine != nullptr) {
           pfdEngine->softkeyController().replaceFlightPlanFromExternal(
               simbriefResult.legs);
@@ -3438,6 +3510,7 @@ int main(int argc, char** argv) {
         ApplyConsumedFlightPlan(
             xplane, app.demoSource, pfdEditedPlan,
             pfdEngine->softkeyController().flightPlanDestinationFilled());
+        app.flightPlanPersistDirty = true;
       }
     }
     if (mfdEngine != nullptr) {
@@ -3446,6 +3519,7 @@ int main(int argc, char** argv) {
         ApplyConsumedFlightPlan(
             xplane, app.demoSource, editedPlan,
             mfdEngine->mfdController().fplDestinationFilled());
+        app.flightPlanPersistDirty = true;
       }
     }
 
@@ -3568,6 +3642,20 @@ int main(int argc, char** argv) {
       mfdMs = renderWindow(mfdWindow, *mfdEngine, *mfdRenderer, dt,
                            profile ? &mfdLastStats : nullptr);
     }
+
+    if (xplane.consumeReconnectFlightPlanClear()) {
+      if (pfdEngine != nullptr) {
+        pfdEngine->softkeyController().replaceFlightPlanFromExternal({});
+      }
+      if (mfdEngine != nullptr) {
+        mfdEngine->mfdController().replaceFlightPlanFromExternal({});
+      }
+      if (app.demoSource != nullptr) {
+        app.demoSource->updateRoute({});
+        app.demoSource->cancelDirectTo();
+      }
+    }
+
     if (profile) {
       profPfdMs += pfdMs;
       profMfdMs += mfdMs;
@@ -3624,10 +3712,20 @@ int main(int argc, char** argv) {
           app.settings.persistedApproach = approach;
           avionics::SaveAppSettings(app.settings);
         }
-        const avionics::PersistedFlightPlan flightPlan =
-            AuthoritativeFlightPlanSnapshot(pfdEngine, mfdEngine);
-        if (flightPlan != app.settings.persistedFlightPlan) {
-          app.settings.persistedFlightPlan = flightPlan;
+        if (app.flightPlanPersistDirty) {
+          app.settings.persistedFlightPlan =
+              AuthoritativeFlightPlanSnapshot(pfdEngine, mfdEngine);
+          if (app.settings.persistedFlightPlan.approachMeta.active) {
+            app.settings.persistedApproach =
+                app.settings.persistedFlightPlan.approachMeta;
+          }
+          app.flightPlanPersistDirty = false;
+          avionics::SaveAppSettings(app.settings);
+        }
+        const avionics::PersistedDirectTo directTo =
+            AuthoritativeDirectToSnapshot(pfdEngine, mfdEngine);
+        if (directTo != app.settings.persistedDirectTo) {
+          app.settings.persistedDirectTo = directTo;
           avionics::SaveAppSettings(app.settings);
         }
       }
@@ -3638,9 +3736,17 @@ int main(int argc, char** argv) {
   // Capture the final window placement for the next launch before the windows
   // go away (always remembered).
   CaptureWindowPositions(app);
-  if (pfdEngine != nullptr) {
+  if (pfdEngine != nullptr && app.flightPlanPersistDirty) {
     app.settings.persistedFlightPlan =
         AuthoritativeFlightPlanSnapshot(pfdEngine, mfdEngine);
+    if (app.settings.persistedFlightPlan.approachMeta.active) {
+      app.settings.persistedApproach =
+          app.settings.persistedFlightPlan.approachMeta;
+    }
+  }
+  if (pfdEngine != nullptr) {
+    app.settings.persistedDirectTo =
+        AuthoritativeDirectToSnapshot(pfdEngine, mfdEngine);
   }
   avionics::SaveAppSettings(app.settings);
 

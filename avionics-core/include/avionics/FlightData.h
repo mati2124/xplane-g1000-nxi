@@ -172,6 +172,10 @@ struct FlightData {
 
   // GPS flight phase annunciated inside the HSI rose (ENR/TERM/DPRT/APR/OCN).
   std::string gpsFlightPhase = "ENR";
+  // Automatic waypoint sequencing suspended at the MAPt (SUSP annunciation).
+  bool gpsSequencingSuspended = false;
+  // Missed approach segment is active (PROC Activate Missed or equivalent).
+  bool missedApproachActive = false;
 
   // Transponder status box (bottom-right of the PFD): squawk code, mode label
   // (STBY/ON/ALT/GND), and a brief reply ("R") indication.
@@ -202,6 +206,11 @@ struct FlightData {
   float cdiDeviationDots = 0.0f;
   bool cdiToFlag = true;
   bool navSignalValid = true;
+
+  // Signed GPS cross-track distance in NM (+ = left of course), unclamped unlike
+  // cdiDeviationDots. Shown as the numeric XTK readout below the HSI aircraft
+  // symbol when GPS is the active source and the CDI is off-scale (>2 dots).
+  float gpsCrossTrackNm = 0.0f;
 
   // Bearing pointers on the HSI. BRG1 is a single-line needle, BRG2 a
   // double-line needle, each with an info window (pointer icon, source, station
@@ -273,6 +282,10 @@ struct FlightData {
   int fmaActiveLegIndex = -1;
   float fmaLegDistanceNm = 12.4f;
   float fmaLegBearingDeg = 315.0f;
+  // Active leg is a holding pattern: the Navigation Status Box shows a racetrack
+  // symbol + fix instead of FROM -> TO (G1000 NXi Pilot's Guide Fig 5-3 symbols).
+  bool fmaLegIsHold = false;
+  bool fmaLegHoldRightTurn = true;
   // Turn-anticipation annunciation for the Navigation Status Box (replaces the
   // active-leg field when non-empty; G1000 NXi Pilot's Guide Section 5.1).
   std::string navStatusAnnunciation;
@@ -284,6 +297,8 @@ struct FlightData {
   std::string fmaVerticalApproachArmed;
   int fmaVerticalValue = 500;
   std::string fmaVerticalUnits = "FPM";
+  // Temporary RNAV glidepath/AP coupling debug (MFD AUX GPS Status).
+  std::string gpCouplingDebug;
   bool apEngaged = true;
   bool ydEngaged = true;
 

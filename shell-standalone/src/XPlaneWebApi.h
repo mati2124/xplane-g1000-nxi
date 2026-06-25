@@ -50,6 +50,11 @@ class XPlaneWebApi {
   std::string aircraftIcao() const;
   std::string aircraftAcfRelativePath() const;
 
+  // Push the active GPS destination identifier into the sim. Required for AP
+  // NAV/GPSS coupling when override_gps is on; the float-only UDP link cannot
+  // carry this byte[] dataref.
+  bool writeGpsNavId(const std::string& id);
+
  private:
   void run();  // background polling loop
 

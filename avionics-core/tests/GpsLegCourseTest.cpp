@@ -64,5 +64,25 @@ TEST(GpsLegCourseTest, ResolveNavLegAdvancesPastCapturedWaypoint) {
   EXPECT_EQ(idx, 2);
 }
 
+TEST(GpsLegCourseTest, InPlanDirectToRouteSlicePersistsAfterCapture) {
+  MapLeg serfs;
+  serfs.id = "SERFS";
+  MapLeg pints;
+  pints.id = "PINTS";
+  MapLeg azomy;
+  azomy.id = "AZOMY";
+  const std::vector<MapLeg> plan = {serfs, pints, azomy};
+
+  MapData map;
+  map.flightPlan = plan;
+  applyInPlanDirectToRouteSlice(map, plan, pints);
+  EXPECT_EQ(map.flightPlanRouteStartIndex, 1);
+
+  map.directToActive = false;
+  EXPECT_EQ(map.flightPlanRouteStartIndex, 1);
+  clearFlightPlanRouteSlice(map);
+  EXPECT_EQ(map.flightPlanRouteStartIndex, 0);
+}
+
 }  // namespace
 }  // namespace avionics::test

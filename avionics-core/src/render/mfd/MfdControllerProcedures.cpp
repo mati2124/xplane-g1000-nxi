@@ -247,6 +247,10 @@ bool MfdController::procBezelKey(BezelKey key) {
         navSource_->expandProcedure(icao, procCategory_, name, transition);
     if (legs.empty()) return;
     if (procCategory_ == ProcedureType::Approach) {
+      // Replace any previously loaded approach rather than appending a second
+      // copy (which duplicates the missed-approach legs).
+      removeLoadedApproachLegs(fplLegs_, fplApproachLegStart_,
+                               fplApproachLegCount_);
       fplApproachLegCount_ = static_cast<int>(legs.size());
     } else {
       fplApproachLegStart_ = 0;

@@ -855,11 +855,36 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         "Active Flight Plan", displayH);
 
     const float headerSize = mfdFontPx(kWtRow, displayH);
-    const MfdController::FplEffectiveApproach approach = ui.fplEffectiveApproach();
-    int approachStart = approach.start;
-    int approachCount = approach.count;
-    approachCount = fplNormalizedApproachCount(
-        approachStart, approachCount, static_cast<int>(plan.size()));
+    // Resolve approach grouping the same way as the PFD Active Flight Plan
+    // window: stored start/count when valid, otherwise infer from procedureRole.
+    int approachStart = ui.fplApproachLegStart();
+    int approachCount = ui.fplApproachLegCount();
+    if (!ui.fplHasLoadedApproach() || approachCount <= 0) {
+      const InferredProcedureBlock block = inferProcedureBlockInPlan(plan);
+      if (block.valid()) {
+        approachStart = block.start;
+        approachCount = block.count;
+      }
+    } else {
+      FlightPlanApproachState stored;
+      stored.legStart = approachStart;
+      stored.legCount = approachCount;
+      if (!approachStateFitsPlan(stored, plan)) {
+        const InferredProcedureBlock block = inferProcedureBlockInPlan(plan);
+        if (block.valid()) {
+          approachStart = block.start;
+          approachCount = block.count;
+        } else {
+          approachStart = 0;
+          approachCount = 0;
+        }
+      }
+    }
+    if (approachCount > 0 && approachStart >= 0 &&
+        approachStart + approachCount < static_cast<int>(plan.size())) {
+      approachCount = fplNormalizedApproachCount(
+          approachStart, approachCount, static_cast<int>(plan.size()));
+    }
     const bool approachLoaded = approachCount > 0;
     std::string approachAirport;
     if (approachLoaded) {

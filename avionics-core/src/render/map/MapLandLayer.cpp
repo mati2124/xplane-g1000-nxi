@@ -943,6 +943,13 @@ void drawProjectedLine(Renderer& r, const MapLandLine& line,
   }
 }
 
+// Man-made land culture lines, decluttered together at Detail 3 (Table 5-4).
+// Water (rivers, lakes) and coastlines stay; these do not.
+bool isCultureLine(LandClass cls) {
+  return cls == LandClass::Road || cls == LandClass::Railroad ||
+         cls == LandClass::StateBorder;
+}
+
 bool shouldDrawLine(const MapLandLine& line, float rangeNm) {
   switch (line.landClass) {
     case LandClass::LandMass:
@@ -969,7 +976,7 @@ bool shouldDrawLine(const MapLandLine& line, float rangeNm) {
 
 void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
                   float rangeNm, bool skipLandMassFill, float viewHalfExtentNm,
-                  float displayRangeNm) {
+                  float displayRangeNm, bool showCulture) {
   g_landZoomAnimating =
       displayRangeNm > 0.0f &&
       !mapRangeZoomSettled(displayRangeNm, rangeNm) &&
@@ -1127,6 +1134,9 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
         line.landClass == LandClass::Coast) {
       continue;
     }
+    // Detail 3 declutter: drop roads/railroads/state boundaries but keep the
+    // topographic water (rivers, lakes).
+    if (!showCulture && isCultureLine(line.landClass)) continue;
     if (!shouldDrawLine(line, rangeNm)) continue;
     const bool isFill = line.landClass == LandClass::Lake;
     if (!(isFill ? projectFillLine(line, proj, rangeNm, pts)
@@ -1177,7 +1187,7 @@ void drawCityDots(Renderer& r, const MapData& map, const Proj& proj,
 }
 
 void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
-                        float rangeNm, float labelSize) {
+                        float rangeNm, float labelSize, bool showCities) {
   struct GeoLabelDraw {
     const MapLandCity* label;
     float x;
@@ -1244,6 +1254,9 @@ void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
   drawGeoBatch(regions, false);
   drawGeoBatch(hydros, true);
 
+  // City names are man-made land data (Detail 3 declutter); hydro/region
+  // labels above are topographic and always drawn.
+  if (!showCities) return;
   for (const MapLandCity& label : map.cities) {
     if (label.labelKind != LandLabelKind::City) continue;
     if (rangeNm > maxLabelRangeNm(label)) continue;

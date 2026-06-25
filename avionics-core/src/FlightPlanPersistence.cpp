@@ -3,6 +3,9 @@
 #include <cmath>
 #include <cctype>
 
+#include "avionics/FplRouteEdit.h"
+#include "avionics/NavFeatureSource.h"
+
 namespace avionics {
 
 bool isFmsLatLonIdent(const std::string& id) {
@@ -93,7 +96,67 @@ void mergeProcedureLegMetadata(std::vector<MapLeg>& plan, int start,
     if (idx >= plan.size()) break;
     if (plan[idx].id != procedureLegs[i].id) continue;
     plan[idx].procedureRole = procedureLegs[i].procedureRole;
+    plan[idx].hold = procedureLegs[i].hold;
+    plan[idx].pathTerminator = procedureLegs[i].pathTerminator;
+    if (procedureLegs[i].legCourseDeg > 0.0f) {
+      plan[idx].legCourseDeg = procedureLegs[i].legCourseDeg;
+    }
+    if (procedureLegs[i].missedInitial.active) {
+      plan[idx].missedInitial = procedureLegs[i].missedInitial;
+    }
+    if (procedureLegs[i].altitudeConstraintFt > 0) {
+      plan[idx].altitudeConstraintFt = procedureLegs[i].altitudeConstraintFt;
+      plan[idx].altitudeConstraint = procedureLegs[i].altitudeConstraint;
+    }
+    if (procedureLegs[i].glidePathAngleDeg > 0.0f) {
+      plan[idx].glidePathAngleDeg = procedureLegs[i].glidePathAngleDeg;
+    }
   }
+}
+
+void removeLoadedApproachLegs(std::vector<MapLeg>& legs, int approachStart,
+                              int approachCount) {
+  if (approachCount <= 0 || approachStart < 0) return;
+  const int end = approachStart + approachCount;
+  if (end > static_cast<int>(legs.size())) return;
+  legs.erase(legs.begin() + approachStart, legs.begin() + end);
+}
+
+bool collapseDuplicateApproachTail(std::vector<MapLeg>& legs) {
+  bool changed = false;
+  for (;;) {
+    const int n = static_cast<int>(legs.size());
+    bool removed = false;
+    // Largest repeated tail block first so a fully duplicated approach collapses
+    // in one step rather than fix-by-fix.
+    for (int block = n / 2; block >= 2; --block) {
+      bool idsMatch = true;
+      for (int i = 0; i < block; ++i) {
+        if (legs[static_cast<std::size_t>(n - 2 * block + i)].id !=
+            legs[static_cast<std::size_t>(n - block + i)].id) {
+          idsMatch = false;
+          break;
+        }
+      }
+      if (!idsMatch) continue;
+      // Only collapse when the repeated tail is an approach (carries procedure
+      // roles); enroute fixes can legitimately repeat (e.g. holds, airways).
+      bool tailHasProcedureRole = false;
+      for (int i = n - block; i < n; ++i) {
+        if (!legs[static_cast<std::size_t>(i)].procedureRole.empty()) {
+          tailHasProcedureRole = true;
+          break;
+        }
+      }
+      if (!tailHasProcedureRole) continue;
+      legs.erase(legs.begin() + (n - block), legs.end());
+      removed = true;
+      break;
+    }
+    if (!removed) break;
+    changed = true;
+  }
+  return changed;
 }
 
 MapProcedure mapProcedureFromPersisted(const PersistedLoadedApproach& saved) {
@@ -265,6 +328,102 @@ std::string formatApproachFplHeaderLabel(const MapProcedure& proc) {
   }
   label += approachSuffix(proc);
   return label;
+}
+
+bool inferApproachMetadataFromLegs(const std::vector<MapLeg>& legs,
+                                   int approachStart,
+                                   PersistedLoadedApproach& meta) {
+  if (approachStart < 0 ||
+      approachStart >= static_cast<int>(legs.size())) {
+    return false;
+  }
+  meta.active = true;
+  meta.type = ProcedureType::Approach;
+  for (int i = approachStart; i < static_cast<int>(legs.size()); ++i) {
+    const MapLeg& leg = legs[static_cast<std::size_t>(i)];
+    const std::string& id = leg.id;
+    if (id.size() >= 3 && (id[0] == 'R' || id[0] == 'r') && id[1] == 'W' &&
+        leg.procedureRole == "mapt") {
+      meta.runway = id.substr(2);
+      meta.name = "R" + meta.runway;
+    }
+    if (leg.procedureRole == "mahp") {
+      meta.levelOfService = "LPV";
+      meta.approachKind = "LPV";
+    }
+  }
+  std::string abbrevType;
+  std::string abbrevRunway;
+  if (!meta.name.empty() &&
+      decodeAbbreviatedApproachName(meta.name, abbrevType, abbrevRunway)) {
+    if (meta.runway.empty()) meta.runway = abbrevRunway;
+  }
+  return !meta.name.empty() || !meta.runway.empty();
+}
+
+std::string inferApproachAirportFromProcedureLegs(
+    const NavFeatureSource* nav, const std::vector<MapLeg>& legs,
+    int approachStart, int approachCount) {
+  if (nav == nullptr || !nav->ready() || approachCount <= 0 ||
+      approachStart < 0 ||
+      approachStart + approachCount > static_cast<int>(legs.size())) {
+    return {};
+  }
+  const MapLeg* ref = nullptr;
+  for (int i = approachStart; i < approachStart + approachCount; ++i) {
+    if (legs[static_cast<std::size_t>(i)].procedureRole == "mapt") {
+      ref = &legs[static_cast<std::size_t>(i)];
+      break;
+    }
+  }
+  if (ref == nullptr) {
+    ref = &legs[static_cast<std::size_t>(approachStart + approachCount - 1)];
+  }
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kDegToRad = kPi / 180.0;
+  const std::vector<MapFeature> features =
+      nav->nearby(ref->lat, ref->lon, 15.0f, 16);
+  std::string best;
+  double bestDist2 = 1e30;
+  const double cosLat = std::cos(ref->lat * kDegToRad);
+  for (const MapFeature& f : features) {
+    if (f.type != MapFeatureType::Airport || !isAirportIdent(f.id)) continue;
+    const double dLat = f.lat - ref->lat;
+    const double dLon = (f.lon - ref->lon) * cosLat;
+    const double d2 = dLat * dLat + dLon * dLon;
+    if (d2 < bestDist2) {
+      bestDist2 = d2;
+      best = f.id;
+    }
+  }
+  return best;
+}
+
+void enrichPersistedFlightPlanFromLegs(PersistedFlightPlan& plan) {
+  if (!plan.active || plan.legs.empty()) return;
+  if (collapseDuplicateApproachTail(plan.legs)) {
+    // The stored grouping spanned both copies of the duplicated approach; force
+    // a re-inference below from the cleaned (single-copy) leg list.
+    plan.approachLegStart = -1;
+    plan.approachLegCount = 0;
+  }
+  InferredProcedureBlock block = inferProcedureBlockInPlan(plan.legs);
+  if (!block.valid()) return;
+  if (plan.approachLegCount <= 0) {
+    plan.approachLegStart = block.start;
+    plan.approachLegCount = block.count;
+  }
+  if (plan.approachMeta.name.empty()) {
+    inferApproachMetadataFromLegs(plan.legs, plan.approachLegStart,
+                                  plan.approachMeta);
+  }
+  if (plan.approachAirportIcao.empty() &&
+      !plan.approachMeta.airportIcao.empty()) {
+    plan.approachAirportIcao = plan.approachMeta.airportIcao;
+  }
+  if (!plan.destinationFilled && plan.approachLegCount > 0) {
+    plan.destinationFilled = true;
+  }
 }
 
 }  // namespace avionics

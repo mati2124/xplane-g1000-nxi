@@ -114,8 +114,9 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   if (config.style.showLand &&
       (!map.landLines.empty() || !map.cities.empty())) {
     mapview::drawLandData(r, map, proj, rangeNm, false, viewHalfExtentNm,
-                          scaleRangeNm);
-    if (config.style.showLabels) {
+                          scaleRangeNm, config.style.showLandData);
+    // City dots are man-made land data, decluttered at Detail 3; water stays.
+    if (config.style.showLabels && config.style.showLandData) {
       mapview::drawCityDots(r, map, proj, rangeNm, symSize);
     }
   }
@@ -192,7 +193,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
 
   // Airspace boundaries draw beneath the route and features.
   if (config.style.showAirspace && !map.airspaces.empty()) {
-    mapview::drawAirspaces(r, map, proj, rangeNm, flight);
+    mapview::drawAirspaces(r, map, proj, rangeNm, flight, config.pointerActive,
+                           config.pointerLat, config.pointerLon);
   }
 
   // Airways draw above airspace but under the route and nav features.
@@ -236,6 +238,17 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     mapview::drawNavFeatures(r, map, proj, config, rangeNm, symSize);
   }
 
+  // Boxed flight-plan idents draw above nav symbology (fixes share the same
+  // coordinates as plan legs; the route overlay replaces their map icons).
+  if (config.style.showFlightPlan && map.flightPlan.size() >= 2) {
+    mapview::drawFlightPlanLabels(r, map, proj, config, flight, symSize,
+                                  labelSize);
+  }
+  if (config.style.showFlightPlan && map.positionValid) {
+    mapview::drawDirectToCourseLabel(r, map, flight, proj, config, symSize,
+                                     labelSize);
+  }
+
   // Obstacles (FAA DOF): independent of nav-feature declutter (Table 5-4).
   if (config.style.showObstacles && !map.obstacles.empty()) {
     mapview::drawObstacles(r, map, proj, rangeNm,
@@ -247,23 +260,16 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // Place and nav idents draw above symbology (white labels centered on top).
   if (config.style.showLabels) {
     if (config.style.showLand && !map.cities.empty()) {
-      mapview::drawMapPlaceLabels(r, map, proj, rangeNm, labelSize);
+      mapview::drawMapPlaceLabels(r, map, proj, rangeNm, labelSize,
+                                  config.style.showLandData);
     }
     if (config.style.showFeatures) {
       mapview::drawNavFeatureLabels(r, map, proj, config, rangeNm, symSize,
                                     labelSize);
     }
-    if (config.style.showFlightPlan && map.flightPlan.size() >= 2) {
-      mapview::drawFlightPlanLabels(r, map, proj, config, flight, symSize,
-                                    labelSize);
-    }
     if (config.procedurePreview != nullptr &&
         config.procedurePreview->size() >= 2) {
       mapview::drawProcedurePreviewLabels(r, proj, config, symSize, labelSize);
-    }
-    if (config.style.showFlightPlan && map.positionValid) {
-      mapview::drawDirectToCourseLabel(r, map, flight, proj, config, symSize,
-                                       labelSize);
     }
   }
 

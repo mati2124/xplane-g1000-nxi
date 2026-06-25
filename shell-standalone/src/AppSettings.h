@@ -65,6 +65,8 @@ struct AppSettings {
   PersistedLoadedApproach persistedApproach;
   // Pilot-built flight plan kept in the avionics app (partial routes included).
   PersistedFlightPlan persistedFlightPlan;
+  // Active GPS Direct-To (target + course origin), restored on next launch.
+  PersistedDirectTo persistedDirectTo;
   // Dev-only Debug menu state (only meaningful when launched with --debug-menu,
   // i.e. from the IDE; the installed app never shows the menu). Persisted so the
   // last-used feed, demo flight state, and demo power switches survive restarts.

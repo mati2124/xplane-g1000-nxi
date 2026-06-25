@@ -51,9 +51,12 @@ void drawWindBox(Renderer& r, const Layout& L, float displayH,
   // x, so the panel tracks the tape in reversionary (display-backup) mode where
   // the whole PFD is shifted right of the EIS strip.
   const float panelX = L.asiX + L.asiW + 4.0f * L.sx;
-  // Align with the GS/TAS box top (AirspeedTape.cpp boxY).
-  const float panelY =
-      L.asiTop + L.asiH - kTapeBottomBoxHeightWt * L.s;
+  // Top edge anchored to the HSI HDG/DTK reference-box bottom (shared HSI canvas
+  // coords, WT #HSI hdgcrs-container), so the panel tucks directly under the HDG
+  // readout and clears it, while its lower-right corner only grazes the rose
+  // tick-ring. Using the actual HSI coordinate -- not a tape-relative offset --
+  // keeps the panel locked to the same frame as the HDG box it sits beneath.
+  const float panelY = (hsi::kOriginY + hsi::kRefBoxTop + hsi::kRefBoxH) * L.sy;
   const float panelW = 83.0f * L.sx;
   const float panelH = 53.0f * L.sy;
   r.fillRoundedRect(panelX, panelY, panelW, panelH, 5.0f * L.s,

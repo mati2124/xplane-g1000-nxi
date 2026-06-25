@@ -324,6 +324,13 @@ class MfdController {
   const MapFeature* mapPointerFeature() const;
   // Obstacle under the pan pointer (same snap envelope as mapPointerFeature).
   const MapObstacle* mapPointerObstacle() const;
+  // Airspaces whose lateral boundary contains the pan pointer (point-in-polygon
+  // over each ring). The page highlights each boundary and lists its name,
+  // class, and vertical limits in a box beside the cursor, like the real unit
+  // selecting an airspace as the pointer passes over it (Pilot's Guide, Map
+  // Panning). Capped at a few entries so a stack of overlapping SUA stays
+  // readable.
+  std::vector<const MapAirspace*> mapPointerAirspaces() const;
 
   // WPT facility ident entry (Pilot's Guide, Waypoint Pages). ENT on a
   // resolved ident selects that waypoint for the page.
@@ -400,6 +407,7 @@ class MfdController {
 
   void replaceFlightPlanFromExternal(const std::vector<MapLeg>& plan);
   PersistedFlightPlan persistedFlightPlanSnapshot() const;
+  PersistedDirectTo persistedDirectToSnapshot() const;
   void restorePersistedFlightPlan(const PersistedFlightPlan& saved);
 
   void setPersistedLoadedApproach(const PersistedLoadedApproach& saved);
@@ -816,6 +824,10 @@ class MfdController {
   int fplApproachLegCount_ = 0;
   std::string fplApproachHeaderLabel_;
   PersistedLoadedApproach persistedApproachRestore_{};
+  // Re-expand the CIFP approach once nav data is ready so the procedure's holds,
+  // altitudes, and glidepath (not persisted per-leg) are re-attached after a
+  // restart. Set on restore, cleared once applied (or known unmatchable).
+  bool fplApproachRestorePending_ = false;
   bool fplCursorOn_ = false;
   bool fplListCursorFollowsActive_ = true;
   int fplCursorRow_ = 0;

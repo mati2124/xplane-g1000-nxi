@@ -215,6 +215,8 @@ bool fplAdoptMapPlanDuringDirectTo(FplRouteEdit& edit,
                                    const std::vector<MapLeg>& lastPublished) {
   const InferredProcedureBlock proc = inferProcedureBlockInPlan(mapPlan);
   if (!proc.valid()) return false;
+  const InferredProcedureBlock existing = inferProcedureBlockInPlan(edit.legs);
+  if (existing.valid() && edit.legs.size() > mapPlan.size()) return false;
   edit.legs = mapPlan;
   preserveFlightPlanIdents(edit.legs, lastPublished);
   edit.destinationFilled = false;

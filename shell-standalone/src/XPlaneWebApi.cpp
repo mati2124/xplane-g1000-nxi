@@ -253,6 +253,36 @@ bool httpGet(const std::string& host, std::uint16_t port,
   return true;
 }
 
+bool httpPatch(const std::string& host, std::uint16_t port,
+               const std::string& path, const std::string& jsonBody) {
+  SocketHandle sock = connectWithTimeout(host, port, kConnectTimeoutMs);
+  if (sock == kInvalidSocket) return false;
+  setIoTimeout(sock, kIoTimeoutMs);
+
+  const std::string req =
+      "PATCH " + path + " HTTP/1.1\r\nHost: " + host +
+      "\r\nContent-Type: application/json\r\nContent-Length: " +
+      std::to_string(jsonBody.size()) +
+      "\r\nConnection: close\r\n\r\n" + jsonBody;
+  if (!sendAll(sock, req)) {
+    closeSocket(sock);
+    return false;
+  }
+
+  char chunk[kRecvChunk];
+  std::string statusLine;
+  while (statusLine.find("\r\n\r\n") == std::string::npos) {
+    const int n = recvSome(sock, chunk, sizeof(chunk));
+    if (n <= 0) {
+      closeSocket(sock);
+      return false;
+    }
+    statusLine.append(chunk, static_cast<std::size_t>(n));
+  }
+  closeSocket(sock);
+  return statusLine.find("200") != std::string::npos;
+}
+
 // Pull the first integer "id" field out of a datarefs list response.
 bool extractId(const std::string& body, long long& idOut) {
   const std::size_t key = body.find("\"id\"");
@@ -293,6 +323,38 @@ bool extractDataString(const std::string& body, std::string& base64Out) {
   }
   base64Out = std::move(out);
   return true;
+}
+
+std::string base64Encode(const std::string& in) {
+  static const char kAlphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(((in.size() + 2) / 3) * 4);
+  std::size_t i = 0;
+  while (i + 2 < in.size()) {
+    const unsigned v = (static_cast<unsigned char>(in[i]) << 16) |
+                       (static_cast<unsigned char>(in[i + 1]) << 8) |
+                       static_cast<unsigned char>(in[i + 2]);
+    out.push_back(kAlphabet[(v >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(v >> 12) & 0x3F]);
+    out.push_back(kAlphabet[(v >> 6) & 0x3F]);
+    out.push_back(kAlphabet[v & 0x3F]);
+    i += 3;
+  }
+  if (i < in.size()) {
+    unsigned v = static_cast<unsigned char>(in[i]) << 16;
+    if (i + 1 < in.size()) v |= static_cast<unsigned char>(in[i + 1]) << 8;
+    out.push_back(kAlphabet[(v >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(v >> 12) & 0x3F]);
+    if (i + 1 < in.size()) {
+      out.push_back(kAlphabet[(v >> 6) & 0x3F]);
+      out.push_back('=');
+    } else {
+      out.push_back('=');
+      out.push_back('=');
+    }
+  }
+  return out;
 }
 
 std::string base64Decode(const std::string& in) {
@@ -421,6 +483,27 @@ std::string XPlaneWebApi::aircraftIcao() const {
 std::string XPlaneWebApi::aircraftAcfRelativePath() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return aircraftAcfRelativePath_;
+}
+
+bool XPlaneWebApi::writeGpsNavId(const std::string& id) {
+  if (id.empty()) return false;
+
+  std::string lookupBody;
+  if (!httpGet(host_, port_,
+               std::string(kDatarefsByName) + datarefs::kGpsNavId,
+               lookupBody)) {
+    return false;
+  }
+  long long datarefId = -1;
+  if (!extractId(lookupBody, datarefId) || datarefId < 0) return false;
+
+  std::string bytes = id;
+  bytes.push_back('\0');
+  const std::string patchBody =
+      std::string("{\"data\":\"") + base64Encode(bytes) + "\"}";
+  const std::string valuePath = std::string(kDatarefsPrefix) +
+                                std::to_string(datarefId) + kValueSuffix;
+  return httpPatch(host_, port_, valuePath, patchBody);
 }
 
 void XPlaneWebApi::run() {

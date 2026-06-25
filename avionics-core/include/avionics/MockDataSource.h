@@ -72,8 +72,20 @@ class MockDataSource : public DataSource {
   // clears and route navigation resumes (sequencing past the target if it is
   // part of the loaded route).
   void directTo(MapLeg target);
+  // Restore a saved Direct-To with the persisted course origin.
+  void restoreDirectTo(MapLeg target, double originLat, double originLon,
+                       bool originValid);
   // Cancel an active Direct-To without changing the loaded route.
   void cancelDirectTo();
+
+  // Reposition the mock aircraft (screenshots / tests) without changing the route.
+  void setOwnshipPosition(double lat, double lon, float headingDeg);
+
+  // Pin the GPS active leg (FMA TO waypoint) for deterministic map screenshots.
+  void setActiveLegIndex(int index);
+
+  // Hold ownship position and active leg fixed (screenshot states).
+  void setNavigationPinned(bool pinned) { navigationPinned_ = pinned; }
 
   void applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
                           CdiSource cdiSource, float nmPerDot) override;
@@ -154,6 +166,7 @@ class MockDataSource : public DataSource {
  private:
   void ensureRoute();              // lazily seed route + initial position
   void navigateRoute(double dt);   // advance the aircraft along the route
+  void syncFmaFromLegIndex();      // publish FMA fields from legIndex_
   void refreshFeatures(double dt); // pull nearby features (real or demo)
   void updateOnGround(double dt);  // parked-at-KFMY stationary state
   void publishEisChannels();       // copy engine fields into the EIS channels
@@ -174,6 +187,7 @@ class MockDataSource : public DataSource {
   bool groundMode_ = false;         // parked at KFMY rwy 31 instead of flying
   bool casMessagesEnabled_ = true;  // demo CAS annunciations cycle on a timer
   bool reversionaryAlertsDemo_ = false;
+  bool navigationPinned_ = false;
 
   // Active Direct-To: when set, navigateRoute flies straight to directToTarget_
   // instead of sequencing the route.

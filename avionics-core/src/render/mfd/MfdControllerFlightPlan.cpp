@@ -13,24 +13,51 @@
 namespace avionics {
 
 void MfdController::fplEnsureApproachInferred() {
-  if (fplApproachLegCount_ <= 0) {
-    reinferApproachFromProcedureLegs();
+  if (fplApproachLegCount_ > 0) {
+    FlightPlanApproachState state;
+    state.legStart = fplApproachLegStart_;
+    state.legCount = fplApproachLegCount_;
+    if (approachStateFitsPlan(state, fplLegs_)) return;
   }
+  reinferApproachFromProcedureLegs();
 }
 
 MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const {
   FplEffectiveApproach out;
   out.start = fplApproachLegStart_;
   out.count = fplApproachLegCount_;
-  if (out.count <= 0) {
+
+  const auto inferFromLegs = [&]() {
     const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
     if (block.valid()) {
       out.start = block.start;
       out.count = block.count;
+    } else {
+      out.start = 0;
+      out.count = 0;
+    }
+  };
+
+  // Match the PFD Active Flight Plan window: infer the approach tail from
+  // procedureRole tags when stored grouping is missing or stale.
+  if (out.count <= 0) {
+    inferFromLegs();
+  } else {
+    FlightPlanApproachState stored;
+    stored.legStart = out.start;
+    stored.legCount = out.count;
+    if (!approachStateFitsPlan(stored, fplLegs_)) {
+      inferFromLegs();
     }
   }
-  out.count = fplNormalizedApproachCount(
-      out.start, out.count, static_cast<int>(fplLegs_.size()));
+
+  if (out.count > 0 && out.start >= 0 &&
+      out.start + out.count <
+          static_cast<int>(fplLegs_.size())) {
+    out.count = fplNormalizedApproachCount(
+        out.start, out.count, static_cast<int>(fplLegs_.size()));
+  }
+
   FlightPlanApproachState state;
   state.legStart = out.start;
   state.legCount = out.count;
@@ -71,6 +98,20 @@ void MfdController::fplClampCursorRow() {
 void MfdController::syncFlightPlan(const MapData& map,
                                    const std::string& activeWaypoint,
                                    bool navDirectTo) {
+  if (fplApproachRestorePending_ && navSource_ != nullptr &&
+      navSource_->ready()) {
+    if (persistedApproachRestore_.airportIcao.empty() &&
+        fplApproachLegCount_ > 0) {
+      const std::string icao = inferApproachAirportFromProcedureLegs(
+          navSource_, fplLegs_, fplApproachLegStart_, fplApproachLegCount_);
+      if (!icao.empty()) {
+        persistedApproachRestore_.airportIcao = icao;
+        persistedApproachRestore_.active = true;
+      }
+    }
+    tryRestorePersistedApproach();
+  }
+
   mapData_ = &map;
   activeWaypoint_ = activeWaypoint;
   fplNavDirectToActive_ = navDirectTo;
@@ -557,6 +598,9 @@ bool MfdController::applyGcuEntryKey(char ch) {
 void MfdController::setPersistedLoadedApproach(
     const PersistedLoadedApproach& saved) {
   persistedApproachRestore_ = saved;
+  if (saved.active && !saved.name.empty()) {
+    fplApproachRestorePending_ = true;
+  }
   tryRestorePersistedApproach();
 }
 
@@ -638,13 +682,26 @@ void MfdController::tryRestorePersistedApproach() {
   if (expanded.empty()) return;
 
   int start = 0;
-  if (!findLegSequenceInPlan(fplLegs_, expanded, start)) return;
+  if (!findLegSequenceInPlan(fplLegs_, expanded, start)) {
+    // Saved legs don't contain this approach contiguously; stop retrying.
+    fplApproachRestorePending_ = false;
+    return;
+  }
 
+  const bool wasRestorePending = fplApproachRestorePending_;
   fplApproachLegStart_ = start;
   fplApproachLegCount_ = static_cast<int>(expanded.size());
   fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
   fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
   mergeProcedureLegMetadata(fplLegs_, start, expanded);
+  // Holds, altitude constraints, and glidepath are now re-attached.
+  fplApproachRestorePending_ = false;
+  // The restored route was pushed to the drawn map before these procedure
+  // details existed (holds are not persisted per-leg); re-publish so the route
+  // override and peer GDU pick up the re-attached holds.
+  if (wasRestorePending) {
+    fplPublishEdit();
+  }
 }
 
 void MfdController::reinferApproachFromProcedureLegs() {
@@ -679,7 +736,23 @@ PersistedFlightPlan MfdController::persistedFlightPlanSnapshot() const {
   out.active = true;
   out.destinationFilled = fplDestinationFilled_;
   out.legs = fplLegs_;
+  if (fplApproachLegCount_ > 0) {
+    out.approachLegStart = fplApproachLegStart_;
+    out.approachLegCount = fplApproachLegCount_;
+    out.approachAirportIcao = fplApproachAirportIcao();
+    if (!fplLoadedApproach_.name.empty()) {
+      out.approachMeta =
+          persistedFromMapProcedure(fplLoadedApproach_, out.approachAirportIcao);
+    } else if (persistedApproachRestore_.active) {
+      out.approachMeta = persistedApproachRestore_;
+    }
+  }
   return out;
+}
+
+PersistedDirectTo MfdController::persistedDirectToSnapshot() const {
+  if (mapData_ == nullptr) return {};
+  return persistedDirectToFromMap(*mapData_);
 }
 
 void MfdController::restorePersistedFlightPlan(
@@ -696,13 +769,40 @@ void MfdController::restorePersistedFlightPlan(
   fplCursorRow_ = 0;
   fplLastPublished_ = saved.legs;
   fplLastMapPlan_ = saved.legs;
-  tryRestorePersistedApproach();
+  fplApproachRestorePending_ = false;
+  if (saved.approachLegCount > 0) {
+    fplApproachLegStart_ = saved.approachLegStart;
+    fplApproachLegCount_ = saved.approachLegCount;
+    persistedApproachRestore_ = saved.approachMeta;
+    if (!saved.approachAirportIcao.empty()) {
+      persistedApproachRestore_.airportIcao = saved.approachAirportIcao;
+      persistedApproachRestore_.active = true;
+    }
+    if (!fplDestinationFilled_ && fplApproachLegCount_ > 0) {
+      fplDestinationFilled_ = true;
+    }
+  }
   if (fplApproachLegCount_ <= 0) {
     reinferApproachFromProcedureLegs();
   }
+  if (fplApproachLegCount_ > 0 && persistedApproachRestore_.name.empty()) {
+    inferApproachMetadataFromLegs(fplLegs_, fplApproachLegStart_,
+                                persistedApproachRestore_);
+  }
   if (fplApproachLegCount_ > 0 && !fplLoadedApproach_.name.empty()) {
     fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
+  } else if (fplApproachLegCount_ > 0 && persistedApproachRestore_.active &&
+             !persistedApproachRestore_.name.empty()) {
+    fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
+    fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
   }
+  // Re-expand the CIFP approach (holds, altitude constraints, and glidepath are
+  // not persisted per-leg) so they are re-attached after a restart. Arm from the
+  // now-final metadata; syncFlightPlan retries until nav data is ready.
+  fplApproachRestorePending_ = fplApproachLegCount_ > 0 &&
+                               persistedApproachRestore_.active &&
+                               !persistedApproachRestore_.name.empty();
+  tryRestorePersistedApproach();
 }
 
 }  // namespace avionics

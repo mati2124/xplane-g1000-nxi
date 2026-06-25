@@ -46,6 +46,9 @@ constexpr float kRefBoxDtkLeft = 276.0f;
 constexpr float kRefBoxW = 84.0f;
 constexpr float kRefBoxH = 26.0f;
 constexpr float kRefBoxRadius = 5.0f;
+// Standard-rose heading box: the readout sits 24 px above the tick-ring top
+// (trainer PFD Default.bmp: box top y=396, rose top y=420 on the 1024 canvas).
+constexpr float kRoseHeadingBoxAboveTopPx = 24.0f;
 }  // namespace hsi
 
 // Lower-right PFD popout shell (WT .popout-dialog on the 1024x768 GDU canvas).
@@ -279,6 +282,7 @@ constexpr int kAsiReadoutOffScaleDashCount = 3;
 // the inner edge; tape ticks are inset by it so they sit just outboard of the
 // strip (white ticks beside the colored band, not under it) per the NXi.
 constexpr float kAirspeedBandWidthFraction = 0.12f;
+constexpr float kVspeedBugWidthFraction = 0.20f;
 
 constexpr float kVsoKt = 33.0f;
 constexpr float kVfeKt = 85.0f;
@@ -398,7 +402,7 @@ void polarOffset(float angleDeg, float radius, float& x, float& y);
 void drawReadoutBox(Renderer& r, float x, float y, float w, float h,
                     const std::string& text, float textSize, NotchSide notch,
                     const Color& boxColor = colors::kReadoutBox,
-                    const Color& textColor = colors::kWhite);
+                    const Color& textColor = colors::kWhite, float textDy = 0.0f);
 
 // `topOuterCornerRadius` rounds the tape's top corner on the OUTER edge (the
 // edge away from the attitude window: left for the airspeed tape, right for the

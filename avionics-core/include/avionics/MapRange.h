@@ -47,6 +47,8 @@ inline constexpr float kTrafficMapRangeDefaultNm = 15.0f;
 inline constexpr float kAirportMaxRangeNm = 100.0f;
 inline constexpr float kMediumAirportMaxRangeNm = 50.0f;
 inline constexpr float kSmallAirportMaxRangeNm = 25.0f;
+// Intersections / VFR waypoints on the navigation map (Map Setup "Fixes").
+inline constexpr float kFixMaxRangeNm = 25.0f;
 // At 50 NM and wider the NXi keeps only the most significant airports on chart
 // (longest runway / towered), not every field that passes the size-class gate.
 inline constexpr float kAirportImportanceBudgetMinNm = 50.0f;
@@ -85,9 +87,12 @@ inline constexpr float kContinentalSilhouetteMinGeoSpanDeg = 50.0f;
 // it only nation outlines and the largest region names remain (NXi declutter).
 inline constexpr float kStateBorderMaxRangeNm = 400.0f;
 
-// Embedded WPT Airport Information map range: tight enough to show the
-// SafeTaxi-style runway + taxiway pavement diagram.
-inline constexpr float kAirportDiagramRangeNm = 2.5f;
+// SafeTaxi runway/taxiway pavement and identifier labels on the navigation
+// map. The real NXi shows airport surfaces at the 1.5 NM range step (Pilot's
+// Guide close-range ladder); wider views keep only the airport symbol.
+inline constexpr float kAirportDiagramMaxRangeNm = 1.5f;
+// Embedded WPT Airport Information map uses the same tight zoom.
+inline constexpr float kAirportDiagramRangeNm = kAirportDiagramMaxRangeNm;
 
 // Clamp a ladder index into range and return the corresponding NM value.
 inline float mapRangeNmAt(int index) {
