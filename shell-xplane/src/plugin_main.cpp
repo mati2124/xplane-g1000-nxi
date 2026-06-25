@@ -136,16 +136,29 @@ struct PresetSpec {
   // the square of this factor while only softening the glass slightly. The PFD
   // is cheap and full of crisp tapes/text, so it always renders at 1:1.
   float mfdRenderScale;
+  // Absolute upper bound on full scene re-renders per second, independent of
+  // sim framerate. The frame-count divisor alone yields (sim fps / N), so at a
+  // high sim framerate (120/144 Hz) the glass would re-render far more often
+  // than it needs to, burning main-thread time for no visible benefit. This cap
+  // holds the redraw rate steady once the sim is fast; the divisor still does
+  // the skipping when the sim is slow. 0 means uncapped (Full preset).
+  float pfdMaxHz;
+  float mfdMaxHz;
 };
 
 // Indexed by RatePreset. Full = redraw every frame at full resolution (best
 // smoothness, highest cost); Performance = redraw rarely at low resolution
 // (best sim fps, choppiest/softest glass).
+// The MFD divisor is set noticeably higher than the PFD's: the moving map /
+// terrain is the heavy scene but it changes slowly (ground track, not tapes),
+// so refreshing it at roughly half the PFD's cadence is visually fine and is
+// where most of the per-frame render saving comes from.
 constexpr PresetSpec kPresets[] = {
-    {"Full (every frame)", 1, 1, 1.00f},
-    {"Smooth", 2, 3, 0.85f},
-    {"Balanced", 3, 4, 0.70f},
-    {"Performance", 5, 6, 0.55f},
+    //          name                pfdN mfdN  scale  pfdHz  mfdHz
+    {"Full (every frame)",           1,   1,  1.00f,  0.0f,  0.0f},
+    {"Smooth",                       2,   4,  0.85f, 30.0f, 15.0f},
+    {"Balanced",                     3,   6,  0.70f, 20.0f, 10.0f},
+    {"Performance",                  5,  10,  0.55f, 12.0f,  6.0f},
 };
 constexpr int kPresetCount = static_cast<int>(RatePreset::Count);
 
@@ -169,6 +182,7 @@ struct AvionicsDevice {
   bool drivesSource;   // only one engine may pump the shared data source
   int renderEveryN;    // re-render the full scene every Nth draw-callback frame
   float renderScale;   // fraction of native res the cached scene renders at
+  float maxRenderHz;   // absolute re-render ceiling (0 = uncapped)
   const char* label;   // for diagnostics ("PFD" / "MFD")
   XPLMAvionicsID handle = nullptr;
   std::unique_ptr<avionics::NanoVgRenderer> renderer;
@@ -215,11 +229,12 @@ struct AvionicsDevice {
 AvionicsDevice g_pfd{
     avionics::DisplayPage::PrimaryFlightDisplay, /*drivesSource=*/true,
     kPresets[static_cast<int>(kDefaultPreset)].pfdEveryN, /*renderScale=*/1.0f,
-    "PFD"};
+    kPresets[static_cast<int>(kDefaultPreset)].pfdMaxHz, "PFD"};
 AvionicsDevice g_mfd{
     avionics::DisplayPage::MultiFunctionDisplay, /*drivesSource=*/false,
     kPresets[static_cast<int>(kDefaultPreset)].mfdEveryN,
-    kPresets[static_cast<int>(kDefaultPreset)].mfdRenderScale, "MFD"};
+    kPresets[static_cast<int>(kDefaultPreset)].mfdRenderScale,
+    kPresets[static_cast<int>(kDefaultPreset)].mfdMaxHz, "MFD"};
 
 // The active quality preset, and the menu that selects it.
 RatePreset g_preset = kDefaultPreset;
@@ -253,6 +268,8 @@ void ApplyPreset(RatePreset preset) {
   g_pfd.renderEveryN = kPresets[idx].pfdEveryN;
   g_mfd.renderEveryN = kPresets[idx].mfdEveryN;
   g_mfd.renderScale = kPresets[idx].mfdRenderScale;
+  g_pfd.maxRenderHz = kPresets[idx].pfdMaxHz;
+  g_mfd.maxRenderHz = kPresets[idx].mfdMaxHz;
   // Force a fresh render on the next frame so the change is visible at once.
   // The cache is dropped too so a render-scale change resizes the FBO.
   g_pfd.frameCounter = 0;
@@ -477,7 +494,11 @@ int DrawDevice(AvionicsDevice& dev) {
   InvalidateAvionicsCacheIfMapGeometryChanged();
   if (!g_dataSource || dev.rendererFailed) return 1;
 
-  if (g_dataSource && g_mfd.engine) {
+  // This MFD-state sync feeds the shared data source's map/weather queries and
+  // is independent of which screen is drawing, so run it once per frame on the
+  // source-driving device (PFD) rather than on both draw callbacks. Doing it on
+  // both was pure duplicate main-thread work every frame.
+  if (dev.drivesSource && g_dataSource && g_mfd.engine) {
     avionics::MfdController& ui = g_mfd.engine->mfdController();
     // Hide the dedicated Weather Radar page on airframes with no radar fit; the
     // NEXRAD map overlay is independent and stays available.
@@ -573,8 +594,18 @@ int DrawDevice(AvionicsDevice& dev) {
   // sim is slow, which is exactly when we need to. Each display keeps a steady,
   // independent cadence (deferring renders to balance per-frame load made the
   // refresh interval irregular, which reads as judder).
-  const bool doRender =
-      !dev.cacheReady || (dev.frameCounter % dev.renderEveryN) == 0;
+  // Two independent throttles combine so the glass redraws at
+  // min(sim fps / N, maxRenderHz): the frame-count divisor keeps skipping work
+  // when the sim is slow (a time cap can't, since every dt already exceeds it),
+  // while the absolute Hz cap stops the divisor from redrawing far too often
+  // when the sim is fast. The first frame (no cached content) always renders.
+  const bool divisorAllows = (dev.frameCounter % dev.renderEveryN) == 0;
+  bool hzCapAllows = true;
+  if (dev.maxRenderHz > 0.0f) {
+    const float minInterval = 1.0f / dev.maxRenderHz;
+    hzCapAllows = (now - dev.lastRenderElapsed) >= minInterval;
+  }
+  const bool doRender = !dev.cacheReady || (divisorAllows && hzCapAllows);
   ++dev.frameCounter;
   if (doRender) {
     double dt = static_cast<double>(now - dev.lastRenderElapsed);

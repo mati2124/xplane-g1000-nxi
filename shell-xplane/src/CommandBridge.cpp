@@ -160,15 +160,18 @@ bool CommandBridge::sendEvent(const cmdbridge::Event& ev) {
     addrLen = clientLen_;
   }
 
-  SocketHandle sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (sock == kInvalidSocket) return false;
+  // Send from the already-bound listen socket rather than creating and tearing
+  // down a fresh UDP socket on every key event (this runs on X-Plane's main
+  // thread). Concurrent sendto here and recvfrom on the worker thread is safe
+  // for a UDP socket. listenSock_ is valid for the lifetime of started_, and a
+  // client can only be registered while the recv loop owns that socket.
+  if (listenSock_ == kInvalidSocket) return false;
 
   const std::vector<unsigned char> datagram = cmdbridge::encodeEvent(ev);
   const int sent = static_cast<int>(
-      ::sendto(sock, reinterpret_cast<const char*>(datagram.data()),
+      ::sendto(listenSock_, reinterpret_cast<const char*>(datagram.data()),
                static_cast<int>(datagram.size()), 0,
                reinterpret_cast<sockaddr*>(&addr), addrLen));
-  closeSocket(sock);
   return sent >= 0;
 }
 
