@@ -92,11 +92,13 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -127,6 +129,7 @@
 #include "avionics/PersistentState.h"
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/ProcedureSupport.h"
+#include "avionics/NavMath.h"
 #include "avionics/UpdateChecker.h"
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
@@ -518,6 +521,297 @@ const char* FlagValue(int argc, char** argv, const char* flag) {
     if (std::strcmp(argv[i], flag) == 0) return argv[i + 1];
   }
   return nullptr;
+}
+
+bool startsWith(const char* text, const char* prefix) {
+  if (text == nullptr || prefix == nullptr) return false;
+  return std::strncmp(text, prefix, std::strlen(prefix)) == 0;
+}
+
+std::string upperCopy(std::string s) {
+  for (char& c : s) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+  return s;
+}
+
+bool containsUpper(const std::string& text, const std::string& needle) {
+  if (needle.empty()) return false;
+  return upperCopy(text).find(upperCopy(needle)) != std::string::npos;
+}
+
+std::string normalizeRunway(std::string runway) {
+  runway = upperCopy(std::move(runway));
+  if (runway.rfind("RW", 0) == 0) runway = runway.substr(2);
+  return runway;
+}
+
+struct ArticleApproachScenario {
+  const char* key;
+  const char* icao;
+  const char* title;
+  const char* kind;
+  const char* runway;
+  const char* transition;
+  const char* nameHint;
+  float rangeNm;
+  const char* previewUrl;
+  const char* flightPathUrl;
+};
+
+constexpr std::array<ArticleApproachScenario, 9> kArticleApproaches = {{
+    {"kpsp-rnpz13r-fernn", "KPSP",
+     "KPSP RNAV (RNP) Z RW13R via FERNN", "RNAV", "13R", "FERNN",
+     "RNPZ13R", 25.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/KPSP-RNPZ13R.FERNN-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/KPSP-RNPZ13R.FERNN-flightpath.png"},
+    {"ktrk-rnav11-truck", "KTRK", "KTRK RNAV (GPS) RW11 via TRUCK", "RNAV",
+     "11", "TRUCK", "RNV11", 20.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/KTRK-RNV10-TRUCK-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/KTRK-RNV10-TRUCK-flightpath.png"},
+    {"kttn-rnp06-hilog", "KTTN", "KTTN RNAV (RNP) RW06 via HILOG", "RNAV",
+     "06", "HILOG", "R06", 20.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/KTTN-RNV06-HILOG-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/KTTN-RNV06-HILOG-flightpath.png"},
+    {"lgkr-vory34-bedex", "LGKR", "LGKR VOR Y RW34 via BEDEX", "VOR", "34",
+     "BEDEX", "VORY34", 35.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LGKR-VORY-34-BEDEX-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LGKR-VORY-34-BEDEX-flightpath.png"},
+    {"lpma-rnpz05", "LPMA", "LPMA RNP (AR) Z RW05", "RNAV", "05", "",
+     "RNPZ05", 25.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LPMA-RNPZ-05-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LPMA-RNPZ-05-flightpath.png"},
+    {"lsgs-rnp25", "LSGS", "LSGS RNP (AR) 25", "RNAV", "25", "", "RNP25",
+     25.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LSGS-RNP25-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LSGS-RNP25-flightpath.png"},
+    {"lszg-rnp24", "LSZG", "LSZG RNP 24", "RNAV", "24", "", "RNP24",
+     25.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LSZG-RNP24-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/LSZG-RNP24-flightpath.png"},
+    {"nzqn-rnavz23", "NZQN", "NZQN RNAV (RNP) Z RW23", "RNAV", "23", "",
+     "RNAVZ23", 35.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/NZQN-RNAVZ-23-2preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/NZQN-RNAVZ-23-flightpath.png"},
+    {"vqpr-rnpz15", "VQPR", "VQPR RNAV (RNP) Z RW15", "RNAV", "15", "",
+     "RNPZ15", 35.0f,
+     "https://www.x-plane.com/wp-content/uploads/2026/02/VQPR-RNPZ-15-preview.png",
+     "https://www.x-plane.com/wp-content/uploads/2026/02/VQPR-RNPZ-15-flightpath.png"},
+}};
+
+const ArticleApproachScenario* findArticleApproachScenario(const char* key) {
+  if (key == nullptr || *key == '\0') return nullptr;
+  for (const ArticleApproachScenario& scenario : kArticleApproaches) {
+    if (std::strcmp(key, scenario.key) == 0) return &scenario;
+  }
+  return nullptr;
+}
+
+class ArticleProcedureNavSource final : public avionics::NavFeatureSource {
+ public:
+  ArticleProcedureNavSource(avionics::NavDataStore& navData,
+                            avionics::ProcedureStore& procedures)
+      : navData_(navData), procedures_(procedures) {}
+
+  bool ready() const override { return navData_.ready(); }
+
+  std::vector<avionics::MapFeature> nearby(double lat, double lon, float rangeNm,
+                                           std::size_t maxCount) const override {
+    return navData_.nearby(lat, lon, rangeNm, maxCount);
+  }
+
+  std::vector<avionics::MapFeature> lookupIdent(
+      const std::string& ident, std::size_t maxCount) const override {
+    return navData_.lookupIdent(ident, maxCount);
+  }
+
+  std::vector<avionics::MapFeature> lookupIdentNear(
+      const std::string& ident, double refLat, double refLon,
+      std::size_t maxCount) const override {
+    return navData_.lookupIdentNear(ident, refLat, refLon, maxCount);
+  }
+
+  std::vector<avionics::MapProcedure> proceduresForAirport(
+      const std::string& icao, avionics::ProcedureType type) const override {
+    return procedures_.proceduresForAirport(icao, type);
+  }
+
+  std::vector<avionics::MapLeg> expandProcedure(
+      const std::string& icao, avionics::ProcedureType type,
+      const std::string& name, const std::string& transition) const override {
+    return procedures_.expandProcedure(icao, type, name, transition, this);
+  }
+
+  std::vector<avionics::ApproachTransitionOption> approachTransitionsFor(
+      const std::string& icao, const std::string& approachName) const override {
+    return procedures_.approachTransitionsFor(icao, approachName);
+  }
+
+ private:
+  avionics::NavDataStore& navData_;
+  avionics::ProcedureStore& procedures_;
+};
+
+struct ResolvedArticleApproach {
+  const ArticleApproachScenario* scenario = nullptr;
+  avionics::MapProcedure procedure;
+  std::string label;
+  std::string transition;
+  std::vector<avionics::MapLeg> legs;
+  std::string message;
+  int rfLegCount = 0;
+  bool ok = false;
+};
+
+ResolvedArticleApproach resolveArticleApproach(
+    const avionics::NavFeatureSource& nav,
+    const ArticleApproachScenario& scenario) {
+  ResolvedArticleApproach out;
+  out.scenario = &scenario;
+  if (!nav.ready()) {
+    out.message = "nav database is not ready";
+    return out;
+  }
+
+  const std::vector<avionics::MapProcedure> catalog =
+      nav.proceduresForAirport(scenario.icao, avionics::ProcedureType::Approach);
+  if (catalog.empty()) {
+    out.message = "no CIFP approaches found for airport";
+    return out;
+  }
+
+  int bestScore = -100000;
+  std::string bestName;
+  std::string bestTransition;
+  std::vector<avionics::MapLeg> bestLegs;
+  for (const avionics::MapProcedure& proc : catalog) {
+    const std::string name = proc.name;
+    bool firstForName = true;
+    for (const avionics::MapProcedure& prev : catalog) {
+      if (&prev == &proc) break;
+      if (prev.name == name) {
+        firstForName = false;
+        break;
+      }
+    }
+    if (!firstForName) continue;
+
+    const std::vector<std::string> transitions = avionics::procedureTransitionIds(
+        &nav, scenario.icao, avionics::ProcedureType::Approach, name);
+    std::string transition;
+    bool hasRequestedTransition = scenario.transition[0] == '\0';
+    if (scenario.transition[0] != '\0') {
+      for (const std::string& candidate : transitions) {
+        if (upperCopy(candidate) == upperCopy(scenario.transition)) {
+          transition = candidate;
+          hasRequestedTransition = true;
+          break;
+        }
+      }
+    }
+    if (transition.empty()) {
+      transition = scenario.transition[0] != '\0'
+                       ? std::string(scenario.transition)
+                       : avionics::defaultProcedureTransition(transitions);
+    }
+
+    const std::vector<avionics::MapLeg> legs = nav.expandProcedure(
+        scenario.icao, avionics::ProcedureType::Approach, name, transition);
+
+    int score = 0;
+    const std::string label = avionics::formatApproachProcedureLabel(proc);
+    const std::string runway = normalizeRunway(scenario.runway);
+    if (!runway.empty() &&
+        (normalizeRunway(proc.runway) == runway || containsUpper(label, runway) ||
+         containsUpper(name, runway))) {
+      score += 80;
+    }
+    const bool wantsVor = upperCopy(scenario.kind) == "VOR";
+    if (wantsVor) {
+      if (containsUpper(label, "VOR") || containsUpper(name, "VOR") ||
+          upperCopy(proc.approachKind) == "V") {
+        score += 70;
+      }
+    } else if (containsUpper(label, "RNAV") || containsUpper(name, "RNP") ||
+               containsUpper(name, "RNV") || upperCopy(proc.approachKind) == "R") {
+      score += 70;
+    }
+    if (scenario.nameHint[0] != '\0' && containsUpper(name, scenario.nameHint)) {
+      score += 30;
+    }
+    if (scenario.transition[0] != '\0') {
+      score += hasRequestedTransition ? 120 : -180;
+    }
+    if (legs.size() >= 2) score += 220;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestName = name;
+      bestTransition = transition;
+      bestLegs = legs;
+    }
+  }
+
+  if (bestName.empty()) {
+    out.message = "no matching approach candidate";
+    return out;
+  }
+  if (bestLegs.size() < 2) {
+    out.message = "matched " + bestName + " " + bestTransition +
+                  " but expanded fewer than two legs";
+    return out;
+  }
+
+  out.transition = bestTransition;
+  out.legs = std::move(bestLegs);
+  out.procedure = avionics::findProcedureInCatalog(
+      avionics::ProcedureType::Approach, bestName, bestTransition, catalog);
+  out.label = avionics::formatApproachProcedureLabel(out.procedure);
+  for (const avionics::MapLeg& leg : out.legs) {
+    if (upperCopy(leg.pathTerminator) == "RF") ++out.rfLegCount;
+  }
+  out.ok = true;
+  return out;
+}
+
+int runArticleApproachReport(const char* onlyKey) {
+  avionics::NavDataStore navData;
+  avionics::AptDatStore aptData;
+  avionics::ProcedureStore procedures(navData, &aptData);
+  ArticleProcedureNavSource nav(navData, procedures);
+  for (int i = 0; i < 2000 && !(navData.ready() && aptData.loaded()); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  int failures = 0;
+  for (const ArticleApproachScenario& scenario : kArticleApproaches) {
+    if (onlyKey != nullptr && *onlyKey != '\0' &&
+        std::strcmp(onlyKey, scenario.key) != 0) {
+      continue;
+    }
+    const ResolvedArticleApproach resolved =
+        resolveArticleApproach(nav, scenario);
+    if (!resolved.ok) {
+      ++failures;
+      std::printf("FAIL %s %s: %s\n", scenario.key, scenario.title,
+                  resolved.message.c_str());
+      continue;
+    }
+    std::printf(
+        "OK %s %s: cifp=%s transition=%s label=\"%s\" legs=%zu rf=%d first=%s "
+        "last=%s preview=%s flightpath=%s\n",
+        scenario.key, scenario.title, resolved.procedure.name.c_str(),
+        resolved.transition.c_str(), resolved.label.c_str(),
+        resolved.legs.size(), resolved.rfLegCount, resolved.legs.front().id.c_str(),
+        resolved.legs.back().id.c_str(), scenario.previewUrl,
+        scenario.flightPathUrl);
+  }
+  if (onlyKey != nullptr && *onlyKey != '\0' &&
+      findArticleApproachScenario(onlyKey) == nullptr) {
+    std::fprintf(stderr, "Unknown article approach key: %s\n", onlyKey);
+    return 2;
+  }
+  return failures == 0 ? 0 : 1;
 }
 
 // Serves a fixed snapshot while reporting the link as down. Used by
@@ -1672,6 +1966,64 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
     engine.pressBezelKey(avionics::BezelKey::Ent);  // "Select Approach"
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr &&
+             (startsWith(state, "mfdapproach:") ||
+              startsWith(state, "mfdapproachloaded:"))) {
+    const bool loaded = startsWith(state, "mfdapproachloaded:");
+    const char* key = state + std::strlen(loaded ? "mfdapproachloaded:"
+                                                 : "mfdapproach:");
+    const ArticleApproachScenario* scenario = findArticleApproachScenario(key);
+    if (scenario == nullptr) {
+      std::fprintf(stderr, "Unknown article approach key: %s\n", key);
+      return 2;
+    }
+    const ResolvedArticleApproach resolved =
+        resolveArticleApproach(navMapData, *scenario);
+    if (!resolved.ok) {
+      std::fprintf(stderr, "Could not resolve %s: %s\n", scenario->key,
+                   resolved.message.c_str());
+      return 3;
+    }
+
+    double minLat = resolved.legs.front().lat;
+    double maxLat = minLat;
+    double minLon = resolved.legs.front().lon;
+    double maxLon = minLon;
+    for (const avionics::MapLeg& leg : resolved.legs) {
+      minLat = std::min(minLat, leg.lat);
+      maxLat = std::max(maxLat, leg.lat);
+      minLon = std::min(minLon, leg.lon);
+      maxLon = std::max(maxLon, leg.lon);
+    }
+    const double centerLat = (minLat + maxLat) * 0.5;
+    const double centerLon = (minLon + maxLon) * 0.5;
+    float heading = 0.0f;
+    if (resolved.legs.size() >= 2) {
+      heading = static_cast<float>(avionics::navBearingDeg(
+          resolved.legs[0].lat, resolved.legs[0].lon, resolved.legs[1].lat,
+          resolved.legs[1].lon));
+    }
+
+    dataSource.setRoute(resolved.legs);
+    dataSource.setOwnshipPosition(centerLat, centerLon, heading);
+    dataSource.setActiveLegIndex(resolved.legs.size() > 1 ? 1 : 0);
+    dataSource.setNavigationPinned(true);
+    dataSource.setChartRangeNm(scenario->rangeNm);
+    dataSource.update(0.0);
+
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.mfdController().setRangeFromNm(scenario->rangeNm);
+    if (loaded) {
+      engine.mfdController().replaceFlightPlanFromExternal(resolved.legs);
+      engine.softkeyController().replaceFlightPlanFromExternal(resolved.legs);
+    } else {
+      engine.mfdController().openProcApproachLoading(
+          scenario->icao, resolved.procedure.name, resolved.transition);
+    }
+    engine.update(0.0);
+    for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdserfshold") == 0) {
     // KFMY RNAV R05 CITAG missed-approach hold at SERFS (trainer screenshot013).
@@ -3198,6 +3550,10 @@ int main(int argc, char** argv) {
     avionics::xplane_install::setNavDataRoot(navDataDir);
   } else if (!savedSettings.navDataDir.empty()) {
     avionics::xplane_install::setNavDataRoot(savedSettings.navDataDir);
+  }
+
+  if (HasFlag(argc, argv, "--check-article-approaches")) {
+    return runArticleApproachReport(FlagValue(argc, argv, "--article-approach"));
   }
 
   const bool cliAlwaysOnTop = WantsAlwaysOnTop(argc, argv);

@@ -115,8 +115,9 @@ void MfdController::openProcApproachLoading(const std::string& icao,
   procMenuOpen_ = true;
   procPreviewRangeManual_ = false;
   buildProcMenu();
-  procedureMenuOpenApproachLoading(procedureMenuHost(), icao, approachName,
-                                   transition, openList);
+  ProcedureMenuHost host = procedureMenuHost();
+  procedureMenuOpenApproachLoading(host, icao, approachName, transition,
+                                   openList);
 }
 
 const char* MfdController::procWindowTitle() const {
@@ -201,7 +202,8 @@ std::vector<MapLeg> MfdController::procPreviewLegs() const {
 
 bool MfdController::procBezelKey(BezelKey key) {
   if (isMapRangePanBezelKey(key)) return false;
-  return procedureMenuBezelKey(procedureMenuHost(), key);
+  ProcedureMenuHost host = procedureMenuHost();
+  return procedureMenuBezelKey(host, key);
 }
 
 }  // namespace avionics

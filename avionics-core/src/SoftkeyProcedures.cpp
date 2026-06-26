@@ -183,7 +183,8 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
     pageMenuOpen_ = false;
     return false;
   }
-  return procedureMenuBezelKey(procedureMenuHost(), key);
+  ProcedureMenuHost host = procedureMenuHost();
+  return procedureMenuBezelKey(host, key);
 }
 
 }  // namespace avionics

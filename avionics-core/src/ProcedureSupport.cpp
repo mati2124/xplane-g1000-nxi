@@ -34,6 +34,20 @@ bool isRunwayToken(const std::string& s) {
   return true;
 }
 
+bool runwaySuffixFromVariantName(const std::string& s, std::string& runwayOut) {
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    if (!std::isdigit(static_cast<unsigned char>(s[i]))) continue;
+    std::size_t j = i;
+    while (j < s.size() && std::isdigit(static_cast<unsigned char>(s[j]))) ++j;
+    if (j - i < 2 || j - i > 3) continue;
+    if (j < s.size() && (s[j] == 'L' || s[j] == 'R' || s[j] == 'C')) ++j;
+    if (j != s.size()) continue;
+    runwayOut = s.substr(i);
+    return isRunwayToken(runwayOut);
+  }
+  return false;
+}
+
 std::string approachTypeFromLetter(char kind) {
   switch (kind) {
     case 'I':
@@ -53,6 +67,8 @@ std::string approachTypeFromLetter(char kind) {
 
 bool decodeAbbreviatedApproachName(const std::string& name, std::string& typeOut,
                                    std::string& runwayOut) {
+  typeOut.clear();
+  runwayOut.clear();
   const std::string upper = upperCopy(name);
   if (upper.size() >= 6 && upper.substr(0, 6) == "VISUAL") {
     const std::string tail = upper.substr(6);
@@ -62,20 +78,34 @@ bool decodeAbbreviatedApproachName(const std::string& name, std::string& typeOut
       return true;
     }
   }
-  if (upper.size() >= 4 && upper.substr(0, 3) == "VOR" &&
-      isRunwayToken(upper.substr(3))) {
-    typeOut = "VOR";
-    runwayOut = upper.substr(3);
-    return true;
+
+  struct Prefix {
+    const char* text;
+    const char* type;
+  };
+  static constexpr Prefix kPrefixes[] = {{"RNAV", "RNAV"}, {"RNP", "RNAV"},
+                                         {"RNV", "RNAV"},  {"ILS", "ILS"},
+                                         {"LOC", "LOC"},   {"VOR", "VOR"},
+                                         {"NDB", "NDB"}};
+  for (const Prefix& prefix : kPrefixes) {
+    const std::string p = prefix.text;
+    if (upper.rfind(p, 0) == 0 &&
+        runwaySuffixFromVariantName(upper.substr(p.size()), runwayOut)) {
+      typeOut = prefix.type;
+      return true;
+    }
   }
+
   if (upper.size() >= 2 &&
       std::isalpha(static_cast<unsigned char>(upper[0]))) {
     const std::string type = approachTypeFromLetter(upper[0]);
     if (type.empty()) return false;
     const std::string tail = upper.substr(1);
-    if (!isRunwayToken(tail)) return false;
+    if (!isRunwayToken(tail) && !runwaySuffixFromVariantName(tail, runwayOut)) {
+      return false;
+    }
     typeOut = type;
-    runwayOut = tail;
+    if (runwayOut.empty()) runwayOut = tail;
     return true;
   }
   return false;
