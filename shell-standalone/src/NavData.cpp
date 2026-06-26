@@ -8,6 +8,7 @@
 #include <string>
 
 #include "avionics/nav/NearbyFeatureSelect.h"
+#include "XPlaneInstall.h"
 
 namespace avionics {
 namespace {
@@ -380,7 +381,7 @@ NavDataStore::~NavDataStore() {
 void NavDataStore::load() {
   std::string root;
   std::string dir;
-  for (const std::string& r : readInstallRoots()) {
+  for (const std::string& r : xplane_install::readInstallRoots()) {
     dir = navDataDirForRoot(r);
     if (!dir.empty()) {
       root = r;

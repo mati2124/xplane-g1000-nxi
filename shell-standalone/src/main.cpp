@@ -562,7 +562,7 @@ struct ArticleApproachScenario {
 constexpr std::array<ArticleApproachScenario, 9> kArticleApproaches = {{
     {"kpsp-rnpz13r-fernn", "KPSP",
      "KPSP RNAV (RNP) Z RW13R via FERNN", "RNAV", "13R", "FERNN",
-     "RNPZ13R", 25.0f,
+     "R13RZ", 25.0f,
      "https://www.x-plane.com/wp-content/uploads/2026/02/KPSP-RNPZ13R.FERNN-preview.png",
      "https://www.x-plane.com/wp-content/uploads/2026/02/KPSP-RNPZ13R.FERNN-flightpath.png"},
     {"ktrk-rnav11-truck", "KTRK", "KTRK RNAV (GPS) RW11 via TRUCK", "RNAV",
@@ -574,11 +574,11 @@ constexpr std::array<ArticleApproachScenario, 9> kArticleApproaches = {{
      "https://www.x-plane.com/wp-content/uploads/2026/02/KTTN-RNV06-HILOG-preview.png",
      "https://www.x-plane.com/wp-content/uploads/2026/02/KTTN-RNV06-HILOG-flightpath.png"},
     {"lgkr-vory34-bedex", "LGKR", "LGKR VOR Y RW34 via BEDEX", "VOR", "34",
-     "BEDEX", "VORY34", 35.0f,
+     "BEDEX", "D34-Y", 35.0f,
      "https://www.x-plane.com/wp-content/uploads/2026/02/LGKR-VORY-34-BEDEX-preview.png",
      "https://www.x-plane.com/wp-content/uploads/2026/02/LGKR-VORY-34-BEDEX-flightpath.png"},
     {"lpma-rnpz05", "LPMA", "LPMA RNP (AR) Z RW05", "RNAV", "05", "",
-     "RNPZ05", 25.0f,
+     "R05-Z", 25.0f,
      "https://www.x-plane.com/wp-content/uploads/2026/02/LPMA-RNPZ-05-preview.png",
      "https://www.x-plane.com/wp-content/uploads/2026/02/LPMA-RNPZ-05-flightpath.png"},
     {"lsgs-rnp25", "LSGS", "LSGS RNP (AR) 25", "RNAV", "25", "", "RNP25",
@@ -590,7 +590,7 @@ constexpr std::array<ArticleApproachScenario, 9> kArticleApproaches = {{
      "https://www.x-plane.com/wp-content/uploads/2026/02/LSZG-RNP24-preview.png",
      "https://www.x-plane.com/wp-content/uploads/2026/02/LSZG-RNP24-flightpath.png"},
     {"nzqn-rnavz23", "NZQN", "NZQN RNAV (RNP) Z RW23", "RNAV", "23", "",
-     "RNAVZ23", 35.0f,
+     "R23-Z", 35.0f,
      "https://www.x-plane.com/wp-content/uploads/2026/02/NZQN-RNAVZ-23-2preview.png",
      "https://www.x-plane.com/wp-content/uploads/2026/02/NZQN-RNAVZ-23-flightpath.png"},
     {"vqpr-rnpz15", "VQPR", "VQPR RNAV (RNP) Z RW15", "RNAV", "15", "",
@@ -686,6 +686,10 @@ ResolvedArticleApproach resolveArticleApproach(
   std::vector<avionics::MapLeg> bestLegs;
   for (const avionics::MapProcedure& proc : catalog) {
     const std::string name = proc.name;
+    if (upperCopy(proc.levelOfService) == "VISUAL" ||
+        upperCopy(name).rfind("VISUAL", 0) == 0) {
+      continue;
+    }
     bool firstForName = true;
     for (const avionics::MapProcedure& prev : catalog) {
       if (&prev == &proc) break;

@@ -50,26 +50,44 @@ TEST(CifpParserTest, ParsesKpgdFixtureRunways) {
 TEST(CifpParserTest, DecodesVariantApproachNamesForCatalogAndLabels) {
   std::istringstream in(
       "APPCH:010,R,RZ13R, ,FERNN,K7,E,A,E  I, ,010,IF, , , , , ,      ,    ,    ,    ,    ,+,04000,     ,     , ,   ,    ,   , , , , , ,A,J,S;\n"
+      "APPCH:010,R,R13RZ, ,WASAK,K7,E,A,E  I, ,010,IF, , , , , ,      ,    ,    ,    ,    ,+,04000,     ,     , ,   ,    ,   , , , , , ,A,J,S;\n"
       "APPCH:010,R,RNPZ05, ,MA401,K7,E,A,E  I, ,010,IF, , , , , ,      ,    ,    ,    ,    ,+,04000,     ,     , ,   ,    ,   , , , , , ,A,J,S;\n"
-      "APPCH:010,V,VORY34, ,BEDEX,LG,E,A,E  I, ,   ,IF, , , , , ,      ,    ,    ,    ,    ,+,04000,     ,     , ,   ,    ,   , , , , , ,A,J,S;\n");
+      "APPCH:010,R,R05-Z, ,MA522,K7,E,A,E  I, ,010,IF, , , , , ,      ,    ,    ,    ,    ,+,04000,     ,     , ,   ,    ,   , , , , , ,A,J,S;\n"
+      "APPCH:010,V,VORY34, ,BEDEX,LG,E,A,E  I, ,   ,IF, , , , , ,      ,    ,    ,    ,    ,+,04000,     ,     , ,   ,    ,   , , , , , ,A,J,S;\n"
+      "APPCH:010,D,D34-Y, ,FD34,LG,E,A,E  I, ,   ,IF, , , , , ,      ,    ,    ,    ,    ,+,04000,     ,     , ,   ,    ,   , , , , , ,0, ,S;\n");
   const CifpAirportProcedures data = parseCifp(in, "TEST");
 
-  ASSERT_EQ(data.catalog.size(), 3u);
+  ASSERT_EQ(data.catalog.size(), 6u);
 
-  EXPECT_EQ(data.catalog[0].name, "RNPZ05");
-  EXPECT_EQ(data.catalog[0].runway, "05");
-  EXPECT_EQ(data.catalog[0].transition, "RW05");
-  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[0]), "RNAV_GPS 05 LPV");
+  EXPECT_EQ(data.catalog[0].name, "D34-Y");
+  EXPECT_EQ(data.catalog[0].runway, "34");
+  EXPECT_EQ(data.catalog[0].transition, "RW34");
+  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[0]), "VOR 34");
 
-  EXPECT_EQ(data.catalog[1].name, "RZ13R");
-  EXPECT_EQ(data.catalog[1].runway, "13R");
-  EXPECT_EQ(data.catalog[1].transition, "RW13R");
-  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[1]), "RNAV_GPS 13R LPV");
+  EXPECT_EQ(data.catalog[1].name, "R05-Z");
+  EXPECT_EQ(data.catalog[1].runway, "05");
+  EXPECT_EQ(data.catalog[1].transition, "RW05");
+  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[1]), "RNAV_GPS 05 LPV");
 
-  EXPECT_EQ(data.catalog[2].name, "VORY34");
-  EXPECT_EQ(data.catalog[2].runway, "34");
-  EXPECT_EQ(data.catalog[2].transition, "RW34");
-  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[2]), "VOR 34");
+  EXPECT_EQ(data.catalog[2].name, "R13RZ");
+  EXPECT_EQ(data.catalog[2].runway, "13R");
+  EXPECT_EQ(data.catalog[2].transition, "RW13R");
+  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[2]), "RNAV_GPS 13R LPV");
+
+  EXPECT_EQ(data.catalog[3].name, "RNPZ05");
+  EXPECT_EQ(data.catalog[3].runway, "05");
+  EXPECT_EQ(data.catalog[3].transition, "RW05");
+  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[3]), "RNAV_GPS 05 LPV");
+
+  EXPECT_EQ(data.catalog[4].name, "RZ13R");
+  EXPECT_EQ(data.catalog[4].runway, "13R");
+  EXPECT_EQ(data.catalog[4].transition, "RW13R");
+  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[4]), "RNAV_GPS 13R LPV");
+
+  EXPECT_EQ(data.catalog[5].name, "VORY34");
+  EXPECT_EQ(data.catalog[5].runway, "34");
+  EXPECT_EQ(data.catalog[5].transition, "RW34");
+  EXPECT_EQ(formatApproachProcedureLabel(data.catalog[5]), "VOR 34");
 }
 
 TEST(CifpParserTest, ListsBulowTransitionForR04) {

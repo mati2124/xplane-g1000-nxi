@@ -41,8 +41,7 @@ bool runwaySuffixFromVariantName(const std::string& s, std::string& runwayOut) {
     while (j < s.size() && std::isdigit(static_cast<unsigned char>(s[j]))) ++j;
     if (j - i < 2 || j - i > 3) continue;
     if (j < s.size() && (s[j] == 'L' || s[j] == 'R' || s[j] == 'C')) ++j;
-    if (j != s.size()) continue;
-    runwayOut = s.substr(i);
+    runwayOut = s.substr(i, j - i);
     return isRunwayToken(runwayOut);
   }
   return false;
@@ -60,6 +59,8 @@ std::string approachTypeFromLetter(char kind) {
       return "VOR";
     case 'N':
       return "NDB";
+    case 'D':
+      return "VOR";
     default:
       return {};
   }
@@ -86,7 +87,7 @@ bool decodeAbbreviatedApproachName(const std::string& name, std::string& typeOut
   static constexpr Prefix kPrefixes[] = {{"RNAV", "RNAV"}, {"RNP", "RNAV"},
                                          {"RNV", "RNAV"},  {"ILS", "ILS"},
                                          {"LOC", "LOC"},   {"VOR", "VOR"},
-                                         {"NDB", "NDB"}};
+                                         {"NDB", "NDB"},   {"D", "VOR"}};
   for (const Prefix& prefix : kPrefixes) {
     const std::string p = prefix.text;
     if (upper.rfind(p, 0) == 0 &&

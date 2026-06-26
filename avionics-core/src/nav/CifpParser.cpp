@@ -177,6 +177,14 @@ void parseLegLengthOrTimeField(const std::string& raw, float& legLengthNm,
   if (v > 0.0) legLengthNm = static_cast<float>(v / 10.0);
 }
 
+float parseRfRadiusNmField(const std::string& raw) {
+  const std::string s = trim(raw);
+  if (s.empty()) return 0.0f;
+  const double v = std::strtod(s.c_str(), nullptr);
+  if (v <= 0.0) return 0.0f;
+  return static_cast<float>(v / 1000.0);
+}
+
 HoldTurnDirection parseHoldTurnDirection(const CifpLeg& leg) {
   const std::string turn = upperCopy(trim(leg.turnDirection));
   if (turn == "L") return HoldTurnDirection::Left;
@@ -206,6 +214,20 @@ void applyPathTerminatorFields(const CifpLeg& leg, MapLeg& ml) {
   if (leg.magneticCourseDeg > 0.0f) {
     ml.legCourseDeg = normalizeHeadingDeg(leg.magneticCourseDeg);
   }
+}
+
+void applyRfArcFromCifpLeg(const CifpLeg& leg, MapLeg& ml,
+                           CifpFixLookup lookup, void* ctx) {
+  if (leg.pathTerminator != "RF" || leg.rfCenterIdent.empty()) return;
+  double lat = 0.0;
+  double lon = 0.0;
+  if (!lookup(leg.rfCenterIdent, lat, lon, ctx)) return;
+  ml.rfArc.active = true;
+  ml.rfArc.centerIdent = leg.rfCenterIdent;
+  ml.rfArc.centerLat = lat;
+  ml.rfArc.centerLon = lon;
+  ml.rfArc.radiusNm = leg.rfRadiusNm;
+  ml.rfArc.turn = parseHoldTurnDirection(leg);
 }
 
 // ARINC 424 HM/HA/HF magnetic course is the inbound course to the holding fix.
@@ -363,8 +385,7 @@ bool runwaySuffixFromVariantName(const std::string& s, std::string& runwayOut) {
     while (j < s.size() && std::isdigit(static_cast<unsigned char>(s[j]))) ++j;
     if (j - i < 2 || j - i > 3) continue;
     if (j < s.size() && (s[j] == 'L' || s[j] == 'R' || s[j] == 'C')) ++j;
-    if (j != s.size()) continue;
-    runwayOut = s.substr(i);
+    runwayOut = s.substr(i, j - i);
     return isRunwayToken(runwayOut);
   }
   return false;
@@ -391,7 +412,7 @@ bool decodeAbbreviatedApproachName(const std::string& name, std::string& typeOut
   static constexpr Prefix kPrefixes[] = {{"RNAV", "RNAV"}, {"RNP", "RNAV"},
                                          {"RNV", "RNAV"},  {"ILS", "ILS"},
                                          {"LOC", "LOC"},   {"VOR", "VOR"},
-                                         {"NDB", "NDB"}};
+                                         {"NDB", "NDB"},   {"D", "VOR"}};
   for (const Prefix& prefix : kPrefixes) {
     const std::string p = prefix.text;
     if (upper.rfind(p, 0) == 0 &&
@@ -426,6 +447,10 @@ bool decodeAbbreviatedApproachName(const std::string& name, std::string& typeOut
         return true;
       case 'N':
         typeOut = "NDB";
+        if (runwayOut.empty()) runwayOut = tail;
+        return true;
+      case 'D':
+        typeOut = "VOR";
         if (runwayOut.empty()) runwayOut = tail;
         return true;
       default:
@@ -574,9 +599,17 @@ void buildCatalog(CifpAirportProcedures& out,
 int approachRouteRank(const std::string& routeType) {
   if (routeType == "A") return 0;
   if (routeType == "B") return 1;
-  if (routeType == "R" || routeType == "I") return 2;
+  if (routeType != "M" && routeType != "5") return 2;
   if (routeType == "M") return 3;
   return 4;
+}
+
+bool isApproachFeederRouteType(const std::string& routeType) {
+  return routeType == "A" || routeType == "B" || routeType == "5";
+}
+
+bool isApproachFinalRouteType(const std::string& routeType) {
+  return !isApproachFeederRouteType(routeType) && routeType != "M";
 }
 
 bool legMatchesSelection(const CifpLeg& leg, ProcedureType type,
@@ -586,13 +619,12 @@ bool legMatchesSelection(const CifpLeg& leg, ProcedureType type,
 
   if (leg.kind == ProcedureType::Approach &&
       upperCopy(transition) == "VECTORS") {
-    if (leg.routeType == "A" || leg.routeType == "B" || leg.routeType == "5") {
+    if (isApproachFeederRouteType(leg.routeType)) {
       return false;
     }
     if (leg.routeType == "M") return true;
     const std::string legTransition = trim(leg.transition);
-    if (legTransition.empty() &&
-        (leg.routeType == "R" || leg.routeType == "I")) {
+    if (legTransition.empty() && isApproachFinalRouteType(leg.routeType)) {
       return true;
     }
     return false;
@@ -610,10 +642,10 @@ bool legMatchesSelection(const CifpLeg& leg, ProcedureType type,
   if (leg.kind == ProcedureType::Approach && legTransition.empty()) {
     if (inferTransitionForApproach(leg) == transition) return true;
     // FAA CIFP encodes the final approach course and missed approach as route
-    // type R (RNAV) or I (ILS/LOC) with an empty transition column. Those legs
-    // apply regardless of which IAF feeder was selected (e.g. CITAG → UZAWO →
-    // GRAMS → RW05).
-    if (leg.routeType == "R" || leg.routeType == "I") return true;
+    // types such as R (RNAV), I (ILS/LOC), D (VOR/DME), or G (GLS) with an
+    // empty transition column. Those legs apply regardless of which IAF feeder
+    // was selected (e.g. CITAG → UZAWO → GRAMS → RW05).
+    if (isApproachFinalRouteType(leg.routeType)) return true;
   }
 
   // Some databases tag the runway transition explicitly in the transition column.
@@ -677,6 +709,8 @@ CifpAirportProcedures parseCifp(std::istream& in, const std::string& icao) {
     if (fields.size() > 21) {
       parseLegLengthOrTimeField(fields[21], leg.legLengthNm, leg.legTimeMin);
     }
+    if (fields.size() > 17) leg.rfRadiusNm = parseRfRadiusNmField(fields[17]);
+    if (fields.size() > 30) leg.rfCenterIdent = trim(fields[30]);
     if (fields.size() > 35) leg.gpsFmsIndication = trim(fields[35]);
     if (fields.size() > 36) leg.qualifier1 = trim(fields[36]);
     if (fields.size() > 37) leg.qualifier2 = trim(fields[37]);
@@ -782,7 +816,7 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
       // Feeder holds (route A/B, HF/HA) often share a fix with the final-segment
       // IAF (route R/I, IF). Keep one leg; the final-segment row carries IAF/FAF
       // roles and altitude constraints (e.g. KPGD RNAV R04 BULOW transition).
-      if ((leg.routeType == "R" || leg.routeType == "I") && !role.empty()) {
+      if (isApproachFinalRouteType(leg.routeType) && !role.empty()) {
         for (MapLeg& existing : result) {
           if (existing.id != leg.fixIdent) continue;
           existing.procedureRole = role;
@@ -808,6 +842,7 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     ml.lon = lon;
     ml.procedureRole = role;
     applyPathTerminatorFields(leg, ml);
+    applyRfArcFromCifpLeg(leg, ml, lookup, ctx);
     if (leg.kind == ProcedureType::Approach) {
       applyArincAltitudeConstraint(leg, ml);
       if (leg.verticalAngleDeg > 0.0f) {
