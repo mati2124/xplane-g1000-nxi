@@ -21,6 +21,13 @@ bool isCourseToAltLeg(const MapLeg& leg) {
          leg.pathTerminator == "VM" || leg.pathTerminator == "VI";
 }
 
+bool isPublishedCourseToFixLeg(const MapLeg& leg) {
+  return leg.legCourseDeg > 0.0f &&
+         (leg.pathTerminator == "CF" || leg.pathTerminator == "FC" ||
+          leg.pathTerminator == "FD" || leg.pathTerminator == "CD" ||
+          leg.pathTerminator == "CR" || leg.pathTerminator == "FA");
+}
+
 bool altitudeConstraintSatisfied(int altFt, AltConstraintType kind,
                                  float altitudeFt) {
   if (altFt <= 0) return false;
@@ -52,6 +59,12 @@ double crossTrackNm(double lat, double lon, double fromLat, double fromLon,
   const double distToFrom = navDistanceNm(lat, lon, fromLat, fromLon);
   const double angleRad = (brgToFrom - legBrg) * kPi / 180.0;
   return distToFrom * std::sin(angleRad);
+}
+
+double courseLineOrigin(const MapLeg& toLeg, double& lat, double& lon) {
+  const double courseDeg = toLeg.legCourseDeg;
+  navOffsetPoint(toLeg.lat, toLeg.lon, courseDeg + 180.0, 10.0, lat, lon);
+  return courseDeg;
 }
 
 }  // namespace
@@ -359,10 +372,38 @@ NavigationSolution FmsNavigator::computeLegSolution(double lat, double lon,
   if (toIdx > 0) {
     const MapLeg& fromLeg = plan_[static_cast<std::size_t>(toIdx - 1)];
     sol.fromWpt = fromLeg.id;
-    sol.desiredTrackDeg = static_cast<float>(navBearingDeg(
-        fromLeg.lat, fromLeg.lon, toLeg.lat, toLeg.lon));
-    sol.crossTrackNm = static_cast<float>(crossTrackNm(
-        lat, lon, fromLeg.lat, fromLeg.lon, toLeg.lat, toLeg.lon));
+    if (toLeg.procedureArc.active) {
+      const double bearingFromCenter =
+          navBearingDeg(toLeg.procedureArc.centerLat,
+                        toLeg.procedureArc.centerLon, lat, lon);
+      const double tangentDeg =
+          bearingFromCenter +
+          (toLeg.procedureArc.turn == HoldTurnDirection::Left ? -90.0 : 90.0);
+      sol.desiredTrackDeg = normalizeHeadingDeg(static_cast<float>(tangentDeg));
+      const double radiusNm =
+          toLeg.procedureArc.radiusNm > 0.0f
+              ? toLeg.procedureArc.radiusNm
+              : navDistanceNm(toLeg.procedureArc.centerLat,
+                              toLeg.procedureArc.centerLon, toLeg.lat,
+                              toLeg.lon);
+      sol.crossTrackNm = static_cast<float>(
+          navDistanceNm(toLeg.procedureArc.centerLat,
+                        toLeg.procedureArc.centerLon, lat, lon) -
+          radiusNm);
+    } else if (isPublishedCourseToFixLeg(toLeg)) {
+      double fromLat = 0.0;
+      double fromLon = 0.0;
+      sol.desiredTrackDeg =
+          static_cast<float>(courseLineOrigin(toLeg, fromLat, fromLon));
+      sol.crossTrackNm =
+          static_cast<float>(crossTrackNm(lat, lon, fromLat, fromLon, toLeg.lat,
+                                          toLeg.lon));
+    } else {
+      sol.desiredTrackDeg = static_cast<float>(navBearingDeg(
+          fromLeg.lat, fromLeg.lon, toLeg.lat, toLeg.lon));
+      sol.crossTrackNm = static_cast<float>(crossTrackNm(
+          lat, lon, fromLeg.lat, fromLeg.lon, toLeg.lat, toLeg.lon));
+    }
   } else {
     sol.desiredTrackDeg = sol.bearingToWaypointDeg;
     sol.crossTrackNm = 0.0f;

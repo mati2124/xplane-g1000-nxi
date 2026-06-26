@@ -24,6 +24,57 @@ std::vector<MapLeg> makeAirportPlusApproachPlan() {
   return plan;
 }
 
+MapLeg makeLeg(const std::string& id, double lat, double lon) {
+  MapLeg leg;
+  leg.id = id;
+  leg.lat = lat;
+  leg.lon = lon;
+  return leg;
+}
+
+MapLeg makeOffsetLeg(const std::string& id, double centerLat, double centerLon,
+                     double bearingDeg, double distanceNm) {
+  double lat = 0.0;
+  double lon = 0.0;
+  navOffsetPoint(centerLat, centerLon, bearingDeg, distanceNm, lat, lon);
+  return makeLeg(id, lat, lon);
+}
+
+std::vector<MapLeg> makeRfArcPlan() {
+  constexpr double cLat = 40.0;
+  constexpr double cLon = -88.0;
+  constexpr float radiusNm = 5.0f;
+  MapLeg from = makeOffsetLeg("ARCIN", cLat, cLon, 0.0, radiusNm);
+  MapLeg to = makeOffsetLeg("ARCEND", cLat, cLon, 90.0, radiusNm);
+  to.pathTerminator = "RF";
+  to.procedureArc.active = true;
+  to.procedureArc.centerLat = cLat;
+  to.procedureArc.centerLon = cLon;
+  to.procedureArc.radiusNm = radiusNm;
+  to.procedureArc.turn = HoldTurnDirection::Right;
+  to.procedureArc.centerIdent = "ARCTR";
+  MapLeg next = makeOffsetLeg("NEXT", cLat, cLon, 135.0, radiusNm);
+  return {from, to, next};
+}
+
+std::vector<MapLeg> makeKcmiDmeArcPlan() {
+  constexpr double cmiLat = 40.034530556;
+  constexpr double cmiLon = -88.276075000;
+  MapLeg fexil = makeLeg("FEXIL", 39.921805556, -88.061063889);
+  MapLeg fasob = makeLeg("FASOB", 40.207791667, -88.145527778);
+  fasob.pathTerminator = "AF";
+  fasob.procedureArc.active = true;
+  fasob.procedureArc.centerLat = cmiLat;
+  fasob.procedureArc.centerLon = cmiLon;
+  fasob.procedureArc.radiusNm = 12.0f;
+  fasob.procedureArc.turn = HoldTurnDirection::Left;
+  fasob.procedureArc.centerIdent = "CMI";
+  MapLeg stadi = makeLeg("STADI", 40.121183333, -88.210869444);
+  stadi.pathTerminator = "CF";
+  stadi.legCourseDeg = 207.0f;
+  return {fexil, fasob, stadi};
+}
+
 TEST(FmsNavigatorTest, EmptyPlanIsInactive) {
   FmsNavigator nav;
   const NavigationSolution sol = nav.update(26.0, -81.2, 90.0f);
@@ -65,6 +116,148 @@ TEST(FmsNavigatorTest, SequencesRnavApproachLegs) {
   sol = nav.update(plan[2].lat, plan[2].lon, 90.0f);
   EXPECT_EQ(nav.activeLegIndex(), 2);
   EXPECT_EQ(sol.toWpt, "RW09");
+}
+
+TEST(FmsNavigatorTest, RfArcGuidanceUsesTangentAndSequencesAtArcEnd) {
+  const std::vector<MapLeg> plan = makeRfArcPlan();
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.setActiveLegIndex(1);
+
+  double midLat = 0.0;
+  double midLon = 0.0;
+  navOffsetPoint(plan[1].procedureArc.centerLat, plan[1].procedureArc.centerLon,
+                 45.0, 5.0, midLat, midLon);
+  NavigationSolution sol = nav.update(midLat, midLon, 90.0f);
+  EXPECT_EQ(sol.toWpt, "ARCEND");
+  EXPECT_NEAR(sol.desiredTrackDeg, 135.0f, 2.0f);
+  EXPECT_NEAR(sol.crossTrackNm, 0.0f, 0.1f);
+
+  double offLat = 0.0;
+  double offLon = 0.0;
+  navOffsetPoint(plan[1].procedureArc.centerLat, plan[1].procedureArc.centerLon,
+                 45.0, 6.2, offLat, offLon);
+  sol = nav.update(offLat, offLon, 90.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 1);
+  EXPECT_GT(sol.crossTrackNm, 1.0f);
+
+  sol = nav.update(plan[1].lat, plan[1].lon, 90.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 2);
+  EXPECT_EQ(sol.toWpt, "NEXT");
+}
+
+TEST(FmsNavigatorTest, AfDmeArcGuidanceUsesTangentAndSequencesAtArcEnd) {
+  const std::vector<MapLeg> plan = makeKcmiDmeArcPlan();
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.setActiveLegIndex(1);
+
+  double midLat = 0.0;
+  double midLon = 0.0;
+  navOffsetPoint(plan[1].procedureArc.centerLat, plan[1].procedureArc.centerLon,
+                 77.0, 12.0, midLat, midLon);
+  NavigationSolution sol = nav.update(midLat, midLon, 90.0f);
+  EXPECT_EQ(sol.toWpt, "FASOB");
+  EXPECT_NEAR(sol.desiredTrackDeg, 347.0f, 3.0f);
+  EXPECT_NEAR(sol.crossTrackNm, 0.0f, 0.1f);
+
+  double insideLat = 0.0;
+  double insideLon = 0.0;
+  navOffsetPoint(plan[1].procedureArc.centerLat, plan[1].procedureArc.centerLon,
+                 77.0, 10.5, insideLat, insideLon);
+  sol = nav.update(insideLat, insideLon, 90.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 1);
+  EXPECT_LT(sol.crossTrackNm, -1.0f);
+
+  sol = nav.update(plan[1].lat, plan[1].lon, 90.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 2);
+  EXPECT_EQ(sol.toWpt, "STADI");
+}
+
+TEST(FmsNavigatorTest, ProcedureTurnLegSequencesFromOffCourseAtFix) {
+  std::vector<MapLeg> plan;
+  plan.push_back(makeLeg("CMI", 40.034530556, -88.276075000));
+  MapLeg hitvu = makeLeg("HITVU", 40.070000000, -88.400000000);
+  hitvu.pathTerminator = "PI";
+  hitvu.legCourseDeg = 321.8f;
+  plan.push_back(hitvu);
+  plan.push_back(makeLeg("CUDLA", 40.050000000, -88.320000000));
+
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.setActiveLegIndex(1);
+
+  NavigationSolution sol = nav.update(hitvu.lat + 0.02, hitvu.lon + 0.02, 90.0f);
+  EXPECT_EQ(sol.toWpt, "HITVU");
+  EXPECT_EQ(nav.activeLegIndex(), 1);
+  EXPECT_GT(std::fabs(sol.crossTrackNm), 0.2f);
+
+  sol = nav.update(hitvu.lat, hitvu.lon, 90.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 2);
+  EXPECT_EQ(sol.toWpt, "CUDLA");
+}
+
+TEST(FmsNavigatorTest, PublishedCourseToFixUsesCourseAndSequencesAtFix) {
+  std::vector<MapLeg> plan = makeKcmiDmeArcPlan();
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.setActiveLegIndex(2);
+
+  double offLat = 0.0;
+  double offLon = 0.0;
+  navOffsetPoint(plan[2].lat, plan[2].lon, 207.0 + 180.0, 3.0, offLat, offLon);
+  offLon += 0.02;
+  NavigationSolution sol = nav.update(offLat, offLon, 90.0f);
+  EXPECT_EQ(sol.toWpt, "STADI");
+  EXPECT_NEAR(sol.desiredTrackDeg, 207.0f, 0.1f);
+  EXPECT_GT(std::fabs(sol.crossTrackNm), 0.2f);
+
+  sol = nav.update(plan[2].lat, plan[2].lon, 90.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 2);
+  EXPECT_EQ(sol.toWpt, "STADI");
+}
+
+TEST(FmsNavigatorTest, VectorToAltitudeLegSequencesAtAltitude) {
+  MapLeg vector = makeLeg("VECT", 40.0, -88.0);
+  vector.pathTerminator = "VI";
+  vector.legCourseDeg = 340.0f;
+  vector.altitudeConstraintFt = 2800;
+  vector.altitudeConstraint = AltConstraintType::AtOrAbove;
+  MapLeg lodge = makeLeg("LODGE", 40.143266667, -88.526277778);
+
+  FmsNavigator nav;
+  nav.setFlightPlan({vector, lodge});
+
+  NavigationSolution sol = nav.update(40.01, -88.01, 90.0f, 2400.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 0);
+  EXPECT_EQ(sol.toWpt, "LODGE");
+  EXPECT_NEAR(sol.desiredTrackDeg, 340.0f, 0.1f);
+  EXPECT_GT(std::fabs(sol.crossTrackNm), 0.01f);
+
+  sol = nav.update(40.02, -88.02, 90.0f, 2850.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 1);
+  EXPECT_EQ(sol.toWpt, "LODGE");
+}
+
+TEST(FmsNavigatorTest, CombinedArrivalAndApproachSequencesAcrossJoinFix) {
+  std::vector<MapLeg> plan;
+  plan.push_back(makeLeg("TIGRA", 39.9, 19.4));
+  plan.push_back(makeLeg("BEDEX", 39.397222222, 19.733333333));
+  plan.push_back(makeLeg("FD34", 39.459761111, 19.952750000));
+  plan.push_back(makeLeg("RW34", 39.601944444, 19.912222222));
+
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.setActiveLegIndex(1);
+
+  NavigationSolution sol =
+      nav.update(plan[1].lat + 0.01, plan[1].lon - 0.02, 90.0f);
+  EXPECT_EQ(sol.toWpt, "BEDEX");
+  EXPECT_GT(std::fabs(sol.crossTrackNm), 0.2f);
+
+  sol = nav.update(plan[1].lat, plan[1].lon, 90.0f);
+  EXPECT_EQ(nav.activeLegIndex(), 2);
+  EXPECT_EQ(sol.toWpt, "FD34");
 }
 
 TEST(FmsNavigatorTest, SuspendsAtMaptWithMissedLegsLoaded) {

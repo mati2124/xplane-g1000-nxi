@@ -1,6 +1,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 #include <gtest/gtest.h>
 
@@ -88,6 +89,33 @@ TEST(CifpParserTest, DecodesVariantApproachNamesForCatalogAndLabels) {
   EXPECT_EQ(data.catalog[5].runway, "34");
   EXPECT_EQ(data.catalog[5].transition, "RW34");
   EXPECT_EQ(formatApproachProcedureLabel(data.catalog[5]), "VOR 34");
+}
+
+TEST(CifpParserTest, ExpandsAfDmeArcMetadata) {
+  std::istringstream in(
+      "APPCH:010,A,D22,FEXIL,FEXIL,K5,P,C,E  A, ,   ,IF, , , , , ,      ,    ,    ,    ,    , ,     ,     ,18000, ,   ,    ,   , , , , , ,0, ,S;\n"
+      "APPCH:020,A,D22,FEXIL,FASOB,K5,P,C,EE B,L,   ,AF, ,CMI,K5,D, ,      ,0270,0120,1210,    ,+,02800,     ,     , ,   ,    ,   , , , , , ,0, ,S;\n"
+      "APPCH:010,D,D22, ,FASOB,K5,P,C,E  I, ,   ,IF, ,CMI,K5,D, ,      ,0270,0120,    ,    ,+,02800,     ,18000, ,   ,    ,   , , , , , ,0, ,S;\n"
+      "APPCH:020,D,D22, ,STADI,K5,P,C,E  F, ,   ,CF, ,CMI,K5,D, ,      ,0270,0060,2070,0060,+,02500,     ,     , ,   ,    ,   ,CMI,K5,D, , ,0, ,S;\n");
+  const CifpAirportProcedures data = parseCifp(in, "KCMI");
+  std::unordered_map<std::string, std::pair<double, double>> fixes;
+  fixes["FEXIL"] = {39.921805556, -88.061063889};
+  fixes["FASOB"] = {40.207791667, -88.145527778};
+  fixes["STADI"] = {40.121183333, -88.210869444};
+  fixes["CMI"] = {40.034530556, -88.276075000};
+
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "D22", "FEXIL",
+                          mapFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 3u);
+  const int fasobIdx = legIndexById(legs, "FASOB");
+  ASSERT_GE(fasobIdx, 0);
+  const MapLeg& fasob = legs[static_cast<std::size_t>(fasobIdx)];
+  EXPECT_EQ(fasob.pathTerminator, "AF");
+  EXPECT_TRUE(fasob.procedureArc.active);
+  EXPECT_EQ(fasob.procedureArc.centerIdent, "CMI");
+  EXPECT_NEAR(fasob.procedureArc.radiusNm, 12.0f, 0.01f);
+  EXPECT_EQ(fasob.procedureArc.turn, HoldTurnDirection::Left);
 }
 
 TEST(CifpParserTest, ListsBulowTransitionForR04) {
