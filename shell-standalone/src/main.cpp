@@ -2019,6 +2019,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.mfdController().setRangeFromNm(scenario->rangeNm);
+    engine.mfdController().setMapDetail(avionics::MapDetail::Detail2);
     if (loaded) {
       engine.mfdController().replaceFlightPlanFromExternal(resolved.legs);
       engine.softkeyController().replaceFlightPlanFromExternal(resolved.legs);

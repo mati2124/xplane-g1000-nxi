@@ -276,6 +276,7 @@ class MfdController {
   bool showTraffic() const { return showTraffic_; }
   bool showWeather() const { return showWeather_; }
   MapDetail mapDetail() const { return detail_; }
+  void setMapDetail(MapDetail detail);
 
   // MAP page orientation (TRK softkey toggles north-up vs track-up).
   MapOrientation mapOrientation() const { return mapOrientation_; }

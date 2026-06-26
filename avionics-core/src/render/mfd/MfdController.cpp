@@ -324,6 +324,11 @@ bool MfdController::stepMapRange(int direction) {
   return rangeIndex_ != before;
 }
 
+void MfdController::setMapDetail(MapDetail detail) {
+  detail_ = detail;
+  rebuildLabels();
+}
+
 float MfdController::mapViewHalfExtentNm() const {
   if (!mapViewportValid_ || mapViewportW_ <= 0.0f || mapViewportH_ <= 0.0f) {
     return 0.0f;
