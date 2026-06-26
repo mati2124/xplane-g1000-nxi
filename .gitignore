@@ -40,12 +40,20 @@ compile_commands.json
 
 # Scratch screenshot captures (use docs/screenshots/ or convert to PNG)
 /*.ppm
+**/*.ppm
+
+# Node dependencies (Stream Deck plugin)
+node_modules/
 
 # Natural Earth download cache for tools/convert_natural_earth.py
 /tools/.ne_cache/
 
 # Standalone build tree (configured in-place; do not commit)
 /build-standalone/
+
+# Local CMake build trees (configured in-place; do not commit)
+/build-tests/
+/build-xplane/
 
 # Reference docs (large, third-party / copyrighted material)
 /docs/reference/

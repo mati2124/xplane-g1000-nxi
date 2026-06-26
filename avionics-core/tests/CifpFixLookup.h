@@ -33,6 +33,18 @@ inline CifpFixTable kpgdR04FixTable() {
   return table;
 }
 
+inline bool mapFixLookup(const std::string& ident, double& lat, double& lon,
+                         void* ctx) {
+  using FixMap = std::unordered_map<std::string, std::pair<double, double>>;
+  auto* fixes = static_cast<FixMap*>(ctx);
+  if (fixes == nullptr) return false;
+  const auto it = fixes->find(ident);
+  if (it == fixes->end()) return false;
+  lat = it->second.first;
+  lon = it->second.second;
+  return true;
+}
+
 inline CifpFixTable kfmyR05FixTable() {
   CifpFixTable table;
   table.fixes["CITAG"] = {26.237036111, -81.779541667};

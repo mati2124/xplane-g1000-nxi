@@ -238,6 +238,7 @@ void AvionicsEngine::update(double dtSeconds) {
   }
 
   bootElapsedSeconds_ += dtSeconds;
+  if (autoAcknowledgePowerUp_ && awaitingPowerUpAck()) acknowledgePowerUp();
   softkeys_.update(dtSeconds, dataSource_->snapshot(),
                    dataSource_->mapSnapshot());
   mfd_.update(dtSeconds, dataSource_->snapshot());
@@ -246,6 +247,7 @@ void AvionicsEngine::update(double dtSeconds) {
   // the panned map view before the source refresh so land and symbols match
   // what MapView draws (pointer geo can lag the view center until edge-scroll).
   mfd_.applyMapPanToDataSource(*dataSource_, dataSource_->snapshot());
+  mfd_.applyDirectToInsetToDataSource(*dataSource_, dataSource_->mapSnapshot());
   dataSource_->setMapViewHalfExtentNm(mfd_.mapViewHalfExtentNm());
   dataSource_->setChartRangeNm(sharedMapQueryRangeNm());
   if (drivesDataSource_) dataSource_->update(dtSeconds);
@@ -331,8 +333,12 @@ void AvionicsEngine::applyActivateMissedRequests() {
 
   auto tryConsume = [this]() -> bool {
     if (softkeys_.consumeActivateMissedRequest()) return true;
+    if (mfd_.consumeActivateMissedRequest()) return true;
     if (!softkeyPeer_) return false;
-    return softkeyPeer_->softkeyController().consumeActivateMissedRequest();
+    if (softkeyPeer_->softkeyController().consumeActivateMissedRequest()) {
+      return true;
+    }
+    return softkeyPeer_->mfdController().consumeActivateMissedRequest();
   };
 
   if (!tryConsume()) return;

@@ -10,8 +10,9 @@
 #include "avionics/Color.h"
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
+#include "avionics/MapRange.h"
 #include "avionics/NavMath.h"
-#include "avionics/FplRouteEdit.h"
+#include "avionics/ProcedureMenuTypes.h"
 #include "render/mfd/MfdPageSupport.h"
 #include "render/mfd/MfdStyle.h"
 #include "render/pfd/ChromeInternal.h"
@@ -107,12 +108,12 @@ float drawIdentEntryCells(Renderer& r, float startX, float cy,
     const float chW = r.measureTextWidth(text, cellSize);
     if (highlightAll || cursorOn) {
       r.fillRect(cx - tracking * 0.5f, cy - cellSize * 0.62f, chW + tracking,
-                 cellSize * 1.24f, colors::kCyan);
+                 cellSize * 1.24f, colors::kPopoutCyan);
     }
     const Color color = highlightAll || cursorOn ? colors::kBlack
-                        : isCursor ? colors::kCyan  // blink-off half pulses cyan
-                        : isBlank  ? colors::kCyan
-                        : i >= typedCount ? colors::kCyan  // spell-ahead fill
+                        : isCursor ? colors::kPopoutCyan  // blink-off half pulses cyan
+                        : isBlank  ? colors::kPopoutCyan
+                        : i >= typedCount ? colors::kPopoutCyan  // spell-ahead fill
                                           : colors::kWhite;
     r.fillText(cx, cy, text, cellSize, TextAlign::Left, color);
     cx += chW + tracking;
@@ -139,7 +140,7 @@ void drawAltEntryCells(Renderer& r, float rightX, float cy,
     const char text[2] = {ch, '\0'};
     if (isCursor) {
       r.fillRect(cx, cy - cellSize * 0.62f, cellW, cellSize * 1.24f,
-                 colors::kCyan);
+                 colors::kPopoutCyan);
     }
     r.fillText(cx + cellW * 0.5f, cy, text, cellSize, TextAlign::Center,
                isCursor ? colors::kBlack : colors::kWhite);
@@ -178,6 +179,118 @@ float drawTightDashRun(Renderer& r, float x, float dashCy, int count, float size
 
 float tightDashRunWidth(int count, float size) {
   return dashStyle(size).advance * static_cast<float>(count);
+}
+
+// Direct-To window placeholder dash counts (trainer MFD Direct To window).
+constexpr int kDtoCityDashCount = 16;
+constexpr int kDtoNameDashCount = 15;
+constexpr int kDtoRegionDashCount = 10;
+constexpr int kDtoAltDashCount = 5;
+
+bool mapFeatureHasGeo(const MapFeature& f) {
+  return f.lat != 0.0 || f.lon != 0.0;
+}
+
+const MapFeature* directToInsetCenter(const MapData& map, bool hasMatch,
+                                    const MapFeature& wpt,
+                                    MapFeature& resolved) {
+  if (!hasMatch) return nullptr;
+  resolved = wpt;
+  if (!mapFeatureHasGeo(resolved)) {
+    for (const MapFeature& f : map.features) {
+      if (f.id == resolved.id && mapFeatureHasGeo(f)) {
+        resolved = f;
+        break;
+      }
+    }
+  }
+  return mapFeatureHasGeo(resolved) ? &resolved : nullptr;
+}
+
+float textCyForDashBottom(Renderer& r, float dashCy, const DashStyle& ds,
+                          float textSize) {
+  const float dashBottom = dashCy + ds.height * 0.5f;
+  const TextRect tr =
+      r.measureTextRect(0.0f, 0.0f, "X", textSize, TextAlign::Left);
+  return dashBottom - tr.bottom;
+}
+
+void drawRightTightDashRun(Renderer& r, float rightX, float dashCy, int count,
+                           float size, const Color& color) {
+  drawTightDashRun(r, rightX - tightDashRunWidth(count, size), dashCy, count,
+                   size, color);
+}
+
+// Ident entry cells for the MFD Direct-To window: tight dash placeholders and
+// the pulsing cyan cursor plate, matching the real unit and the PFD popout.
+float drawDtoIdentEntryCells(Renderer& r, float startX, float dashCy,
+                             const std::string& ident, int cursor,
+                             int typedCount, bool selectAll, bool blinkOn,
+                             float displayH) {
+  const float cellSize = mfdFontPx(kWtDtoIdent, displayH);
+  const float tracking = cellSize * 0.06f;
+  const DashStyle ds = dashStyle(cellSize);
+  const float entryTextCy = textCyForDashBottom(r, dashCy, ds, cellSize);
+  const TextRect entryRect =
+      r.measureTextRect(0.0f, entryTextCy, "X", cellSize, TextAlign::Left);
+  const float plateTop = entryRect.top;
+  const float plateH = dashCy + ds.height * 0.5f - plateTop + 1.0f;
+  float cx = startX;
+  for (int i = 0; i < MfdController::kFplEntryMaxChars; ++i) {
+    const char ch = i < static_cast<int>(ident.size()) ? ident[i] : '_';
+    const bool isBlank = ch == '_';
+    const bool highlightAll = selectAll && !isBlank;
+    const bool isCursor = !selectAll && i == cursor;
+    const bool cursorOn = isCursor && blinkOn;
+    if (isBlank) {
+      if (highlightAll || cursorOn) {
+        r.fillRect(cx, plateTop, ds.advance, plateH, colors::kPopoutCyan);
+      }
+      const Color dashColor =
+          highlightAll || cursorOn ? colors::kBlack
+          : isCursor        ? colors::kPopoutCyan
+          : i >= typedCount ? colors::kPopoutCyan
+                            : colors::kWhite;
+      drawTightDash(r, cx + (ds.advance - ds.width) * 0.5f, dashCy, ds,
+                    dashColor);
+      cx += ds.advance;
+      continue;
+    }
+    const char text[2] = {ch, '\0'};
+    const float chW = r.measureTextWidth(text, cellSize);
+    if (highlightAll || cursorOn) {
+      r.fillRect(cx - tracking * 0.5f, plateTop, chW + tracking, plateH,
+                 colors::kPopoutCyan);
+    }
+    const Color color = highlightAll || cursorOn ? colors::kBlack
+                        : isCursor        ? colors::kPopoutCyan
+                        : i >= typedCount ? colors::kPopoutCyan
+                                          : colors::kWhite;
+    r.fillText(cx, entryTextCy, text, cellSize, TextAlign::Left, color);
+    cx += chW + tracking;
+  }
+  return cx;
+}
+
+void drawDtoDisPlaceholder(Renderer& r, float rightX, float pad, float dashCy,
+                           float readoutSize, const Color& color) {
+  const DashStyle ds = dashStyle(readoutSize);
+  const float readoutCy = textCyForDashBottom(r, dashCy, ds, readoutSize);
+  const float smallSize = readoutSize * kUnitEm;
+  const float smallCy = textCyForDashBottom(r, dashCy, dashStyle(smallSize),
+                                            smallSize);
+  const char* disNm = "NM";
+  const float disNmW = r.measureTextWidth(disNm, smallSize);
+  r.fillText(rightX - pad, smallCy, disNm, smallSize, TextAlign::Right, color);
+  float disX = rightX - pad - disNmW;
+  disX -= ds.advance * 3.0f;
+  drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, dashCy, ds, color);
+  disX += ds.advance;
+  drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, dashCy, ds, color);
+  disX += ds.advance;
+  r.fillText(disX, readoutCy, ".", readoutSize, TextAlign::Left, color);
+  disX += r.measureTextWidth(".", readoutSize) * 0.55f;
+  drawTightDash(r, disX + (ds.advance - ds.width) * 0.5f, dashCy, ds, color);
 }
 
 std::string restAfterRnavGps(const std::string& label) {
@@ -231,6 +344,40 @@ void drawFplApproachHeader(Renderer& r, float x, float cy, const std::string& ic
   }
 }
 
+// Rendered width of an approach label, accounting for the smaller "GPS" affix
+// on RNAV GPS procedures (matches drawApproachLabel below).
+float measureApproachLabelWidth(Renderer& r, const std::string& label,
+                                float size) {
+  if (!labelIsRnavGps(label)) return r.measureTextWidth(label, size);
+  const float subSize = size * 0.72f;
+  float w = r.measureTextWidth("RNAV", size) + size * 0.08f +
+            r.measureTextWidth("GPS", subSize);
+  const std::string rest = restAfterRnavGps(label);
+  if (!rest.empty()) w += r.measureTextWidth(" " + rest, size);
+  return w;
+}
+
+// Left-aligned approach label with the PFD's RNAV GPS styling: "RNAV" at full
+// size, a smaller "GPS" (no underscore), then the rest (e.g. "05 LPV"). Plain
+// labels (ILS/VOR/VISUAL) draw unchanged.
+void drawApproachLabel(Renderer& r, float x, float cy, const std::string& label,
+                       float size, const Color& color) {
+  if (!labelIsRnavGps(label)) {
+    r.fillText(x, cy, label, size, TextAlign::Left, color);
+    return;
+  }
+  const float subSize = size * 0.72f;
+  float xx = x;
+  r.fillText(xx, cy, "RNAV", size, TextAlign::Left, color);
+  xx += r.measureTextWidth("RNAV", size) + size * 0.08f;
+  r.fillText(xx, cy, "GPS", subSize, TextAlign::Left, color);
+  xx += r.measureTextWidth("GPS", subSize);
+  const std::string rest = restAfterRnavGps(label);
+  if (!rest.empty()) {
+    r.fillText(xx, cy, " " + rest, size, TextAlign::Left, color);
+  }
+}
+
 std::string fplApproachLegRole(const MapLeg& leg, const std::string& transition) {
   if (!leg.procedureRole.empty()) return leg.procedureRole;
   if (transition.size() >= 2 && transition[0] == 'R' && transition[1] == 'W') {
@@ -278,14 +425,14 @@ void drawFplApproachLegIdent(Renderer& r, float x, float cy, const MapLeg& leg,
                                          r.measureTextWidth(role.c_str(), smallSize));
     if (blinkOn) {
       r.fillRect(x - tracking * 0.5f, cy - size * 0.62f, tw + tracking,
-                 size * 1.24f, colors::kCyan);
+                 size * 1.24f, colors::kPopoutCyan);
       r.fillText(x, cy, leg.id, size, TextAlign::Left, colors::kBlack);
       if (!role.empty()) {
         const float roleX = x + r.measureTextWidth(leg.id.c_str(), size) + size * 0.14f;
         r.fillText(roleX, cy, role, smallSize, TextAlign::Left, colors::kBlack);
       }
     } else {
-      r.fillText(x, cy, leg.id, size, TextAlign::Left, colors::kCyan);
+      r.fillText(x, cy, leg.id, size, TextAlign::Left, colors::kPopoutCyan);
       if (!role.empty()) {
         const float roleX = x + r.measureTextWidth(leg.id.c_str(), size) + size * 0.14f;
         r.fillText(roleX, cy, role, smallSize, TextAlign::Left, colors::kWhite);
@@ -542,14 +689,18 @@ float drawWaypointMatchInfo(Renderer& r, const Rect& inner, float fy,
 // spelled identifier in character cells above the matched waypoint's
 // description.
 void drawFplEntryWindow(Renderer& r, const MfdController& ui,
-                        const MapData& map, float x, float y, float w, float h,
+                        const MapData& map, const Rect& panel,
                         float displayH) {
   const FontScope fs(r, FontFace::DejaVuSemiBold);
+  auto P = [&](float v) { return mfdFontPx(v, displayH); };
   const float rowH = mfdFontPx(kWtFieldValue, displayH) * 1.9f;
-  const float boxW = w * 0.40f;
+  const float margin = P(6.0f);
+  const float promptReserve = mfdFontPx(20.0f, displayH) + P(8.0f);
+  const float boxW = panel.w - 2.0f * margin;
   const float boxH = rowH * 4.6f;
   Rect inner = drawDialog(
-      r, Rect{x + (w - boxW) * 0.5f, y + (h - boxH) * 0.38f, boxW, boxH},
+      r, Rect{panel.x + margin, panel.y + panel.h - boxH - promptReserve, boxW,
+              boxH},
       "Waypoint Information", displayH);
 
   const float cy = inner.y + rowH * 0.8f;
@@ -580,9 +731,9 @@ void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
   const bool hasMatch = ui.directToHasMatch();
   const MapFeature& wpt = ui.directToMatch();
   const float gap = P(4.0f);
-  const float labelSize = mfdFontPx(kWtFieldLabel, displayH);
-  const float valueSize = mfdFontPx(kWtFieldValue, displayH);
-  const float rowSize = mfdFontPx(kWtRow, displayH);
+  const float labelSize = mfdFontPx(kWtDtoLabel, displayH);
+  const float valueSize = mfdFontPx(kWtDtoValue, displayH);
+  const float rowSize = mfdFontPx(kWtDtoFace, displayH);
 
   // Bearing / distance / direct course from the present position.
   double brg = 0.0;
@@ -597,28 +748,36 @@ void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
   // ---- top stack: Ident/Facility/City, then VNV ----
   float topY = inner.y;
   {
-    Rect ic = drawGroupBox(r, Rect{inner.x, topY, inner.w, P(104.0f)},
-                           "Ident, Facility, City", displayH);
-    topY += P(104.0f) + gap;
-    const float identSize = mfdFontPx(kWtIdentLarge, displayH);
-    const float cy1 = ic.y + identSize * 0.62f;
-    const float identEnd = drawIdentEntryCells(
+    Rect ic = drawGroupBox(r, Rect{inner.x, topY, inner.w, P(94.0f)},
+                           "Ident, Facility, City", displayH, colors::kBlack);
+    topY += P(94.0f) + gap;
+    const float identSize = mfdFontPx(kWtDtoIdent, displayH);
+    const float regionSize = mfdFontPx(kWtDtoFace, displayH);
+    const float cy1 = ic.y + identSize;
+    const float identEnd = drawDtoIdentEntryCells(
         r, ic.x, cy1, ui.directToIdent(), ui.directToCursor(),
         ui.directToTypedCount(), ui.directToSelectAll(), ui.blinkOn(),
         displayH);
     if (hasMatch) {
-      drawWaypointIcon(r, identEnd + P(16.0f), cy1, P(22.0f), &wpt, wpt.type);
-      r.fillText(ic.x + ic.w, cy1, wpt.region.empty() ? kDash : wpt.region,
-                 mfdFontPx(16.0f, displayH), TextAlign::Right,
-                 colors::kWhitesmoke);
+      drawWaypointIcon(r, identEnd + P(12.0f), cy1, P(16.0f), &wpt, wpt.type);
+      if (wpt.region.empty()) {
+        drawRightTightDashRun(r, ic.x + ic.w, cy1, kDtoRegionDashCount,
+                              regionSize, colors::kWhite);
+      } else {
+        r.fillText(ic.x + ic.w, cy1, wpt.region, regionSize, TextAlign::Right,
+                   colors::kWhitesmoke);
+      }
+    } else {
+      drawRightTightDashRun(r, ic.x + ic.w, cy1, kDtoRegionDashCount,
+                            regionSize, colors::kWhite);
     }
     // Facility name and city rows (Fig 5-45). The feature type stands in for
     // the facility name when the database has none.
     const float cy2 = cy1 + rowSize * 1.5f;
     const float cy3 = cy2 + rowSize * 1.3f;
     if (ui.directToNotFound()) {
-      r.fillText(ic.x, cy2, "WAYPOINT NOT FOUND", mfdFontPx(16.0f, displayH),
-                 TextAlign::Left, colors::kBandYellow);
+      r.fillText(ic.x, cy2, "WAYPOINT NOT FOUND", rowSize, TextAlign::Left,
+                 colors::kBandYellow);
     } else if (hasMatch) {
       auto clipRow = [&](std::string text) {
         while (text.size() > 4 &&
@@ -630,106 +789,131 @@ void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
       r.fillText(ic.x, cy2,
                  clipRow(wpt.name.empty() ? fplFeatureTypeName(wpt.type)
                                           : wpt.name),
-                 rowSize, TextAlign::Left, colors::kCyan);
-      r.fillText(ic.x, cy3,
-                 wpt.city.empty() ? std::string(kDash) : clipRow(wpt.city),
-                 rowSize, TextAlign::Left, colors::kCyan);
+                 rowSize, TextAlign::Left, colors::kPopoutCyan);
+      if (wpt.city.empty()) {
+        drawTightDashRun(r, ic.x, cy3, kDtoCityDashCount, rowSize,
+                         colors::kPopoutCyan);
+      } else {
+        r.fillText(ic.x, cy3, clipRow(wpt.city), rowSize, TextAlign::Left,
+                   colors::kPopoutCyan);
+      }
+    } else {
+      drawTightDashRun(r, ic.x, cy2, kDtoNameDashCount, rowSize,
+                       colors::kPopoutCyan);
+      drawTightDashRun(r, ic.x, cy3, kDtoCityDashCount, rowSize,
+                       colors::kPopoutCyan);
     }
   }
   {
     Rect vc =
-        drawGroupBox(r, Rect{inner.x, topY, inner.w, P(58.0f)}, "VNV", displayH);
-    topY += P(58.0f) + gap;
+        drawGroupBox(r, Rect{inner.x, topY, inner.w, P(50.0f)}, "VNV", displayH,
+                     colors::kBlack);
+    topY += P(50.0f) + gap;
     const float cy = vc.y + vc.h * 0.5f;
-    drawValueWithUnit(r, vc.x + P(110.0f), cy, "_ _ _ _ _", "FT", valueSize,
-                      colors::kWhitesmoke);
-    drawValueWithUnit(r, vc.x + vc.w, cy, "+0", "NM", valueSize, colors::kCyan);
+    const float altSmallCy =
+        textCyForDashBottom(r, cy, dashStyle(valueSize * kUnitEm),
+                            valueSize * kUnitEm);
+    float ax = vc.x + P(8.0f);
+    ax = drawTightDashRun(r, ax, cy, kDtoAltDashCount, valueSize,
+                          colors::kPopoutCyan);
+    r.fillText(ax, altSmallCy, "FT", valueSize * kUnitEm, TextAlign::Left,
+               colors::kPopoutCyan);
+    drawValueWithUnit(r, vc.x + vc.w, cy, "+0", "NM", valueSize,
+                      colors::kPopoutCyan);
   }
 
   // ---- bottom stack (laid out upward): buttons, Course, Location ----
   // Readout values (BRG/DIS/Course) draw larger than the small field labels,
   // matching the real unit.
-  const float readoutSize = mfdFontPx(24.0f, displayH);
-  const float buttonsH = P(42.0f);
-  const float buttonsY = inner.y + inner.h - buttonsH - P(4.0f);
-  const float courseH = P(60.0f);
-  const float courseY = buttonsY - P(24.0f) - courseH;  // gap above the buttons
-  const float locH = P(60.0f);
+  const float readoutSize = mfdFontPx(kWtDtoReadout, displayH);
+  const float buttonsH = hasMatch ? valueSize * 1.7f : 0.0f;
+  const float buttonGap = hasMatch ? P(18.0f) : P(4.0f);
+  const float buttonsY = inner.y + inner.h - P(4.0f) - buttonsH;
+  const float courseH = P(42.0f);
+  const float courseY = buttonsY - buttonGap - courseH;
+  const float locH = P(52.0f);
   const float locY = courseY - gap - locH;
 
   // Location box (full width): bearing and distance from present position.
   {
     Rect lc = drawGroupBox(r, Rect{inner.x, locY, inner.w, locH}, "Location",
-                           displayH);
+                           displayH, colors::kBlack);
     const float cy = lc.y + lc.h * 0.5f;
     r.fillText(lc.x, cy, "BRG", labelSize, TextAlign::Left, colors::kTitleGray);
-    std::string brgStr = kDash;
     if (haveGeo) {
       std::snprintf(buf, sizeof(buf), "%03.0f", brg);
-      brgStr = buf;
+      drawValueWithUnit(r, lc.x + lc.w * 0.46f, cy, buf, kDeg, readoutSize,
+                        colors::kWhite);
+    } else {
+      drawValueWithUnit(r, lc.x + lc.w * 0.46f, cy, "360", kDeg, readoutSize,
+                        colors::kWhite);
     }
-    drawValueWithUnit(r, lc.x + lc.w * 0.46f, cy, brgStr, kDeg, readoutSize,
-                      colors::kWhitesmoke);
     r.fillText(lc.x + lc.w * 0.52f, cy, "DIS", labelSize, TextAlign::Left,
                colors::kTitleGray);
-    std::string disStr = kDash;
     if (haveGeo) {
       std::snprintf(buf, sizeof(buf), "%.1f", dis);
-      disStr = buf;
+      drawValueWithUnit(r, lc.x + lc.w, cy, buf, "NM", readoutSize,
+                        colors::kWhite);
+    } else {
+      drawDtoDisPlaceholder(r, lc.x + lc.w, P(2.0f), cy, readoutSize,
+                            colors::kWhite);
     }
-    drawValueWithUnit(r, lc.x + lc.w, cy, disStr, "NM", readoutSize,
-                      colors::kWhitesmoke);
   }
   // Course box (about half width): the GPS direct course (cyan), equal to the
   // bearing until the direct-to is activated.
   {
     Rect cc = drawGroupBox(r, Rect{inner.x, courseY, inner.w * 0.52f, courseH},
-                           "Course", displayH);
+                           "Course", displayH, colors::kBlack);
     const float cy = cc.y + cc.h * 0.5f;
-    std::string crs = kDash;
+    const float vx = cc.x + P(12.0f);
     if (haveGeo) {
       std::snprintf(buf, sizeof(buf), "%03.0f", brg);
-      crs = buf;
+      r.fillText(vx, cy, buf, readoutSize, TextAlign::Left,
+                 colors::kPopoutCyan);
+      r.fillText(vx + r.measureTextWidth(buf, readoutSize), cy, kDeg,
+                 readoutSize * kUnitEm, TextAlign::Left, colors::kPopoutCyan);
+    } else {
+      r.fillText(vx, cy, "360", readoutSize, TextAlign::Left,
+                 colors::kPopoutCyan);
+      r.fillText(vx + r.measureTextWidth("360", readoutSize), cy, kDeg,
+                 readoutSize * kUnitEm, TextAlign::Left, colors::kPopoutCyan);
     }
-    const float vx = cc.x + P(12.0f);
-    r.fillText(vx, cy, crs, readoutSize, TextAlign::Left, colors::kCyan);
-    r.fillText(vx + r.measureTextWidth(crs, readoutSize), cy, kDeg,
-               readoutSize * kUnitEm, TextAlign::Left, colors::kCyan);
   }
 
   // ---- Map box fills the middle ----
   {
     const float mapBot = locY - gap;
     Rect mc = drawGroupBox(r, Rect{inner.x, topY, inner.w, mapBot - topY},
-                           "Map", displayH);
-    float dtoRangeNm = 10.0f;
-    if (haveGeo && dis > 0.1) {
-      dtoRangeNm = static_cast<float>(std::max(2.0, std::min(250.0, dis * 1.2)));
-    }
-    const MapFeature* center = hasMatch ? &wpt : nullptr;
-    drawPageMap(r, d, map, mc, dtoRangeNm, center, displayH);
+                           "Map", displayH, colors::kBlack);
+    float dtoRangeNm = mfd::directToInsetRangeNm(map, wpt);
+    MapFeature dtoCenter;
+    const MapFeature* center = directToInsetCenter(map, hasMatch, wpt, dtoCenter);
+    drawPageMap(r, d, map, mc, dtoRangeNm, center, displayH, false, nullptr,
+                0.0f, TerrainDisplay::Off, true);
   }
 
   // ---- Activate? / Hold? buttons ----
   // Text-sized rounded-rect buttons with a thin gray outline; Activate? at the
   // left, Hold? at the right. Activate? pulses cyan when armed (~1 Hz).
-  auto drawButton = [&](float leftX, const char* label, bool armed) {
-    const float bw = r.measureTextWidth(label, valueSize) + valueSize * 1.3f;
-    const Rect b{leftX, buttonsY, bw, buttonsH};
-    Point pts[kRoundedRectPoints + 1];
-    const int closed = buildRoundedRect(pts, b, buttonsH * 0.32f);
-    const bool blinkOn = ui.blinkOn();
-    if (armed && blinkOn) r.fillPolygon(pts, kRoundedRectPoints, colors::kCyan);
-    r.strokePolyline(pts, closed, 1.0f, colors::kGroupBoxBorder);
-    const Color textColor =
-        armed ? (blinkOn ? colors::kBlack : colors::kCyan) : colors::kWhitesmoke;
-    r.fillText(b.x + b.w * 0.5f, b.y + b.h * 0.5f, label, valueSize,
-               TextAlign::Center, textColor);
-    return bw;
-  };
-  drawButton(inner.x + P(6.0f), "Activate?", ui.directToArmed());
-  const float holdW = r.measureTextWidth("Hold?", valueSize) + valueSize * 1.3f;
-  drawButton(inner.x + inner.w - holdW - P(6.0f), "Hold?", false);
+  if (hasMatch) {
+    auto drawButton = [&](float leftX, const char* label, bool armed) {
+      const float bw = r.measureTextWidth(label, valueSize) + valueSize * 1.3f;
+      const Rect b{leftX, buttonsY, bw, buttonsH};
+      Point pts[kRoundedRectPoints + 1];
+      const int closed = buildRoundedRect(pts, b, buttonsH * 0.32f);
+      const bool blinkOn = ui.blinkOn();
+      if (armed && blinkOn) r.fillPolygon(pts, kRoundedRectPoints, colors::kCyan);
+      r.strokePolyline(pts, closed, 1.0f, colors::kGroupBoxBorder);
+      const Color textColor =
+          armed ? (blinkOn ? colors::kBlack : colors::kCyan) : colors::kWhitesmoke;
+      r.fillText(b.x + b.w * 0.5f, b.y + b.h * 0.5f, label, valueSize,
+                 TextAlign::Center, textColor);
+      return bw;
+    };
+    drawButton(inner.x + P(6.0f), "Activate?", ui.directToArmed());
+    const float holdW = r.measureTextWidth("Hold?", valueSize) + valueSize * 1.3f;
+    drawButton(inner.x + inner.w - holdW - P(6.0f), "Hold?", false);
+  }
 }
 
 namespace {
@@ -778,39 +962,609 @@ void drawFplConfirmWindow(Renderer& r, const MfdController& ui, float x,
   }
 }
 
-// The FPL page menu (MENU key): its one supported option, Delete Flight Plan.
-void drawFplMenuWindow(Renderer& r, const MfdController& ui, float x, float y,
-                       float w, float h, float displayH) {
+// ---- Procedures window (PROC key) ----
+
+void drawProcLoadedDashes(Renderer& r, float rightX, float cy, float size) {
+  drawRightTightDashRun(r, rightX, cy, 4, size, colors::kWhite);
+}
+
+void drawProcCarrot(Renderer& r, float cx, float cy, float size, bool pointRight,
+                    bool enabled) {
+  if (!enabled) return;
+  const float aw = size * 0.34f;
+  if (pointRight) {
+    const Point tri[3] = {{cx + aw * 0.55f, cy},
+                          {cx - aw * 0.30f, cy - aw},
+                          {cx - aw * 0.30f, cy + aw}};
+    r.fillPolygon(tri, 3, colors::kPopoutCyan);
+  } else {
+    const Point tri[3] = {{cx - aw * 0.55f, cy},
+                          {cx + aw * 0.30f, cy - aw},
+                          {cx + aw * 0.30f, cy + aw}};
+    r.fillPolygon(tri, 3, colors::kPopoutCyan);
+  }
+}
+
+// Text-sized rounded-rect button (Load? / Activate?), matching the Direct-To
+// window's Activate?/Hold? buttons: thin gray outline, pulsing cyan fill when
+// armed. Returns the button width.
+float drawProcButton(Renderer& r, float leftX, float cy, const char* label,
+                     float size, bool armed, bool blinkOn) {
+  const float bw = r.measureTextWidth(label, size) + size * 1.3f;
+  const float bh = size * 1.7f;
+  const Rect b{leftX, cy - bh * 0.5f, bw, bh};
+  Point pts[kRoundedRectPoints + 1];
+  const int closed = buildRoundedRect(pts, b, bh * 0.32f);
+  if (armed && blinkOn) r.fillPolygon(pts, kRoundedRectPoints, colors::kCyan);
+  r.strokePolyline(pts, closed, 1.5f,
+                   armed ? colors::kWhite : colors::kGroupBoxBorder);
+  const Color textColor =
+      armed ? (blinkOn ? colors::kBlack : colors::kCyan) : colors::kWhitesmoke;
+  r.fillText(leftX + bw * 0.5f, cy, label, size, TextAlign::Center, textColor);
+  return bw;
+}
+
+// Top-level Procedures menu: Options and Loaded group boxes (trainer MFD PROC
+// page), with a footer hint to press PROC again.
+void drawProcMenuWindow(Renderer& r, const MfdController& ui, float x, float y,
+                        float w, float h, float displayH) {
   const FontScope fs(r, FontFace::DejaVuSemiBold);
-  const float rowH = mfdFontPx(kWtFieldValue, displayH) * 1.9f;
+  auto P = [&](float v) { return mfdFontPx(v, displayH); };
+  const int n = ui.procMenuItemCount();
+  const float rowSize = mfdFontPx(kWtRow, displayH);
+  const float rowH = rowSize * 1.5f;
+  const float footSize = P(15.0f);
+  const float titleSize = mfdFontPx(kWtBoxTitle, displayH);
+  const float pad = P(10.0f);
+  const float gap = P(16.0f);
+
+  const float optionsSlotH = titleSize * 0.55f + pad + n * rowH + pad * 0.8f;
+  const float loadedSlotH = titleSize * 0.55f + pad + 3.0f * rowH + pad * 0.8f;
   const float boxW = w * 0.40f;
-  const float boxH = rowH * 4.0f;
-  Rect inner = drawDialog(
-      r, Rect{x + (w - boxW) * 0.5f, y + (h - boxH) * 0.38f, boxW, boxH},
-      "PAGE MENU", displayH);
+  const float boxH = h - P(4.0f);
+  Rect inner = drawProcOverlayPanel(
+      r, Rect{x + w - boxW - P(2.0f), y + P(2.0f), boxW, boxH}, displayH);
+  float slotY = inner.y;
+  Rect options = drawGroupBox(r, Rect{inner.x, slotY, inner.w, optionsSlotH},
+                              "Options", displayH, colors::kMfdOverlayGray);
+  float fy = options.y;
+  for (int i = 0; i < n; ++i) {
+    const float cy = fy + rowH * 0.5f;
+    const std::string& text = ui.procMenuItemText(i);
+    const bool enabled = ui.procMenuItemEnabled(i);
+    if (i == ui.procMenuSelected() && enabled) {
+      if (ui.blinkOn()) {
+        r.fillRect(options.x - pad * 0.4f, cy - rowSize * 0.62f, options.w,
+                   rowSize * 1.24f, colors::kPopoutCyan);
+        r.fillText(options.x, cy, text, rowSize, TextAlign::Left,
+                   colors::kBlack);
+      } else {
+        r.fillText(options.x, cy, text, rowSize, TextAlign::Left,
+                   colors::kPopoutCyan);
+      }
+    } else {
+      r.fillText(options.x, cy, text, rowSize, TextAlign::Left,
+                 enabled ? colors::kWhite : colors::kDisabledGray);
+    }
+    fy += rowH;
+  }
 
-  float fy = inner.y;
-  r.fillText(inner.x + inner.w * 0.5f, fy + rowH * 0.5f, "OPTIONS",
-             mfdFontPx(kWtHeader, displayH), TextAlign::Center,
-             colors::kTitleGray);
-  fy += rowH;
+  slotY += optionsSlotH + gap;
+  Rect loaded = drawGroupBox(r, Rect{inner.x, slotY, inner.w, loadedSlotH},
+                             "Loaded", displayH, colors::kMfdOverlayGray);
+  struct LoadedRow {
+    const char* label;
+    std::string value;
+  };
+  LoadedRow rows[3] = {
+      {"Approach:",
+       ui.fplHasLoadedApproach() ? ui.fplApproachHeaderLabel() : std::string()},
+      {"Arrival:", {}},
+      {"Departure:", {}},
+  };
+  fy = loaded.y;
+  for (const LoadedRow& row : rows) {
+    const float cy = fy + rowH * 0.5f;
+    r.fillText(loaded.x, cy, row.label, rowSize, TextAlign::Left,
+               colors::kWhite);
+    if (row.value.empty()) {
+      drawProcLoadedDashes(r, loaded.x + loaded.w, cy, rowSize);
+    } else {
+      const float valueW = measureApproachLabelWidth(r, row.value, rowSize);
+      drawApproachLabel(r, loaded.x + loaded.w - valueW, cy, row.value, rowSize,
+                        colors::kCyan);
+    }
+    fy += rowH;
+  }
 
-  // The single option, highlighted (ENT selects, CLR/MENU backs out).
-  drawCursorSelect(r, inner.x + inner.w * 0.5f, fy + rowH * 0.5f,
-                   "Delete Flight Plan", mfdFontPx(kWtFieldValue, displayH),
-                   TextAlign::Center, ui.blinkOn());
-  fy += rowH;
+  const float footCx = inner.x + inner.w * 0.5f;
+  const float footLineH = footSize * 1.4f;
+  const float footBottom = inner.y + inner.h;
+  r.fillText(footCx, footBottom - footLineH * 1.6f, "Press the \"PROC\" key to",
+             footSize, TextAlign::Center, colors::kTitleGray);
+  r.fillText(footCx, footBottom - footLineH * 0.5f, "view the previous page",
+             footSize, TextAlign::Center, colors::kTitleGray);
+}
 
-  r.fillText(inner.x + inner.w * 0.5f, fy + rowH * 0.5f,
-             "Press the FMS CRSR knob to return to base page",
-             mfdFontPx(12.0f, displayH), TextAlign::Center,
-             colors::kTitleGray);
+// Inner approach / transition selection popup over the Select Approach form.
+void drawProcSubList(Renderer& r, const MfdController& ui, const Rect& inner,
+                     const Rect& anchor, float displayH) {
+  auto P = [&](float v) { return mfdFontPx(v, displayH); };
+  const std::vector<std::string> items = ui.procListItems();
+  const bool transitionList =
+      ui.procStep() == ProcStep::TransitionList;
+  const float size = mfdFontPx(kWtRow, displayH);
+  const float rowH = P(26.0f);
+  const float pad = P(6.0f);
+  const int total = static_cast<int>(items.size());
+
+  const float popupX = anchor.x;
+  const float popupY = anchor.y + anchor.h;
+  // Grow the popup to fill the room beneath the field, keeping the footer
+  // buttons clear. If the list still overflows the available rows, a WT scroll
+  // bar appears (matching the PFD popout lists).
+  const float bottomLimit = inner.y + inner.h - P(44.0f);
+  const int fitRows = std::max(
+      1, static_cast<int>((bottomLimit - popupY - pad * 2.0f) / rowH));
+  const int visible = std::max(1, std::min(fitRows, std::max(1, total)));
+  const bool scrolling = total > visible;
+  const float scrollReserve = scrolling ? avionics::pfd::wtScrollBarLane(displayH)
+                                         : 0.0f;
+  const int sel = std::min(std::max(0, ui.procListSelected()), std::max(0, total - 1));
+  int first = 0;
+  if (total > visible) first = std::max(0, std::min(sel - visible / 2, total - visible));
+  const int end = std::min(total, first + visible);
+
+  float maxW = 0.0f;
+  for (int i = 0; i < total; ++i) {
+    const std::string lbl =
+        transitionList ? items[static_cast<std::size_t>(i)]
+                       : ui.procApproachDisplayName(i);
+    maxW = std::max(maxW, measureApproachLabelWidth(r, lbl, size));
+  }
+  const float popupW =
+      std::min(anchor.w, std::max(P(120.0f), maxW + pad * 2.0f + scrollReserve +
+                                                 P(10.0f)));
+  const float popupH = rowH * static_cast<float>(visible) + pad * 2.0f;
+  const float radius = P(4.0f);
+  r.fillRoundedRect(popupX, popupY, popupW, popupH, radius,
+                    colors::kPopoutBodyBottom);
+  r.strokeRoundedRect(popupX + 0.75f, popupY + 0.75f, popupW - 1.5f,
+                      popupH - 1.5f, radius, 1.5f, colors::kPopoutBorder);
+  if (total == 0) {
+    r.fillText(popupX + popupW * 0.5f, popupY + popupH * 0.5f, "NO PROCEDURES",
+               size, TextAlign::Center, colors::kTitleGray);
+    return;
+  }
+  float yy = popupY + pad;
+  for (int i = first; i < end; ++i) {
+    const float cy = yy + rowH * 0.5f;
+    const std::string lbl =
+        transitionList ? items[static_cast<std::size_t>(i)]
+                       : ui.procApproachDisplayName(i);
+    if (i == sel) {
+      if (ui.blinkOn()) {
+        const float tw = measureApproachLabelWidth(r, lbl, size);
+        r.fillRect(popupX + pad - size * 0.08f, cy - size * 0.62f,
+                   tw + size * 0.16f, size * 1.24f, colors::kPopoutCyan);
+        drawApproachLabel(r, popupX + pad, cy, lbl, size, colors::kBlack);
+      } else {
+        drawApproachLabel(r, popupX + pad, cy, lbl, size, colors::kPopoutCyan);
+      }
+    } else {
+      drawApproachLabel(r, popupX + pad, cy, lbl, size, colors::kWhite);
+    }
+    yy += rowH;
+  }
+
+  if (scrolling) {
+    const float scrollW = avionics::pfd::wtScrollBarLane(displayH);
+    avionics::pfd::drawWtScrollBar(r, displayH, popupX + popupW - pad - scrollW,
+                                   popupY + pad,
+                                   rowH * static_cast<float>(visible), total,
+                                   visible, first, 1.0f);
+  }
+}
+
+void drawProcSequenceRows(Renderer& r, const Rect& area, float displayH,
+                          const std::vector<MapLeg>& legs, const MapData& map,
+                          int selected, bool focused, bool blinkOn) {
+  if (legs.empty()) return;
+  auto P = [&](float v) { return mfdFontPx(v, displayH); };
+  const float rowSize = mfdFontPx(kWtFieldValue, displayH);
+  const float rowH = P(26.0f);
+  const int visible = std::max(1, static_cast<int>(area.h / rowH));
+  const int total = static_cast<int>(legs.size());
+  // Scroll the selected row into view and reserve a lane for the WT scroll bar
+  // when the list overflows, matching the approach/transition sub-list popup.
+  const bool scrolling = total > visible;
+  const float scrollReserve =
+      scrolling ? avionics::pfd::wtScrollBarLane(displayH) : 0.0f;
+  const int sel = std::min(std::max(0, selected), std::max(0, total - 1));
+  int first = 0;
+  if (scrolling) {
+    first = std::max(0, std::min(sel - visible / 2, total - visible));
+  }
+  const int end = std::min(total, first + visible);
+  const float rowsRight = area.x + area.w - scrollReserve;
+  char buf[32];
+  for (int i = first; i < end; ++i) {
+    const MapLeg& leg = legs[static_cast<std::size_t>(i)];
+    const float cy = area.y + rowH * (static_cast<float>(i - first) + 0.5f);
+    if (focused && i == sel) {
+      drawCursorSelect(r, area.x, cy, leg.id, rowSize, TextAlign::Left, blinkOn);
+    } else {
+      r.fillText(area.x, cy, leg.id, rowSize, TextAlign::Left,
+                 colors::kPopoutCyan);
+    }
+    // The leg-type role (iaf / faf / mapt / mahp) is white, set apart from the
+    // cyan waypoint ident, matching the unit's sequence list.
+    if (!leg.procedureRole.empty()) {
+      const float roleX =
+          area.x + r.measureTextWidth(leg.id, rowSize) + rowSize * 0.35f;
+      r.fillText(roleX, cy, leg.procedureRole, rowSize, TextAlign::Left,
+                 colors::kWhite);
+    }
+    // DTK / DIS columns (matching the PFD/FPL style: number with a smaller
+    // degree and NM affix). The first leg has no preceding fix, so it shows
+    // no track or distance, just like the real unit.
+    if (i > 0) {
+      const MapLeg& prev = legs[static_cast<std::size_t>(i - 1)];
+      const double dtk = navBearingDeg(prev.lat, prev.lon, leg.lat, leg.lon);
+      const double dis = navDistanceNm(prev.lat, prev.lon, leg.lat, leg.lon);
+      const float colDisR = rowsRight;
+      const float disColW = r.measureTextWidth("00.0", rowSize) +
+                            r.measureTextWidth("NM", rowSize * kUnitEm) +
+                            rowSize * 0.5f;
+      const float colDtkR = colDisR - disColW;
+      std::snprintf(buf, sizeof(buf), "%03.0f", dtk);
+      drawValueWithUnit(r, colDtkR, cy, buf, kDeg, rowSize, colors::kWhite);
+      std::snprintf(buf, sizeof(buf), "%.1f", dis);
+      drawValueWithUnit(r, colDisR, cy, buf, "NM", rowSize, colors::kWhite);
+    }
+  }
+
+  if (scrolling) {
+    const float scrollW = avionics::pfd::wtScrollBarLane(displayH);
+    avionics::pfd::drawWtScrollBar(r, displayH, area.x + area.w - scrollW,
+                                   area.y, rowH * static_cast<float>(visible),
+                                   total, visible, first, 1.0f);
+  }
+  (void)map;
+}
+
+// Select Approach / Approach Loading detail form: stacked group boxes on the grey
+// overlay panel (Airport, Approach Channel, Approach, Transition, Minimums,
+// Primary Frequency, Sequence) and a centered Activate? button.
+void drawProcApproachForm(Renderer& r, const MfdController& ui,
+                          const MapData& map, const Rect& inner,
+                          float displayH) {
+  using Field = ProcApproachField;
+  auto P = [&](float v) { return mfdFontPx(v, displayH); };
+  const float labelSize = mfdFontPx(kWtFieldLabel, displayH);
+  const float valueSize = mfdFontPx(kWtFieldValue, displayH);
+  const float smallSize = valueSize * kUnitEm;
+  const float gap = P(10.0f);
+  const bool blinkOn = ui.blinkOn();
+  const bool sub = ui.procSubListOpen();
+  const bool seqFocused = ui.procSequenceFocused();
+  const Color titleBg = colors::kMfdOverlayGray;
+
+  const float buttonsH = P(38.0f);
+  const float buttonsY = inner.y + inner.h - buttonsH;
+  float slotY = inner.y;
+
+  // drawGroupBox returns a content rect that sits just below the title but is
+  // trimmed by its bottom pad, so a single value centered on the content rect
+  // reads high. Center single-value rows between the content top and the box's
+  // bottom edge so they sit in the optical middle of the area below the title.
+  const auto rowCenterY = [](const Rect& slot, const Rect& content) {
+    return (content.y + slot.y + slot.h) * 0.5f;
+  };
+
+  const float airportH = P(88.0f);
+  {
+    Rect ac = drawGroupBox(r, Rect{inner.x, slotY, inner.w, airportH},
+                           "Airport", displayH, titleBg);
+    const float cy = ac.y + ac.h * 0.32f;
+    const std::string icao = ui.procAirportIcao();
+    const bool airportHi =
+        !seqFocused && ui.procApproachField() == Field::Airport;
+    if (airportHi && blinkOn && !sub) {
+      drawCursorSelect(r, ac.x, cy, icao.empty() ? "_____" : icao, valueSize,
+                       TextAlign::Left, true);
+    } else {
+      r.fillText(ac.x, cy, icao.empty() ? "_____" : icao, valueSize,
+                 TextAlign::Left, colors::kPopoutCyan);
+    }
+    const MapFeature sym = ui.procAirportFeature();
+    if (!icao.empty()) {
+      const float iconX =
+          ac.x + r.measureTextWidth(icao, valueSize) + P(16.0f);
+      drawWaypointIcon(r, iconX, cy, P(22.0f), &sym, sym.type);
+      const char* usage = airportUsageType(sym);
+      if (usage != nullptr) {
+        r.fillText(ac.x + ac.w, cy, usage, labelSize, TextAlign::Right,
+                   colors::kWhitesmoke);
+      }
+    }
+    const std::string city = ui.procAirportCityLine();
+    if (!city.empty()) {
+      const float nameCy = cy + valueSize * 1.25f;
+      r.fillText(ac.x, nameCy, city, labelSize, TextAlign::Left,
+                 colors::kPopoutCyan);
+    }
+  }
+  slotY += airportH + gap;
+
+  const float channelH = P(48.0f);
+  {
+    const Rect channelSlot{inner.x, slotY, inner.w, channelH};
+    Rect ch = drawGroupBox(r, channelSlot, "Approach Channel", displayH,
+                           titleBg);
+    const float cy = rowCenterY(channelSlot, ch);
+    const char* channelLabel = "Channel";
+    const float channelLabelW = r.measureTextWidth(channelLabel, labelSize);
+    r.fillText(ch.x, cy, channelLabel, labelSize, TextAlign::Left,
+               colors::kWhite);
+    drawTightDashRun(r, ch.x + channelLabelW + P(6.0f), cy, 5, valueSize,
+                     colors::kPopoutCyan);
+    const char* idLabel = "ID";
+    const float idLabelW = r.measureTextWidth(idLabel, labelSize);
+    const float idX = ch.x + ch.w * 0.55f;
+    r.fillText(idX, cy, idLabel, labelSize, TextAlign::Left, colors::kWhite);
+    if (!seqFocused && ui.procApproachField() == Field::Id && blinkOn && !sub) {
+      const float barW = valueSize * 0.14f;
+      r.fillRect(idX - barW * 1.6f, cy - valueSize * 0.55f, barW,
+                 valueSize * 1.1f, colors::kPopoutCyan);
+    }
+    drawRightTightDashRun(r, ch.x + ch.w, cy, 5, valueSize, colors::kWhite);
+    (void)idLabelW;
+  }
+  slotY += channelH + gap;
+
+  const float fieldH = P(44.0f);
+  const auto drawFieldBox = [&](const Rect& slot, const char* title,
+                                const std::string& value, Field field) {
+    Rect box = drawGroupBox(r, slot, title, displayH, titleBg);
+    const float cy = rowCenterY(slot, box);
+    if (value.empty()) {
+      drawTightDashRun(r, box.x, cy, 8, valueSize, colors::kPopoutCyan);
+      return;
+    }
+    if (!seqFocused && ui.procApproachField() == field && blinkOn && !sub) {
+      drawCursorSelect(r, box.x, cy, value, valueSize, TextAlign::Left, true);
+    } else {
+      drawApproachLabel(r, box.x, cy, value, valueSize, colors::kPopoutCyan);
+    }
+  };
+
+  const Rect aprSlot{inner.x, slotY, inner.w, fieldH};
+  drawFieldBox(aprSlot, "Approach", ui.procSelectedApproachDisplay(),
+               Field::Apr);
+  slotY += fieldH + gap;
+  const Rect transSlot{inner.x, slotY, inner.w, fieldH};
+  drawFieldBox(transSlot, "Transition", ui.procSelectedTransitionDisplay(),
+               Field::Trans);
+  slotY += fieldH + gap;
+
+  const float minsH = P(86.0f);
+  {
+    const Rect minsSlot{inner.x, slotY, inner.w, minsH};
+    Rect mc = drawGroupBox(r, minsSlot, "Minimums", displayH, titleBg);
+    const float minsMidY = rowCenterY(minsSlot, mc);
+    const float minsRowHalf = valueSize * 0.95f;
+    const float cy1 = minsMidY - minsRowHalf;
+    const float cy2 = minsMidY + minsRowHalf;
+    const bool baro = ui.minimumsBaroOn();
+    const char* minsLabel = baro ? "BARO" : "OFF";
+    const float toggleW = r.measureTextWidth("BARO", labelSize);
+    const float centerX = mc.x + toggleW * 0.75f;
+    const bool minsHi = !seqFocused && ui.procApproachField() == Field::Mins;
+    if (minsHi && blinkOn && !sub) {
+      r.fillRect(centerX - toggleW * 0.5f - labelSize * 0.15f,
+                 cy1 - labelSize * 0.62f, toggleW + labelSize * 0.3f,
+                 labelSize * 1.24f, colors::kPopoutCyan);
+      r.fillText(centerX, cy1, minsLabel, labelSize, TextAlign::Center,
+                 colors::kBlack);
+    } else {
+      r.fillText(centerX, cy1, minsLabel, labelSize, TextAlign::Center,
+                 colors::kPopoutCyan);
+    }
+    drawProcCarrot(r, centerX - toggleW * 0.5f - labelSize * 0.45f, cy1,
+                   labelSize, false, baro);
+    drawProcCarrot(r, centerX + toggleW * 0.5f + labelSize * 0.45f, cy1,
+                   labelSize, true, !baro);
+    const float ftW = r.measureTextWidth("FT", smallSize);
+    if (baro) {
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), "%.0f", ui.minimumsAltitudeFt());
+      const bool altHi = !seqFocused && ui.procApproachField() == Field::MinsAlt;
+      const float altR = mc.x + mc.w - ftW - P(2.0f);
+      if (altHi && blinkOn && !sub) {
+        drawCursorSelect(r, altR, cy1, buf, valueSize, TextAlign::Right, true);
+      } else {
+        r.fillText(altR, cy1, buf, valueSize, TextAlign::Right,
+                   colors::kPopoutCyan);
+      }
+      r.fillText(mc.x + mc.w, cy1, "FT", smallSize, TextAlign::Right,
+                 colors::kWhitesmoke);
+    } else {
+      drawRightTightDashRun(r, mc.x + mc.w - ftW, cy1, 4, labelSize,
+                            colors::kWhite);
+      r.fillText(mc.x + mc.w, cy1, "FT", smallSize, TextAlign::Right,
+                 colors::kWhitesmoke);
+    }
+
+    std::string tempLabel = "TEMP At ";
+    tempLabel += ui.procAirportIcao();
+    r.fillText(mc.x, cy2, tempLabel, labelSize, TextAlign::Left,
+               colors::kWhite);
+    char tbuf[16];
+    std::snprintf(tbuf, sizeof(tbuf), "%d",
+                  static_cast<int>(std::lround(ui.minimumsTempC() * 9.0f / 5.0f +
+                                               32.0f)));
+    const float tempX = mc.x + r.measureTextWidth(tempLabel, labelSize) +
+                        P(8.0f);
+    r.fillText(tempX, cy2, tbuf, valueSize, TextAlign::Left,
+               colors::kPopoutCyan);
+    drawRightTightDashRun(r, mc.x + mc.w - ftW, cy2, 4, labelSize,
+                          colors::kWhite);
+    r.fillText(mc.x + mc.w, cy2, "FT", smallSize, TextAlign::Right,
+               colors::kWhitesmoke);
+  }
+  slotY += minsH + gap;
+
+  const float primH = P(44.0f);
+  {
+    const Rect primSlot{inner.x, slotY, inner.w, primH};
+    Rect fc = drawGroupBox(r, primSlot, "Primary Frequency", displayH, titleBg);
+    const float cy = rowCenterY(primSlot, fc);
+    if (ui.procShowsPrimaryNavFreq() && ui.procPrimaryFreqMhz() > 0.0f) {
+      char buf[16];
+      if (ui.procPrimaryNavIsNdb()) {
+        std::snprintf(buf, sizeof(buf), "%.1f", ui.procPrimaryFreqMhz());
+      } else {
+        std::snprintf(buf, sizeof(buf), "%.2f", ui.procPrimaryFreqMhz());
+      }
+      const std::string ident = ui.procPrimaryIdent();
+      if (!ident.empty()) {
+        r.fillText(fc.x, cy, ident, valueSize, TextAlign::Left,
+                   colors::kPopoutCyan);
+      } else {
+        drawTightDashRun(r, fc.x, cy, 5, labelSize, colors::kWhite);
+      }
+      const float pillW =
+          r.measureTextWidth(buf, valueSize) + valueSize * 1.1f;
+      const Rect pill{fc.x + fc.w - pillW, cy - valueSize * 0.72f, pillW,
+                      valueSize * 1.44f};
+      drawPill(r, pill, buf, valueSize, colors::kPopoutCyan);
+    } else {
+      drawTightDashRun(r, fc.x, cy, 5, labelSize, colors::kWhite);
+    }
+  }
+  slotY += primH + gap;
+
+  const float seqH = buttonsY - gap - slotY;
+  {
+    Rect sc = drawGroupBox(r, Rect{inner.x, slotY, inner.w, seqH}, "Sequence",
+                           displayH, titleBg);
+    drawProcSequenceRows(r, sc, displayH, ui.procPreviewLegs(), map,
+                         ui.procSequenceSelected(), ui.procSequenceFocused(),
+                         blinkOn);
+  }
+
+  // Footer: "Load?  or  Activate?" (trainer Approach Loading), each a
+  // text-sized rounded-rect button with the lowercase "or" between them.
+  const float btnCy = buttonsY + buttonsH * 0.5f;
+  const float loadW =
+      r.measureTextWidth("Load?", valueSize) + valueSize * 1.3f;
+  const float actW =
+      r.measureTextWidth("Activate?", valueSize) + valueSize * 1.3f;
+  const float orW = r.measureTextWidth("or", valueSize);
+  const float orPad = valueSize * 0.6f;
+  const float groupW = loadW + orPad + orW + orPad + actW;
+  float btnX = inner.x + (inner.w - groupW) * 0.5f;
+  drawProcButton(r, btnX, btnCy, "Load?", valueSize,
+                 !seqFocused && ui.procApproachField() == Field::Load &&
+                     ui.procLoadArmed(),
+                 blinkOn);
+  btnX += loadW + orPad;
+  r.fillText(btnX + orW * 0.5f, btnCy, "or", valueSize, TextAlign::Center,
+             colors::kWhitesmoke);
+  btnX += orW + orPad;
+  drawProcButton(r, btnX, btnCy, "Activate?", valueSize,
+                 !seqFocused && ui.procApproachField() == Field::Activate &&
+                     ui.procActivateArmed(),
+                 blinkOn);
+
+  if (sub) {
+    const Rect& anchor =
+        ui.procStep() == ProcStep::TransitionList ? transSlot : aprSlot;
+    drawProcSubList(r, ui, inner, anchor, displayH);
+  }
+}
+
+// Select Departure / Arrival sub-window: airport header, then the procedure
+// (or transition) list.
+void drawProcDepArrList(Renderer& r, const MfdController& ui, const Rect& inner,
+                        float displayH) {
+  auto P = [&](float v) { return mfdFontPx(v, displayH); };
+  const float valueSize = mfdFontPx(kWtFieldValue, displayH);
+  const float rowSize = mfdFontPx(kWtRow, displayH);
+  const float rowH = P(28.0f);
+  const float left = inner.x;
+  const float right = inner.x + inner.w;
+  float yy = inner.y;
+  const std::string icao = ui.procAirportIcao();
+  r.fillText(left, yy + rowH * 0.5f, icao.empty() ? "_____" : icao, valueSize,
+             TextAlign::Left, colors::kCyan);
+  if (ui.procStep() == ProcStep::TransitionList) {
+    r.fillText(right, yy + rowH * 0.5f, ui.procSelectedName(), valueSize,
+               TextAlign::Right, colors::kCyan);
+  }
+  yy += rowH * 0.9f;
+  r.strokeLine(left, yy, right, yy, 1.0f, colors::kMenuBorderGray);
+  yy += rowH * 0.3f;
+
+  const std::vector<std::string> items = ui.procListItems();
+  if (items.empty()) {
+    r.fillText(left + inner.w * 0.5f, yy + rowH * 0.5f, "NO PROCEDURES",
+               rowSize, TextAlign::Center, colors::kTitleGray);
+    return;
+  }
+  const int total = static_cast<int>(items.size());
+  const int sel = std::min(std::max(0, ui.procListSelected()), total - 1);
+  const int visible =
+      std::max(1, static_cast<int>((inner.y + inner.h - yy) / rowH));
+  int first = 0;
+  if (total > visible) first = std::max(0, std::min(sel - visible / 2, total - visible));
+  const int end = std::min(total, first + visible);
+  for (int i = first; i < end; ++i) {
+    const float cy = yy + rowH * 0.5f;
+    const std::string& lbl = items[static_cast<std::size_t>(i)];
+    if (i == sel) {
+      drawCursorSelect(r, left, cy, lbl, rowSize, TextAlign::Left, ui.blinkOn());
+    } else {
+      r.fillText(left, cy, lbl, rowSize, TextAlign::Left, colors::kCyan);
+    }
+    yy += rowH;
+  }
+}
+
+// Selection sub-window frame (Select Approach / Arrival / Departure): a tall
+// right-side popup like the Direct-To window.
+void drawProcSelectWindow(Renderer& r, const MfdController& ui,
+                          const MapData& map, float x, float y, float w,
+                          float h, float displayH) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
+  auto P = [&](float v) { return mfdFontPx(v, displayH); };
+  const float boxW = w * 0.40f;
+  const float boxH = h - P(4.0f);
+  Rect inner = drawProcOverlayPanel(
+      r, Rect{x + w - boxW - P(2.0f), y + P(2.0f), boxW, boxH}, displayH);
+  if (ui.procCategory() == ProcedureType::Approach) {
+    drawProcApproachForm(r, ui, map, inner, displayH);
+  } else {
+    drawProcDepArrList(r, ui, inner, displayH);
+  }
 }
 
 }  // namespace
 
+void drawProcWindow(Renderer& r, const FlightData& d, const MapData& map,
+                    const MfdController& ui, float x, float y, float w, float h,
+                    float displayH) {
+  (void)d;
+  if (ui.procSelectMode()) {
+    drawProcSelectWindow(r, ui, map, x, y, w, h, displayH);
+  } else {
+    drawProcMenuWindow(r, ui, x, y, w, h, displayH);
+  }
+}
+
 void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
-                              const MapData& map, const MfdController& ui,
+                              const MapData& map, MfdController& ui,
                               float x, float y, float w, float h,
                               float displayH) {
   // FPL Active Flight Plan (WT MFDFPLPage): map on the LEFT, the wide gray
@@ -826,32 +1580,40 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
   const std::vector<MapLeg>& plan = ui.fplLegs();
   const std::string activeToIdent = fplActiveToIdent(d, map, plan);
 
-  // Route preview map around ownship, wide enough to show the plan.
+  // Route preview map around ownship, wide enough to show the plan. The RANGE
+  // knob zooms this inset (Pilot's Guide); auto-frame the route until the pilot
+  // turns the knob, then honor the manual ladder step.
   float previewRangeNm = 25.0f;
-  if (map.positionValid && plan.size() >= 2) {
-    double maxNm = 0.0;
-    for (const MapLeg& leg : plan) {
-      maxNm = std::max(maxNm, navDistanceNm(map.ownshipLat, map.ownshipLon,
-                                            leg.lat, leg.lon));
+  if (!ui.fplPreviewRangeManual()) {
+    if (map.positionValid && plan.size() >= 2) {
+      double maxNm = 0.0;
+      for (const MapLeg& leg : plan) {
+        maxNm = std::max(maxNm, navDistanceNm(map.ownshipLat, map.ownshipLon,
+                                              leg.lat, leg.lon));
+      }
+      previewRangeNm =
+          std::max(10.0f, std::min(150.0f, static_cast<float>(maxNm) * 1.2f));
     }
-    previewRangeNm =
-        std::max(10.0f, std::min(150.0f, static_cast<float>(maxNm) * 1.2f));
+    ui.setFplPreviewFitRange(mapRangeIndexForNm(previewRangeNm));
   }
+  previewRangeNm = ui.rangeNm();
+  const float previewDisplayRangeNm = ui.displayRangeNm();
   const std::vector<MapLeg> procPreview =
       ui.procMenuOpen() ? ui.procPreviewLegs() : std::vector<MapLeg>{};
   const std::vector<MapLeg>* procPreviewPtr =
       procPreview.empty() ? nullptr : &procPreview;
   drawPageMap(r, d, map, f.map, previewRangeNm, nullptr, displayH, false,
-              procPreviewPtr);
+              procPreviewPtr, previewDisplayRangeNm);
 
   PanelStack stack(f.panel, displayH);
   const float promptWt = 34.0f;
   const float vnvWt = 124.0f;
+  const float wxWt = 90.0f;
 
   // Active Flight Plan box.
   {
     Rect inner = drawGroupBox(
-        r, stack.slot(stack.remainingWt(promptWt + vnvWt + 10.0f)),
+        r, stack.slot(stack.remainingWt(promptWt + vnvWt + wxWt + 20.0f)),
         "Active Flight Plan", displayH);
 
     const float headerSize = mfdFontPx(kWtRow, displayH);
@@ -1208,16 +1970,17 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         fy += rowH;
         continue;
       }
-      if (sr.kind == FplSectionRow::Kind::Origin && sr.legIndex < 0) {
+      if (sr.kind == FplSectionRow::Kind::Origin && sr.legIndex < 0 &&
+          !sectionRowIsSelectable(sr, bodyLegCount, ui.fplDestinationFilled())) {
         drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(), true,
                             false, false, rowSize, colors::kPopoutCyan);
         fy += rowH;
         continue;
       }
-      if (sr.kind == FplSectionRow::Kind::Destination && sr.legIndex < 0 &&
-          fplShowsDestinationBlankRow(bodyLegCount, ui.fplDestinationFilled())) {
-        drawFplSectionIdent(r, labelX, cy, "Destination - ", std::string(),
-                            true, false, false, rowSize, colors::kPopoutCyan);
+      if (sr.kind == FplSectionRow::Kind::OriginBlank ||
+          sr.kind == FplSectionRow::Kind::DestinationBlank) {
+        drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                       colors::kPopoutCyan, false, false);
         fy += rowH;
         continue;
       }
@@ -1231,22 +1994,27 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
       switch (sr.kind) {
         case FplSectionRow::Kind::Origin: {
-          const bool showActive = fplShowActiveNavRow(
-              activeHighlight, sr.legIndex, activeLegIdx,
-              plan[static_cast<std::size_t>(sr.legIndex)], navToIdent);
-          const bool activeNavBlink =
-              showActive &&
-              fplActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
-                                   cursorOn, listCursorRow, activeSelectableRow);
-          drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
-                        filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
-                        rowH, displayH, ui, showSelection, showActive, activeNavBlink,
-                        false, approachTransition);
+          if (sr.legIndex >= 0) {
+            const bool showActive = fplShowActiveNavRow(
+                activeHighlight, sr.legIndex, activeLegIdx,
+                plan[static_cast<std::size_t>(sr.legIndex)], navToIdent);
+            const bool activeNavBlink =
+                showActive &&
+                fplActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
+                                     cursorOn, listCursorRow,
+                                     activeSelectableRow);
+            drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
+                          filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
+                          rowH, displayH, ui, showSelection, showActive, activeNavBlink,
+                          false, approachTransition);
+          } else {
+            drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(),
+                                true, showSelection, blinkOn, rowSize,
+                                colors::kPopoutCyan);
+          }
           break;
         }
         case FplSectionRow::Kind::OriginBlank:
-          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
-                         colors::kPopoutCyan, showSelection, blinkOn);
           break;
         case FplSectionRow::Kind::EnrouteBlank: {
           const bool active = fplSectionRowIsActiveDisplay(
@@ -1304,8 +2072,6 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           }
           break;
         case FplSectionRow::Kind::DestinationBlank:
-          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
-                         colors::kPopoutCyan, showSelection, blinkOn);
           break;
         default:
           break;
@@ -1378,6 +2144,12 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                    colors::kWhitesmoke);
   }
 
+  // Selected Waypoint Weather (WT MFDFPLPage): the box for the highlighted
+  // waypoint's datalink (SiriusXM/Connext) weather. With no datalink weather
+  // source wired in, the body stays empty, matching the trainer's MFD Active
+  // Flight Plan page when no weather product has been received.
+  drawGroupBox(r, stack.slot(wxWt), "Selected Waypoint Weather", displayH);
+
   // Bottom prompt (WT .mfd-fpl-bottom-prompt, exact text).
   r.fillText(f.panel.x + f.panel.w * 0.5f,
              f.panel.y + f.panel.h - mfdFontPx(20.0f, displayH),
@@ -1387,83 +2159,12 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
 
   // Editing overlays above the page content.
   if (ui.fplEntryActive()) {
-    drawFplEntryWindow(r, ui, map, x, y, w, h, displayH);
+    drawFplEntryWindow(r, ui, map, f.panel, displayH);
   } else if (ui.fplConfirm() != MfdController::FplConfirm::None) {
     drawFplConfirmWindow(r, ui, x, y, w, h, displayH);
-  } else if (ui.fplMenuOpen()) {
-    drawFplMenuWindow(r, ui, x, y, w, h, displayH);
-  } else if (ui.procMenuOpen()) {
-    const FontScope fs(r, FontFace::DejaVuSemiBold);
-    const float rowH = mfdFontPx(kWtFieldValue, displayH) * 1.9f;
-    const float boxW = w * 0.48f;
-    const float boxH = rowH * 7.0f;
-    const ProcedureType cat = ui.procCategory();
-    const bool pickingTransition =
-        ui.procStep() == MfdController::ProcMenuStep::TransitionList;
-    const char* title =
-        pickingTransition ? "Select Transition"
-        : cat == ProcedureType::Departure ? "Select Departure"
-        : cat == ProcedureType::Arrival   ? "Select Arrival"
-                                          : "Select Approach";
-    Rect inner = drawDialog(
-        r, Rect{x + (w - boxW) * 0.5f, y + (h - boxH) * 0.32f, boxW, boxH},
-        title, displayH);
-
-    const float tabSize = mfdFontPx(16.0f, displayH);
-    const float tabY = inner.y + tabSize * 0.55f;
-    if (!pickingTransition) {
-      struct Tab {
-        const char* label;
-        ProcedureType type;
-      };
-      const Tab tabs[3] = {{"DEP", ProcedureType::Departure},
-                           {"ARR", ProcedureType::Arrival},
-                           {"APP", ProcedureType::Approach}};
-      float tabX = inner.x;
-      for (const Tab& tab : tabs) {
-        const bool active = tab.type == cat;
-        r.fillText(tabX, tabY, tab.label, tabSize, TextAlign::Left,
-                   active ? colors::kCyan : colors::kTitleGray);
-        tabX += r.measureTextWidth(tab.label, tabSize) + tabSize * 1.2f;
-      }
-    } else {
-      r.fillText(inner.x, tabY, ui.procSelectedName().c_str(), tabSize,
-                 TextAlign::Left, colors::kCyan);
-    }
-
-    char icaoBuf[16];
-    std::snprintf(icaoBuf, sizeof(icaoBuf), "%s", ui.procAirportIcao().c_str());
-    r.fillText(inner.x + inner.w, tabY, icaoBuf, tabSize, TextAlign::Right,
-               colors::kWhitesmoke);
-
-    const std::vector<std::string> rows =
-        pickingTransition ? ui.procTransitionLabels(cat, ui.procSelectedName())
-                          : ui.procProcedureNames(cat);
-    const float listRowH = mfdFontPx(kWtListRow, displayH);
-    const float rowSize = mfdFontPx(kWtRow, displayH);
-    float yy = inner.y + listRowH * 1.15f;
-    if (rows.empty()) {
-      r.fillText(inner.x + inner.w * 0.5f, yy + listRowH * 0.5f,
-                 "NO PROCEDURES", rowSize, TextAlign::Center,
-                 colors::kTitleGray);
-    } else {
-      const int fit = std::max(
-          1, static_cast<int>((inner.h - (yy - inner.y)) / listRowH));
-      const int count = std::min(fit, static_cast<int>(rows.size()));
-      for (int i = 0; i < count; ++i) {
-        const float cy = yy + listRowH * 0.5f;
-        const std::string& row = rows[static_cast<std::size_t>(i)];
-        if (i == ui.procSelected()) {
-          drawCursorSelect(r, inner.x, cy, row, rowSize, TextAlign::Left,
-                           ui.blinkOn());
-        } else {
-          r.fillText(inner.x, cy, row, rowSize, TextAlign::Left,
-                     colors::kCyan);
-        }
-        yy += listRowH;
-      }
-    }
   }
+  // The Active Flight Plan Page Menu (MENU key) renders via the shared
+  // drawPageMenu overlay in MultiFunctionDisplay, like the Navigation Map.
 }
 
 }  // namespace avionics::mfd

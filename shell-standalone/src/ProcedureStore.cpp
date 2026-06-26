@@ -4,6 +4,8 @@
 #include "NavData.h"
 #include "XPlaneInstall.h"
 
+#include "avionics/NavMath.h"
+
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>
@@ -122,17 +124,31 @@ void addSyntheticVisualApproaches(const AptDatStore* aptData,
                                   const std::string& icao,
                                   std::vector<MapProcedure>& list) {
   std::unordered_set<std::string> runways;
+  // apt.dat designations are the paired form ("05-23"); each end gets its own
+  // visual approach (the unit lists VISUAL 05, VISUAL 23, ... not "05-23").
+  const auto addRunwayEnds = [&](const std::string& designation) {
+    if (designation.empty()) return;
+    const std::size_t dash = designation.find('-');
+    if (dash == std::string::npos) {
+      runways.insert(designation);
+      return;
+    }
+    const std::string first = designation.substr(0, dash);
+    const std::string second = designation.substr(dash + 1);
+    if (!first.empty()) runways.insert(first);
+    if (!second.empty()) runways.insert(second);
+  };
   if (aptData != nullptr && aptData->loaded()) {
     const AirportMeta* meta = aptData->airportMeta(icao);
     if (meta != nullptr) {
       for (const AirportRunwayInfo& rwy : meta->runways) {
-        if (!rwy.designation.empty()) runways.insert(rwy.designation);
+        addRunwayEnds(rwy.designation);
       }
     }
   }
   for (const MapProcedure& proc : list) {
     if (proc.type != ProcedureType::Approach) continue;
-    if (!proc.runway.empty()) runways.insert(proc.runway);
+    addRunwayEnds(proc.runway);
   }
   for (const std::string& runway : runways) {
     const std::string name = "VISUAL" + runway;
@@ -162,6 +178,104 @@ void mergeProcedureLevelOfService(std::vector<MapProcedure>& list) {
       if (it != bestLos.end()) proc.levelOfService = it->second;
     }
   }
+}
+
+// Reciprocal runway key ("RW13" -> "RW31", swapping L/R), used to derive the
+// runway centerline course when only CIFP thresholds are available.
+std::string oppositeRunwayKey(const std::string& runway) {
+  std::size_t digits = 0;
+  while (digits < runway.size() && runway[digits] >= '0' &&
+         runway[digits] <= '9') {
+    ++digits;
+  }
+  if (digits == 0) return {};
+  const int num = std::stoi(runway.substr(0, digits));
+  const int opp = ((num + 18 - 1) % 36) + 1;
+  std::string suffix = runway.substr(digits);
+  if (suffix == "L") suffix = "R";
+  else if (suffix == "R") suffix = "L";
+  char numbuf[8];
+  std::snprintf(numbuf, sizeof(numbuf), "%02d", opp);
+  return "RW" + std::string(numbuf) + suffix;
+}
+
+// Garmin synthesizes a straight-in visual approach along the runway centerline:
+// STRGHT (3.5 NM final), FINAL (FAF, 1.0 NM), the runway threshold (MAP), and
+// MANSEQ (5.0 NM straight-ahead missed sequence). Distances/roles match the
+// trainer's VISUAL approach preview.
+std::vector<MapLeg> synthesizeVisualApproach(const AptDatStore* aptData,
+                                             const CifpAirportProcedures& airport,
+                                             double refLat, double refLon,
+                                             bool haveRef,
+                                             const std::string& runway) {
+  if (runway.empty()) return {};
+  double thrLat = 0.0;
+  double thrLon = 0.0;
+  double courseDeg = 0.0;
+  bool resolved = false;
+
+  // Prefer apt.dat geometry: both thresholds give the exact centerline course.
+  if (aptData != nullptr && aptData->loaded() && haveRef) {
+    for (const MapRunway& rw : aptData->nearby(refLat, refLon, 6.0f, 64)) {
+      if (rw.idA == runway) {
+        thrLat = rw.a.lat;
+        thrLon = rw.a.lon;
+        courseDeg = navBearingDeg(rw.a.lat, rw.a.lon, rw.b.lat, rw.b.lon);
+        resolved = true;
+        break;
+      }
+      if (rw.idB == runway) {
+        thrLat = rw.b.lat;
+        thrLon = rw.b.lon;
+        courseDeg = navBearingDeg(rw.b.lat, rw.b.lon, rw.a.lat, rw.a.lon);
+        resolved = true;
+        break;
+      }
+    }
+  }
+
+  // Fall back to the CIFP runway thresholds.
+  if (!resolved) {
+    const auto thrIt = airport.runways.find("RW" + runway);
+    if (thrIt == airport.runways.end()) return {};
+    thrLat = thrIt->second.first;
+    thrLon = thrIt->second.second;
+    const auto oppIt = airport.runways.find(oppositeRunwayKey(runway));
+    if (oppIt != airport.runways.end()) {
+      courseDeg = navBearingDeg(thrLat, thrLon, oppIt->second.first,
+                                oppIt->second.second);
+    } else {
+      int num = 0;
+      for (char ch : runway) {
+        if (ch < '0' || ch > '9') break;
+        num = num * 10 + (ch - '0');
+      }
+      courseDeg = static_cast<double>(num) * 10.0;
+    }
+  }
+
+  const double backDeg = courseDeg + 180.0;
+  const auto makeLeg = [](const std::string& id, double lat, double lon,
+                          const std::string& role) {
+    MapLeg leg;
+    leg.id = id;
+    leg.lat = lat;
+    leg.lon = lon;
+    leg.procedureRole = role;
+    return leg;
+  };
+
+  std::vector<MapLeg> legs;
+  double lat = 0.0;
+  double lon = 0.0;
+  navOffsetPoint(thrLat, thrLon, backDeg, 3.5, lat, lon);
+  legs.push_back(makeLeg("STRGHT", lat, lon, ""));
+  navOffsetPoint(thrLat, thrLon, backDeg, 1.0, lat, lon);
+  legs.push_back(makeLeg("FINAL", lat, lon, "faf"));
+  legs.push_back(makeLeg("RW" + runway, thrLat, thrLon, "map"));
+  navOffsetPoint(thrLat, thrLon, courseDeg, 5.0, lat, lon);
+  legs.push_back(makeLeg("MANSEQ", lat, lon, ""));
+  return legs;
 }
 
 }  // namespace
@@ -238,6 +352,14 @@ std::vector<MapLeg> ProcedureStore::expandProcedure(
   if (!cifpLegs.empty()) return cifpLegs;
 
   if (type != ProcedureType::Approach) return {};
+
+  // Synthetic visual approaches have no CIFP legs; build the straight-in course
+  // (STRGHT/FINAL/RW/MANSEQ) from the runway centerline geometry.
+  if (name.compare(0, 6, "VISUAL") == 0) {
+    const std::string runway = name.substr(6);
+    return synthesizeVisualApproach(aptData_, airport, ctx.refLat, ctx.refLon,
+                                    ctx.haveRef, runway);
+  }
 
   for (const MapApproach& ap : navData_.approachesForAirport(icao)) {
     if (ap.ident != name && ap.runway != transition) continue;

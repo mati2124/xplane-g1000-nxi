@@ -104,10 +104,16 @@ void FlightPlanBridgeClient::writePlan(std::vector<MapLeg> legs) {
   hasPlanCmd_ = true;
 }
 
-void FlightPlanBridgeClient::writeDirectTo(MapLeg target) {
+void FlightPlanBridgeClient::writeDirectTo(MapLeg target, bool originValid,
+                                           double originLat, double originLon,
+                                           bool programFms) {
   std::lock_guard<std::mutex> lock(mutex_);
   dtoCmdActive_ = true;
   dtoCmdTarget_ = std::move(target);
+  dtoCmdOriginValid_ = originValid;
+  dtoCmdOriginLat_ = originLat;
+  dtoCmdOriginLon_ = originLon;
+  dtoCmdProgramFms_ = programFms;
   hasDtoCmd_ = true;
 }
 
@@ -115,7 +121,23 @@ void FlightPlanBridgeClient::clearDirectTo() {
   std::lock_guard<std::mutex> lock(mutex_);
   dtoCmdActive_ = false;
   dtoCmdTarget_ = MapLeg{};
+  dtoCmdOriginValid_ = false;
+  dtoCmdOriginLat_ = 0.0;
+  dtoCmdOriginLon_ = 0.0;
+  dtoCmdProgramFms_ = true;
   hasDtoCmd_ = true;
+}
+
+void FlightPlanBridgeClient::clearDirectToDisplay() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  hasDtoDisplayClearCmd_ = true;
+}
+
+fpbridge::DirectToState FlightPlanBridgeClient::directToState(
+    bool& available) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  available = available_;
+  return dtoState_;
 }
 
 void FlightPlanBridgeClient::writeActiveLeg(int legIndex) {
@@ -126,7 +148,8 @@ void FlightPlanBridgeClient::writeActiveLeg(int legIndex) {
 
 bool FlightPlanBridgeClient::pendingCommand() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return hasPlanCmd_ || hasDtoCmd_ || hasActiveLegCmd_;
+  return hasPlanCmd_ || hasDtoCmd_ || hasDtoDisplayClearCmd_ ||
+         hasActiveLegCmd_;
 }
 
 void FlightPlanBridgeClient::run() {
@@ -154,6 +177,11 @@ void FlightPlanBridgeClient::flushCommands() {
   bool hasDto = false;
   bool dtoActive = false;
   MapLeg dtoTarget;
+  bool dtoOriginValid = false;
+  double dtoOriginLat = 0.0;
+  double dtoOriginLon = 0.0;
+  bool dtoProgramFms = true;
+  bool hasDtoDisplayClear = false;
   bool hasActiveLeg = false;
   int activeLegIndex = -1;
   {
@@ -167,7 +195,15 @@ void FlightPlanBridgeClient::flushCommands() {
       hasDto = true;
       dtoActive = dtoCmdActive_;
       dtoTarget = dtoCmdTarget_;
+      dtoOriginValid = dtoCmdOriginValid_;
+      dtoOriginLat = dtoCmdOriginLat_;
+      dtoOriginLon = dtoCmdOriginLon_;
+      dtoProgramFms = dtoCmdProgramFms_;
       hasDtoCmd_ = false;
+    }
+    if (hasDtoDisplayClearCmd_) {
+      hasDtoDisplayClear = true;
+      hasDtoDisplayClearCmd_ = false;
     }
     if (hasActiveLegCmd_) {
       hasActiveLeg = true;
@@ -184,12 +220,25 @@ void FlightPlanBridgeClient::flushCommands() {
     }
   }
   if (hasDto &&
-      !sendWithAck(fpbridge::encodeSetDirectTo(dtoActive, dtoTarget))) {
+      !sendWithAck(fpbridge::encodeSetDirectTo(dtoActive, dtoTarget,
+                                               dtoOriginValid, dtoOriginLat,
+                                               dtoOriginLon, dtoProgramFms))) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!hasDtoCmd_) {
       dtoCmdActive_ = dtoActive;
       dtoCmdTarget_ = std::move(dtoTarget);
+      dtoCmdOriginValid_ = dtoOriginValid;
+      dtoCmdOriginLat_ = dtoOriginLat;
+      dtoCmdOriginLon_ = dtoOriginLon;
+      dtoCmdProgramFms_ = dtoProgramFms;
       hasDtoCmd_ = true;
+    }
+  }
+  if (hasDtoDisplayClear &&
+      !sendWithAck(fpbridge::encodeClearDirectToDisplay())) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!hasDtoDisplayClearCmd_) {
+      hasDtoDisplayClearCmd_ = true;
     }
   }
   if (hasActiveLeg &&
@@ -269,12 +318,15 @@ bool FlightPlanBridgeClient::pollOnce() {
   if (n <= 0) return false;  // timeout / no bridge listening
 
   std::vector<MapLeg> plan;
-  if (!fpbridge::decodeReply(buf.data(), static_cast<std::size_t>(n), plan)) {
+  fpbridge::DirectToState dto;
+  if (!fpbridge::decodeReply(buf.data(), static_cast<std::size_t>(n), plan,
+                             &dto)) {
     return false;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
   plan_ = std::move(plan);
+  dtoState_ = std::move(dto);
   available_ = true;
   return true;
 }

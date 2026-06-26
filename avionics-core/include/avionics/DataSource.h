@@ -60,6 +60,14 @@ class DataSource {
   virtual void setMapPanCenter(bool /*active*/, double /*lat*/,
                                double /*lon*/) {}
 
+  // MFD Direct-To inset: when the window is open on a far-away target, land and
+  // nav features must be queried around that target so the inset chart is not
+  // blank ocean. Sources populate MapData::inset*; MapView reads them when the
+  // inset requests useInsetMapData.
+  virtual void setInsetMapQuery(bool /*active*/, double /*lat*/, double /*lon*/,
+                                float /*rangeNm*/, float /*viewHalfExtentNm*/,
+                                const std::string& /*targetIdent*/ = {}) {}
+
   // MFD map range ladder step (NM). Land-layer queries use this for range-tier
   // selection (continental silhouettes vs high-res detail) and geographic overlap.
   virtual void setChartRangeNm(float /*rangeNm*/) {}

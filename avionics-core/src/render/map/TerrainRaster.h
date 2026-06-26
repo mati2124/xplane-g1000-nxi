@@ -33,8 +33,28 @@ inline constexpr float kFullDetailTerrainMaxNm = 200.0f;
 // Raster edge length in pixels. Full detail at close range; halved above
 // kFullDetailTerrainMaxNm where each pixel already spans several NM.
 inline constexpr int kTerrainFullRasterSize = 512;
+// Upper cap for full-detail hillshade rasters. The MFD's wide aspect needs
+// ~2*viewHalfExtentNm*pixelsPerNm texels (see rasterSizeFor); ~1150 at 10 NM.
+inline constexpr int kTerrainHiResRasterSize = 1152;
 inline constexpr int kTerrainCoarseRasterSize = 256;
-// Wider MFD map aspect: farthest on-screen corner from center at max range.
+// Minimum hillshade texels per on-screen pixel (raster spans 2*halfNm and is
+// drawn at 2*halfNm*pixelsPerNm). Below ~1.0 the MFD shows facet chords.
+inline constexpr float kTerrainMinRasterCellsPerScreenPixel = 1.0f;
+// Separable smoothing passes on the elevation grid before hillshade normals.
+inline constexpr int kTerrainHillshadeSmoothPasses = 2;
+// The hillshade elevation is low-pass filtered over this ground radius before
+// normals are computed. The DSF DEM stores elevation as whole-meter integers
+// (1 m steps over ~90 m posts), so near-flat coastal terrain reads as discrete
+// plateaus whose boundaries the hillshade renders as facet chords. Smoothing
+// over ~2-3 posts bridges those steps; the radius is small versus mountain
+// relief (km-scale), so real terrain detail is preserved.
+inline constexpr float kTerrainHillshadeSmoothRadiusNm = 0.12f;
+// Kernel radius clamp (in raster cells): keeps a coarse raster bridging at
+// least one DEM post while bounding the cost on a very fine (small-range) one.
+inline constexpr int kTerrainHillshadeSmoothMinRadiusCells = 1;
+inline constexpr int kTerrainHillshadeSmoothMaxRadiusCells = 12;
+// Fallback footprint when viewHalfExtentNm is unavailable (inset maps without
+// a viewport extent pass a zero and keep the wider corner margin).
 inline constexpr float kTerrainCornerRangeFactor = 3.5f;
 
 bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,

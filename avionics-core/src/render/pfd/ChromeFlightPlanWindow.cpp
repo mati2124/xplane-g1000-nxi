@@ -8,6 +8,7 @@
 #include "avionics/NavMath.h"
 #include "avionics/render/CursorHighlight.h"
 #include "avionics/FplRouteEdit.h"
+#include "render/mfd/MfdStyle.h"
 #include "render/pfd/ChromeInternal.h"
 #include "render/pfd/PfdFlightPlanSections.h"
 
@@ -121,25 +122,17 @@ void drawFplApproachHeader(Renderer& r, float x, float cy, const std::string& ic
 
 void drawFplDtkValue(Renderer& r, float rightX, float rowCy, double dtkDeg,
                      float size, float smallSize, const Color& color) {
+  (void)smallSize;
   const std::string num = formatHeading(static_cast<float>(dtkDeg));
-  const float degW = r.measureTextWidth(kDeg, smallSize);
-  const float numW = r.measureTextWidth(num.c_str(), size);
-  const float gap = size * 0.06f;
-  const float left = rightX - degW - gap - numW;
-  r.fillText(left, rowCy, num, size, TextAlign::Left, color);
-  r.fillText(left + numW + gap, rowCy, kDeg, smallSize, TextAlign::Left, color);
+  mfd::drawValueWithUnit(r, rightX, rowCy, num, kDeg, size, color);
 }
 
 void drawFplDisValue(Renderer& r, float rightX, float rowCy, double disNm,
                      float size, float smallSize, const Color& color) {
+  (void)smallSize;
   char buf[24];
   std::snprintf(buf, sizeof(buf), "%.1f", disNm);
-  const float numW = r.measureTextWidth(buf, size);
-  const float nmW = r.measureTextWidth("NM", smallSize);
-  const float gap = size * 0.06f;
-  const float left = rightX - nmW - gap - numW;
-  r.fillText(left, rowCy, buf, size, TextAlign::Left, color);
-  r.fillText(left + numW + gap, rowCy, "NM", smallSize, TextAlign::Left, color);
+  mfd::drawValueWithUnit(r, rightX, rowCy, buf, "NM", size, color);
 }
 
 void drawFplValueWithDeg(Renderer& r, float rightX, float rowCy,
@@ -526,9 +519,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const float identX = listLeft + listW * 0.04f;
   const float sectionIdentX = identX + fontPx(kFplSectionIdentIndentPx, h);
   constexpr float kFplDtkDisLeftPx = 10.0f;
-  constexpr float kFplDtkDisDownPx = 4.0f;
   const float dtkDisLeft = fontPx(kFplDtkDisLeftPx, h);
-  const float dtkDisDown = fontPx(kFplDtkDisDownPx, h);
   const float disRight = listRight - dtkDisLeft;
   const float dtkRight = listLeft + listW * 0.58f - dtkDisLeft;
 
@@ -596,8 +587,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
       f.contentTop + fontPx(kFplActiveRowPx + 1.0f, h);
   drawFplHrRule(r, listLeft, listRight, activeLegRuleY, a);
 
-  const float dtkCy =
-      f.contentTop + fontPx(kFplActiveRowPx + 10.0f, h) + dtkDisDown;
+  const float dtkCy = f.contentTop + fontPx(kFplActiveRowPx + 10.0f, h);
   if (!directToFplView) {
     r.fillText(dtkRight, dtkCy, "DTK", smallSize, TextAlign::Right,
                withAlpha(colors::kWhite, a));
@@ -827,8 +817,6 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   for (int idx = first; idx < end; ++idx) {
     const float rowCy =
         bodyTop + rowH * (static_cast<float>(idx - first) + 0.5f);
-    const float valuesCy = rowCy + dtkDisDown;
-
     if (approachLoaded) {
       const FplDisplayRow& dr =
           approachDisplayRows[static_cast<std::size_t>(idx)];
@@ -870,16 +858,16 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                                activeSelectableRow, blinkOn),
               a);
           if (showActive) {
-            drawFplActiveRowValues(r, dtkRight, disColumnRight, valuesCy, size,
+            drawFplActiveRowValues(r, dtkRight, disColumnRight, rowCy, size,
                                    smallSize, d.fmaLegBearingDeg,
                                    d.fmaLegDistanceNm, a);
           } else if (legIdx > 0) {
             const MapLeg& prev = legs[static_cast<std::size_t>(legIdx - 1)];
-            drawFplLegRowValues(r, dtkRight, disColumnRight, valuesCy, size,
+            drawFplLegRowValues(r, dtkRight, disColumnRight, rowCy, size,
                                 smallSize, prev, leg,
                                 withAlpha(colors::kWhitesmoke, a));
           } else {
-            drawFplApproachDtkDisDashes(r, dtkRight, disColumnRight, valuesCy, size,
+            drawFplApproachDtkDisDashes(r, dtkRight, disColumnRight, rowCy, size,
                                         smallSize, a);
           }
           continue;
@@ -920,7 +908,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                          withAlpha(colors::kPopoutCyan, a));
             }
             if (showActive) {
-              drawFplActiveRowValues(r, dtkRight, rowRight, valuesCy, size,
+              drawFplActiveRowValues(r, dtkRight, rowRight, rowCy, size,
                                      smallSize, d.fmaLegBearingDeg,
                                      d.fmaLegDistanceNm, a);
             } else if (dr.legIndex > 0) {
@@ -928,7 +916,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                   legs[static_cast<std::size_t>(dr.legIndex)];
               const MapLeg& prev =
                   legs[static_cast<std::size_t>(dr.legIndex - 1)];
-              drawFplLegRowValues(r, dtkRight, rowRight, valuesCy, size,
+              drawFplLegRowValues(r, dtkRight, rowRight, rowCy, size,
                                   smallSize, prev, leg,
                                   withAlpha(colors::kWhitesmoke, a));
             }
@@ -979,14 +967,14 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                                 colors::kPopoutCyan);
           }
           if (showActive) {
-            drawFplActiveRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
+            drawFplActiveRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                                    d.fmaLegBearingDeg, d.fmaLegDistanceNm, a);
           } else if (dr.legIndex > 0) {
             const MapLeg& leg =
                 legs[static_cast<std::size_t>(dr.legIndex)];
             const MapLeg& prev =
                 legs[static_cast<std::size_t>(dr.legIndex - 1)];
-            drawFplLegRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
+            drawFplLegRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                                 prev, leg, withAlpha(colors::kWhitesmoke, a));
           }
           continue;
@@ -1030,14 +1018,14 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                        withAlpha(colors::kPopoutCyan, a));
           }
           if (showActive) {
-            drawFplActiveRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
+            drawFplActiveRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                                    d.fmaLegBearingDeg, d.fmaLegDistanceNm, a);
           } else if (dr.legIndex > 0) {
             const MapLeg& leg =
                 legs[static_cast<std::size_t>(dr.legIndex)];
             const MapLeg& prev =
                 legs[static_cast<std::size_t>(dr.legIndex - 1)];
-            drawFplLegRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
+            drawFplLegRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                                 prev, leg, withAlpha(colors::kWhitesmoke, a));
           }
           continue;
@@ -1068,16 +1056,18 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
       continue;
     }
 
-    if (sr.kind == FplSectionRow::Kind::Origin && sr.legIndex < 0) {
+    if (sr.kind == FplSectionRow::Kind::Origin && sr.legIndex < 0 &&
+        !fplSectionRowIsSelectable(sr, bodyLegCount,
+                                   ui.flightPlanDestinationFilled())) {
       drawFplSectionIdent(r, identX, rowCy, "Origin - ", std::string(), true,
                           false, false, size, a, colors::kPopoutCyan);
       continue;
     }
-    if (sr.kind == FplSectionRow::Kind::Destination && sr.legIndex < 0 &&
-        fplShowsDestinationBlankRow(bodyLegCount,
-                                  ui.flightPlanDestinationFilled())) {
-      drawFplSectionIdent(r, identX, rowCy, "Destination - ", std::string(),
-                          true, false, false, size, a, colors::kPopoutCyan);
+
+    if (sr.kind == FplSectionRow::Kind::OriginBlank ||
+        sr.kind == FplSectionRow::Kind::DestinationBlank) {
+      drawFplDashRow(r, identX, rowCy, kFplDashCount, size,
+                     withAlpha(colors::kPopoutCyan, a), false, false, a);
       continue;
     }
 
@@ -1092,12 +1082,11 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
           drawFplSectionIdent(r, filledIdentX, rowCy, "Origin - ", ident,
                               false, showSelection, blinkOn, size, a,
                               colors::kPopoutCyan);
+        } else {
+          drawFplSectionIdent(r, identX, rowCy, "Origin - ", std::string(),
+                              true, showSelection, blinkOn, size, a,
+                              colors::kPopoutCyan);
         }
-        ++selectableIdx;
-        continue;
-      case FplSectionRow::Kind::OriginBlank:
-        drawFplDashRow(r, identX, rowCy, kFplDashCount, size,
-                       withAlpha(colors::kPopoutCyan, a), showSelection, blinkOn, a);
         ++selectableIdx;
         continue;
       case FplSectionRow::Kind::EnrouteBlank: {
@@ -1114,7 +1103,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                                  a),
                        showSelection, blinkOn, a);
         if (showActive) {
-          drawFplActiveRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
+          drawFplActiveRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                                  d.fmaLegBearingDeg, d.fmaLegDistanceNm, a);
         }
         ++selectableIdx;
@@ -1152,7 +1141,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                                 colors::kPopoutCyan);
           }
           if (showActive) {
-            drawFplActiveRowValues(r, dtkRight, rowRight, valuesCy, size,
+            drawFplActiveRowValues(r, dtkRight, rowRight, rowCy, size,
                                    smallSize, d.fmaLegBearingDeg,
                                    d.fmaLegDistanceNm, a);
           } else if (sr.legIndex > 0) {
@@ -1160,7 +1149,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                 legs[static_cast<std::size_t>(sr.legIndex)];
             const MapLeg& prev =
                 legs[static_cast<std::size_t>(sr.legIndex - 1)];
-            drawFplLegRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
+            drawFplLegRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                                 prev, leg, withAlpha(colors::kWhitesmoke, a));
           }
         } else {
@@ -1170,9 +1159,6 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
         ++selectableIdx;
         continue;
       case FplSectionRow::Kind::DestinationBlank:
-        drawFplDashRow(r, identX, rowCy, kFplDashCount, size,
-                       withAlpha(colors::kPopoutCyan, a), showSelection, blinkOn, a);
-        ++selectableIdx;
         continue;
       default:
         continue;
@@ -1205,13 +1191,13 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
     }
 
     if (showActive) {
-      drawFplActiveRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize,
+      drawFplActiveRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                              d.fmaLegBearingDeg, d.fmaLegDistanceNm, a);
     } else if (sr.legIndex > 0) {
       const MapLeg& leg = legs[static_cast<std::size_t>(sr.legIndex)];
       const MapLeg& prev =
           legs[static_cast<std::size_t>(sr.legIndex - 1)];
-      drawFplLegRowValues(r, dtkRight, rowRight, valuesCy, size, smallSize, prev,
+      drawFplLegRowValues(r, dtkRight, rowRight, rowCy, size, smallSize, prev,
                           leg, withAlpha(colors::kWhitesmoke, a));
     }
   }

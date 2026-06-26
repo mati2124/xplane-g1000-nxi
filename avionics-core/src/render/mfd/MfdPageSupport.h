@@ -91,7 +91,13 @@ struct PanelStack {
 void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
                  const Rect& area, float rangeNm, const MapFeature* center,
                  float displayH, bool showFixes = false,
-                 const std::vector<MapLeg>* procedurePreview = nullptr);
+                 const std::vector<MapLeg>* procedurePreview = nullptr,
+                 float displayRangeNm = 0.0f,
+                 TerrainDisplay terrain = TerrainDisplay::Topo,
+                 bool useInsetMapData = false);
+
+float directToInsetRangeNm(const MapData& map, const MapFeature& wpt);
+float directToInsetViewHalfExtentNm(float rangeNm);
 
 void drawWaypointIcon(Renderer& r, float cx, float cy, float size,
                       const MapFeature* feature, MapFeatureType type);

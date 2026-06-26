@@ -53,6 +53,9 @@ class MockDataSource : public DataSource {
   std::string aircraftAcfRelativePath() const override { return {}; }
 
   void setMapPanCenter(bool active, double lat, double lon) override;
+  void setInsetMapQuery(bool active, double lat, double lon, float rangeNm,
+                        float viewHalfExtentNm,
+                        const std::string& targetIdent = {}) override;
   void setChartRangeNm(float rangeNm) override;
   void setMapViewHalfExtentNm(float halfExtentNm) override;
 
@@ -210,6 +213,16 @@ class MockDataSource : public DataSource {
   double mapPanLon_ = 0.0;
   bool mapPanDirty_ = false;
   float mapViewHalfExtentNm_ = 0.0f;
+
+  bool insetMapActive_ = false;
+  double insetMapLat_ = 0.0;
+  double insetMapLon_ = 0.0;
+  float insetMapRangeNm_ = 0.0f;
+  float insetMapHalfExtentNm_ = 0.0f;
+  std::string insetMapTargetIdent_;
+  bool insetMapDirty_ = false;
+
+  void refreshInsetMap();
 
   static inline const ChecklistData emptyChecklists_{};
   static inline const EisLayout emptyEis_{};

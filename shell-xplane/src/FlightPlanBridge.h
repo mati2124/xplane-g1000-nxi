@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "avionics/FlightPlanBridgeProtocol.h"
 #include "avionics/MapData.h"
 
 namespace avionics {
@@ -71,8 +72,18 @@ class FlightPlanBridge {
   bool hasDtoWrite_ = false;
   bool dtoWriteActive_ = false;
   MapLeg dtoWriteTarget_;
+  bool dtoWriteOriginValid_ = false;
+  double dtoWriteOriginLat_ = 0.0;
+  double dtoWriteOriginLon_ = 0.0;
+  bool dtoWriteProgramFms_ = true;
+  bool hasDtoDisplayClearWrite_ = false;
   bool hasActiveLegWrite_ = false;
   int activeLegWriteIndex_ = -1;
+
+  // Stored Direct-To display state (target + course origin at activation).
+  // Survives standalone restarts while the plugin stays loaded; reported in
+  // FPLR replies so the map magenta course can be restored.
+  fpbridge::DirectToState dtoDisplay_;
 
   std::atomic<bool> stop_{false};
   std::thread thread_;

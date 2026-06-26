@@ -57,6 +57,10 @@ std::string lastAirportInPlan(const std::vector<MapLeg>& legs);
 
 std::string directToAirportIcao(const MapData* map);
 
+// Nearest airport to ownship from the map feature list (PROC default airport).
+std::string nearestAirportIcao(const MapData* map);
+std::vector<std::string> nearestAirportIds(const MapData* map, int maxCount = 25);
+
 bool fplDestinationFilledFromLegCount(int legCount);
 
 // Direct-To with a single leg is destination-only (not origin).
@@ -113,5 +117,11 @@ bool fplCommitWaypointIdent(FplRouteEdit& edit, const NavFeatureSource* navSourc
                             int selectableCursorRow,
                             const std::string& approachAirport,
                             FplCursorLayout layout);
+
+// Initial ident for the FPL waypoint-entry window at the highlighted row
+// (blank origin/destination slots return empty).
+std::string fplIdentEntrySeedAtCursor(const FplRouteEdit& edit,
+                                      const std::string& approachAirport,
+                                      FplCursorLayout layout);
 
 }  // namespace avionics

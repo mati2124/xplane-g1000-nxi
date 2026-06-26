@@ -81,7 +81,43 @@ constexpr float kTurnSmoothMaxCdiDots = 1.5f;
 constexpr double kTurnSmoothMinDeltaDeg = 15.0;
 // Margin past the lead point that still counts as "inside the turn" so the
 // clamp covers the full arc until the aircraft intercepts the outbound leg.
-constexpr double kTurnRegionMarginNm = 0.4;
+constexpr double kTurnRegionMarginNm = avionics::kTurnSteeringMarginNm;
+
+bool steerDirectToOutboundTurn(NavigationSolution& sol, const MapData& map,
+                               double gsKts) {
+  if (!map.directToActive || map.directTo.id.empty()) return false;
+  const std::vector<MapLeg>& plan = map.flightPlan;
+  const int dtoIdx = legIndexInPlan(plan, map.directTo);
+  if (dtoIdx < 0 || dtoIdx + 1 >= static_cast<int>(plan.size())) {
+    return false;
+  }
+
+  const MapLeg& target = plan[static_cast<std::size_t>(dtoIdx)];
+  const MapLeg& nextLeg = plan[static_cast<std::size_t>(dtoIdx + 1)];
+  double inboundDeg;
+  if (map.directToOriginValid) {
+    inboundDeg = navBearingDeg(map.directToOriginLat, map.directToOriginLon,
+                               target.lat, target.lon);
+  } else {
+    inboundDeg = navBearingDeg(map.ownshipLat, map.ownshipLon, target.lat,
+                              target.lon);
+  }
+  const double outboundDeg =
+      navBearingDeg(target.lat, target.lon, nextLeg.lat, nextLeg.lon);
+  const double turnDeltaDeg = shortestTurnDeltaDeg(inboundDeg, outboundDeg);
+  if (std::fabs(turnDeltaDeg) < 1.0) return false;
+
+  const double gs = std::max(40.0, static_cast<double>(gsKts));
+  const double leadNm =
+      turnLeadDistanceNm(gs, turnDeltaDeg, kDirectToFlyByMaxTurnDegCap);
+  const double distToNm =
+      navDistanceNm(map.ownshipLat, map.ownshipLon, target.lat, target.lon);
+  if (distToNm > leadNm + kTurnRegionMarginNm) return false;
+
+  sol.desiredTrackDeg = static_cast<float>(outboundDeg);
+  sol.crossTrackNm = 0.0f;
+  return true;
+}
 
 }  // namespace
 
@@ -93,9 +129,6 @@ NavigationSolution applyFlyByTurnCourse(NavigationSolution sol,
       cdiSource != CdiSource::Gps) {
     return sol;
   }
-  // Fly-by steering applies only after Direct-To capture; during Direct-To the
-  // AP must track the direct course to the fix, not the outbound leg.
-  if (sol.directTo) return sol;
   if (!map.positionValid || map.flightPlan.size() < 2) return sol;
 
   const std::vector<MapLeg>& plan = map.flightPlan;
@@ -107,6 +140,10 @@ NavigationSolution applyFlyByTurnCourse(NavigationSolution sol,
   // centered CDI so the autopilot starts the turn instead of the inbound
   // cross-track fighting it (e.g. KFMY CITAG→BUTLY→UZAWO needs a right turn but
   // the outbound XTK reads "fly left" until the fix is captured).
+  //
+  // Also applies during an on-plan Direct-To: the AP must track the direct
+  // course until the advisory says "now", then begin the outbound turn smoothly
+  // (regression: Direct-To AZOMY then left turn to UZAWO dropped NAV mid-turn).
   const TurnAnticipation ta =
       computeTurnAnticipation(map, data, obsMode, cdiSource);
   if (ta.active && ta.message.find(" now") != std::string::npos &&
@@ -119,6 +156,14 @@ NavigationSolution applyFlyByTurnCourse(NavigationSolution sol,
     return sol;
   }
 
+  // Fly-by post-sequence smoothing applies only after Direct-To capture; during
+  // Direct-To the AP must track the direct course to the fix until the fly-by
+  // lead point, then steer the outbound leg (see steerDirectToOutboundTurn).
+  if (sol.directTo) {
+    steerDirectToOutboundTurn(sol, map, data.groundSpeedKts);
+    return sol;
+  }
+
   // (B) Post-sequence turn completion. The navigator flips the leg at the same
   // lead distance the advisory uses, so on the standard fly-by the aircraft is
   // already on the outbound leg by the time it reaches the fly-by point and (A)
@@ -128,12 +173,18 @@ NavigationSolution applyFlyByTurnCourse(NavigationSolution sol,
   // turn near the fix, clamp the commanded cross-track so the needle never
   // saturates; it relaxes to exact tracking as the real offset shrinks below the
   // clamp and the aircraft intercepts the outbound leg.
-  if (toIdx < 2) return sol;  // need both the turn fix and the leg into it
-  const MapLeg& priorFix = plan[static_cast<std::size_t>(toIdx - 2)];
+  if (toIdx < 1) return sol;
   const MapLeg& turnFix = plan[static_cast<std::size_t>(toIdx - 1)];
   const MapLeg& outLeg = plan[static_cast<std::size_t>(toIdx)];
-  const double inboundDeg =
-      navBearingDeg(priorFix.lat, priorFix.lon, turnFix.lat, turnFix.lon);
+  double inboundDeg;
+  if (toIdx >= 2) {
+    const MapLeg& priorFix = plan[static_cast<std::size_t>(toIdx - 2)];
+    inboundDeg =
+        navBearingDeg(priorFix.lat, priorFix.lon, turnFix.lat, turnFix.lon);
+  } else {
+    inboundDeg = navBearingDeg(map.ownshipLat, map.ownshipLon, turnFix.lat,
+                               turnFix.lon);
+  }
   const double outboundDeg =
       navBearingDeg(turnFix.lat, turnFix.lon, outLeg.lat, outLeg.lon);
   const double turnDeltaDeg = shortestTurnDeltaDeg(inboundDeg, outboundDeg);

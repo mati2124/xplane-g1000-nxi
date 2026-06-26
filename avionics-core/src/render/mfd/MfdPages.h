@@ -82,7 +82,7 @@ void drawNearestFrequenciesPage(Renderer& r, const FlightData& d,
 // the editing overlays (Waypoint Information entry, Remove/Delete
 // confirmations, page menu) driven by the FMS knob.
 void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
-                              const MapData& map, const MfdController& ui,
+                              const MapData& map, MfdController& ui,
                               float x, float y, float w, float h,
                               float displayH);
 
@@ -93,6 +93,11 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
 void drawDirectToWindow(Renderer& r, const FlightData& d, const MapData& map,
                         const MfdController& ui, float x, float y, float w,
                         float h, float displayH);
+
+// The Procedures window (PROC bezel key), drawn over the current MFD page.
+void drawProcWindow(Renderer& r, const FlightData& d, const MapData& map,
+                    const MfdController& ui, float x, float y, float w,
+                    float h, float displayH);
 
 // The Map Settings window (MENU -> Map Settings on the Navigation Map page),
 // drawn over the current MFD page: the Group selector and the active group's

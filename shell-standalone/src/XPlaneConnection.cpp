@@ -971,6 +971,8 @@ void XPlaneConnection::update(double dtSeconds) {
     // Sim date passes straight through (it only changes at midnight).
     data_.utcDayOfYear = target_.utcDayOfYear;
     updateZuluClock(dtSeconds);
+    tryAdoptDirectToFromBridge();
+    ensureDirectToFmsForNavArming();
     updateMap(dtSeconds);
     updateFmaModes();
     syncDisplayBackup(data_, dtSeconds);
@@ -1033,8 +1035,10 @@ std::vector<MapLeg> XPlaneConnection::displayedFlightPlan() const {
 void XPlaneConnection::setDirectTo(MapLeg target) {
   const std::string prevDirectToId = directTo_.id;
   const bool navActive = apModeStatus_[kApNav] == kApModeActive;
+  bridgeDtoAdoptAttempted_ = true;
   directTo_ = std::move(target);
   directToActive_ = !directTo_.id.empty();
+  directToFmsProgrammed_ = false;
   if (directToActive_) {
     // Each Direct-To activation snapshots present position as the course origin.
     if (haveLat_ && haveLon_) {
@@ -1066,14 +1070,17 @@ void XPlaneConnection::setDirectTo(MapLeg target) {
   if (fmsWriteEnabled_) {
     if (directToActive_) {
       // Reprogramming X-Plane's FMS to the same fix drops GPS nav briefly; skip
-      // it when already Direct-To to this ident, and skip it entirely while AP
+      // it when already Direct-To to this ident, and skip FMS writes while AP
       // NAV is coupled -- override_gps steers the leg, so the sim FMS is unused
-      // for the autopilot and reprogramming would only drop NAV.
+      // for the autopilot and reprogramming would only drop NAV. The plugin
+      // still receives the display state (target + origin) either way.
       const bool sameDirectToTarget =
           !prevDirectToId.empty() &&
           flightPlanIdentsEqual(prevDirectToId, directTo_.id);
-      if (!sameDirectToTarget && !navActive) {
-        fmsBridge_.writeDirectTo(directTo_);
+      if (!sameDirectToTarget) {
+        directToFmsProgrammed_ = false;
+        syncDirectToToBridge(!navActive);
+        if (!navActive) directToFmsProgrammed_ = true;
       }
     } else {
       fmsBridge_.clearDirectTo();
@@ -1081,14 +1088,49 @@ void XPlaneConnection::setDirectTo(MapLeg target) {
   }
 }
 
+void XPlaneConnection::syncDirectToToBridge(bool programFms) {
+  if (!fmsWriteEnabled_ || !directToActive_) return;
+  fmsBridge_.writeDirectTo(directTo_, directToOriginValid_, directToOriginLat_,
+                           directToOriginLon_, programFms);
+}
+
+void XPlaneConnection::tryAdoptDirectToFromBridge() {
+  if (bridgeDtoAdoptAttempted_ || directToActive_ || !fmsWriteEnabled_) {
+    return;
+  }
+  bool bridgeAvailable = false;
+  const fpbridge::DirectToState dto = fmsBridge_.directToState(bridgeAvailable);
+  if (!bridgeAvailable) return;
+
+  bridgeDtoAdoptAttempted_ = true;
+  if (!dto.active || dto.target.id.empty() || !dto.originValid) return;
+
+  restoreDirectTo(dto.target, dto.originLat, dto.originLon, true, true);
+}
+
+void XPlaneConnection::ensureDirectToFmsForNavArming() {
+  if (!fmsWriteEnabled_ || !directToActive_ || directTo_.id.empty()) return;
+  const bool navActive = apModeStatus_[kApNav] == kApModeActive;
+  if (navActive) {
+    directToFmsProgrammed_ = true;
+    return;
+  }
+  if (directToFmsProgrammed_) return;
+  syncDirectToToBridge(true);
+  directToFmsProgrammed_ = true;
+}
+
 void XPlaneConnection::restoreDirectTo(MapLeg target, double originLat,
-                                     double originLon, bool originValid) {
+                                     double originLon, bool originValid,
+                                     bool programBridgeFms) {
   if (target.id.empty()) {
     setDirectTo({});
     return;
   }
+  bridgeDtoAdoptAttempted_ = true;
   directTo_ = std::move(target);
   directToActive_ = true;
+  directToFmsProgrammed_ = false;
   directToOriginLat_ = originLat;
   directToOriginLon_ = originLon;
   directToOriginValid_ = originValid;
@@ -1099,13 +1141,16 @@ void XPlaneConnection::restoreDirectTo(MapLeg target, double originLat,
   }
   resetGpsCouplingState();
   if (fmsWriteEnabled_) setGpsOverride(false);
-  if (fmsWriteEnabled_) {
-    fmsBridge_.writeDirectTo(directTo_);
+  if (fmsWriteEnabled_ && programBridgeFms) {
+    syncDirectToToBridge(true);
+    directToFmsProgrammed_ = true;
   }
 }
 
 void XPlaneConnection::clearDirectTo() {
+  bridgeDtoAdoptAttempted_ = true;
   directToActive_ = false;
+  directToFmsProgrammed_ = false;
   directToOriginPending_ = false;
   directToOriginValid_ = false;
   if (fmsWriteEnabled_) fmsBridge_.clearDirectTo();
@@ -1113,6 +1158,7 @@ void XPlaneConnection::clearDirectTo() {
 
 void XPlaneConnection::releaseDirectToOverride() {
   directToActive_ = false;
+  directToFmsProgrammed_ = false;
   directTo_ = {};
   directToOriginPending_ = false;
   directToOriginValid_ = false;
@@ -1123,6 +1169,7 @@ void XPlaneConnection::releaseDirectToOverride() {
 
 void XPlaneConnection::onNavigatorDirectToCaptured(int activeLegIndex) {
   releaseDirectToOverride();
+  bridgeDtoAdoptAttempted_ = true;
   if (fmsWriteEnabled_) {
     // With NAV already tracking, override_gps takes over steering the planned
     // leg on this same frame, so the sim FMS is irrelevant for the autopilot.
@@ -1136,6 +1183,8 @@ void XPlaneConnection::onNavigatorDirectToCaptured(int activeLegIndex) {
       if (activeLegIndex >= 0) {
         syncSimulatorActiveLeg(activeLegIndex);
       }
+    } else {
+      fmsBridge_.clearDirectToDisplay();
     }
   }
   resetGpsCouplingState();
@@ -1187,6 +1236,14 @@ void XPlaneConnection::updateMap(double dtSeconds) {
     map_.directToOriginValid = true;
     map_.directToOriginLat = directToOriginLat_;
     map_.directToOriginLon = directToOriginLon_;
+    if (fmsWriteEnabled_ && directToActive_) {
+      const bool navActive = apModeStatus_[kApNav] == kApModeActive;
+      if (!navActive) {
+        directToFmsProgrammed_ = false;
+        syncDirectToToBridge(true);
+        directToFmsProgrammed_ = true;
+      }
+    }
   }
 
   if (routeOverrideSet_) {
@@ -1260,6 +1317,60 @@ void XPlaneConnection::updateMap(double dtSeconds) {
     }
     mapPanDirty_ = false;
     sinceMapRebuildSeconds_ = 0.0;
+  }
+
+  if (insetMapActive_) {
+    const bool insetDue = insetMapDirty_ || map_.insetLandLines.empty() ||
+                          sinceMapRebuildSeconds_ >= kMapRebuildIntervalSeconds;
+    if (insetDue) {
+      map_.insetMapActive = true;
+      map_.insetMapLat = insetMapLat_;
+      map_.insetMapLon = insetMapLon_;
+      const float featRange =
+          std::max(insetMapRangeNm_, kMapQueryRangeNm * 0.25f);
+      if (navData_.loaded()) {
+        map_.insetFeatures =
+            navData_.nearby(insetMapLat_, insetMapLon_, featRange,
+                            kMaxMapFeatures);
+        if (aptData_.loaded()) {
+          for (MapFeature& f : map_.insetFeatures) {
+            aptData_.enrichAirport(f);
+          }
+        }
+        if (!insetMapTargetIdent_.empty()) {
+          bool found = false;
+          for (const MapFeature& f : map_.insetFeatures) {
+            if (f.id == insetMapTargetIdent_) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            std::vector<MapFeature> exact =
+                navData_.lookupIdent(insetMapTargetIdent_, 1);
+            if (!exact.empty()) {
+              MapFeature f = exact.front();
+              if (aptData_.loaded()) aptData_.enrichAirport(f);
+              map_.insetFeatures.push_back(std::move(f));
+            }
+          }
+        }
+      }
+      if (landData_.loaded()) {
+        map_.insetLandLines =
+            landData_.nearbyLines(insetMapLat_, insetMapLon_, insetMapRangeNm_,
+                                  kMaxMapLandLines, insetMapHalfExtentNm_);
+        map_.insetCities =
+            landData_.nearbyCities(insetMapLat_, insetMapLon_, insetMapRangeNm_,
+                                   kMaxMapCities, insetMapHalfExtentNm_);
+      }
+      insetMapDirty_ = false;
+    }
+  } else if (map_.insetMapActive) {
+    map_.insetMapActive = false;
+    map_.insetLandLines.clear();
+    map_.insetCities.clear();
+    map_.insetFeatures.clear();
   }
 
   // Traffic: decoded every frame (only a handful of slots) so targets track
@@ -1548,6 +1659,15 @@ void XPlaneConnection::updateGpsGlidepathCoupling() {
   }
 
   if ((gpsGlidepathCaptured_ || gsStatus == kApModeActive) && data_.apEngaged) {
+    // Latch the capture as soon as we begin pitch-steering the glidepath. This
+    // covers the race where X-Plane's own autopilot captures the glideslope
+    // (gsStatus active) a frame before engageGsCapture()'s envelope test fires:
+    // we take over the sim's VS channel to track the path, which immediately
+    // drops the sim's GS-active status, so without this latch neither
+    // gpsGlidepathCaptured_ nor glideslope_status would read active and the FMA
+    // would fall through to annunciate VS instead of the green GP. GP is its own
+    // pitch mode on the NXi; VS is only the underlying steering lever.
+    gpsGlidepathCaptured_ = true;
     setApOverrideForGs(true);
     sendDataref(datarefs::kApAltitudeMode, kAltModeVerticalSpeed);
     if (std::fabs(gp.targetVerticalSpeedFpm - lastSentGsTrackVsFpm_) >
@@ -1666,6 +1786,24 @@ void XPlaneConnection::setMapPanCenter(bool active, double lat, double lon) {
   mapPanActive_ = active;
   mapPanLat_ = lat;
   mapPanLon_ = lon;
+}
+
+void XPlaneConnection::setInsetMapQuery(bool active, double lat, double lon,
+                                        float rangeNm, float viewHalfExtentNm,
+                                        const std::string& targetIdent) {
+  if (active != insetMapActive_ ||
+      (active && (lat != insetMapLat_ || lon != insetMapLon_ ||
+                  rangeNm != insetMapRangeNm_ ||
+                  viewHalfExtentNm != insetMapHalfExtentNm_ ||
+                  targetIdent != insetMapTargetIdent_))) {
+    insetMapDirty_ = true;
+  }
+  insetMapActive_ = active;
+  insetMapLat_ = lat;
+  insetMapLon_ = lon;
+  insetMapRangeNm_ = rangeNm;
+  insetMapHalfExtentNm_ = viewHalfExtentNm;
+  insetMapTargetIdent_ = targetIdent;
 }
 
 void XPlaneConnection::setChartRangeNm(float rangeNm) {
@@ -1843,9 +1981,16 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
   // Without FMS write (--no-fms-write) there is no sim route to steer from, so
   // override always injects our guidance (including before NAV capture).
   const bool navRollActive = apModeStatus_[kApNav] == kApModeActive;
+  if (lastApNavActive_ && !navRollActive && directToActive_) {
+    directToFmsProgrammed_ = false;
+  }
+  lastApNavActive_ = navRollActive;
+
   const bool steerWithOverride = fmsWriteEnabled_ ? navRollActive : true;
   if (!steerWithOverride) {
-    if (!gpsGlidepathHasSignal_) setGpsOverride(false);
+    // Sim GPS must drive the CDI for AP NAV to arm/capture; release override even
+    // if a synthesized glidepath was active while NAV was previously coupled.
+    setGpsOverride(false);
     lastSentGpsCourseDeg_ = -999.0f;
     lastSentGpsHdefDots_ = 999.0f;
     lastSentGpsHdefNmPerDot_ = -1.0f;

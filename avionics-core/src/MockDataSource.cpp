@@ -894,6 +894,24 @@ void MockDataSource::setMapPanCenter(bool active, double lat, double lon) {
   mapPanLon_ = lon;
 }
 
+void MockDataSource::setInsetMapQuery(bool active, double lat, double lon,
+                                      float rangeNm, float viewHalfExtentNm,
+                                      const std::string& targetIdent) {
+  if (active != insetMapActive_ ||
+      (active && (lat != insetMapLat_ || lon != insetMapLon_ ||
+                  rangeNm != insetMapRangeNm_ ||
+                  viewHalfExtentNm != insetMapHalfExtentNm_ ||
+                  targetIdent != insetMapTargetIdent_))) {
+    insetMapDirty_ = true;
+  }
+  insetMapActive_ = active;
+  insetMapLat_ = lat;
+  insetMapLon_ = lon;
+  insetMapRangeNm_ = rangeNm;
+  insetMapHalfExtentNm_ = viewHalfExtentNm;
+  insetMapTargetIdent_ = targetIdent;
+}
+
 void MockDataSource::setChartRangeNm(float rangeNm) {
   if (map_.rangeNm != rangeNm) {
     map_.rangeNm = rangeNm;
@@ -919,7 +937,10 @@ void MockDataSource::refreshFeatures(double dt) {
   sinceFeatureRebuild_ += dt;
   const bool due = map_.features.empty() || mapPanDirty_ ||
                    sinceFeatureRebuild_ >= kFeatureRebuildIntervalSeconds;
-  if (!due) return;
+  if (!due) {
+    refreshInsetMap();
+    return;
+  }
   sinceFeatureRebuild_ = 0.0;
   mapPanDirty_ = false;
 
@@ -950,6 +971,50 @@ void MockDataSource::refreshFeatures(double dt) {
                                    mapViewHalfExtentNm_);
   map_.obstacles = navFeatures_->nearbyObstacles(lat, lon, kObstacleQueryRangeNm,
                                                  kMaxObstacles);
+  refreshInsetMap();
+}
+
+void MockDataSource::refreshInsetMap() {
+  if (!insetMapActive_) {
+    if (map_.insetMapActive) {
+      map_.insetMapActive = false;
+      map_.insetLandLines.clear();
+      map_.insetCities.clear();
+      map_.insetFeatures.clear();
+    }
+    return;
+  }
+  if (!insetMapDirty_ && !map_.insetLandLines.empty()) return;
+  insetMapDirty_ = false;
+  map_.insetMapActive = true;
+  map_.insetMapLat = insetMapLat_;
+  map_.insetMapLon = insetMapLon_;
+  if (navFeatures_ != nullptr && navFeatures_->ready()) {
+    const float featRange =
+        std::max(insetMapRangeNm_, kFeatureQueryRangeNm * 0.25f);
+    map_.insetFeatures =
+        navFeatures_->nearby(insetMapLat_, insetMapLon_, featRange, kMaxFeatures);
+    if (!insetMapTargetIdent_.empty()) {
+      bool found = false;
+      for (const MapFeature& f : map_.insetFeatures) {
+        if (f.id == insetMapTargetIdent_) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        std::vector<MapFeature> exact =
+            navFeatures_->lookupIdent(insetMapTargetIdent_, 1);
+        if (!exact.empty()) map_.insetFeatures.push_back(exact.front());
+      }
+    }
+    map_.insetLandLines = navFeatures_->nearbyLandLines(
+        insetMapLat_, insetMapLon_, insetMapRangeNm_, kMaxLandLines,
+        insetMapHalfExtentNm_);
+    map_.insetCities = navFeatures_->nearbyCities(
+        insetMapLat_, insetMapLon_, insetMapRangeNm_, kMaxCities,
+        insetMapHalfExtentNm_);
+  }
 }
 
 namespace {

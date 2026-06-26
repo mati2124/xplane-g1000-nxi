@@ -96,13 +96,15 @@ inline constexpr Color kActiveGreen{0.0f, 0.95f, 0.0f, 1.0f};
 inline constexpr Color kAirspaceBlue{0.188f, 0.502f, 1.0f, 1.0f};    // #3080ff
 inline constexpr Color kAirspaceMaroon{0.290f, 0.0f, 0.271f, 1.0f};  // #4a0045
 
-// Navigation-map point-feature symbology, matching the Garmin G1000/G3000 NXi
-// map icon assets (Working Title fspackages, Garmin/Map): towered airports are
-// a muted blue, non-towered/heliport/private airports a muted magenta, VORs and
-// intersections a muted cyan, and NDBs a muted magenta. Every symbol carries a
-// dark-gray outline for contrast over terrain.
-inline constexpr Color kAirportTowered{0.251f, 0.439f, 0.690f, 1.0f};     // #4070b0
-inline constexpr Color kAirportNonTowered{0.565f, 0.251f, 0.502f, 1.0f};  // #904080
+// Navigation-map point-feature symbology, matching the Garmin G1000 NXi map
+// icons. Colors sampled from the Cessna NAV III PC Trainer v20.05: towered
+// airports are a bright azure blue (#3080ff, the same blue as towered airport
+// data and the WPT page "Public" type diamond), non-towered/heliport/private
+// airports a bright magenta (#a03080), VORs and intersections a muted cyan, and
+// NDBs the same magenta. Every symbol carries a dark-gray outline for contrast
+// over terrain.
+inline constexpr Color kAirportTowered{0.188f, 0.502f, 1.0f, 1.0f};       // #3080ff
+inline constexpr Color kAirportNonTowered{0.627f, 0.188f, 0.502f, 1.0f};  // #a03080
 inline constexpr Color kNavaidCyan{0.502f, 0.816f, 0.816f, 1.0f};         // #80d0d0
 inline constexpr Color kNdbMagenta{0.627f, 0.188f, 0.502f, 1.0f};         // #a03080
 inline constexpr Color kMapSymbolOutline{0.251f, 0.251f, 0.251f, 1.0f};   // #404040
@@ -150,6 +152,8 @@ inline constexpr Color kMenuBorderGray{0.62f, 0.66f, 0.66f, 1.0f};
 // the muted field-label gray (--title-gray #b7b7b7), and whitesmoke for
 // computed values (editable values are cyan, GPS-derived magenta).
 inline constexpr Color kMfdPanelGray{0.196f, 0.196f, 0.196f, 1.0f};   // rgb(50,50,50)
+// MFD procedure overlay panel behind the black group boxes (trainer ~rgb(32,32,32)).
+inline constexpr Color kMfdOverlayGray{0.125f, 0.125f, 0.125f, 1.0f};  // rgb(32,32,32)
 inline constexpr Color kGroupBoxBorder{0.471f, 0.471f, 0.471f, 1.0f};  // rgb(120,120,120)
 inline constexpr Color kTitleGray{0.718f, 0.718f, 0.718f, 1.0f};       // #b7b7b7
 // Disabled / unavailable text (WT --disabled-gray): dim grey for menu options

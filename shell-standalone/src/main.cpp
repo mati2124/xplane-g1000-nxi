@@ -18,6 +18,9 @@
 //   --demo                    boot straight into the built-in demo feed (the
 //                             same motion-only mock Ctrl+Shift+D toggles), so
 //                             the displays show believable motion with no sim
+//   --skip-ack                auto-acknowledge the MFD power-up page (as if ENT
+//                             were pressed) once the self-test finishes, so a
+//                             relaunch never blocks waiting for ENT
 //   --debug-menu              install the dev-only macOS "Debug" menu (switch
 //                             the data source between X-Plane and the demo
 //                             ground/flying/turbulence states, and flip the
@@ -123,6 +126,7 @@
 #include "avionics/MockDataSource.h"
 #include "avionics/PersistentState.h"
 #include "avionics/FlightPlanPersistence.h"
+#include "avionics/ProcedureSupport.h"
 #include "avionics/UpdateChecker.h"
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
@@ -1096,19 +1100,22 @@ inline void RenderSuiteSettled(avionics::NanoVgRenderer& renderer,
   RenderSuite(renderer, eng, fbWidth, fbHeight, showBezel);
 }
 
-// Block until DSF tiles cover the terrain raster footprint (rangeNm * 2.4) so
-// wide-map topo screenshots and the first async rebuild sample real elevation.
+// Block until DSF tiles cover the terrain raster footprint so wide-map topo
+// screenshots (and the first async rebuild) sample real elevation. The raster
+// sizes its footprint to the wide MFD's farthest viewport corner
+// (kTerrainCornerRangeFactor), so warming only the narrower rangeNm*2.4 left an
+// un-resident annulus that the build then streamed mid-frame -- on a fresh
+// inland view that showed as black terrain and churned the async worker.
 void WarmTerrainTilesForRange(avionics::DsfTerrainStore& terrain,
                               double centerLat, double centerLon,
                               float rangeNm) {
   if (!terrain.ready()) return;
-  constexpr float kCoverageRangeFactor = 2.4f;
-  constexpr float kTerrainCornerRangeFactor = 3.5f;
+  // Matches the raster's kTerrainCornerRangeFactor (farthest MFD viewport
+  // corner) so the whole drawn footprint is resident before the build samples.
+  constexpr float kCoverageRangeFactor = 3.5f;
   constexpr float kFullDetailTerrainMaxNm = 200.0f;
   constexpr double kNmPerDegLat = 60.0;
-  const double halfNm =
-      std::max(static_cast<double>(rangeNm) * kCoverageRangeFactor,
-               static_cast<double>(rangeNm) * kTerrainCornerRangeFactor);
+  const double halfNm = static_cast<double>(rangeNm) * kCoverageRangeFactor;
   const double nmLon =
       kNmPerDegLat * std::cos(centerLat * 3.14159265358979323846 / 180.0);
   const bool coarse = rangeNm > kFullDetailTerrainMaxNm;
@@ -1598,7 +1605,57 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::Fpl);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
-  } else if (state != nullptr && std::strcmp(state, "pfdproc") == 0) {
+  } else if (state != nullptr && (std::strcmp(state, "tmptop") == 0 ||
+                                  std::strcmp(state, "tmpbot") == 0)) {
+    avionics::MapLeg origin; origin.id = "KPGD"; origin.lat = 26.9202; origin.lon = -81.9906;
+    avionics::MapLeg enroute; enroute.id = "LBV"; enroute.lat = 27.0442; enroute.lon = -81.9953;
+    avionics::MapLeg dest; dest.id = "KFMY"; dest.lat = 26.5862; dest.lon = -81.8632;
+    dataSource.setRoute({origin, enroute, dest});
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.softkeyController().syncFlightPlanFromMap(dataSource.mapSnapshot());
+    engine.mfdController().syncFlightPlan(dataSource.mapSnapshot(), {}, false);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);  // cursor on
+    const auto dir = std::strcmp(state, "tmptop") == 0
+                         ? avionics::BezelKey::FmsOuterCcw
+                         : avionics::BezelKey::FmsOuterCw;
+    for (int i = 0; i < 10; ++i) {
+      engine.pressBezelKey(dir);
+      for (int j = 0; j < 3; ++j) engine.update(1.0 / 60.0);
+    }
+    for (int i = 0; i < 35; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && (std::strcmp(state, "tmpmtop") == 0 ||
+                                  std::strcmp(state, "tmpmbot") == 0)) {
+    avionics::MapLeg origin; origin.id = "KPGD"; origin.lat = 26.9202; origin.lon = -81.9906;
+    avionics::MapLeg enroute; enroute.id = "LBV"; enroute.lat = 27.0442; enroute.lon = -81.9953;
+    avionics::MapLeg dest; dest.id = "KFMY"; dest.lat = 26.5862; dest.lon = -81.8632;
+    dataSource.setRoute({origin, enroute, dest});
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.softkeyController().syncFlightPlanFromMap(dataSource.mapSnapshot());
+    engine.mfdController().syncFlightPlan(dataSource.mapSnapshot(), {}, false);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);  // cursor on
+    const auto dir = std::strcmp(state, "tmpmtop") == 0
+                         ? avionics::BezelKey::FmsOuterCcw
+                         : avionics::BezelKey::FmsOuterCw;
+    for (int i = 0; i < 10; ++i) {
+      engine.pressBezelKey(dir);
+      for (int j = 0; j < 3; ++j) engine.update(1.0 / 60.0);
+    }
+    if (std::strcmp(state, "tmpmbot") == 0) {
+      engine.pressBezelKey(avionics::BezelKey::FmsOuterCcw);
+      for (int j = 0; j < 5; ++j) engine.update(1.0 / 60.0);
+    }
+    for (int i = 0; i < 35; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
     // The PFD Procedures window (PROC bezel key, Pilot's Guide 5.8): the
     // top-level Procedures menu.
     engine.skipBoot();
@@ -1784,6 +1841,191 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::DirectTo);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfddtoempty") == 0) {
+    // MFD Direct-To empty window (trainer screenshot020): blank ident entry with
+    // placeholder dashes, default 360° course, and no Activate?/Hold? buttons.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.mfdController().openDirectToWindow("");
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfddtotype") == 0) {
+    // MFD Direct-To mid-entry: a partial ident with the character cursor on (not
+    // select-all) and a matched facility/city shown, so the cursor highlight is
+    // captured over the ident row to confirm it stays clear of the name rows.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.mfdController().openDirectToWindow("");
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // first char + match
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // adopt + advance cursor
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfddtofar") == 0) {
+    // MFD Direct-To to a far-away airport (Chicago from SW Florida ownship) so
+    // the inset map loads land/nav data at the target, not blank ocean.
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.mfdController().openDirectToWindow("KORD");
+    for (int i = 0; i < 90; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfddtokcmi") == 0) {
+    // MFD Direct-To to KCMI (inland Champaign IL) from SW Florida ownship.
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.mfdController().openDirectToWindow("KCMI");
+    for (int i = 0; i < 90; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdproc") == 0) {
+    // MFD Procedures menu (trainer screenshot021): Options/Loaded group boxes
+    // over the navigation map.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Proc);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdprocsel") == 0) {
+    // MFD Approach Loading window for KFMY ILS 05 / VECTORS (trainer screenshot023).
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    std::string ils05Name;
+    for (const avionics::MapProcedure& proc :
+         navMapData.proceduresForAirport("KFMY",
+                                         avionics::ProcedureType::Approach)) {
+      if (avionics::formatApproachProcedureLabel(proc) == "ILS 05") {
+        ils05Name = proc.name;
+        break;
+      }
+    }
+    if (!ils05Name.empty()) {
+      engine.mfdController().openProcApproachLoading("KFMY", ils05Name,
+                                                     "VECTORS");
+    } else {
+      engine.pressBezelKey(avionics::BezelKey::Proc);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+      engine.pressBezelKey(avionics::BezelKey::Ent);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdprocseq") == 0) {
+    // Approach Loading page with the FMS cursor in the Sequence box (live path:
+    // open PROC from map, land on approach form, scroll from Minimums into
+    // Sequence with the large FMS knob).
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    std::string ils05Name;
+    for (const avionics::MapProcedure& proc :
+         navMapData.proceduresForAirport("KFMY",
+                                         avionics::ProcedureType::Approach)) {
+      if (avionics::formatApproachProcedureLabel(proc) == "ILS 05") {
+        ils05Name = proc.name;
+        break;
+      }
+    }
+    engine.mfdController().openProcApproachLoading("KFMY", ils05Name, "VECTORS");
+    for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
+    // Activate -> Load (large knob CCW), then into Sequence at the last leg and
+    // scroll up to a middle row (CCW within the list).
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCcw);
+    for (int j = 0; j < 4; ++j) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCcw);
+    for (int j = 0; j < 4; ++j) engine.update(1.0 / 60.0);
+    for (int i = 0; i < 2; ++i) {
+      engine.pressBezelKey(avionics::BezelKey::FmsOuterCcw);
+      for (int j = 0; j < 4; ++j) engine.update(1.0 / 60.0);
+    }
+    for (int i = 0; i < 48; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdprocdto") == 0) {
+    // Approach Loading page: highlight a Sequence leg, then press Direct-To so
+    // the window opens targeting that fix (KFMY ILS 05 / VECTORS).
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    std::string ils05Name;
+    for (const avionics::MapProcedure& proc :
+         navMapData.proceduresForAirport("KFMY",
+                                         avionics::ProcedureType::Approach)) {
+      if (avionics::formatApproachProcedureLabel(proc) == "ILS 05") {
+        ils05Name = proc.name;
+        break;
+      }
+    }
+    engine.mfdController().openProcApproachLoading("KFMY", ils05Name, "VECTORS");
+    for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
+    // Activate -> Load (large knob CCW), then into Sequence at the last leg.
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCcw);
+    for (int j = 0; j < 4; ++j) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCcw);
+    for (int j = 0; j < 4; ++j) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::DirectTo);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr &&
+             (std::strcmp(state, "mfdprocaprlist") == 0 ||
+              std::strcmp(state, "mfdproctranslist") == 0)) {
+    // Approach Loading page with the Approach or Transition dropdown open,
+    // to verify the popup anchors directly under its control.
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    std::string ils05Name;
+    for (const avionics::MapProcedure& proc :
+         navMapData.proceduresForAirport("KFMY",
+                                         avionics::ProcedureType::Approach)) {
+      if (avionics::formatApproachProcedureLabel(proc) == "ILS 05") {
+        ils05Name = proc.name;
+        break;
+      }
+    }
+    const avionics::ProcLoadingList openList =
+        std::strcmp(state, "mfdproctranslist") == 0
+            ? avionics::ProcLoadingList::Transition
+            : avionics::ProcLoadingList::Approach;
+    engine.mfdController().openProcApproachLoading("KFMY", ils05Name, "VECTORS",
+                                                   openList);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdprocvis") == 0) {
+    // Approach Loading page for the synthetic VISUAL 13 approach at KFMY, to
+    // verify the straight-in course (STRGHT/FINAL/RW13/MANSEQ) previews.
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    std::string visName;
+    for (const avionics::MapProcedure& proc :
+         navMapData.proceduresForAirport("KFMY",
+                                         avionics::ProcedureType::Approach)) {
+      if (avionics::formatApproachProcedureLabel(proc) == "VISUAL 13") {
+        visName = proc.name;
+        break;
+      }
+    }
+    engine.mfdController().openProcApproachLoading(
+        "KFMY", visName, "VECTORS", avionics::ProcLoadingList::Approach);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdfplrmv") == 0) {
     // The FPL page's "Remove <wpt>?" confirmation: cursor onto the second
     // waypoint, CLR opens the OK/CANCEL window (ENT would delete the leg).
@@ -1795,6 +2037,59 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // second row
     engine.pressBezelKey(avionics::BezelKey::Clr);         // Remove <wpt>?
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdfplwx") == 0) {
+    // MFD Active Flight Plan with a waypoint highlighted, to show the Selected
+    // Waypoint Weather box at the bottom of the right panel (trainer MFD FPL
+    // page; the box body is empty when no datalink weather is received).
+    avionics::MapLeg origin;
+    origin.id = "KPGD";
+    origin.lat = 26.9202;
+    origin.lon = -81.9906;
+    avionics::MapLeg enroute;
+    enroute.id = "LBV";
+    enroute.lat = 27.0442;
+    enroute.lon = -81.9953;
+    avionics::MapLeg dest;
+    dest.id = "KFMY";
+    dest.lat = 26.5862;
+    dest.lon = -81.8632;
+    dataSource.setRoute({origin, enroute, dest});
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);     // cursor on
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // highlight a row
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdfplmenu") == 0) {
+    // The Active Flight Plan Page Menu (MENU bezel key): load a route, open the
+    // FPL page, then press MENU so the trainer's full option list is captured
+    // (Collapse Airways .. Remove Approach) with the first option highlighted.
+    avionics::MapLeg origin;
+    origin.id = "KPGD";
+    origin.lat = 26.9202;
+    origin.lon = -81.9906;
+    avionics::MapLeg enroute;
+    enroute.id = "LBV";
+    enroute.lat = 27.0442;
+    enroute.lon = -81.9953;
+    avionics::MapLeg dest;
+    dest.id = "KFMY";
+    dest.lat = 26.5862;
+    dest.lon = -81.8632;
+    dataSource.setRoute({origin, enroute, dest});
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    engine.pressBezelKey(avionics::BezelKey::Menu);
+    // Let the open slide+fade finish (kWindowAnimSeconds) so the capture shows
+    // the menu fully in place rather than mid-animation.
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdmenu") == 0) {
     // The Navigation Map Page Menu (MENU bezel key, Pilot's Guide Fig. 5-6):
@@ -1874,12 +2169,59 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(10);  // Back
     for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdtopo5") == 0) {
+    // MFD MAP at 5 NM with TER Topo.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::RangeDown);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    WarmTerrainTilesForRange(terrain, 26.5862, -81.7552, 5.0f);
+    engine.pressSoftkey(2);   // Map Opt
+    engine.pressSoftkey(3);   // TER Off -> Topo
+    engine.pressSoftkey(10);  // Back
+    for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdtopo10") == 0) {
     // MFD MAP at 10 NM (default range) with TER Topo.
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
     WarmTerrainTilesForRange(terrain, 26.5862, -81.7552, 10.0f);
+    engine.pressSoftkey(2);   // Map Opt
+    engine.pressSoftkey(3);   // TER Off -> Topo
+    engine.pressSoftkey(10);  // Back
+    for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdtopo25") == 0) {
+    // MFD MAP at 25 NM with TER Topo.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int p = 0; p < 2; ++p) {
+      engine.pressBezelKey(avionics::BezelKey::RangeUp);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    }
+    WarmTerrainTilesForRange(terrain, 26.5862, -81.7552, 25.0f);
+    engine.pressSoftkey(2);   // Map Opt
+    engine.pressSoftkey(3);   // TER Off -> Topo
+    engine.pressSoftkey(10);  // Back
+    for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdtopomtn") == 0) {
+    // MFD MAP at 10 NM with TER Topo over the Colorado Rockies (high relief), so
+    // a regression that over-smoothed real terrain would wash out the ridges.
+    // A short local route keeps ensureRoute from snapping ownship back to KFMY.
+    avionics::MapLeg mtnA; mtnA.id = "MTNA"; mtnA.lat = 39.5; mtnA.lon = -106.4;
+    avionics::MapLeg mtnB; mtnB.id = "MTNB"; mtnB.lat = 39.7; mtnB.lon = -106.2;
+    dataSource.setRoute({mtnA, mtnB});
+    dataSource.setOwnshipPosition(39.5, -106.4, 45.0f);
+    dataSource.setNavigationPinned(true);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    WarmTerrainTilesForRange(terrain, 39.5, -106.4, 10.0f);
     engine.pressSoftkey(2);   // Map Opt
     engine.pressSoftkey(3);   // TER Off -> Topo
     engine.pressSoftkey(10);  // Back
@@ -2921,6 +3263,9 @@ int main(int argc, char** argv) {
   bool wantPfd = !HasFlag(argc, argv, "--no-pfd");
   if (!wantMfd && !wantPfd) wantPfd = true;
   const bool demoStart = HasFlag(argc, argv, "--demo");
+  // Auto-acknowledge the MFD power-up page so a relaunch (e.g. the Stream Deck
+  // NXI RESTART key) never blocks on a manual ENT press.
+  const bool skipAck = HasFlag(argc, argv, "--skip-ack");
   // The dev-only Debug menu (data-source / demo-state / power switches) is
   // installed only with --debug-menu, which the IDE launch configs/tasks pass
   // but the installer never does -- so it never appears in a shipped build.
@@ -3203,6 +3548,7 @@ int main(int argc, char** argv) {
     // The MFD only pumps the source when it is the sole display (--no-pfd);
     // otherwise the PFD drives it.
     mfdEngine->setDrivesDataSource(pfdEngine == nullptr);
+    mfdEngine->setAutoAcknowledgePowerUp(skipAck);
     mfdEngine->mfdController().setSimbriefPilotId(simbriefPilotId);
     // Ident lookups for FPL waypoint entry come from the parsed nav database.
     mfdEngine->mfdController().setNavFeatureSource(&navMapData);
@@ -3491,6 +3837,7 @@ int main(int argc, char** argv) {
               ? app.activeSource
               : static_cast<avionics::DataSource*>(&xplane);
       mapUi.applyMapPanToDataSource(*mapSource, mapSource->snapshot());
+      mapUi.applyDirectToInsetToDataSource(*mapSource, mapSource->mapSnapshot());
       mapSource->setMapViewHalfExtentNm(mapUi.mapViewHalfExtentNm());
       mapSource->setChartRangeNm(mapUi.rangeNm());
     }

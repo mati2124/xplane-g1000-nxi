@@ -70,18 +70,25 @@ int airportImportance(const MapFeature& f) {
   return score;
 }
 
+const std::vector<MapFeature>& navFeaturesForDraw(const MapData& map,
+                                                   const MapViewConfig& config) {
+  if (config.useInsetMapData && map.insetMapActive) return map.insetFeatures;
+  return map.features;
+}
+
 // At regional scale the NXi draws only the highest-priority airports that pass
 // the Map Setup size-class gates, not every towered field in the query radius.
 std::unordered_set<std::size_t> rankedAirportDrawSet(
     const MapData& map, const MapViewConfig& config, float rangeNm) {
+  const std::vector<MapFeature>& features = navFeaturesForDraw(map, config);
   struct Cand {
     int score = 0;
     std::size_t idx = 0;
   };
   std::vector<Cand> candidates;
   candidates.reserve(64);
-  for (std::size_t i = 0; i < map.features.size(); ++i) {
-    const MapFeature& f = map.features[i];
+  for (std::size_t i = 0; i < features.size(); ++i) {
+    const MapFeature& f = features[i];
     if (f.type != MapFeatureType::Airport) continue;
     if (!airportVisible(f, config, rangeNm)) continue;
     candidates.push_back({airportImportance(f), i});
@@ -157,13 +164,14 @@ void drawNavFeatures(Renderer& r, const MapData& map, const Proj& proj,
                      const MapViewConfig& config, float rangeNm, float symSize) {
   if (rangeNm > kContinentalChartRangeNm) return;
 
+  const std::vector<MapFeature>& features = navFeaturesForDraw(map, config);
   const std::unordered_set<std::size_t> airportDrawSet =
       rankedAirportDrawSet(map, config, rangeNm);
   const std::unordered_set<std::string> routeOverlayIds =
       routeOverlayLabelIds(map, config);
 
-  for (std::size_t i = 0; i < map.features.size(); ++i) {
-    const MapFeature& f = map.features[i];
+  for (std::size_t i = 0; i < features.size(); ++i) {
+    const MapFeature& f = features[i];
     if (!drawFeature(f, i, airportDrawSet, config, rangeNm)) continue;
     if (!f.id.empty() && routeOverlayIds.find(f.id) != routeOverlayIds.end()) {
       continue;
@@ -190,6 +198,7 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
                           float symSize, float labelSize) {
   if (rangeNm > kContinentalChartRangeNm || !config.style.showLabels) return;
 
+  const std::vector<MapFeature>& features = navFeaturesForDraw(map, config);
   const std::unordered_set<std::size_t> airportDrawSet =
       rankedAirportDrawSet(map, config, rangeNm);
   const std::unordered_set<std::string> routeLabelIds =
@@ -200,8 +209,8 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
   std::vector<FixLabelCandidate> fixLabels;
   fixLabels.reserve(128);
 
-  for (std::size_t i = 0; i < map.features.size(); ++i) {
-    const MapFeature& f = map.features[i];
+  for (std::size_t i = 0; i < features.size(); ++i) {
+    const MapFeature& f = features[i];
     if (!drawFeature(f, i, airportDrawSet, config, rangeNm)) continue;
     const bool isFix =
         f.type == MapFeatureType::Fix || f.type == MapFeatureType::Waypoint;

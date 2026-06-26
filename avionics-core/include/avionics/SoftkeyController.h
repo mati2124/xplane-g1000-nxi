@@ -10,7 +10,8 @@
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
-#include "avionics/NavFeatureSource.h"
+#include "avionics/ProcedureMenuTypes.h"
+#include "avionics/ProcedureMenu.h"
 #include "avionics/MapRange.h"
 #include "avionics/Radio.h"
 #include "avionics/render/BezelKeys.h"
@@ -91,21 +92,8 @@ enum class PfdWindow {
 };
 inline constexpr int kPfdWindowCount = 7;  // including None
 
-// PFD Procedures window (PROC bezel key, Pilot's Guide 5.8 "Procedures"): the
-// menu options, verbatim and in order, from the real unit (Working Title
-// PFDProc). Activate Vector-to-Final is not modeled yet; Activate Approach and
-// Activate Missed Approach are wired when a loaded approach (and missed segment)
-// is available.
-enum class ProcMenuAction {
-  ActivateVtf,
-  ActivateApproach,
-  ActivateMissed,
-  SelectApproach,
-  SelectArrival,
-  SelectDeparture,
-};
-
-// PFD Setup Menu (PFD MENU key, Pilot's Guide Fig. 1-18). Adjusts the PFD and
+// PFD Procedures window (PROC bezel key, Pilot's Guide 5.8 "Procedures"): see
+// ProcedureMenuTypes.h for shared menu types and ProcedureMenu.cpp for logic. (PFD MENU key, Pilot's Guide Fig. 1-18). Adjusts the PFD and
 // MFD display/key backlighting. The two rows the menu shows -- indexed by this
 // in the controller and renderer.
 enum class PfdSetupRow { Pfd, Mfd, Count };
@@ -407,48 +395,32 @@ class SoftkeyController {
                                const FlightPlanApproachState& approach);
 
   // ---- Procedures window (PROC bezel key) ----
-  // The Procedures window first shows the top-level menu; selecting a "Select
-  // ..." item switches to the procedure-selection sub-window (a procedure list,
-  // then a transition list) which loads the chosen procedure into the active
-  // flight plan.
-  enum class ProcStep { ProcedureList, TransitionList };
-  enum class ProcMode { Menu, Select };
-  // Select Approach detail form fields (PFD PROC, Pilot's Guide 5.8).
-  enum class ProcApproachField {
-    Apr,
-    Trans,
-    Mins,
-    MinsAlt,  // MDA/DH altitude when Mins is BARO (ENT from Mins)
-    Id,
-    Load,
-    Activate,
-    Count
-  };
+  using ProcStep = avionics::ProcStep;
+  using ProcMode = avionics::ProcMode;
+  using ProcApproachField = avionics::ProcApproachField;
   // True while the selection sub-window is shown rather than the top-level menu.
-  bool procSelectMode() const { return procMode_ == ProcMode::Select; }
+  bool procSelectMode() const { return procMenu_.mode == ProcMode::Select; }
   // Window title: "Procedures" for the menu, "Select Approach/Arrival/Departure"
   // for the selection sub-window.
   const char* procWindowTitle() const;
   // Top-level menu rows.
   int procMenuItemCount() const {
-    return static_cast<int>(procMenuItems_.size());
+    return static_cast<int>(procMenu_.menuItems.size());
   }
   const std::string& procMenuItemText(int i) const;
   bool procMenuItemEnabled(int i) const;
-  int procMenuSelected() const { return procMenuSel_; }
+  int procMenuSelected() const { return procMenu_.menuSel; }
   // Selection sub-window: the flight-plan airport, the visible list (procedure
   // names on the ProcedureList step, transitions on the TransitionList step),
   // the highlighted row, the step, and the procedure picked before transitions.
   std::string procAirportIcao() const;
-  ProcedureType procCategory() const { return procCategory_; }
-  ProcStep procStep() const { return procStep_; }
-  const std::string& procSelectedName() const { return procSelectedName_; }
+  ProcedureType procCategory() const { return procMenu_.category; }
+  ProcStep procStep() const { return procMenu_.step; }
+  const std::string& procSelectedName() const { return procMenu_.selectedName; }
   std::vector<std::string> procListItems() const;
-  int procListSelected() const { return procSelected_; }
-  // Select Approach detail form: the inner approach/transition list popup and
-  // the highlighted field on the form behind it.
-  bool procSubListOpen() const { return procSubListOpen_; }
-  ProcApproachField procApproachField() const { return procApproachField_; }
+  int procListSelected() const { return procMenu_.selected; }
+  bool procSubListOpen() const { return procMenu_.subListOpen; }
+  ProcApproachField procApproachField() const { return procMenu_.approachField; }
   std::string procAirportCityLine() const;
   std::string procAirportNameLine() const;
   MapFeature procAirportFeature() const;
@@ -459,8 +431,8 @@ class SoftkeyController {
   bool procPrimaryNavIsNdb() const;
   bool procShowsPrimaryNavFreq() const;
   std::string procPrimaryIdent() const;
-  bool procLoadArmed() const { return procLoadArmed_; }
-  bool procActivateArmed() const { return procActivateArmed_; }
+  bool procLoadArmed() const { return procMenu_.loadArmed; }
+  bool procActivateArmed() const { return procMenu_.activateArmed; }
   // Loaded approach shown in the PFD Flight Plan body (PROC Load?).
   bool flightPlanHasLoadedApproach() const { return fplApproachLegCount_ > 0; }
   int flightPlanApproachLegStart() const { return fplApproachLegStart_; }
@@ -770,10 +742,6 @@ class SoftkeyController {
   // disabled rows), and load the selected procedure's legs into the plan.
   void buildProcMenu();
   bool procBezelKey(BezelKey key);
-  void procMoveMenu(int dir);
-  void procLoadSelected(const std::string& name, const std::string& transition);
-  void procActivateSelected(const std::string& name,
-                            const std::string& transition);
   std::vector<std::string> procProcedureNames(ProcedureType type) const;
   std::vector<std::string> procTransitions(ProcedureType type,
                                            const std::string& name) const;
@@ -902,28 +870,8 @@ class SoftkeyController {
   bool fplConfirmOk_ = true;
   std::string fplRemoveIdent_;
 
-  // Procedures window (PROC key) state: the top-level menu rows, the menu
-  // cursor, and the procedure-selection sub-window (category / step / list
-  // cursor / picked procedure), plus the NAV1-tune load latch.
-  struct ProcMenuItem {
-    std::string text;
-    ProcMenuAction action = ProcMenuAction::SelectApproach;
-    bool enabled = true;
-  };
-  std::vector<ProcMenuItem> procMenuItems_;
-  int procMenuSel_ = 0;
-  ProcMode procMode_ = ProcMode::Menu;
-  ProcedureType procCategory_ = ProcedureType::Approach;
-  ProcStep procStep_ = ProcStep::ProcedureList;
-  int procSelected_ = 0;
-  std::string procSelectedName_;
-  std::string procSelectedTransition_;
-  bool procSubListOpen_ = false;
-  ProcApproachField procApproachField_ = ProcApproachField::Apr;
-  bool procLoadArmed_ = false;
-  bool procActivateArmed_ = false;
-  bool procLoadPending_ = false;
-  MapProcedure procLoadTarget_{};
+  // Procedures window (PROC key): shared menu state; logic in ProcedureMenu.cpp.
+  ProcedureMenuState procMenu_;
   MapProcedure fplLoadedApproach_{};
   int fplApproachLegStart_ = 0;
   int fplApproachLegCount_ = 0;
@@ -935,17 +883,9 @@ class SoftkeyController {
   bool fplApproachRestorePending_ = false;
   MapProcedure procSelectedProcedure() const;
   std::string formatApproachLabel(const MapProcedure& proc) const;
-  void procOpenApproachSelect();
-  void procPickApproach(const std::string& name);
-  void procCloseSubList();
-  void procBackToApproachList();
-  void procCycleApproachField(int dir);
-  void procCycleApproachMins(int dir);
-  void procAdjustApproachMinsAlt(int step);
-  void procFocusLoad();
-  void procFocusActivate();
-  void procOpenApproachList();
-  void procOpenTransitionList();
+  std::string procDefaultAirportIcao() const;
+  ProcedureMenuHost procedureMenuHost();
+  ProcedureMenuHost procedureMenuHost() const;
 
   // Direct-To window state. Latest map snapshot (for ident lookups / geographic
   // readouts) and the active flight-plan waypoint (the default destination) are

@@ -210,16 +210,15 @@ SmoothedRoute buildSmoothedRoute(const std::vector<MapLeg>& legs,
 
     // The Bézier tangent length is the corner lead distance: lead = R*tan(Δ/2),
     // which is exactly what turnLeadDistanceNm returns (capped at a 90° turn).
-    // Use the autopilot lead only when it would draw a wider (smoother) curve
-    // than the baseline display radius; never tighten below it. At GA approach
-    // speeds the realistic lead is only a few pixels and would fall under the
-    // smoothing threshold below, snapping the route back to sharp corners.
+    // With live speed, draw the *actual* autopilot lead so the rendered curve
+    // matches the flown path. The fixed display radius is only a fallback for
+    // the speedless procedure preview; previously the active route max()'d with
+    // it, forcing every turn to a >=2 NM radius far wider than the aircraft
+    // actually turns.
     float rad = fixedRadiusPx;
     if (speedDriven) {
-      const float leadPx =
-          static_cast<float>(turnLeadDistanceNm(gsKts, turnDeg)) *
-          proj.pixelsPerNm;
-      rad = std::max(rad, leadPx);
+      rad = static_cast<float>(turnLeadDistanceNm(gsKts, turnDeg)) *
+            proj.pixelsPerNm;
     }
     // Never let adjacent turns overlap on short legs.
     rad = std::min(rad, 0.45f * std::min(lenIn, lenOut));
@@ -551,38 +550,44 @@ void drawProcedurePreview(Renderer& r, const Proj& proj,
     return;
   }
 
-  const SmoothedRoute preview =
-      buildSmoothedRoute(*config.procedurePreview, proj);
-  drawSmoothedRouteDashedPolyline(r, preview, 2.0f, colors::kCyan);
-
+  const std::vector<MapLeg>& legs = *config.procedurePreview;
+  // Inbound approach legs use the full-weight white course; the missed-approach
+  // segment (from the MAP onward, e.g. RW05->SERFS) draws as the same thin white
+  // line a loaded approach shows before the missed approach is activated.
+  const int maptIdx = findMaptIndexInRoute(legs);
+  const float activeWidth = flightPlanRouteWidth(symSize);
   const float previewWidth = missedApproachRouteWidth(symSize);
-  for (const MapLeg& leg : *config.procedurePreview) {
-    if (leg.hold.active) {
-      drawHoldRacetrack(r, leg, proj, previewWidth, colors::kCyan, 90.0f);
-      drawHoldLabel(r, proj, leg, symSize, colors::kCyan);
-    }
+  const SmoothedRoute preview = buildSmoothedRoute(legs, proj);
+  for (std::size_t leg = 0; leg + 1 < legs.size(); ++leg) {
+    const float width =
+        (maptIdx >= 0 && static_cast<int>(leg) >= maptIdx) ? previewWidth
+                                                           : activeWidth;
+    drawRouteLeg(r, preview, leg, legs, proj, width, colors::kWhite);
   }
 
-  for (const MapLeg& leg : *config.procedurePreview) {
-    const Point pt = projectLeg(proj, leg);
-    r.fillCircle(pt.x, pt.y, symSize * 0.32f, colors::kCyan);
+  for (const MapLeg& leg : legs) {
+    if (leg.hold.active) {
+      drawHoldRacetrack(r, leg, proj, previewWidth, colors::kWhite, 90.0f);
+    }
   }
 }
 
 void drawProcedurePreviewLabels(Renderer& r, const Proj& proj,
                                 const MapViewConfig& config, float symSize,
                                 float labelSize) {
-  if (config.rangeNm > kContinentalChartRangeNm || !config.style.showLabels) {
+  if (config.rangeNm > kContinentalChartRangeNm ||
+      config.procedurePreview == nullptr) {
     return;
   }
-
+  // Boxed white idents, exactly like the live flight-plan waypoint labels, so
+  // the previewed procedure fixes read the same as a loaded approach.
   const float textSize = labelSize * kMapIdentLabelScale;
   for (const MapLeg& leg : *config.procedurePreview) {
     if (leg.id.empty()) continue;
     const Point pt = projectLeg(proj, leg);
-    r.fillText(pt.x, pt.y - symSize * 0.95f - kMapLabelLiftPx, leg.id, textSize,
-               TextAlign::Center, colors::kCyan, kMapLabelFace);
+    drawRouteIdentBox(r, pt.x, pt.y, leg.id, textSize, colors::kWhite);
   }
+  (void)symSize;
 }
 
 void drawDirectToCourse(Renderer& r, const MapData& map,

@@ -957,7 +957,7 @@ TEST(FmsNavigatorTest, TurnAnticipationCountdownDuringDirectToOnPlan) {
               ta.message.find(" now") != std::string::npos);
 }
 
-TEST(FmsNavigatorTest, FlyByTurnDoesNotApplyDuringDirectTo) {
+TEST(FmsNavigatorTest, FlyByTurnSteersOutboundDuringDirectToAtLead) {
   MapLeg prior;
   prior.id = "FIX01";
   prior.lat = 26.802891667;
@@ -972,6 +972,19 @@ TEST(FmsNavigatorTest, FlyByTurnDoesNotApplyDuringDirectTo) {
   azomy.lon = -82.129402778;
   const std::vector<MapLeg> plan = {prior, pints, azomy};
 
+  const double gsKts = 116.0;
+  const double inboundDeg =
+      navBearingDeg(prior.lat, prior.lon, pints.lat, pints.lon);
+  const double outboundDeg =
+      navBearingDeg(pints.lat, pints.lon, azomy.lat, azomy.lon);
+  const double turnDelta = shortestTurnDeltaDeg(inboundDeg, outboundDeg);
+  const double leadNm = turnLeadDistanceNm(gsKts, turnDelta, 135.0);
+
+  double lat = 0.0;
+  double lon = 0.0;
+  navOffsetPoint(pints.lat, pints.lon, inboundDeg + 180.0, leadNm * 0.5, lat,
+                 lon);
+
   MapData map;
   map.positionValid = true;
   map.flightPlan = plan;
@@ -980,33 +993,33 @@ TEST(FmsNavigatorTest, FlyByTurnDoesNotApplyDuringDirectTo) {
   map.directToOriginValid = true;
   map.directToOriginLat = prior.lat;
   map.directToOriginLon = prior.lon;
-  map.ownshipLat = prior.lat + 0.85 * (pints.lat - prior.lat);
-  map.ownshipLon = prior.lon + 0.85 * (pints.lon - prior.lon);
+  map.ownshipLat = lat;
+  map.ownshipLon = lon;
 
   FlightData data;
   data.dataLinkValid = true;
   data.cdiSource = CdiSource::Gps;
-  data.groundSpeedKts = 116.0f;
+  data.groundSpeedKts = static_cast<float>(gsKts);
   data.fmaFromWpt.clear();
   data.fmaToWpt = "PINTS";
   data.fmaActiveLegIndex = 1;
-  data.fmaLegDistanceNm = 0.05f;
+  data.fmaLegDistanceNm =
+      static_cast<float>(navDistanceNm(lat, lon, pints.lat, pints.lon));
 
-  const TurnAnticipation ta =
-      computeTurnAnticipation(map, data, false, CdiSource::Gps);
-  ASSERT_TRUE(ta.active);
-  EXPECT_NE(ta.message.find(" now"), std::string::npos);
+  NavigationSolution sol;
+  sol.active = true;
+  sol.directTo = true;
+  sol.activeLegIndex = 1;
+  sol.toWpt = "PINTS";
+  sol.desiredTrackDeg = static_cast<float>(inboundDeg);
+  sol.crossTrackNm = 0.0f;
 
-  FmsNavigator nav;
-  nav.setFlightPlan(plan);
-  nav.activateDirectTo(pints, prior.lat, prior.lon, true);
-  NavigationSolution sol =
-      nav.update(map.ownshipLat, map.ownshipLon, data.groundSpeedKts);
-  const float directCourse = sol.desiredTrackDeg;
   sol = applyFlyByTurnCourse(sol, map, data, false, CdiSource::Gps, 0.5f);
 
   EXPECT_TRUE(sol.directTo);
-  EXPECT_NEAR(sol.desiredTrackDeg, directCourse, 0.5f);
+  EXPECT_NEAR(sol.desiredTrackDeg, static_cast<float>(outboundDeg), 1.0f);
+  EXPECT_NEAR(sol.crossTrackNm, 0.0f, 0.01f);
+  EXPECT_NE(sol.desiredTrackDeg, static_cast<float>(inboundDeg));
 }
 
 TEST(FmsNavigatorTest, DirectToWithOriginAtTargetUsesOwnshipBearing) {
@@ -1030,9 +1043,279 @@ TEST(FmsNavigatorTest, DirectToWithOriginAtTargetUsesOwnshipBearing) {
   EXPECT_LT(sol.desiredTrackDeg, 270.0f);
 }
 
-// Regression: the degree sign in the turn advisory must be valid UTF-8 so the
-// renderer does not truncate the " in N seconds" countdown suffix that follows
-// it. A narrow "\u00b0" literal emits a lone 0xB0 byte on MSVC and breaks this.
+TEST(FmsNavigatorTest, DirectToAfterHoldResumesApproachAtNextFix) {
+  MapLeg azomy;
+  azomy.id = "AZOMY";
+  azomy.lat = 26.519147222;
+  azomy.lon = -82.129402778;
+  azomy.procedureRole = "iaf";
+  MapLeg uzawo;
+  uzawo.id = "UZAWO";
+  uzawo.lat = 26.436994444;
+  uzawo.lon = -82.046516667;
+  MapLeg mapt;
+  mapt.id = "RW05";
+  mapt.lat = 26.350000;
+  mapt.lon = -81.950000;
+  mapt.procedureRole = "mapt";
+  MapLeg missed1;
+  missed1.id = "IBITE";
+  missed1.lat = 26.105000;
+  missed1.lon = -81.200000;
+  MapLeg serfs;
+  serfs.id = "SERFS";
+  serfs.lat = 26.800700000;
+  serfs.lon = -81.819600000;
+  serfs.procedureRole = "mahp";
+  serfs.hold.active = true;
+  serfs.hold.inboundCourseDeg = 174.0f;
+  serfs.hold.legLengthNm = 4.0f;
+  serfs.hold.turn = HoldTurnDirection::Right;
+  const std::vector<MapLeg> plan = {azomy, uzawo, mapt, missed1, serfs};
+
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.setActiveLegIndex(4);
+  nav.update(serfs.lat, serfs.lon, 90.0f);
+  ASSERT_TRUE(nav.inHold());
+  ASSERT_TRUE(nav.missedApproachActive());
+
+  nav.activateDirectTo(azomy, serfs.lat, serfs.lon, true);
+  EXPECT_FALSE(nav.inHold());
+  EXPECT_FALSE(nav.missedApproachActive());
+
+  NavigationSolution sol = nav.update(azomy.lat, azomy.lon, 116.0f);
+  EXPECT_FALSE(nav.directToActive());
+  EXPECT_FALSE(nav.inHold());
+  EXPECT_EQ(nav.activeLegIndex(), 1);
+  EXPECT_EQ(sol.toWpt, "UZAWO");
+  EXPECT_FALSE(sol.inHold);
+}
+
+TEST(FmsNavigatorTest, TurnAnticipationSuppressedWhileCompletingPriorFlyBy) {
+  MapLeg azomy;
+  azomy.id = "AZOMY";
+  azomy.lat = 26.60;
+  azomy.lon = -82.10;
+  MapLeg uzawo;
+  uzawo.id = "UZAWO";
+  uzawo.lat = 26.45;
+  uzawo.lon = -81.95;
+  MapLeg grams;
+  grams.id = "GRAMS";
+  grams.lat = 26.58;
+  grams.lon = -81.80;
+  const std::vector<MapLeg> plan = {azomy, uzawo, grams};
+
+  const double gsKts = 119.0;
+  const double inboundDeg = navBearingDeg(azomy.lat, azomy.lon, uzawo.lat,
+                                          uzawo.lon);
+  const double outboundDeg = navBearingDeg(uzawo.lat, uzawo.lon, grams.lat,
+                                           grams.lon);
+  const double turnDelta = shortestTurnDeltaDeg(inboundDeg, outboundDeg);
+  const double leadNm = turnLeadDistanceNm(gsKts, turnDelta);
+  ASSERT_GT(leadNm, 0.4);
+
+  double lat = 0.0;
+  double lon = 0.0;
+  navOffsetPoint(uzawo.lat, uzawo.lon, inboundDeg + 180.0, leadNm * 0.5, lat,
+                 lon);
+
+  MapData map;
+  map.positionValid = true;
+  map.flightPlan = plan;
+  map.ownshipLat = lat;
+  map.ownshipLon = lon;
+
+  FlightData data;
+  data.dataLinkValid = true;
+  data.cdiSource = CdiSource::Gps;
+  data.groundSpeedKts = static_cast<float>(gsKts);
+  data.fmaActiveLegIndex = 2;
+  data.fmaFromWpt = "UZAWO";
+  data.fmaToWpt = "GRAMS";
+  data.fmaLegDistanceNm =
+      static_cast<float>(navDistanceNm(lat, lon, grams.lat, grams.lon));
+
+  const TurnAnticipation ta =
+      computeTurnAnticipation(map, data, false, CdiSource::Gps);
+  EXPECT_FALSE(ta.active);
+}
+
+TEST(FmsNavigatorTest, DirectToAzomyCountdownAlignsWithSteeringStart) {
+  MapLeg azomy;
+  azomy.id = "AZOMY";
+  azomy.lat = 26.519147222;
+  azomy.lon = -82.129402778;
+  MapLeg uzawo;
+  uzawo.id = "UZAWO";
+  uzawo.lat = 26.436994444;
+  uzawo.lon = -82.046516667;
+  const std::vector<MapLeg> plan = {azomy, uzawo};
+
+  constexpr double kEastLat = 26.519147222;
+  constexpr double kEastLon = -82.050000;
+  const double gsKts = 116.0;
+  const double inboundDeg =
+      navBearingDeg(kEastLat, kEastLon, azomy.lat, azomy.lon);
+  const double outboundDeg =
+      navBearingDeg(azomy.lat, azomy.lon, uzawo.lat, uzawo.lon);
+  const double turnDelta = shortestTurnDeltaDeg(inboundDeg, outboundDeg);
+  const double leadNm =
+      turnLeadDistanceNm(gsKts, turnDelta, kDirectToFlyByMaxTurnDegCap);
+  const double steerNm = leadNm + kTurnSteeringMarginNm;
+
+  MapData map;
+  map.positionValid = true;
+  map.flightPlan = plan;
+  map.directToActive = true;
+  map.directTo = azomy;
+  map.directToOriginValid = true;
+  map.directToOriginLat = kEastLat;
+  map.directToOriginLon = kEastLon;
+
+  FlightData data;
+  data.dataLinkValid = true;
+  data.cdiSource = CdiSource::Gps;
+  data.groundSpeedKts = static_cast<float>(gsKts);
+  data.fmaFromWpt.clear();
+  data.fmaToWpt = "AZOMY";
+  data.fmaActiveLegIndex = 0;
+
+  double lat = 0.0;
+  double lon = 0.0;
+  navOffsetPoint(azomy.lat, azomy.lon, inboundDeg + 180.0, steerNm + 0.15, lat,
+                 lon);
+  map.ownshipLat = lat;
+  map.ownshipLon = lon;
+  data.fmaLegDistanceNm =
+      static_cast<float>(navDistanceNm(lat, lon, azomy.lat, azomy.lon));
+
+  TurnAnticipation ta =
+      computeTurnAnticipation(map, data, false, CdiSource::Gps);
+  ASSERT_TRUE(ta.active);
+  EXPECT_NE(ta.message.find("in "), std::string::npos);
+  EXPECT_EQ(ta.message.find("now"), std::string::npos);
+
+  navOffsetPoint(azomy.lat, azomy.lon, inboundDeg + 180.0, steerNm, lat, lon);
+  map.ownshipLat = lat;
+  map.ownshipLon = lon;
+  data.fmaLegDistanceNm =
+      static_cast<float>(navDistanceNm(lat, lon, azomy.lat, azomy.lon));
+
+  ta = computeTurnAnticipation(map, data, false, CdiSource::Gps);
+  ASSERT_TRUE(ta.active);
+  EXPECT_NE(ta.message.find(" now"), std::string::npos);
+}
+
+TEST(FmsNavigatorTest, DirectToAzomyFromEastSequencesAtFlyByLead) {
+  MapLeg azomy;
+  azomy.id = "AZOMY";
+  azomy.lat = 26.519147222;
+  azomy.lon = -82.129402778;
+  MapLeg uzawo;
+  uzawo.id = "UZAWO";
+  uzawo.lat = 26.436994444;
+  uzawo.lon = -82.046516667;
+  const std::vector<MapLeg> plan = {azomy, uzawo};
+
+  constexpr double kEastLat = 26.519147222;
+  constexpr double kEastLon = -82.050000;
+  const double gsKts = 116.0;
+
+  const double inboundDeg =
+      navBearingDeg(kEastLat, kEastLon, azomy.lat, azomy.lon);
+  const double outboundDeg =
+      navBearingDeg(azomy.lat, azomy.lon, uzawo.lat, uzawo.lon);
+  const double turnDelta = shortestTurnDeltaDeg(inboundDeg, outboundDeg);
+  const double leadNm = turnLeadDistanceNm(gsKts, turnDelta, 135.0);
+  ASSERT_GT(leadNm, 0.4);
+
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.activateDirectTo(azomy, kEastLat, kEastLon, true);
+
+  double lat = 0.0;
+  double lon = 0.0;
+  navOffsetPoint(azomy.lat, azomy.lon, inboundDeg + 180.0, leadNm + 0.3, lat,
+                 lon);
+  NavigationSolution sol = nav.update(lat, lon, static_cast<float>(gsKts));
+  EXPECT_TRUE(nav.directToActive());
+  EXPECT_EQ(sol.toWpt, "AZOMY");
+
+  navOffsetPoint(azomy.lat, azomy.lon, inboundDeg + 180.0, leadNm * 0.5, lat,
+                 lon);
+  const double distNm = navDistanceNm(lat, lon, azomy.lat, azomy.lon);
+  ASSERT_GT(distNm, 0.4);
+  sol = nav.update(lat, lon, static_cast<float>(gsKts));
+  EXPECT_FALSE(nav.directToActive());
+  EXPECT_EQ(nav.activeLegIndex(), 1);
+  EXPECT_EQ(sol.toWpt, "UZAWO");
+  EXPECT_FALSE(sol.directTo);
+}
+
+TEST(FmsNavigatorTest, DirectToAzomyFromEastClampsCdiOnFirstOutboundLeg) {
+  MapLeg azomy;
+  azomy.id = "AZOMY";
+  azomy.lat = 26.519147222;
+  azomy.lon = -82.129402778;
+  MapLeg uzawo;
+  uzawo.id = "UZAWO";
+  uzawo.lat = 26.436994444;
+  uzawo.lon = -82.046516667;
+  const std::vector<MapLeg> plan = {azomy, uzawo};
+
+  constexpr double kEastLat = 26.519147222;
+  constexpr double kEastLon = -82.050000;
+  const double gsKts = 116.0;
+  const double inboundDeg =
+      navBearingDeg(kEastLat, kEastLon, azomy.lat, azomy.lon);
+  const double outboundDeg =
+      navBearingDeg(azomy.lat, azomy.lon, uzawo.lat, uzawo.lon);
+  const double turnDelta = shortestTurnDeltaDeg(inboundDeg, outboundDeg);
+  const double leadNm = turnLeadDistanceNm(gsKts, turnDelta, 135.0);
+
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.activateDirectTo(azomy, kEastLat, kEastLon, true);
+
+  double lat = 0.0;
+  double lon = 0.0;
+  navOffsetPoint(azomy.lat, azomy.lon, inboundDeg + 180.0, leadNm * 0.5, lat,
+                 lon);
+  NavigationSolution sol = nav.update(lat, lon, static_cast<float>(gsKts));
+  ASSERT_EQ(nav.activeLegIndex(), 1);
+  ASSERT_EQ(sol.toWpt, "UZAWO");
+
+  MapData map;
+  map.positionValid = true;
+  map.flightPlan = plan;
+  map.ownshipLat = lat;
+  map.ownshipLon = lon;
+
+  FlightData data;
+  data.dataLinkValid = true;
+  data.cdiSource = CdiSource::Gps;
+  data.groundSpeedKts = static_cast<float>(gsKts);
+  data.fmaActiveLegIndex = 1;
+  data.fmaFromWpt = "AZOMY";
+  data.fmaToWpt = "UZAWO";
+  data.fmaLegDistanceNm =
+      static_cast<float>(navDistanceNm(lat, lon, uzawo.lat, uzawo.lon));
+
+  constexpr float kApproachNmPerDot = 0.15f;
+  const float rawXtkNm = sol.crossTrackNm;
+  ASSERT_GT(std::fabs(rawXtkNm) / kApproachNmPerDot, 2.5f);
+
+  sol = applyFlyByTurnCourse(sol, map, data, false, CdiSource::Gps,
+                             kApproachNmPerDot);
+  EXPECT_LT(std::fabs(sol.crossTrackNm), std::fabs(rawXtkNm));
+
+  FlightData applied;
+  applyNavigationSolution(applied, sol, kApproachNmPerDot);
+  EXPECT_LT(std::fabs(applied.cdiDeviationDots), 2.5f);
+}
+
 TEST(FmsNavigatorTest, TurnAdvisoryCountdownUsesUtf8DegreeAndKeepsSuffix) {
   std::vector<MapLeg> plan;
   MapLeg a; a.id = "AZOMY"; a.lat = 26.60; a.lon = -82.10; plan.push_back(a);

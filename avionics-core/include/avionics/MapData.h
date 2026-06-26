@@ -446,6 +446,14 @@ struct MapData {
   std::vector<MapTraffic> traffic;
   std::vector<MapLandLine> landLines;
   std::vector<MapLandCity> cities;
+  // Land/features queried around the MFD Direct-To inset center when the target
+  // is far from ownship (the main map layers stay ownship-centered).
+  bool insetMapActive = false;
+  double insetMapLat = 0.0;
+  double insetMapLon = 0.0;
+  std::vector<MapLandLine> insetLandLines;
+  std::vector<MapLandCity> insetCities;
+  std::vector<MapFeature> insetFeatures;
   std::vector<MapRunway> runways;
   std::vector<MapPavement> taxiways;
   std::vector<MapTaxiwayLabel> taxiwayLabels;

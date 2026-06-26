@@ -1072,6 +1072,7 @@ void DatarefDataSource::updateMap(double dtSeconds) {
       sinceMapRebuildSeconds_ = 0.0;
     }
   }
+  rebuildInsetMap();
 }
 
 void DatarefDataSource::startMapQueryWorker() {
@@ -1247,6 +1248,71 @@ void DatarefDataSource::setMapPanCenter(bool active, double lat, double lon) {
   mapPanActive_ = active;
   mapPanLat_ = lat;
   mapPanLon_ = lon;
+}
+
+void DatarefDataSource::setInsetMapQuery(bool active, double lat, double lon,
+                                          float rangeNm, float viewHalfExtentNm,
+                                          const std::string& targetIdent) {
+  if (active != insetMapActive_ ||
+      (active && (lat != insetMapLat_ || lon != insetMapLon_ ||
+                  rangeNm != insetMapRangeNm_ ||
+                  viewHalfExtentNm != insetMapHalfExtentNm_ ||
+                  targetIdent != insetMapTargetIdent_))) {
+    insetMapDirty_ = true;
+  }
+  insetMapActive_ = active;
+  insetMapLat_ = lat;
+  insetMapLon_ = lon;
+  insetMapRangeNm_ = rangeNm;
+  insetMapHalfExtentNm_ = viewHalfExtentNm;
+  insetMapTargetIdent_ = targetIdent;
+}
+
+void DatarefDataSource::rebuildInsetMap() {
+  if (!insetMapActive_) {
+    if (map_.insetMapActive) {
+      map_.insetMapActive = false;
+      map_.insetLandLines.clear();
+      map_.insetCities.clear();
+      map_.insetFeatures.clear();
+    }
+    return;
+  }
+  if (!insetMapDirty_ && !map_.insetLandLines.empty()) return;
+  insetMapDirty_ = false;
+  map_.insetMapActive = true;
+  map_.insetMapLat = insetMapLat_;
+  map_.insetMapLon = insetMapLon_;
+  if (!navCacheBuilt_) return;
+  const float featRange = std::max(insetMapRangeNm_, kMapQueryRangeNm * 0.25f);
+  map_.insetFeatures =
+      filterNearby(navCache_, insetMapLat_, insetMapLon_, featRange,
+                   kMaxMapFeatures);
+  for (MapFeature& f : map_.insetFeatures) {
+    enrichAirportFromMeta(f, aptMetaByIcao_);
+  }
+  if (!insetMapTargetIdent_.empty()) {
+    bool found = false;
+    for (const MapFeature& f : map_.insetFeatures) {
+      if (f.id == insetMapTargetIdent_) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      std::vector<MapFeature> exact =
+          lookupNavIdentNear(insetMapTargetIdent_, insetMapLat_, insetMapLon_, 1);
+      if (!exact.empty()) map_.insetFeatures.push_back(exact.front());
+    }
+  }
+  if (landData_ != nullptr && landData_->loaded()) {
+    map_.insetLandLines =
+        landData_->nearbyLines(insetMapLat_, insetMapLon_, insetMapRangeNm_,
+                               kMaxMapLandLines, insetMapHalfExtentNm_);
+    map_.insetCities =
+        landData_->nearbyCities(insetMapLat_, insetMapLon_, insetMapRangeNm_,
+                                kMaxMapCities, insetMapHalfExtentNm_);
+  }
 }
 
 void DatarefDataSource::setChartRangeNm(float rangeNm) {

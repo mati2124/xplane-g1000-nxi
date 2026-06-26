@@ -85,6 +85,8 @@ class FmsNavigator {
   bool captureWaypoint(double lat, double lon, const MapLeg& wpt) const;
   bool shouldSequenceLeg(double lat, double lon, float groundSpeedKts,
                            int legIdx) const;
+  bool shouldSequenceDirectToOnPlan(double lat, double lon,
+                                    float groundSpeedKts) const;
   void sequenceActiveLeg(double lat, double lon, float groundSpeedKts,
                          float altitudeFt);
   void refreshMaptIndex();

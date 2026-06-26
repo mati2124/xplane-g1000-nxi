@@ -11,6 +11,7 @@
 #include "render/mfd/EisStrip.h"
 #include "render/mfd/MfdPages.h"
 #include "render/mfd/MfdStyle.h"
+#include "render/pfd/ChromeInternal.h"
 #include "render/pfd/PfdInternal.h"
 
 namespace avionics {
@@ -420,19 +421,25 @@ void drawPageMenu(Renderer& r, const MfdController& ui, float x, float y,
     const float cy = fy + rowH * 0.5f;
     const std::string& text = ui.pageMenuItemText(i);
     const bool enabled = ui.pageMenuItemEnabled(i);
+    Color rowColor = enabled ? colors::kWhite : colors::kDisabledGray;
     if (i == ui.pageMenuSelected() && enabled) {
       // Full-width highlight bar with black text (pulses ~1 Hz), matching the
       // figure's selected option.
       if (ui.blinkOn()) {
         r.fillRect(group.x - pad * 0.4f, cy - rowSize * 0.62f, group.w,
                    rowSize * 1.24f, colors::kCyan);
-        r.fillText(group.x, cy, text, rowSize, TextAlign::Left, colors::kBlack);
+        rowColor = colors::kBlack;
       } else {
-        r.fillText(group.x, cy, text, rowSize, TextAlign::Left, colors::kCyan);
+        rowColor = colors::kCyan;
       }
-    } else {
-      r.fillText(group.x, cy, text, rowSize, TextAlign::Left,
-                 enabled ? colors::kWhite : colors::kDisabledGray);
+    }
+    r.fillText(group.x, cy, text, rowSize, TextAlign::Left, rowColor);
+    // The FPL menu's "VNV" row carries the Direct-To glyph after the label
+    // (the trainer's VNV vertical Direct-To option).
+    if (ui.pageMenuItemDtoSuffix(i)) {
+      const float gx = group.x + r.measureTextWidth(text, rowSize) +
+                       rowSize * 0.35f;
+      pfd::drawDirectToIcon(r, gx, cy, rowSize, rowColor);
     }
     fy += rowH;
   }
@@ -553,10 +560,29 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
   title = pageTitle(ui.page());
   }
 
+  if (ui.procMenuOpen() && ui.procSelectMode()) {
+    switch (ui.procCategory()) {
+      case ProcedureType::Departure:
+        title = "PROC \xE2\x80\x93 Departure Loading";
+        break;
+      case ProcedureType::Arrival:
+        title = "PROC \xE2\x80\x93 Arrival Loading";
+        break;
+      case ProcedureType::Approach:
+      default:
+        title = "PROC \xE2\x80\x93 Approach Loading";
+        break;
+    }
+  }
+
   mfd::drawEisStrip(r, d, eisLayout, mfd::Rect{0.0f, bodyY, eisW, bodyH}, h);
+  if (ui.procMenuOpen()) {
+    mfd::drawProcWindow(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+  }
   // The Direct-To window overlays whatever page is up (it is opened by the
   // Direct-To bezel key from anywhere), drawn over the body but under the
-  // top/bottom chrome bars.
+  // top/bottom chrome bars. It sits above the Procedures window so a Direct-To
+  // launched from a highlighted Sequence leg is not hidden behind it.
   // Both pop-ups slide up and fade in/out with the shared window animation
   // (the same logic as the PFD menus), so they are drawn whenever their open
   // progress is nonzero rather than only while strictly open.

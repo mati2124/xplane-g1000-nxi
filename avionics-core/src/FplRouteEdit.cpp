@@ -1,6 +1,10 @@
 #include "avionics/FplRouteEdit.h"
 
+#include <algorithm>
+
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/NavFeatureSource.h"
+#include "avionics/NavMath.h"
 #include "render/pfd/PfdFlightPlanSections.h"
 
 namespace avionics {
@@ -196,6 +200,43 @@ std::string lastAirportInPlan(const std::vector<MapLeg>& legs) {
 std::string directToAirportIcao(const MapData* map) {
   if (map == nullptr || !map->directToActive) return {};
   return isAirportIdent(map->directTo.id) ? map->directTo.id : std::string();
+}
+
+namespace {
+
+constexpr double kNearestAirportMaxRangeNm = 200.0;
+
+}  // namespace
+
+std::vector<std::string> nearestAirportIds(const MapData* map, int maxCount) {
+  std::vector<std::string> ids;
+  if (map == nullptr || !map->positionValid || maxCount <= 0) return ids;
+
+  struct Row {
+    std::string id;
+    double distNm = 0.0;
+  };
+  std::vector<Row> rows;
+  for (const MapFeature& f : map->features) {
+    if (f.type != MapFeatureType::Airport) continue;
+    const double dist =
+        navDistanceNm(map->ownshipLat, map->ownshipLon, f.lat, f.lon);
+    if (dist > kNearestAirportMaxRangeNm) continue;
+    rows.push_back({f.id, dist});
+  }
+  std::sort(rows.begin(), rows.end(),
+            [](const Row& a, const Row& b) { return a.distNm < b.distNm; });
+  if (static_cast<int>(rows.size()) > maxCount) {
+    rows.resize(static_cast<std::size_t>(maxCount));
+  }
+  ids.reserve(rows.size());
+  for (const Row& row : rows) ids.push_back(row.id);
+  return ids;
+}
+
+std::string nearestAirportIcao(const MapData* map) {
+  const std::vector<std::string> ids = nearestAirportIds(map, 1);
+  return ids.empty() ? std::string() : ids.front();
 }
 
 bool flightPlanLegsEqual(const std::vector<MapLeg>& a,
@@ -405,6 +446,19 @@ bool fplCommitWaypointIdent(FplRouteEdit& edit, const NavFeatureSource* navSourc
     return fplCommitFlatIdent(edit, navSource, match, ident, selectableCursorRow);
   }
   return fplCommitSectionIdent(edit, navSource, match, ident, selectableCursorRow);
+}
+
+std::string fplIdentEntrySeedAtCursor(const FplRouteEdit& edit,
+                                      const std::string& approachAirport,
+                                      FplCursorLayout layout) {
+  const int legIndex =
+      fplCursorLegIndex(edit, approachAirport, layout);
+  if (legIndex < 0 || legIndex >= static_cast<int>(edit.legs.size())) {
+    return {};
+  }
+  const std::string initial = edit.legs[static_cast<std::size_t>(legIndex)].id;
+  if (!initial.empty() && isFmsLatLonIdent(initial)) return {};
+  return initial;
 }
 
 }  // namespace avionics

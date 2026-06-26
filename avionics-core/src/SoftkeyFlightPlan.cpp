@@ -323,15 +323,27 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
   }
 
   if (!fplCursorOn_) {
-    // Cursor off: the knob scrolls the section list; other keys fall through.
-    if (key == BezelKey::FmsOuterCw || key == BezelKey::FmsInnerCw) {
+    // Cursor off: outer knob scrolls the section list. Inner knob on the
+    // highlighted ident row opens waypoint entry (trainer / Pilot's Guide).
+    if (key == BezelKey::FmsOuterCw) {
       fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
       return true;
     }
-    if (key == BezelKey::FmsOuterCcw || key == BezelKey::FmsInnerCcw) {
+    if (key == BezelKey::FmsOuterCcw) {
       fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
+      return true;
+    }
+    if (key == BezelKey::FmsInnerCw || key == BezelKey::FmsInnerCcw) {
+      if (!fplEntry_.active) {
+        fplEntry_.open(navSource_, mapData_,
+                       fplIdentEntrySeedAtCursor(edit, approachAirport,
+                                                 FplCursorLayout::SectionRows));
+        fplEntry_.selectAll = false;
+      }
+      fplEntry_.turnChar(navSource_, mapData_,
+                         key == BezelKey::FmsInnerCw ? +1 : -1);
       return true;
     }
     return false;
@@ -351,9 +363,9 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
     case BezelKey::FmsInnerCw:
     case BezelKey::FmsInnerCcw: {
       if (!fplEntry_.active) {
-        std::string initial = flightPlanSelectedLegIdent();
-        if (!initial.empty() && isFmsLatLonIdent(initial)) initial.clear();
-        fplEntry_.open(navSource_, mapData_, initial);
+        fplEntry_.open(navSource_, mapData_,
+                       fplIdentEntrySeedAtCursor(edit, approachAirport,
+                                                 FplCursorLayout::SectionRows));
         fplEntry_.selectAll = false;
       }
       fplEntry_.turnChar(navSource_, mapData_,

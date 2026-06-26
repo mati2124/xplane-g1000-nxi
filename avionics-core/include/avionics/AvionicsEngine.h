@@ -75,6 +75,12 @@ class AvionicsEngine {
   // Acknowledge the power-up page (the ENT key). No-op unless awaiting; brings
   // up the live pages.
   void acknowledgePowerUp();
+  // Auto-press ENT on the MFD power-up page as soon as the self-test animation
+  // reaches the database review, so the pilot never has to acknowledge it. Stays
+  // armed across GDU power cycles (so a relaunch against an already-running sim,
+  // where the bus comes alive after the link is up, still auto-dismisses the
+  // replayed prompt). Used by the standalone's --skip-ack convenience flag.
+  void setAutoAcknowledgePowerUp(bool on) { autoAcknowledgePowerUp_ = on; }
 
   // ---- physical softkeys (the key row the shell draws below the screen) ----
   // Apply a press of softkey `index` (0..kSoftkeyCount-1) to whichever page is
@@ -181,6 +187,8 @@ class AvionicsEngine {
   // Set once the pilot acknowledges the power-up page with ENT (or immediately
   // for feeds that don't require it / when boot is skipped).
   bool powerUpAcknowledged_ = false;
+  // Auto-acknowledge the power-up page (the --skip-ack flag); see the setter.
+  bool autoAcknowledgePowerUp_ = false;
   bool drivesDataSource_ = true;
   // GDU power tracking. wasPowered_ remembers the previous frame's bus state so
   // an off->on transition can re-run the power-up self-test; powerInitialized_

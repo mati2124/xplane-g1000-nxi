@@ -484,6 +484,13 @@ def main():
     n = add_lines(lines, rivers, CLASS_RIVER)
     print(f"rivers: {n} lines")
 
+    # North America supplement: secondary rivers and canals (e.g. the
+    # Caloosahatchee at Fort Myers) the global major-river layer omits, so US
+    # hydrography density approaches the real NXi's. Same schema as above.
+    na_rivers = fetch("ne_10m_rivers_north_america.geojson")
+    n = add_lines(lines, na_rivers, CLASS_RIVER)
+    print(f"rivers (NA supplement): {n} lines")
+
     lakes = fetch("ne_10m_lakes.geojson")
     n = add_lines(lines, lakes, CLASS_LAKE)
     print(f"lakes: {n} rings")

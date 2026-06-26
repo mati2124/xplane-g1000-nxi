@@ -1,9 +1,21 @@
 #include "avionics/MfdController.h"
 
+#include "avionics/DataSource.h"
+#include "render/mfd/MfdPageSupport.h"
+
 // Direct-To window (Direct-To bezel key, Pilot's Guide 5.5): opens over any MFD
 // page pre-filled with the active (or FPL-selected) waypoint; the first ENT
 // confirms the waypoint and arms ACTIVATE?, the second engages the direct course.
 namespace avionics {
+
+void MfdController::openDirectToWindow(const std::string& initial) {
+  dtoOpen_ = true;
+  dtoArmed_ = false;
+  dtoPreservePlan_ = false;
+  dtoPreserveLegIndex_ = -1;
+  dtoPreserveFplCursorRow_ = -1;
+  dtoEntry_.open(navSource_, mapData_, initial);
+}
 
 void MfdController::directToOpen() {
   dtoOpen_ = true;
@@ -11,6 +23,24 @@ void MfdController::directToOpen() {
   dtoPreservePlan_ = false;
   dtoPreserveLegIndex_ = -1;
   dtoPreserveFplCursorRow_ = -1;
+  // Approach Loading Sequence box: Direct-To targets the highlighted leg fix
+  // (Pilot's Guide 5.8) when the FMS cursor has descended into the sequence.
+  if (procMenuOpen_ && procMenu_.sequenceFocused) {
+    const std::vector<MapLeg> legs = procPreviewLegs();
+    const int sel = procMenu_.sequenceSelected;
+    if (sel >= 0 && sel < static_cast<int>(legs.size())) {
+      const MapLeg& leg = legs[static_cast<std::size_t>(sel)];
+      dtoEntry_.open(navSource_, mapData_, leg.id);
+      dtoEntry_.match.id = leg.id;
+      if (leg.lat != 0.0 || leg.lon != 0.0) {
+        dtoEntry_.match.lat = leg.lat;
+        dtoEntry_.match.lon = leg.lon;
+      }
+      dtoEntry_.hasMatch = true;
+      dtoEntry_.autofill = leg.id;
+      return;
+    }
+  }
   // Map Pointer: Direct-To opens on the waypoint under the pointer (Pilot's
   // Guide, Map Panning).
   if (mapPointerActive_) {
@@ -149,6 +179,22 @@ bool MfdController::consumeDirectToRequest(MapLeg& out) {
   dtoRequestPending_ = false;
   out = dtoRequestTarget_;
   return true;
+}
+
+void MfdController::applyDirectToInsetToDataSource(DataSource& source,
+                                                   const MapData& map) {
+  if (!dtoOpen_ || !dtoEntry_.hasMatch) {
+    source.setInsetMapQuery(false, 0.0, 0.0, 0.0f, 0.0f);
+    return;
+  }
+  const MapFeature& wpt = dtoEntry_.match;
+  if (wpt.lat == 0.0 && wpt.lon == 0.0) {
+    source.setInsetMapQuery(false, 0.0, 0.0, 0.0f, 0.0f);
+    return;
+  }
+  const float rangeNm = mfd::directToInsetRangeNm(map, wpt);
+  const float halfExtent = mfd::directToInsetViewHalfExtentNm(rangeNm);
+  source.setInsetMapQuery(true, wpt.lat, wpt.lon, rangeNm, halfExtent, wpt.id);
 }
 
 }  // namespace avionics

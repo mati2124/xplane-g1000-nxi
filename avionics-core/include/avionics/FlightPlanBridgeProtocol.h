@@ -24,11 +24,12 @@
 //
 // Messages (each a single datagram, client <-> plugin):
 //   FPLQ  client->plugin  request the active route        -> plugin replies FPLR
-//   FPLR  plugin->client   the serialized active route (reply to FPLQ)
+//   FPLR  plugin->client   the serialized active route + Direct-To display state
 //   FPLS  client->plugin   program this route into the FMS -> plugin replies FPLA
-//   FPLD  client->plugin   set/clear a Direct-To target    -> plugin replies FPLA
+//   FPLD  client->plugin   set/clear a Direct-To target (+ origin) -> plugin FPLA
+//   FPLX  client->plugin   clear stored Direct-To display only (FMS untouched) -> FPLA
 //   FPLG  client->plugin   set the FMS destination leg index -> plugin replies FPLA
-//   FPLA  plugin->client   acknowledgement of an FPLS/FPLD/FPLG write
+//   FPLA  plugin->client   acknowledgement of an FPLS/FPLD/FPLG/FPLX write
 namespace avionics {
 namespace fpbridge {
 
@@ -41,13 +42,14 @@ constexpr char kRequestMagic[4] = {'F', 'P', 'L', 'Q'};  // request route
 constexpr char kReplyMagic[4] = {'F', 'P', 'L', 'R'};    // route payload (reply)
 constexpr char kSetPlanMagic[4] = {'F', 'P', 'L', 'S'};  // program route
 constexpr char kSetDtoMagic[4] = {'F', 'P', 'L', 'D'};   // set/clear Direct-To
+constexpr char kClearDtoDisplayMagic[4] = {'F', 'P', 'L', 'X'};  // display-only clear
 constexpr char kSetActiveLegMagic[4] = {'F', 'P', 'L', 'G'};  // set FMS destination
 constexpr char kAckMagic[4] = {'F', 'P', 'L', 'A'};      // write acknowledgement
 
 // Bump when a payload layout changes; a mismatched version is ignored by the
 // receiver so an old plugin/new shell (or vice versa) fails closed rather than
 // mis-parsing.
-constexpr std::int32_t kProtocolVersion = 2;
+constexpr std::int32_t kProtocolVersion = 3;
 
 // Sanity caps so a malformed or hostile datagram cannot drive an unbounded
 // allocation. X-Plane's FMS holds at most ~100 entries; identifiers are short.
@@ -61,6 +63,17 @@ constexpr std::size_t kMaxDatagramBytes = 65536;
 // Fixed sizes of the reply framing, in bytes.
 constexpr std::size_t kReplyHeaderBytes = 4 /*magic*/ + 4 /*version*/ + 4 /*count*/;
 constexpr std::size_t kLegFixedBytes = 8 /*lat*/ + 8 /*lon*/ + 4 /*idLen*/;
+constexpr std::size_t kDirectToOriginBytes = 4 /*originValid*/ + 8 /*originLat*/ +
+                                             8 /*originLon*/;
+
+// Direct-To display state carried in FPLR replies and stored by the plugin.
+struct DirectToState {
+  bool active = false;
+  MapLeg target;
+  bool originValid = false;
+  double originLat = 0.0;
+  double originLon = 0.0;
+};
 
 // --- little-endian primitives (no dependency on host byte order) ---
 
@@ -194,12 +207,92 @@ inline bool isRequest(const unsigned char* data, std::size_t len) {
 
 // --- route reply (FPLR) and program-route command (FPLS) ---
 
-inline std::vector<unsigned char> encodeReply(const std::vector<MapLeg>& legs) {
-  return encodePlan(kReplyMagic, legs);
+inline void putDirectToOrigin(std::vector<unsigned char>& out,
+                              bool originValid, double originLat,
+                              double originLon) {
+  putI32(out, originValid ? 1 : 0);
+  putF64(out, originLat);
+  putF64(out, originLon);
 }
+
+inline bool getDirectToOrigin(const unsigned char* data, std::size_t len,
+                              std::size_t& off, bool& originValid,
+                              double& originLat, double& originLon) {
+  if (off + kDirectToOriginBytes > len) return false;
+  originValid = getI32(data + off) != 0;
+  off += 4;
+  originLat = getF64(data + off);
+  off += 8;
+  originLon = getF64(data + off);
+  off += 8;
+  return true;
+}
+
+inline void putDirectToTrailer(std::vector<unsigned char>& out,
+                               const DirectToState& dto) {
+  putI32(out, dto.active ? 1 : 0);
+  if (!dto.active) return;
+  putLeg(out, dto.target);
+  putDirectToOrigin(out, dto.originValid, dto.originLat, dto.originLon);
+}
+
+inline bool getDirectToTrailer(const unsigned char* data, std::size_t len,
+                               std::size_t& off, DirectToState& dto) {
+  dto = {};
+  if (off + 4 > len) return false;
+  dto.active = getI32(data + off) != 0;
+  off += 4;
+  if (!dto.active) return true;
+  if (!getLeg(data, len, off, dto.target)) return false;
+  return getDirectToOrigin(data, len, off, dto.originValid, dto.originLat,
+                           dto.originLon);
+}
+
+// FPLR: magic | version | count | legs | dtoActive | [target | origin].
+inline std::vector<unsigned char> encodeReply(const std::vector<MapLeg>& legs,
+                                              const DirectToState& dto = {}) {
+  std::vector<unsigned char> out = encodePlan(kReplyMagic, legs);
+  putDirectToTrailer(out, dto);
+  return out;
+}
+
 inline bool decodeReply(const unsigned char* data, std::size_t len,
-                        std::vector<MapLeg>& out) {
-  return decodePlan(data, len, kReplyMagic, out);
+                        std::vector<MapLeg>& out,
+                        DirectToState* dtoOut = nullptr) {
+  out.clear();
+  DirectToState dto;
+  if (len < kReplyHeaderBytes) return false;
+  if (!hasMagic(data, len, kReplyMagic)) return false;
+
+  std::size_t off = 4;
+  const std::int32_t version = getI32(data + off);
+  off += 4;
+  if (version != kProtocolVersion) return false;
+
+  const std::int32_t count = getI32(data + off);
+  off += 4;
+  if (count < 0 || count > kMaxLegs) return false;
+
+  out.reserve(static_cast<std::size_t>(count));
+  for (std::int32_t i = 0; i < count; ++i) {
+    MapLeg leg;
+    if (!getLeg(data, len, off, leg)) {
+      out.clear();
+      return false;
+    }
+    out.push_back(std::move(leg));
+  }
+
+  if (off >= len) {
+    if (dtoOut != nullptr) *dtoOut = dto;
+    return true;
+  }
+  if (!getDirectToTrailer(data, len, off, dto)) {
+    out.clear();
+    return false;
+  }
+  if (dtoOut != nullptr) *dtoOut = dto;
+  return true;
 }
 
 inline std::vector<unsigned char> encodeSetPlan(
@@ -216,32 +309,72 @@ inline bool decodeSetPlan(const unsigned char* data, std::size_t len,
 
 // --- Direct-To command (FPLD) ---
 //
-// Layout: magic | version | active(i32, 1 = set / 0 = clear) | [leg if active].
+// Layout: magic | version | active(i32, 1 = set / 0 = clear) |
+//         [leg | originValid | originLat | originLon | programFms if active] |
+//         [programFms if !active].
+// programFms: when set, also program/clear the sim FMS; when clear on active=0,
+// controls whether the sim FMS Direct-To is cleared. Display state is always
+// updated from FPLD; use FPLX to clear display without touching the FMS.
 
-inline std::vector<unsigned char> encodeSetDirectTo(bool active,
-                                                    const MapLeg& target) {
+inline std::vector<unsigned char> encodeSetDirectTo(
+    bool active, const MapLeg& target, bool originValid = false,
+    double originLat = 0.0, double originLon = 0.0, bool programFms = true) {
   std::vector<unsigned char> out;
   out.insert(out.end(), kSetDtoMagic, kSetDtoMagic + 4);
   putI32(out, kProtocolVersion);
   putI32(out, active ? 1 : 0);
-  if (active) putLeg(out, target);
+  if (active) {
+    putLeg(out, target);
+    putDirectToOrigin(out, originValid, originLat, originLon);
+  }
+  putI32(out, programFms ? 1 : 0);
   return out;
 }
 inline bool isSetDirectTo(const unsigned char* data, std::size_t len) {
   return hasMagic(data, len, kSetDtoMagic);
 }
 inline bool decodeSetDirectTo(const unsigned char* data, std::size_t len,
-                              bool& active, MapLeg& target) {
+                              bool& active, MapLeg& target,
+                              bool& originValid, double& originLat,
+                              double& originLon, bool& programFms) {
   active = false;
-  if (len < kReplyHeaderBytes) return false;
+  originValid = false;
+  originLat = 0.0;
+  originLon = 0.0;
+  programFms = true;
+  if (len < kReplyHeaderBytes + 4) return false;
   if (!hasMagic(data, len, kSetDtoMagic)) return false;
   std::size_t off = 4;
   if (getI32(data + off) != kProtocolVersion) return false;
   off += 4;
   active = getI32(data + off) != 0;
   off += 4;
-  if (!active) return true;
-  return getLeg(data, len, off, target);
+  if (active) {
+    if (!getLeg(data, len, off, target)) return false;
+    if (!getDirectToOrigin(data, len, off, originValid, originLat, originLon)) {
+      return false;
+    }
+  }
+  if (off + 4 > len) return false;
+  programFms = getI32(data + off) != 0;
+  return true;
+}
+
+// --- display-only Direct-To clear (FPLX) ---
+//
+// Layout: magic | version. Clears the plugin's stored Direct-To display state
+// without reprogramming the sim FMS (used when AP NAV is coupled and the sim
+// FMS must stay untouched through Direct-To capture).
+
+inline std::vector<unsigned char> encodeClearDirectToDisplay() {
+  std::vector<unsigned char> out;
+  out.insert(out.end(), kClearDtoDisplayMagic, kClearDtoDisplayMagic + 4);
+  putI32(out, kProtocolVersion);
+  return out;
+}
+inline bool isClearDirectToDisplay(const unsigned char* data, std::size_t len) {
+  return hasMagic(data, len, kClearDtoDisplayMagic) && len >= 8 &&
+         getI32(data + 4) == kProtocolVersion;
 }
 
 // --- active-leg command (FPLG) ---

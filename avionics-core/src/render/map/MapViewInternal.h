@@ -273,24 +273,31 @@ float drawChromeLabel(Renderer& r, float x, float y, const char* text,
 // `showCulture` keeps the topographic water/coastline (landmass, lakes,
 // rivers, national borders) but suppresses the man-made "land data" lines
 // (roads, railroads, state/province boundaries) when decluttered at Detail 3.
-void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm, bool skipLandMassFill = false,
+void drawLandData(Renderer& r, const std::vector<MapLandLine>& landLines,
+                  const Proj& proj, float rangeNm, bool skipLandMassFill = false,
                   float viewHalfExtentNm = 0.0f, float displayRangeNm = 0.0f,
                   bool showCulture = true);
+
+// River/water hydrography lines, drawn after the topo raster so the thin blue
+// strokes stay visible over terrain shading (and the chart base when terrain is
+// off), matching the real NXi. Kept out of drawLandData's base pass.
+void drawRiverData(Renderer& r, const std::vector<MapLandLine>& landLines,
+                   const Proj& proj, float rangeNm);
 
 // Populated places: a dot plus name, decluttered by city rank vs. range.
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,
                 float rangeNm, float symSize, float labelSize);
 
 // City dots only (drawn with other symbology).
-void drawCityDots(Renderer& r, const MapData& map, const Proj& proj, float rangeNm,
-                  float symSize);
+void drawCityDots(Renderer& r, const std::vector<MapLandCity>& cities,
+                  const Proj& proj, float rangeNm, float symSize);
 
 // Geo/city name labels (white/cyan, drawn on top of map symbology). Hydro and
 // region labels are topographic and always drawn; city labels are man-made
 // land data and suppressed when `showCities` is false (Detail 3 declutter).
-void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
-                        float rangeNm, float labelSize, bool showCities = true);
+void drawMapPlaceLabels(Renderer& r, const std::vector<MapLandCity>& cities,
+                        const Proj& proj, float rangeNm, float labelSize,
+                        bool showCities = true);
 
 // Airways declutter above their max range. Low-altitude routes draw first;
 // high-altitude Jet/Q-routes draw on top when both are shown (Fig 5-15).
@@ -339,7 +346,7 @@ void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
 void drawProcedurePreview(Renderer& r, const Proj& proj,
                           const MapViewConfig& config, float symSize);
 
-// Procedure preview fix idents (cyan, centered above symbols).
+// Boxed white idents for the previewed procedure fixes (flight-plan style).
 void drawProcedurePreviewLabels(Renderer& r, const Proj& proj,
                                 const MapViewConfig& config, float symSize,
                                 float labelSize);

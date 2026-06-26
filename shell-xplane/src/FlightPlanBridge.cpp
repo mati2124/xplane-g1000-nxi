@@ -107,6 +107,11 @@ void FlightPlanBridge::applyPendingWritesOnSimThread() {
   bool hasDto = false;
   bool dtoActive = false;
   MapLeg dtoTarget;
+  bool dtoOriginValid = false;
+  double dtoOriginLat = 0.0;
+  double dtoOriginLon = 0.0;
+  bool dtoProgramFms = true;
+  bool hasDtoDisplayClear = false;
   bool hasActiveLeg = false;
   int activeLegIndex = -1;
   {
@@ -121,7 +126,15 @@ void FlightPlanBridge::applyPendingWritesOnSimThread() {
       hasDto = true;
       dtoActive = dtoWriteActive_;
       dtoTarget = dtoWriteTarget_;
+      dtoOriginValid = dtoWriteOriginValid_;
+      dtoOriginLat = dtoWriteOriginLat_;
+      dtoOriginLon = dtoWriteOriginLon_;
+      dtoProgramFms = dtoWriteProgramFms_;
       hasDtoWrite_ = false;
+    }
+    if (hasDtoDisplayClearWrite_) {
+      hasDtoDisplayClear = true;
+      hasDtoDisplayClearWrite_ = false;
     }
     if (hasActiveLegWrite_) {
       hasActiveLeg = true;
@@ -131,7 +144,28 @@ void FlightPlanBridge::applyPendingWritesOnSimThread() {
   }
   // Apply the route before the Direct-To so a combined edit lands coherently.
   if (hasPlan) programFmsRoute(plan);
-  if (hasDto) programFmsDirectTo(dtoActive, dtoTarget);
+  if (hasDtoDisplayClear) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      dtoDisplay_ = {};
+    }
+  } else if (hasDto) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (dtoActive) {
+        dtoDisplay_.active = true;
+        dtoDisplay_.target = dtoTarget;
+        dtoDisplay_.originValid = dtoOriginValid;
+        dtoDisplay_.originLat = dtoOriginLat;
+        dtoDisplay_.originLon = dtoOriginLon;
+      } else {
+        dtoDisplay_ = {};
+      }
+    }
+    if (dtoProgramFms) {
+      programFmsDirectTo(dtoActive, dtoTarget);
+    }
+  }
   if (hasActiveLeg) {
     if (plan.empty()) {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -205,13 +239,16 @@ void FlightPlanBridge::serverLoop() {
       const auto len = static_cast<std::size_t>(n);
 
       if (fpbridge::isRequest(buf.data(), len)) {
-        // Read: reply with the latest route snapshot.
+        // Read: reply with the latest route snapshot and Direct-To display state.
         std::vector<MapLeg> plan;
+        fpbridge::DirectToState dto;
         {
           std::lock_guard<std::mutex> lock(mutex_);
           plan = plan_;
+          dto = dtoDisplay_;
         }
-        const std::vector<unsigned char> reply = fpbridge::encodeReply(plan);
+        const std::vector<unsigned char> reply =
+            fpbridge::encodeReply(plan, dto);
         ::sendto(sock, reinterpret_cast<const char*>(reply.data()),
                  static_cast<int>(reply.size()), 0,
                  reinterpret_cast<sockaddr*>(&src), srcLen);
@@ -233,11 +270,21 @@ void FlightPlanBridge::serverLoop() {
       } else if (fpbridge::isSetDirectTo(buf.data(), len)) {
         bool active = false;
         MapLeg target;
-        if (fpbridge::decodeSetDirectTo(buf.data(), len, active, target)) {
+        bool originValid = false;
+        double originLat = 0.0;
+        double originLon = 0.0;
+        bool programFms = true;
+        if (fpbridge::decodeSetDirectTo(buf.data(), len, active, target,
+                                        originValid, originLat, originLon,
+                                        programFms)) {
           {
             std::lock_guard<std::mutex> lock(mutex_);
             dtoWriteActive_ = active;
             dtoWriteTarget_ = std::move(target);
+            dtoWriteOriginValid_ = originValid;
+            dtoWriteOriginLat_ = originLat;
+            dtoWriteOriginLon_ = originLon;
+            dtoWriteProgramFms_ = programFms;
             hasDtoWrite_ = true;
           }
           const std::vector<unsigned char> ack = fpbridge::encodeAck();
@@ -245,6 +292,15 @@ void FlightPlanBridge::serverLoop() {
                    static_cast<int>(ack.size()), 0,
                    reinterpret_cast<sockaddr*>(&src), srcLen);
         }
+      } else if (fpbridge::isClearDirectToDisplay(buf.data(), len)) {
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          hasDtoDisplayClearWrite_ = true;
+        }
+        const std::vector<unsigned char> ack = fpbridge::encodeAck();
+        ::sendto(sock, reinterpret_cast<const char*>(ack.data()),
+                 static_cast<int>(ack.size()), 0,
+                 reinterpret_cast<sockaddr*>(&src), srcLen);
       } else if (fpbridge::isSetActiveLeg(buf.data(), len)) {
         int legIndex = -1;
         if (fpbridge::decodeSetActiveLeg(buf.data(), len, legIndex)) {

@@ -151,16 +151,21 @@ void drawProcSubListPopup(Renderer& r, const WindowFrame& f, float h,
 
   const bool transitionList =
       ui.procStep() == SoftkeyController::ProcStep::TransitionList;
+  const bool airportList =
+      ui.procStep() == SoftkeyController::ProcStep::AirportList;
   const float size = fontPx(wt::kInfoValue, h);
   const float pad = fontPx(5.0f, h);
   constexpr int kMaxApproachVisibleRows = 7;
   constexpr int kMaxTransitionVisibleRows = 5;
+  constexpr int kMaxAirportVisibleRows = 7;
   const int maxVisibleRows =
-      transitionList ? kMaxTransitionVisibleRows : kMaxApproachVisibleRows;
+      airportList ? kMaxAirportVisibleRows
+      : transitionList ? kMaxTransitionVisibleRows
+                       : kMaxApproachVisibleRows;
   const int total = static_cast<int>(items.size());
   const int visible = std::min(maxVisibleRows, total);
   float rowH = 0.0f;
-  if (transitionList) {
+  if (transitionList || airportList) {
     // Always show up to 5 transitions; size the rows to fit the band between
     // the airport header and the buttons so the popup grows up over part of
     // the airport name (matches the trainer) while keeping 5 rows visible.
@@ -198,14 +203,15 @@ void drawProcSubListPopup(Renderer& r, const WindowFrame& f, float h,
         maxLabelW, measureApproachLabelWidth(r, label, size, labelIsRnavGps(label)));
   }
 
-  const float maxWidthFrac = transitionList ? 0.52f : 0.78f;
+  const float maxWidthFrac =
+      airportList ? 0.42f : transitionList ? 0.52f : 0.78f;
   const float neededW =
       maxLabelW + scrollReserve + pad * 2.0f + size * 0.20f;
   const float popupW = std::min(f.w * maxWidthFrac, neededW);
   const float popupH = rowH * static_cast<float>(visible) + pad * 2.0f;
   const float popupX = f.x + (f.w - popupW) * 0.5f;
   float popupY = 0.0f;
-  if (transitionList) {
+  if (transitionList || airportList) {
     popupY = anchorCy - popupH * 0.5f;
   } else {
     // Trainer: the approach list overlaps the airport header block.
@@ -321,18 +327,28 @@ void drawApproachSelectWindow(Renderer& r, const WindowFrame& f, float w, float 
   // Airport header block: ICAO + icon + city on top row; name + CHNL on bottom row.
   const std::string icao = ui.procAirportIcao();
   const char* icaoText = icao.empty() ? "_____" : icao.c_str();
-  r.fillText(left, headerCy, icaoText, size, TextAlign::Left,
-             withAlpha(colors::kPopoutCyan, a));
+  const bool airportCursor =
+      ui.procApproachField() == SoftkeyController::ProcApproachField::Airport;
+  if (airportCursor && blinkOn && !subListOpen) {
+    const float tw = r.measureTextWidth(icaoText, size);
+    r.fillRect(left - size * 0.08f, headerCy - size * 0.62f, tw + size * 0.16f,
+               size * 1.24f, withAlpha(colors::kPopoutCyan, a));
+    r.fillText(left, headerCy, icaoText, size, TextAlign::Left,
+               withAlpha(colors::kBlack, a));
+  } else {
+    r.fillText(left, headerCy, icaoText, size, TextAlign::Left,
+               withAlpha(colors::kPopoutCyan, a));
+  }
 
   const MapFeature sym = ui.procAirportFeature();
   const float iconSize = fontPx(15.0f, h) * 0.45f;
   const float iconCx =
-      left + r.measureTextWidth(icaoText, size) + iconSize * 0.9f;
+      left + r.measureTextWidth(icaoText, size) + fontPx(16.0f, h);
   drawUiWaypointIcon(r, sym, iconCx, headerCy, iconSize);
 
   const std::string cityLine = ui.procAirportCityLine();
   if (!cityLine.empty()) {
-    const float cityX = iconCx + iconSize * 0.9f;
+    const float cityX = iconCx + iconSize + fontPx(16.0f, h);
     const float cityMaxW = right - cityX;
     std::string city = cityLine;
     while (!city.empty() &&
@@ -515,7 +531,10 @@ void drawApproachSelectWindow(Renderer& r, const WindowFrame& f, float w, float 
              withAlpha(colors::kTitleGray, a));
 
   if (ui.procSubListOpen()) {
-    drawProcSubListPopup(r, f, h, ui, transCy, btnSepY, a);
+    const float anchorCy =
+        ui.procStep() == SoftkeyController::ProcStep::AirportList ? headerCy
+                                                                  : transCy;
+    drawProcSubListPopup(r, f, h, ui, anchorCy, btnSepY, a);
   }
 }
 

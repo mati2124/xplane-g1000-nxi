@@ -8,8 +8,34 @@
 #include "avionics/MapRange.h"
 #include "avionics/NavMath.h"
 #include "avionics/render/MapSymbols.h"
+#include "render/map/MapViewInternal.h"
 
 namespace avionics::mfd {
+
+float directToInsetRangeNm(const MapData& map, const MapFeature& wpt) {
+  float dtoRangeNm = 7.5f;
+  if (map.positionValid) {
+    const double dis =
+        navDistanceNm(map.ownshipLat, map.ownshipLon, wpt.lat, wpt.lon);
+    if (dis > 0.1) {
+      dtoRangeNm = static_cast<float>(
+          std::max(2.0, std::min(250.0, dis * 1.2)));
+    }
+  }
+  return dtoRangeNm;
+}
+
+float directToInsetViewHalfExtentNm(float rangeNm) {
+  MapViewConfig cfg{};
+  cfg.w = 180.0f;
+  cfg.h = 220.0f;
+  const float mapRadiusPx = mapview::mapRangeSpanPx(cfg);
+  if (mapRadiusPx <= 0.0f || rangeNm <= 0.0f) return rangeNm * 1.1f;
+  const float pixelsPerNm = mapRadiusPx / rangeNm;
+  const float halfW = cfg.w * 0.5f;
+  const float halfH = cfg.h * 0.5f;
+  return std::sqrt(halfW * halfW + halfH * halfH) / pixelsPerNm;
+}
 
 std::string formatLatLon(double value, bool isLat) {
   const char hemi = isLat ? (value >= 0.0 ? 'N' : 'S')
@@ -218,7 +244,9 @@ PageFrame beginPanelPage(Renderer& r, float x, float y, float w, float h,
 void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
                  const Rect& area, float rangeNm, const MapFeature* center,
                  float displayH, bool showFixes,
-                 const std::vector<MapLeg>* procedurePreview) {
+                 const std::vector<MapLeg>* procedurePreview,
+                 float displayRangeNm, TerrainDisplay terrain,
+                 bool useInsetMapData) {
   MapViewConfig cfg;
   cfg.x = area.x;
   cfg.y = area.y;
@@ -226,17 +254,20 @@ void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
   cfg.h = area.h;
   cfg.orientation = MapOrientation::NorthUp;
   cfg.rangeNm = rangeNm;
+  cfg.displayRangeNm = displayRangeNm;
   cfg.style.showChrome = false;
   cfg.style.showOrientationLabel = true;
   cfg.style.showNorthArrow = true;
-  cfg.style.terrain = TerrainDisplay::Topo;
+  cfg.style.terrain = terrain;
   cfg.style.showFixes = showFixes;
   cfg.style.labelFontWt = 16.0f;
   cfg.procedurePreview = procedurePreview;
+  cfg.useInsetMapData = useInsetMapData;
   if (center != nullptr) {
     cfg.hasCenterOverride = true;
     cfg.centerLat = center->lat;
     cfg.centerLon = center->lon;
+    cfg.centerFeature = center;
   }
   r.fillRect(area.x, area.y, area.w, area.h, colors::kBlack);
   MapView::render(r, map, d, cfg, displayH);

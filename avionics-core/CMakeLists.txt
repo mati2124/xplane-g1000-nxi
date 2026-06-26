@@ -14,6 +14,8 @@ add_library(avionics-core STATIC
   src/MockDataSource.cpp
   src/PersistentState.cpp
   src/FlightPlanPersistence.cpp
+  src/ProcedureSupport.cpp
+  src/ProcedureMenu.cpp
   src/GlidepathGuidance.cpp
   src/MissedApproachGuidance.cpp
   src/GpsLegCourse.cpp

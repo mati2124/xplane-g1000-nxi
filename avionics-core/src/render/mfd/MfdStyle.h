@@ -26,6 +26,12 @@ inline constexpr float kWtFieldLabel = 15.0f;
 inline constexpr float kWtFieldValue = 20.0f;
 inline constexpr float kWtHeader = 14.0f;
 inline constexpr float kWtIdentLarge = 26.0f;
+// MFD Direct-To popout (match PFD ChromeDirectToWindow proportions).
+inline constexpr float kWtDtoIdent = 18.0f;
+inline constexpr float kWtDtoFace = 16.0f;
+inline constexpr float kWtDtoLabel = 14.0f;
+inline constexpr float kWtDtoValue = 18.0f;
+inline constexpr float kWtDtoReadout = 18.0f;
 // Unit suffixes render at 0.7em of their value (.numberunit-unit-small).
 inline constexpr float kUnitEm = 0.7f;
 
@@ -121,7 +127,8 @@ inline void strokeCircle(Renderer& r, float cx, float cy, float radius,
 // of the title extends above the container, so the container starts a half
 // title-height below the slot top.
 inline Rect drawGroupBox(Renderer& r, const Rect& slot, const char* title,
-                         float displayH) {
+                         float displayH,
+                         Color titleBg = colors::kMfdPanelGray) {
   const float titleSize = mfdFontPx(kWtBoxTitle, displayH);
   const float topInset = titleSize * 0.55f;
   const Rect box{slot.x, slot.y + topInset, slot.w, slot.h - topInset};
@@ -142,7 +149,7 @@ inline Rect drawGroupBox(Renderer& r, const Rect& slot, const char* title,
     // Opaque patch matching the panel gray behind the title "breaks" the
     // border line, like the WT title's background-color.
     r.fillRect(tx - padX, box.y - titleSize * 0.62f, tw + 2.0f * padX,
-               titleSize * 1.24f, colors::kMfdPanelGray);
+               titleSize * 1.24f, titleBg);
     r.fillText(tx, box.y, title, titleSize, TextAlign::Left, colors::kWhite);
   }
 
@@ -161,10 +168,10 @@ inline Rect drawGroupBox(Renderer& r, const Rect& slot, const char* title,
 // rule beneath the title. Returns the inner content rect. Callers that want the
 // menu in DejaVu SemiBold push a FontScope around this and their content.
 inline Rect drawDialog(Renderer& r, const Rect& box, const char* title,
-                       float displayH) {
+                       float displayH, Color bg = colors::kBlack) {
   const float radius = mfdFontPx(10.0f, displayH);
   const float borderW = mfdFontPx(3.0f, displayH);
-  r.fillRoundedRect(box.x, box.y, box.w, box.h, radius, colors::kBlack);
+  r.fillRoundedRect(box.x, box.y, box.w, box.h, radius, bg);
   r.strokeRoundedRect(box.x + borderW * 0.5f, box.y + borderW * 0.5f,
                       box.w - borderW, box.h - borderW, radius, borderW,
                       colors::kMenuBorderGray);
@@ -183,6 +190,21 @@ inline Rect drawDialog(Renderer& r, const Rect& box, const char* title,
   const float pad = mfdFontPx(10.0f, displayH);
   return Rect{box.x + pad, top, box.w - 2.0f * pad,
               box.y + box.h - top - pad};
+}
+
+// Full-height MFD procedure overlay (Approach Loading / Procedures menu): grey
+// rounded panel flush to the body edges with no interior title (the page title
+// bar shows "PROC – …" instead).
+inline Rect drawProcOverlayPanel(Renderer& r, const Rect& box, float displayH) {
+  const float radius = mfdFontPx(10.0f, displayH);
+  const float borderW = mfdFontPx(3.0f, displayH);
+  r.fillRoundedRect(box.x, box.y, box.w, box.h, radius, colors::kMfdOverlayGray);
+  r.strokeRoundedRect(box.x + borderW * 0.5f, box.y + borderW * 0.5f,
+                      box.w - borderW, box.h - borderW, radius, borderW,
+                      colors::kMenuBorderGray);
+  const float pad = mfdFontPx(8.0f, displayH);
+  return Rect{box.x + pad, box.y + pad, box.w - 2.0f * pad,
+              box.h - 2.0f * pad};
 }
 
 // ---- fields and values ----

@@ -157,23 +157,27 @@ inline bool fplShowsDestinationBlankRow(int legCount, bool destinationFilled) {
   return fplSectionLayout(legCount, destinationFilled).destLegIndex < 0;
 }
 
-// Knob cursor steps only the editable slots; section label rows (Origin -
-// ____, Enroute, Destination - RW__, etc.) are display-only.
+// Knob cursor steps the editable slots, including the Origin and Destination
+// fields (filled idents or the blank "Origin - ____" / "Destination - ____"
+// entry rows) so the cursor can land on them to enter/edit the airports, like
+// the real unit. The Enroute / Destination-RW__ section labels stay display-
+// only. The blank Origin/Destination rows take the cursor stop that the
+// separate dash rows used to carry, so the selectable count/order is preserved.
 inline bool fplSectionRowIsSelectable(const FplSectionRow& sr, int legCount,
                                       bool destinationFilled) {
   switch (sr.kind) {
     case FplSectionRow::Kind::EnrouteLabel:
     case FplSectionRow::Kind::DestinationLabel:
+    case FplSectionRow::Kind::OriginBlank:
+    case FplSectionRow::Kind::DestinationBlank:
       return false;
     case FplSectionRow::Kind::Origin:
-      return sr.legIndex >= 0;
+      return sr.legIndex >= 0 || fplShowsOriginBlankRow(legCount);
     case FplSectionRow::Kind::Destination:
-      if (sr.legIndex >= 0) return true;
-      return !fplShowsDestinationBlankRow(legCount, destinationFilled);
-    case FplSectionRow::Kind::OriginBlank:
+      return sr.legIndex >= 0 ||
+             fplShowsDestinationBlankRow(legCount, destinationFilled);
     case FplSectionRow::Kind::EnrouteBlank:
     case FplSectionRow::Kind::EnrouteLeg:
-    case FplSectionRow::Kind::DestinationBlank:
       return true;
     default:
       return false;

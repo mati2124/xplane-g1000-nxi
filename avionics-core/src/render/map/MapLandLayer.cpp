@@ -974,9 +974,9 @@ bool shouldDrawLine(const MapLandLine& line, float rangeNm) {
 
 }  // namespace
 
-void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm, bool skipLandMassFill, float viewHalfExtentNm,
-                  float displayRangeNm, bool showCulture) {
+void drawLandData(Renderer& r, const std::vector<MapLandLine>& landLines,
+                  const Proj& proj, float rangeNm, bool skipLandMassFill,
+                  float viewHalfExtentNm, float displayRangeNm, bool showCulture) {
   g_landZoomAnimating =
       displayRangeNm > 0.0f &&
       !mapRangeZoomSettled(displayRangeNm, rangeNm) &&
@@ -993,9 +993,9 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
   if (!skipLandMassFill) {
     static thread_local std::vector<std::size_t> baseIdx;
     baseIdx.clear();
-    baseIdx.reserve(map.landLines.size());
-    for (std::size_t i = 0; i < map.landLines.size(); ++i) {
-      const MapLandLine& line = map.landLines[i];
+    baseIdx.reserve(landLines.size());
+    for (std::size_t i = 0; i < landLines.size(); ++i) {
+      const MapLandLine& line = landLines[i];
       if (line.points.size() < 3) continue;
       const float geoSpan = landLineGeoSpan(line);
       if (!isLandFillBase(line, geoSpan)) continue;
@@ -1015,11 +1015,11 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
     }
     // Coarsest first (largest span), so finer high-res rings fill on top.
     std::sort(baseIdx.begin(), baseIdx.end(), [&](std::size_t a, std::size_t b) {
-      return landLineGeoSpan(map.landLines[a]) >
-             landLineGeoSpan(map.landLines[b]);
+      return landLineGeoSpan(landLines[a]) >
+             landLineGeoSpan(landLines[b]);
     });
     for (std::size_t i : baseIdx) {
-      const MapLandLine& line = map.landLines[i];
+      const MapLandLine& line = landLines[i];
       if (!projectMidRangeContinentalFill(line, proj, rangeNm, viewHalfExtentNm,
                                           pts)) {
         continue;
@@ -1038,18 +1038,18 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
   {
     static thread_local std::vector<std::size_t> landIdx;
     landIdx.clear();
-    landIdx.reserve(map.landLines.size());
-    for (std::size_t i = 0; i < map.landLines.size(); ++i) {
-      const MapLandLine& line = map.landLines[i];
+    landIdx.reserve(landLines.size());
+    for (std::size_t i = 0; i < landLines.size(); ++i) {
+      const MapLandLine& line = landLines[i];
       if (line.landClass == LandClass::LandMass && line.points.size() >= 2) {
         landIdx.push_back(i);
       }
     }
     std::sort(landIdx.begin(), landIdx.end(), [&](std::size_t a, std::size_t b) {
-      const std::size_t pa = map.landLines[a].points.size();
-      const std::size_t pb = map.landLines[b].points.size();
-      const float ga = landLineGeoSpan(map.landLines[a]);
-      const float gb = landLineGeoSpan(map.landLines[b]);
+      const std::size_t pa = landLines[a].points.size();
+      const std::size_t pb = landLines[b].points.size();
+      const float ga = landLineGeoSpan(landLines[a]);
+      const float gb = landLineGeoSpan(landLines[b]);
       if (rangeNm <= kRegionalSilhouetteSuppressMaxNm) {
         // Close range: regional lon-band underlay, then local shore/island rings.
         auto fillTier = [](std::size_t npts, float geoSpan) {
@@ -1094,7 +1094,7 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
       return pa > pb;
     });
     for (std::size_t i : landIdx) {
-      const MapLandLine& line = map.landLines[i];
+      const MapLandLine& line = landLines[i];
       if (skipLandMassFill) continue;
       const float geoSpan = landLineGeoSpan(line);
       // Base-fill rings are handled by the solid land-base pass above (unless
@@ -1126,7 +1126,7 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
     }
   }
 
-  for (const MapLandLine& line : map.landLines) {
+  for (const MapLandLine& line : landLines) {
     if (line.landClass == LandClass::LandMass || line.points.size() < 2) {
       continue;
     }
@@ -1134,6 +1134,10 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
         line.landClass == LandClass::Coast) {
       continue;
     }
+    // Rivers overlay on top of the topo raster (drawn separately by
+    // drawRiverData after the terrain pass), so they stay visible whether
+    // terrain is on or off -- matching the real NXi.
+    if (line.landClass == LandClass::River) continue;
     // Detail 3 declutter: drop roads/railroads/state boundaries but keep the
     // topographic water (rivers, lakes).
     if (!showCulture && isCultureLine(line.landClass)) continue;
@@ -1151,7 +1155,7 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
   }
 
   // Political borders only at wide range; shoreline is land fill vs ocean.
-  for (const MapLandLine& line : map.landLines) {
+  for (const MapLandLine& line : landLines) {
     if (line.landClass != LandClass::Border) {
       continue;
     }
@@ -1173,9 +1177,25 @@ void drawLandData(Renderer& r, const MapData& map, const Proj& proj,
   }
 }
 
-void drawCityDots(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm, float symSize) {
-  for (const MapLandCity& label : map.cities) {
+void drawRiverData(Renderer& r, const std::vector<MapLandLine>& landLines,
+                   const Proj& proj, float rangeNm) {
+  const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
+  std::vector<Point> pts;
+  for (const MapLandLine& line : landLines) {
+    if (line.landClass != LandClass::River || line.points.size() < 2) continue;
+    if (!shouldDrawLine(line, rangeNm)) continue;
+    if (!projectLine(line, proj, rangeNm, pts)) continue;
+    if (!polylineIntersectsClip(pts.data(), static_cast<int>(pts.size()), clip,
+                                kSymbologyClipMarginPx)) {
+      continue;
+    }
+    drawProjectedLine(r, line, pts, rangeNm, clip, landLineGeoSpan(line));
+  }
+}
+
+void drawCityDots(Renderer& r, const std::vector<MapLandCity>& cities,
+                  const Proj& proj, float rangeNm, float symSize) {
+  for (const MapLandCity& label : cities) {
     if (label.labelKind != LandLabelKind::City) continue;
     if (rangeNm > maxLabelRangeNm(label)) continue;
     if (!continentalLabelVisible(label, rangeNm)) continue;
@@ -1186,8 +1206,9 @@ void drawCityDots(Renderer& r, const MapData& map, const Proj& proj,
   }
 }
 
-void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
-                        float rangeNm, float labelSize, bool showCities) {
+void drawMapPlaceLabels(Renderer& r, const std::vector<MapLandCity>& cities,
+                        const Proj& proj, float rangeNm, float labelSize,
+                        bool showCities) {
   struct GeoLabelDraw {
     const MapLandCity* label;
     float x;
@@ -1198,10 +1219,10 @@ void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
 
   std::vector<GeoLabelDraw> regions;
   std::vector<GeoLabelDraw> hydros;
-  regions.reserve(map.cities.size());
-  hydros.reserve(map.cities.size());
+  regions.reserve(cities.size());
+  hydros.reserve(cities.size());
 
-  for (const MapLandCity& label : map.cities) {
+  for (const MapLandCity& label : cities) {
     if (label.labelKind == LandLabelKind::City) continue;
     if (rangeNm > maxLabelRangeNm(label)) continue;
     if (!continentalLabelVisible(label, rangeNm)) continue;
@@ -1257,7 +1278,7 @@ void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
   // City names are man-made land data (Detail 3 declutter); hydro/region
   // labels above are topographic and always drawn.
   if (!showCities) return;
-  for (const MapLandCity& label : map.cities) {
+  for (const MapLandCity& label : cities) {
     if (label.labelKind != LandLabelKind::City) continue;
     if (rangeNm > maxLabelRangeNm(label)) continue;
     if (!continentalLabelVisible(label, rangeNm)) continue;
@@ -1272,8 +1293,8 @@ void drawMapPlaceLabels(Renderer& r, const MapData& map, const Proj& proj,
 
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,
                 float rangeNm, float symSize, float labelSize) {
-  drawCityDots(r, map, proj, rangeNm, symSize);
-  drawMapPlaceLabels(r, map, proj, rangeNm, labelSize);
+  drawCityDots(r, map.cities, proj, rangeNm, symSize);
+  drawMapPlaceLabels(r, map.cities, proj, rangeNm, labelSize);
 }
 
 }  // namespace avionics::mapview

@@ -5,6 +5,7 @@
 
 #include "avionics/Color.h"
 #include "avionics/WeatherRadar.h"
+#include "avionics/render/MapSymbols.h"
 #include "render/map/MapProjection.h"
 #include "render/map/MapViewInternal.h"
 #include "render/map/TerrainRaster.h"
@@ -72,13 +73,22 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   const double viewCenterLon =
       config.hasCenterOverride ? config.centerLon : map.ownshipLon;
 
+  const bool useInsetData = config.useInsetMapData && map.insetMapActive;
+  const std::vector<MapLandLine>& landLines =
+      useInsetData ? map.insetLandLines : map.landLines;
+  const std::vector<MapLandCity>& cities =
+      useInsetData ? map.insetCities : map.cities;
+
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
 
-  // NXi navy ocean base whenever land styling is active.
+  // NXi chart base: navy ocean on the main map; Direct-To inset uses black land
+  // so inland targets are not blank ocean when continental fill is sparse.
   if (config.style.showLand && map.positionValid &&
       (config.style.showChrome || config.style.showLand)) {
-    r.fillRect(config.x, config.y, config.w, config.h, mapview::kMapOceanFill);
+    const Color chartBase =
+        useInsetData ? mapview::kMapLandFill : mapview::kMapOceanFill;
+    r.fillRect(config.x, config.y, config.w, config.h, chartBase);
   }
 
   if (!map.positionValid) {
@@ -111,13 +121,12 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // Chart land/ocean under the topo layer. Where the terrain raster is still
   // loading (transparent pixels) or omits open ocean, the base chart shows
   // through like the real NXi instead of procedural tan over the Gulf.
-  if (config.style.showLand &&
-      (!map.landLines.empty() || !map.cities.empty())) {
-    mapview::drawLandData(r, map, proj, rangeNm, false, viewHalfExtentNm,
+  if (config.style.showLand && (!landLines.empty() || !cities.empty())) {
+    mapview::drawLandData(r, landLines, proj, rangeNm, false, viewHalfExtentNm,
                           scaleRangeNm, config.style.showLandData);
     // City dots are man-made land data, decluttered at Detail 3; water stays.
     if (config.style.showLabels && config.style.showLandData) {
-      mapview::drawCityDots(r, map, proj, rangeNm, symSize);
+      mapview::drawCityDots(r, cities, proj, rangeNm, symSize);
     }
   }
 
@@ -132,6 +141,13 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
         r, *map.terrain, mode, flight.altitudeValid ? flight.altitudeFt : 0.0f,
         viewCenterLat, viewCenterLon, cx, cy, pixelsPerNm, rotation, rangeNm,
         scaleRangeNm, viewHalfExtentNm, config.style.terrainMaxRangeNm);
+  }
+
+  // Rivers overlay on top of the topo raster so the thin blue hydrography stays
+  // visible whether terrain is on or off (the raster otherwise paints over the
+  // river lines), matching the real NXi.
+  if (config.style.showLand && !landLines.empty()) {
+    mapview::drawRiverData(r, landLines, proj, rangeNm);
   }
 
   // Dim fallback when land styling is off and no terrain raster is shown.
@@ -203,16 +219,20 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
                          labelSize);
   }
 
-  if (config.style.showFlightPlan && map.flightPlan.size() >= 2) {
+  const bool procPreviewActive =
+      config.procedurePreview != nullptr &&
+      config.procedurePreview->size() >= 2;
+
+  if (config.style.showFlightPlan && map.flightPlan.size() >= 2 &&
+      !procPreviewActive) {
     mapview::drawFlightPlan(r, map, proj, config, flight, symSize);
   }
 
-  if (config.procedurePreview != nullptr &&
-      config.procedurePreview->size() >= 2) {
+  if (procPreviewActive) {
     mapview::drawProcedurePreview(r, proj, config, symSize);
   }
 
-  if (config.style.showFlightPlan && map.positionValid) {
+  if (config.style.showFlightPlan && map.positionValid && !procPreviewActive) {
     mapview::drawDirectToCourse(r, map, flight, proj, config, symSize);
   }
 
@@ -238,16 +258,36 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     mapview::drawNavFeatures(r, map, proj, config, rangeNm, symSize);
   }
 
+  // Direct-To inset: the target is always drawn at the view center regardless
+  // of airport size-class range declutter (far-away targets zoom out past 100 NM).
+  if (useInsetData && config.centerFeature != nullptr &&
+      config.style.showFeatures) {
+    const MapFeature& f = *config.centerFeature;
+    drawMapFeatureSymbol(r, f, cx, cy, symSize);
+    if (config.style.showLabels && !f.id.empty()) {
+      const float textSize = labelSize * mapview::kMapIdentLabelScale;
+      const float labelY =
+          (f.type == MapFeatureType::Airport ? cy - symSize * 1.25f
+                                             : cy - symSize * 1.12f) -
+          mapview::kMapLabelLiftPx;
+      r.fillText(cx, labelY, f.id, textSize, TextAlign::Center, colors::kWhite,
+                 mapview::kMapLabelFace);
+    }
+  }
+
   // Boxed flight-plan idents draw above nav symbology (fixes share the same
   // coordinates as plan legs; the route overlay replaces their map icons).
-  if (config.style.showFlightPlan && map.flightPlan.size() >= 2) {
+  if (config.style.showFlightPlan && map.flightPlan.size() >= 2 &&
+      !procPreviewActive) {
     mapview::drawFlightPlanLabels(r, map, proj, config, flight, symSize,
                                   labelSize);
   }
-  if (config.style.showFlightPlan && map.positionValid) {
+  if (config.style.showFlightPlan && map.positionValid && !procPreviewActive) {
     mapview::drawDirectToCourseLabel(r, map, flight, proj, config, symSize,
                                      labelSize);
   }
+  // Previewed approach fixes get the same boxed idents as loaded plan legs.
+  mapview::drawProcedurePreviewLabels(r, proj, config, symSize, labelSize);
 
   // Obstacles (FAA DOF): independent of nav-feature declutter (Table 5-4).
   if (config.style.showObstacles && !map.obstacles.empty()) {
@@ -259,18 +299,17 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
 
   // Place and nav idents draw above symbology (white labels centered on top).
   if (config.style.showLabels) {
-    if (config.style.showLand && !map.cities.empty()) {
-      mapview::drawMapPlaceLabels(r, map, proj, rangeNm, labelSize,
+    if (config.style.showLand && !cities.empty()) {
+      mapview::drawMapPlaceLabels(r, cities, proj, rangeNm, labelSize,
                                   config.style.showLandData);
     }
     if (config.style.showFeatures) {
       mapview::drawNavFeatureLabels(r, map, proj, config, rangeNm, symSize,
                                     labelSize);
     }
-    if (config.procedurePreview != nullptr &&
-        config.procedurePreview->size() >= 2) {
-      mapview::drawProcedurePreviewLabels(r, proj, config, symSize, labelSize);
-    }
+    // The procedure preview does not draw its own fix labels: the base map
+    // already labels every fix in white, so cyan preview labels would just
+    // duplicate them (and the real unit shows no extra labels here).
   }
 
   // Ownship sits at the view center unless the center is overridden (the WPT/

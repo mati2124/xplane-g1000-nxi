@@ -24,9 +24,32 @@ const char* declutterLevelText(MapDetail d) {
 }  // namespace
 
 std::vector<MfdController::PageMenuItem> MfdController::buildPageMenu() const {
-  // Only the Navigation Map page defines a Page Menu in this suite for now
-  // (Pilot's Guide Fig. 5-6). Other pages return an empty list, so MENU is
-  // inert there, matching the real unit's pages that have no page menu.
+  // The Navigation Map and the Active Flight Plan page each define a Page Menu
+  // in this suite (Pilot's Guide Fig. 5-6). Other pages return an empty list,
+  // so MENU is inert there, matching the real unit's pages with no page menu.
+  if (pageGroup_ == MfdPageGroup::FlightPlan) {
+    // The Active Flight Plan page menu, verbatim from the trainer in on-unit
+    // order and enable state. Delete Flight Plan opens the confirmation; every
+    // other row's feature is not modeled, so the rows the trainer shows active
+    // are DisplayOnly (selectable, inert) and the rows it greys are Disabled.
+    return {
+        {"Collapse Airways", PageMenuAction::DisplayOnly},
+        {"Hold At Waypoint", PageMenuAction::Disabled},
+        {"Hold At Present Position", PageMenuAction::DisplayOnly},
+        {"Create ATK Offset Waypoint", PageMenuAction::Disabled},
+        {"VNV", PageMenuAction::DisplayOnly, /*dtoSuffix=*/true},
+        {"Select VNV Profile Window", PageMenuAction::DisplayOnly},
+        {"Cancel VNV", PageMenuAction::DisplayOnly},
+        {"Delete Flight Plan", PageMenuAction::FplDeleteFlightPlan},
+        {"Store Flight Plan", PageMenuAction::DisplayOnly},
+        {"Invert Flight Plan", PageMenuAction::DisplayOnly},
+        {"Temperature Compensation", PageMenuAction::DisplayOnly},
+        {"Create New User Waypoint", PageMenuAction::Disabled},
+        {"Remove Departure", PageMenuAction::Disabled},
+        {"Remove Arrival", PageMenuAction::Disabled},
+        {"Remove Approach", PageMenuAction::DisplayOnly},
+    };
+  }
   if (pageGroup_ != MfdPageGroup::Map || page() != MfdPage::NavigationMap) {
     return {};
   }
@@ -73,6 +96,11 @@ bool MfdController::pageMenuItemEnabled(int i) const {
          PageMenuAction::Disabled;
 }
 
+bool MfdController::pageMenuItemDtoSuffix(int i) const {
+  if (i < 0 || i >= static_cast<int>(pageMenuItems_.size())) return false;
+  return pageMenuItems_[static_cast<std::size_t>(i)].dtoSuffix;
+}
+
 void MfdController::pageMenuStep(int direction) {
   const int n = static_cast<int>(pageMenuItems_.size());
   if (n == 0) return;
@@ -101,8 +129,14 @@ void MfdController::pageMenuActivate() {
       pageMenuOpen_ = false;  // the page menu closes as the window opens
       openMapSettings();
       break;
+    case PageMenuAction::FplDeleteFlightPlan:
+      pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
+      fplConfirm_ = FplConfirm::DeleteFlightPlan;
+      fplConfirmOk_ = true;
+      break;
+    case PageMenuAction::DisplayOnly:
     case PageMenuAction::Disabled:
-      break;  // inert: a disabled row is never highlighted, so this is a no-op
+      break;  // inert: the underlying feature is not modeled, so leave the menu
   }
 }
 

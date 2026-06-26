@@ -302,6 +302,18 @@ void MfdController::setRangeFromNm(float rangeNm) {
   rangeIndex_ = mapRangeIndexForNm(rangeNm);
 }
 
+void MfdController::setProcPreviewFitRange(int ladderIndex) {
+  if (procPreviewRangeManual_) return;
+  rangeIndex_ = std::max(0, std::min(kMapRangeLadderCount - 1, ladderIndex));
+  displayRangeNm_ = mapRangeNmAt(rangeIndex_);
+}
+
+void MfdController::setFplPreviewFitRange(int ladderIndex) {
+  if (fplPreviewRangeManual_) return;
+  rangeIndex_ = std::max(0, std::min(kMapRangeLadderCount - 1, ladderIndex));
+  displayRangeNm_ = mapRangeNmAt(rangeIndex_);
+}
+
 bool MfdController::stepMapRange(int direction) {
   const int before = rangeIndex_;
   if (direction > 0) {
@@ -613,15 +625,38 @@ void MfdController::pressBezelKey(BezelKey key) {
     return;
   }
 
+  // The Procedures window owns the FMS knob / ENT / CLR while it is open
+  // (Pilot's Guide 5.8). It must run before the FPL page handler: PROC is
+  // opened as an overlay on the FPL page, and fplBezelKey would otherwise
+  // consume knob turns for list scrolling even when the proc menu is up.
+  if (procMenuOpen_) {
+    if (procBezelKey(key)) {
+      rebuildLabels();
+      return;
+    }
+    // Modal overlay: knob / ENT / CLR must not fall through to the FPL page
+    // or page-group routing when the proc handler does not recognize the key.
+    if (!isMapRangePanBezelKey(key) && !isPageNavigationBezelKey(key)) {
+      switch (key) {
+        case BezelKey::FmsInnerCw:
+        case BezelKey::FmsInnerCcw:
+        case BezelKey::FmsOuterCw:
+        case BezelKey::FmsOuterCcw:
+        case BezelKey::FmsPush:
+        case BezelKey::Ent:
+        case BezelKey::Clr:
+          rebuildLabels();
+          return;
+        default:
+          break;
+      }
+    }
+  }
+
   // The FPL page owns the FMS knob / ENT / CLR / MENU while it is up (cursor,
   // waypoint entry, remove confirmation); unconsumed keys fall through to the
   // common handling below (FPL toggle, range rocker).
   if (pageGroup_ == MfdPageGroup::FlightPlan && fplBezelKey(key)) {
-    rebuildLabels();
-    return;
-  }
-
-  if (procMenuOpen_ && procBezelKey(key)) {
     rebuildLabels();
     return;
   }
@@ -647,9 +682,13 @@ void MfdController::pressBezelKey(BezelKey key) {
   switch (key) {
     case BezelKey::RangeUp:
       rangeIndex_ = std::min(kMapRangeLadderCount - 1, rangeIndex_ + 1);
+      if (pageGroup_ == MfdPageGroup::FlightPlan) fplPreviewRangeManual_ = true;
+      if (procMenuOpen_ && procSelectMode()) procPreviewRangeManual_ = true;
       break;
     case BezelKey::RangeDown:
       rangeIndex_ = std::max(0, rangeIndex_ - 1);
+      if (pageGroup_ == MfdPageGroup::FlightPlan) fplPreviewRangeManual_ = true;
+      if (procMenuOpen_ && procSelectMode()) procPreviewRangeManual_ = true;
       break;
     case BezelKey::Fpl:
       // FPL toggles the Active Flight Plan page; pressing it again returns to
@@ -660,17 +699,21 @@ void MfdController::pressBezelKey(BezelKey key) {
       } else {
         groupBeforeFpl_ = pageGroup_;
         pageGroup_ = MfdPageGroup::FlightPlan;
+        fplPreviewRangeManual_ = false;
       }
       pageSelectSec_ = kPageSelectSeconds;
       break;
     case BezelKey::Proc:
-      if (pageGroup_ == MfdPageGroup::FlightPlan) {
-        procMenuOpen_ = !procMenuOpen_;
-        procSelected_ = 0;
-        procCategory_ = ProcedureType::Approach;
-        procStep_ = ProcMenuStep::ProcedureList;
-        procSelectedName_.clear();
+      // PROC opens the Procedures window over the current MFD page (Pilot's
+      // Guide 5.8); pressing it again closes it. Opening rebuilds the top-level
+      // menu so the activate items reflect the current plan.
+      if (procMenuOpen_) {
+        procMenuOpen_ = false;
+      } else {
+        procMenuOpen_ = true;
+        buildProcMenu();
       }
+      procPreviewRangeManual_ = false;
       break;
     case BezelKey::FmsInnerCw:
       // Small FMS knob: move the item cursor down the checklist, else step

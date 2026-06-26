@@ -30,7 +30,7 @@ try {
 
     Write-Log "Launching PFD + MFD (single process, shared command bridge)..."
     $env:AVIONICS_SKIP_UPDATE_CHECK = "1"
-    Start-Process $Exe -ArgumentList @("--debug-menu") -WorkingDirectory $Repo
+    Start-Process $Exe -ArgumentList @("--debug-menu", "--skip-ack") -WorkingDirectory $Repo
     Write-Log "Done."
 }
 catch {

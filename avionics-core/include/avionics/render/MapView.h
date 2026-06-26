@@ -149,6 +149,11 @@ struct MapViewConfig {
   bool pointerActive = false;
   double pointerLat = 0.0;
   double pointerLon = 0.0;
+  // When true, land/nav layers come from MapData::inset* (Direct-To inset).
+  bool useInsetMapData = false;
+  // Direct-To / WPT inset: always draw this feature at the view center (bypasses
+  // range declutter so the target airport/fix stays visible when far away).
+  const MapFeature* centerFeature = nullptr;
   MapViewStyle style;
 };
 

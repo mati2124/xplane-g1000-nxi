@@ -28,7 +28,6 @@ constexpr double kCountdownLeadSec = 10.0;
 // Use the turn-advisory wording when the outbound course change exceeds this.
 constexpr double kTurnAdvisoryDeg = 15.0;
 
-
 std::string formatTrackDeg(float deg) {
   int hdg = static_cast<int>(std::lround(deg)) % 360;
   if (hdg < 0) hdg += 360;
@@ -44,11 +43,14 @@ double shortestTurnDeltaDeg(double inboundDeg, double outboundDeg) {
   return std::fmod(outboundDeg - inboundDeg + 540.0, 360.0) - 180.0;
 }
 
-double turnLeadDistanceNm(double gsKts, double turnDeltaDeg) {
+double turnLeadDistanceNm(double gsKts, double turnDeltaDeg,
+                          double maxTurnDegCap) {
   if (gsKts < 1.0 || std::fabs(turnDeltaDeg) < 0.5) return 0.0;
-  // Large course reversals use the same fly-by lead as a 90° turn; beyond that
-  // the formula blows up and the annunciation would read "now" for miles.
-  const double cappedDeltaDeg = std::min(std::fabs(turnDeltaDeg), 90.0);
+  // Large course reversals cap the angle used in the formula so the annunciation
+  // does not read "now" for miles; Direct-To off-route entries may use a higher
+  // cap (e.g. 135°) so the fly-by still begins before the fix.
+  const double cappedDeltaDeg =
+      std::min(std::fabs(turnDeltaDeg), maxTurnDegCap);
   const double bankRad = kTurnBankDeg * kPi / 180.0;
   const double deltaRad = cappedDeltaDeg * kPi / 180.0 * 0.5;
   const double vFps = gsKts * kFeetPerNm / 3600.0;
@@ -93,6 +95,33 @@ TurnAnticipation computeTurnAnticipation(const MapData& map,
   const MapLeg& active = plan[static_cast<std::size_t>(activeIdx)];
   const MapLeg& next = plan[static_cast<std::size_t>(activeIdx + 1)];
 
+  // After a fly-by sequences early onto the outbound leg, the active TO waypoint
+  // is already the outbound fix while the aircraft is still rounding the prior
+  // fix. Suppress the *next* leg's turn advisory until the prior fly-by is
+  // complete so the countdown does not start miles early (regression: AZOMY→
+  // UZAWO turn still in progress but GRAMS countdown already running).
+  if (activeIdx >= 2) {
+    const MapLeg& prevFix = plan[static_cast<std::size_t>(activeIdx - 1)];
+    const MapLeg& priorFix = plan[static_cast<std::size_t>(activeIdx - 2)];
+    const double inboundPrevDeg =
+        navBearingDeg(priorFix.lat, priorFix.lon, prevFix.lat, prevFix.lon);
+    const double outboundPrevDeg =
+        navBearingDeg(prevFix.lat, prevFix.lon, active.lat, active.lon);
+    const double prevTurnDeltaDeg =
+        shortestTurnDeltaDeg(inboundPrevDeg, outboundPrevDeg);
+    if (std::fabs(prevTurnDeltaDeg) >= 1.0) {
+      const double gsKts =
+          std::max(40.0, static_cast<double>(data.groundSpeedKts));
+      const double prevLeadNm =
+          turnLeadDistanceNm(gsKts, prevTurnDeltaDeg);
+      const double distPrevFixNm =
+          navDistanceNm(map.ownshipLat, map.ownshipLon, prevFix.lat, prevFix.lon);
+      if (distPrevFixNm <= prevLeadNm + kTurnSteeringMarginNm) {
+        return out;
+      }
+    }
+  }
+
   const double inboundDeg =
       directToOnPlan
           ? (map.directToOriginValid
@@ -112,14 +141,20 @@ TurnAnticipation computeTurnAnticipation(const MapData& map,
   if (std::fabs(turnDeltaDeg) < 1.0) return out;
 
   const double gsKts = std::max(40.0, static_cast<double>(data.groundSpeedKts));
-  const double leadNm = turnLeadDistanceNm(gsKts, turnDeltaDeg);
-  const double distToWptNm = std::max(0.0, static_cast<double>(data.fmaLegDistanceNm));
-  const double distToTurnNm = distToWptNm - leadNm;
+  const double maxTurnDegCap =
+      directToOnPlan ? kDirectToFlyByMaxTurnDegCap : 90.0;
+  const double leadNm = turnLeadDistanceNm(gsKts, turnDeltaDeg, maxTurnDegCap);
+  const double steeringMarginNm =
+      directToOnPlan ? kTurnSteeringMarginNm : 0.0;
+  const double distToWptNm =
+      std::max(0.0, static_cast<double>(data.fmaLegDistanceNm));
+  const double distToTurnNm = distToWptNm - leadNm - steeringMarginNm;
   const double timeToTurnSec = distToTurnNm / (gsKts / 3600.0);
 
   // Anticipation begins when within the lead distance plus the 10-second
-  // countdown window.
-  const double announceNm = leadNm + gsKts / 3600.0 * kCountdownLeadSec;
+  // countdown window (and the Direct-To steering margin when applicable).
+  const double announceNm =
+      leadNm + steeringMarginNm + gsKts / 3600.0 * kCountdownLeadSec;
   if (distToWptNm > announceNm) return out;
 
   const std::string track = formatTrackDeg(static_cast<float>(outboundDeg));

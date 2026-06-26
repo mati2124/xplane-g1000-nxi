@@ -141,7 +141,6 @@ void MfdController::syncFlightPlan(const MapData& map,
       fplEntry_.notFound = false;
       fplAltEntry_.active = false;
       fplConfirm_ = FplConfirm::None;
-      fplMenuOpen_ = false;
     } else {
       const bool keepProcedure =
           fplApproachLegCount_ > 0 ||
@@ -170,7 +169,6 @@ void MfdController::syncFlightPlan(const MapData& map,
         fplEntry_.notFound = false;
         fplAltEntry_.active = false;
         fplConfirm_ = FplConfirm::None;
-        fplMenuOpen_ = false;
       }
     }
   }
@@ -214,7 +212,6 @@ void MfdController::syncFlightPlan(const MapData& map,
     fplEntry_.notFound = false;
     fplAltEntry_.active = false;
     fplConfirm_ = FplConfirm::None;
-    fplMenuOpen_ = false;
   }
 
   fplEnsureApproachInferred();
@@ -251,10 +248,10 @@ void MfdController::fplResetInteraction() {
   fplEntry_.reset();
   fplAltEntry_ = FplAltEntry{};
   fplConfirm_ = FplConfirm::None;
-  fplMenuOpen_ = false;
+  pageMenuOpen_ = false;
   procMenuOpen_ = false;
-  procStep_ = ProcMenuStep::ProcedureList;
-  procSelectedName_.clear();
+  procMenu_ = ProcedureMenuState{};
+  fplPreviewRangeManual_ = false;
 }
 
 void MfdController::fplAltEntryOpen(int row) {
@@ -318,6 +315,9 @@ void MfdController::fplCommitEntry() {
 }
 
 bool MfdController::fplBezelKey(BezelKey key) {
+  // The Procedures overlay is modal over the FPL page (Pilot's Guide 5.8).
+  if (procMenuOpen_ && !isMapRangePanBezelKey(key)) return false;
+
   fplEnsureApproachInferred();
   const int legCount = static_cast<int>(fplLegs_.size());
   FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
@@ -366,25 +366,6 @@ bool MfdController::fplBezelKey(BezelKey key) {
       case BezelKey::FmsInnerCw:
       case BezelKey::FmsInnerCcw:
         fplConfirmOk_ = !fplConfirmOk_;
-        break;
-      default:
-        break;
-    }
-    return true;
-  }
-
-  // Page menu: a single option (Delete Flight Plan), ENT selects it.
-  if (fplMenuOpen_) {
-    switch (key) {
-      case BezelKey::Ent:
-        fplMenuOpen_ = false;
-        fplConfirm_ = FplConfirm::DeleteFlightPlan;
-        fplConfirmOk_ = true;
-        break;
-      case BezelKey::Clr:
-      case BezelKey::Menu:
-      case BezelKey::FmsPush:
-        fplMenuOpen_ = false;
         break;
       default:
         break;
@@ -454,11 +435,8 @@ bool MfdController::fplBezelKey(BezelKey key) {
     return true;
   }
 
-  // MENU opens the page menu whether or not the cursor is on.
-  if (key == BezelKey::Menu) {
-    fplMenuOpen_ = true;
-    return true;
-  }
+  // MENU falls through to the common handler, which opens the generic Page
+  // Menu for the Active Flight Plan page (built in buildPageMenu).
 
   // Pushing the knob turns the selection cursor on/off.
   if (key == BezelKey::FmsPush) {
@@ -468,15 +446,26 @@ bool MfdController::fplBezelKey(BezelKey key) {
   }
 
   if (!fplCursorOn_) {
-    // Cursor off: the knob scrolls the section list (PFD FPL window behavior).
-    if (key == BezelKey::FmsOuterCw || key == BezelKey::FmsInnerCw) {
+    // Cursor off: outer knob scrolls the section list. Inner knob on the
+    // highlighted ident row opens waypoint entry (trainer / Pilot's Guide).
+    if (key == BezelKey::FmsOuterCw) {
       fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
       return true;
     }
-    if (key == BezelKey::FmsOuterCcw || key == BezelKey::FmsInnerCcw) {
+    if (key == BezelKey::FmsOuterCcw) {
       fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
+      return true;
+    }
+    if (key == BezelKey::FmsInnerCw || key == BezelKey::FmsInnerCcw) {
+      if (!fplEntry_.active) {
+        fplEntry_.open(navSource_, mapData_,
+                       fplIdentEntrySeedAtCursor(edit, approachAirport, layout));
+        fplEntry_.selectAll = false;
+      }
+      fplEntry_.turnChar(navSource_, mapData_,
+                         key == BezelKey::FmsInnerCw ? +1 : -1);
       return true;
     }
     return false;  // other keys fall through to page stepping
@@ -525,12 +514,8 @@ bool MfdController::fplBezelKey(BezelKey key) {
         fplAltEntryOpen(legIndex);
       } else {
         if (!fplEntry_.active) {
-          std::string initial;
-          if (onLegRow) {
-            initial = fplLegs_[static_cast<std::size_t>(legIndex)].id;
-            if (!initial.empty() && isFmsLatLonIdent(initial)) initial.clear();
-          }
-          fplEntry_.open(navSource_, mapData_, initial);
+          fplEntry_.open(navSource_, mapData_,
+                         fplIdentEntrySeedAtCursor(edit, approachAirport, layout));
           fplEntry_.selectAll = false;
         }
         fplEntry_.turnChar(navSource_, mapData_,
@@ -632,7 +617,7 @@ void MfdController::adoptFlightPlanFromPeer(
     const std::vector<MapLeg>& legs, bool destinationFilled,
     const FlightPlanApproachState& approach) {
   if (fplEntry_.active || fplAltEntry_.active ||
-      fplConfirm_ != FplConfirm::None || fplMenuOpen_) {
+      fplConfirm_ != FplConfirm::None || pageMenuOpen_) {
     return;
   }
   if (flightPlanLegsEqual(fplLegs_, legs) &&
@@ -651,7 +636,7 @@ void MfdController::adoptFlightPlanFromPeer(
   fplEntry_.notFound = false;
   fplAltEntry_.active = false;
   fplConfirm_ = FplConfirm::None;
-  fplMenuOpen_ = false;
+  pageMenuOpen_ = false;
   fplClampCursorRow();
 }
 

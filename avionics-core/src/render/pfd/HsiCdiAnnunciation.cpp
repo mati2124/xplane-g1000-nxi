@@ -96,6 +96,8 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
   const float devX = X(mapLeft + hsi::kCourseDevLeft);
   const float phaseX = X(mapLeft + hsi::kCoursePhaseLeft);
   const float size = fontPx(wt::kHsiBug, displayH);  // 18 px, per WT
+  // RobotoBold ink sits visually high in the 23 px band; nudge down for centering.
+  const float annunInkNudgeY = Y(2.0f);
   constexpr FontFace kAnnunFace = FontFace::RobotoBold;
 
   const bool obs = ui.displayToggle(DisplayToggle::Obs);
@@ -107,9 +109,11 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
   // Source box (left).
   r.fillRoundedRect(srcX, bandY, srcW, bandH, radius, colors::kWindBox);
   {
-    const float textY = inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY,
-                                      bandBottom, srcX + srcW * 0.5f, srcText,
-                                      size, TextAlign::Center, kAnnunFace);
+    const float textY =
+        inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY, bandBottom,
+                     srcX + srcW * 0.5f, srcText, size, TextAlign::Center,
+                     kAnnunFace) +
+        annunInkNudgeY;
     r.save();
     r.clip(srcX, bandY, srcW, bandH);
     r.fillText(srcX + srcW * 0.5f, textY, srcText, size, TextAlign::Center,
@@ -169,9 +173,11 @@ void drawHsiMapCourseBand(Renderer& r, const Layout& L, const FlightData& d,
       isGps ? (susp ? "SUSP" : d.gpsFlightPhase) : std::string();
   if (!phase.empty()) {
     r.fillRoundedRect(phaseX, bandY, phaseW, bandH, radius, colors::kWindBox);
-    const float textY = inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY,
-                                      bandBottom, phaseX + phaseW * 0.5f, phase,
-                                      size, TextAlign::Center, kAnnunFace);
+    const float textY =
+        inkMidYAtRow(r, (bandY + bandBottom) * 0.5f, bandY, bandBottom,
+                     phaseX + phaseW * 0.5f, phase, size, TextAlign::Center,
+                     kAnnunFace) +
+        annunInkNudgeY;
     r.save();
     r.clip(phaseX, bandY, phaseW, bandH);
     r.fillText(phaseX + phaseW * 0.5f, textY, phase, size, TextAlign::Center,

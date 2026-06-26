@@ -117,12 +117,16 @@ class XPlaneConnection : public SimulatorConnection {
   // display only. An empty id clears the direct course.
   void setDirectTo(MapLeg target);
   // Restore a saved Direct-To without re-snapshotting present position as the
-  // course origin (used when reloading standalone settings).
+  // course origin (used when reloading standalone settings or adopting from the
+  // plugin bridge). programBridgeFms controls whether the sim FMS is reprogrammed.
   void restoreDirectTo(MapLeg target, double originLat, double originLon,
-                       bool originValid);
+                       bool originValid, bool programBridgeFms = true);
   void clearDirectTo();
 
   void setMapPanCenter(bool active, double lat, double lon) override;
+  void setInsetMapQuery(bool active, double lat, double lon, float rangeNm,
+                        float viewHalfExtentNm,
+                        const std::string& targetIdent = {}) override;
   void setChartRangeNm(float rangeNm) override;
   void setMapViewHalfExtentNm(float halfExtentNm) override;
 
@@ -188,6 +192,16 @@ class XPlaneConnection : public SimulatorConnection {
   // Fill directTo_ lat/lon from the nav database when the Direct-To window
   // supplied only an ident (needed for map course + DIS/BRG away from the target).
   void ensureDirectToCoords();
+
+  // Push the local Direct-To display state to the plugin bridge.
+  void syncDirectToToBridge(bool programFms);
+
+  // Once per session, adopt a plugin-stored Direct-To after a standalone restart.
+  void tryAdoptDirectToFromBridge();
+
+  // While AP NAV is off, the sim's own GPS (FMS Direct-To) must be programmed so
+  // the pilot can arm NAV; reprogram after NAV disengages if we skipped it earlier.
+  void ensureDirectToFmsForNavArming();
 
   // data_ is the smoothed state returned by snapshot(); target_ holds the most
   // recent values decoded from packets, which data_ is eased toward each frame.
@@ -269,6 +283,9 @@ class XPlaneConnection : public SimulatorConnection {
   bool directToOriginValid_ = false;
   double directToOriginLat_ = 0.0;
   double directToOriginLon_ = 0.0;
+  bool bridgeDtoAdoptAttempted_ = false;
+  bool directToFmsProgrammed_ = false;
+  bool lastApNavActive_ = false;
   ChecklistSource* checklists_ = nullptr;
   EisSource* eisSource_ = nullptr;
   static inline const ChecklistData emptyChecklists_{};
@@ -300,6 +317,16 @@ class XPlaneConnection : public SimulatorConnection {
   bool mapPanDirty_ = false;
   float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
   float mapViewHalfExtentNm_ = 0.0f;
+
+  // MFD Direct-To inset: land/nav queried around the target when it is far from
+  // ownship so the inset chart is not blank ocean.
+  bool insetMapActive_ = false;
+  double insetMapLat_ = 0.0;
+  double insetMapLon_ = 0.0;
+  float insetMapRangeNm_ = 0.0f;
+  float insetMapHalfExtentNm_ = 0.0f;
+  std::string insetMapTargetIdent_;
+  bool insetMapDirty_ = false;
 
   std::string host_;
   std::uint16_t port_;

@@ -13,6 +13,8 @@
 #include "avionics/MapData.h"
 #include "avionics/MapRange.h"
 #include "avionics/NavFeatureSource.h"
+#include "avionics/ProcedureMenuTypes.h"
+#include "avionics/ProcedureMenu.h"
 #include "avionics/SimBrief.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/MapView.h"
@@ -317,6 +319,8 @@ class MfdController {
   // Push the panned map view center (not the pointer geo) into the data
   // source so land vectors and nav features load for what is on screen.
   void applyMapPanToDataSource(DataSource& source, const FlightData& flight);
+  // Load land/nav data around the Direct-To target for the inset chart.
+  void applyDirectToInsetToDataSource(DataSource& source, const MapData& map);
   // The map feature under the pan pointer (within a small, range-scaled snap
   // radius), or nullptr. The page highlights it and fills the Map Pointer
   // information box with its ident, like the real unit selecting a waypoint as
@@ -468,8 +472,6 @@ class MfdController {
   FplConfirm fplConfirm() const { return fplConfirm_; }
   bool fplConfirmOk() const { return fplConfirmOk_; }
   const std::string& fplRemoveIdent() const { return fplRemoveIdent_; }
-  // FPL page menu (Delete Flight Plan).
-  bool fplMenuOpen() const { return fplMenuOpen_; }
 
   // ---- Direct-To window (Direct-To bezel key) ----
   // The GPS Direct-To window (Pilot's Guide, Section 5.5): the Direct-To key
@@ -478,6 +480,13 @@ class MfdController {
   // confirms the waypoint and arms ACTIVATE?, the second ENT engages the
   // direct course. CLR (or the knob push) cancels the window.
   bool directToWindowOpen() const { return dtoOpen_; }
+  // Opens the Direct-To window with an explicit initial ident (empty for a
+  // blank entry field). Used by dev screenshot states and tests.
+  void openDirectToWindow(const std::string& initial = "");
+  void openProcApproachLoading(
+      const std::string& icao, const std::string& approachName,
+      const std::string& transition,
+      ProcLoadingList openList = ProcLoadingList::None);
   // 0..1 open progress for the slide+fade animation (1 fully open, eases back
   // to 0 on close so the window animates out as well as in).
   float directToWindowAnim() const { return dtoAnim_; }
@@ -538,41 +547,87 @@ class MfdController {
   // Airport runways (apt.dat row 100) for the WPT/NRST Runways boxes.
   std::vector<AirportRunwayInfo> airportRunways(const std::string& icao) const;
 
-  // ---- PROC menu (PROC bezel key on the FPL page, Pilot's Guide 5.8) ----
-  enum class ProcMenuStep { ProcedureList, TransitionList };
+  // ---- Procedures window (PROC bezel key on the FPL page, Pilot's Guide 5.8) ----
+  // Shared menu logic with the PFD (ProcedureMenu.cpp); MFD-specific host wiring
+  // only supplies airport resolution and close/activate callbacks.
+  using ProcStep = avionics::ProcStep;
+  using ProcMode = avionics::ProcMode;
+  using ProcApproachField = avionics::ProcApproachField;
 
   bool procMenuOpen() const { return procMenuOpen_; }
-  ProcMenuStep procStep() const { return procStep_; }
-  ProcedureType procCategory() const { return procCategory_; }
-  int procSelected() const { return procSelected_; }
-  const std::string& procSelectedName() const { return procSelectedName_; }
+  bool procSelectMode() const { return procMenu_.mode == ProcMode::Select; }
+  // Approach-loading map preview range: the preview auto-frames the highlighted
+  // procedure until the user turns the RANGE knob, after which the manually
+  // selected range is honored (Pilot's Guide 5.8).
+  bool procPreviewRangeManual() const { return procPreviewRangeManual_; }
+  void setProcPreviewFitRange(int ladderIndex);
+  // FPL page inset map: auto-frames the route until the pilot turns RANGE.
+  bool fplPreviewRangeManual() const { return fplPreviewRangeManual_; }
+  void setFplPreviewFitRange(int ladderIndex);
+  const char* procWindowTitle() const;
+  int procMenuItemCount() const {
+    return static_cast<int>(procMenu_.menuItems.size());
+  }
+  const std::string& procMenuItemText(int i) const;
+  bool procMenuItemEnabled(int i) const;
+  int procMenuSelected() const { return procMenu_.menuSel; }
+  ProcStep procStep() const { return procMenu_.step; }
+  ProcedureType procCategory() const { return procMenu_.category; }
+  int procSelected() const { return procMenu_.selected; }
+  int procListSelected() const { return procMenu_.selected; }
+  const std::string& procSelectedName() const { return procMenu_.selectedName; }
   std::string procAirportIcao() const;
   std::vector<std::string> procProcedureNames(ProcedureType type) const;
   std::vector<std::string> procTransitions(ProcedureType type,
                                            const std::string& name) const;
   std::vector<std::string> procTransitionLabels(ProcedureType type,
                                                 const std::string& name) const;
-  // Preview legs for the current PROC selection (drawn on the FPL map).
+  std::vector<std::string> procListItems() const;
+  bool procSubListOpen() const { return procMenu_.subListOpen; }
+  ProcApproachField procApproachField() const { return procMenu_.approachField; }
+  std::string procAirportCityLine() const;
+  std::string procAirportNameLine() const;
+  MapFeature procAirportFeature() const;
+  std::string procApproachDisplayName(int index) const;
+  std::string procSelectedApproachDisplay() const;
+  std::string procSelectedTransitionDisplay() const;
+  float procPrimaryFreqMhz() const;
+  bool procPrimaryNavIsNdb() const;
+  bool procShowsPrimaryNavFreq() const;
+  std::string procPrimaryIdent() const;
+  bool procLoadArmed() const { return procMenu_.loadArmed; }
+  bool procActivateArmed() const { return procMenu_.activateArmed; }
+  // Whether the FMS field cursor has descended into the Sequence box, and the
+  // previewed-leg row it currently highlights.
+  bool procSequenceFocused() const { return procMenu_.sequenceFocused; }
+  int procSequenceSelected() const { return procMenu_.sequenceSelected; }
+  bool minimumsBaroOn() const { return minsBaroOn_; }
+  float minimumsAltitudeFt() const { return minsAltFt_; }
+  float minimumsTempC() const { return minsTempC_; }
   std::vector<MapLeg> procPreviewLegs() const;
-  // Returns true once per ENT on a highlighted procedure; clears the latch.
   bool consumeProcLoadRequest(MapProcedure& out);
+  bool consumeActivateMissedRequest();
 
   // ---- Page menu (MENU bezel key, Pilot's Guide Fig. 5-6) ----
   // The context "Page Menu" popout, opened by the MENU key on pages that
-  // define one (currently the Navigation Map). It lists the page's options;
-  // the FMS knob moves the highlight, ENT runs the highlighted option and
-  // closes the menu, and CLR / MENU / the FMS knob push back out to the base
-  // page. Options this suite does not yet model are listed but disabled
-  // (greyed), the way the real unit greys options that are unavailable
-  // (e.g. Charts in the figure).
+  // define one (the Navigation Map and the Active Flight Plan page). It lists
+  // the page's options; the FMS knob moves the highlight, ENT runs the
+  // highlighted option and closes the menu, and CLR / MENU / the FMS knob push
+  // back out to the base page. Options this suite does not yet model are listed
+  // either greyed (Disabled, the cursor skips them) or selectable-but-inert
+  // (DisplayOnly), matching the real unit's greyed/active states for each row.
   enum class PageMenuAction {
-    Disabled,        // listed but inert (the underlying feature is not modeled)
-    MapDeclutter,    // cycle the Navigation Map declutter (Detail) level
-    OpenMapSettings, // open the Map Settings window (Fig. 5-7)
+    Disabled,            // greyed and skipped (the feature is not modeled)
+    DisplayOnly,         // selectable but inert (the feature is not modeled)
+    MapDeclutter,        // cycle the Navigation Map declutter (Detail) level
+    OpenMapSettings,     // open the Map Settings window (Fig. 5-7)
+    FplDeleteFlightPlan, // open the Delete Flight Plan confirmation
   };
   struct PageMenuItem {
     std::string text;
     PageMenuAction action = PageMenuAction::Disabled;
+    // Draw the Direct-To glyph after the label (the FPL menu's "VNV D->" row).
+    bool dtoSuffix = false;
   };
 
   bool pageMenuOpen() const { return pageMenuOpen_; }
@@ -583,6 +638,8 @@ class MfdController {
   }
   const std::string& pageMenuItemText(int i) const;
   bool pageMenuItemEnabled(int i) const;
+  // True for rows that draw the Direct-To glyph after the label (FPL "VNV").
+  bool pageMenuItemDtoSuffix(int i) const;
   int pageMenuSelected() const { return pageMenuSel_; }
 
   // ---- Map Settings window (MENU -> Map Settings on the Navigation Map) ----
@@ -669,7 +726,13 @@ class MfdController {
   // (cursor/entry/menu interactions); unconsumed keys fall through to the
   // common handling (FPL toggle, range rocker).
   bool fplBezelKey(BezelKey key);
+  // Procedures window (PROC key): build the top-level menu on open, route the
+  // FMS knob / ENT / CLR while it is open, and load / activate the selection.
   bool procBezelKey(BezelKey key);
+  void buildProcMenu();
+  std::string procDefaultAirportIcao() const;
+  ProcedureMenuHost procedureMenuHost();
+  ProcedureMenuHost procedureMenuHost() const;
   // ---- Page menu (MENU key) ----
   // Build the option list for the current page (empty when the page has no
   // page menu, so MENU is inert there, like the real unit).
@@ -846,7 +909,6 @@ class MfdController {
   FplConfirm fplConfirm_ = FplConfirm::None;
   bool fplConfirmOk_ = true;
   std::string fplRemoveIdent_;
-  bool fplMenuOpen_ = false;
 
   // Page menu (MENU key) state: the option list built for the current page,
   // the highlighted row, and whether the popout is up.
@@ -867,14 +929,15 @@ class MfdController {
   std::array<int, static_cast<std::size_t>(MapSetting::Count)> msRange_{};
   int msTrafficMode_ = 0;  // 0 All Traffic / 1 TA/PA / 2 TA Only
 
-  // PROC menu: departures / arrivals / approaches for the flight-plan airport.
+  // Procedures window (PROC key): shared menu state; logic in ProcedureMenu.cpp.
   bool procMenuOpen_ = false;
-  ProcMenuStep procStep_ = ProcMenuStep::ProcedureList;
-  ProcedureType procCategory_ = ProcedureType::Approach;
-  std::string procSelectedName_;
-  int procSelected_ = 0;
-  bool procLoadPending_ = false;
-  MapProcedure procLoadTarget_{};
+  bool procPreviewRangeManual_ = false;
+  bool fplPreviewRangeManual_ = false;
+  ProcedureMenuState procMenu_;
+  bool procActivateMissedPending_ = false;
+  bool minsBaroOn_ = false;
+  float minsAltFt_ = 0.0f;
+  float minsTempC_ = 26.7f;  // ~80 deg F for TEMP At display on approach loading
 
   // Direct-To window state.
   bool dtoOpen_ = false;

@@ -82,6 +82,9 @@ class DatarefDataSource : public DataSource {
   bool weatherRadarEquipped() const { return weather_.equipped(); }
 
   void setMapPanCenter(bool active, double lat, double lon) override;
+  void setInsetMapQuery(bool active, double lat, double lon, float rangeNm,
+                        float viewHalfExtentNm,
+                        const std::string& targetIdent = {}) override;
   void setChartRangeNm(float rangeNm) override;
   void setMapViewHalfExtentNm(float halfExtentNm) override;
 
@@ -223,6 +226,16 @@ class DatarefDataSource : public DataSource {
   bool mapPanDirty_ = false;
   float chartRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);
   float mapViewHalfExtentNm_ = 0.0f;
+
+  bool insetMapActive_ = false;
+  double insetMapLat_ = 0.0;
+  double insetMapLon_ = 0.0;
+  float insetMapRangeNm_ = 0.0f;
+  float insetMapHalfExtentNm_ = 0.0f;
+  std::string insetMapTargetIdent_;
+  bool insetMapDirty_ = false;
+  void rebuildInsetMap();
+
   XPLMDataRef efisMapRangeNm_ = nullptr;
   float lastPushedMapRangeNm_ = -1.0f;
 

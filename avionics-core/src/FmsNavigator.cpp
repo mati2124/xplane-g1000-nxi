@@ -163,7 +163,11 @@ void FmsNavigator::activateDirectTo(MapLeg target, double originLat,
   directToOriginLon_ = originLon;
   directToOriginValid_ = originValid;
   const int dtoIdx = legIndexInPlan(plan_, directTo_);
-  if (dtoIdx >= 0) activeLegIndex_ = dtoIdx;
+  if (dtoIdx >= 0) {
+    activeLegIndex_ = dtoIdx;
+    exitHold();
+    syncMissedApproachStateFromLeg();
+  }
 }
 
 void FmsNavigator::clearDirectTo() {
@@ -210,6 +214,50 @@ bool FmsNavigator::shouldSequenceLeg(double lat, double lon,
   if (distToNm <= turnPointNm) return true;
 
   const double bearingFixToAcDeg = navBearingDeg(toWpt.lat, toWpt.lon, lat, lon);
+  const double alongInbound = std::cos(
+      shortestTurnDeltaDeg(inboundDeg, bearingFixToAcDeg) * kPi / 180.0);
+  const double passedRadiusNm = std::max(kWaypointCaptureNm, leadNm) + 0.75;
+  if (alongInbound > 0.0 && distToNm <= passedRadiusNm) return true;
+
+  return false;
+}
+
+bool FmsNavigator::shouldSequenceDirectToOnPlan(double lat, double lon,
+                                                float groundSpeedKts) const {
+  const int dtoIdx = legIndexInPlan(plan_, directTo_);
+  if (dtoIdx < 0 || dtoIdx + 1 >= static_cast<int>(plan_.size())) {
+    return false;
+  }
+
+  const MapLeg& target = plan_[static_cast<std::size_t>(dtoIdx)];
+  const MapLeg& nextWpt = plan_[static_cast<std::size_t>(dtoIdx + 1)];
+  const double distToNm = navDistanceNm(lat, lon, target.lat, target.lon);
+
+  double inboundDeg;
+  if (directToOriginValid_) {
+    inboundDeg = navBearingDeg(directToOriginLat_, directToOriginLon_,
+                               target.lat, target.lon);
+  } else {
+    inboundDeg = navBearingDeg(lat, lon, target.lat, target.lon);
+  }
+  const double outboundDeg =
+      navBearingDeg(target.lat, target.lon, nextWpt.lat, nextWpt.lon);
+  const double turnDeltaDeg = shortestTurnDeltaDeg(inboundDeg, outboundDeg);
+
+  const double gsKts = std::max(40.0, static_cast<double>(groundSpeedKts));
+  const double absTurnDeg = std::fabs(turnDeltaDeg);
+  // Off-route Direct-To (e.g. east of AZOMY) can need a >90° fly-by; use a
+  // wider angle cap so sequencing and steering start before the fix.
+  const double leadNm =
+      absTurnDeg >= 1.0
+          ? turnLeadDistanceNm(gsKts, turnDeltaDeg, kDirectToFlyByMaxTurnDegCap)
+          : 0.0;
+
+  const double turnPointNm = leadNm > 0.0 ? leadNm : kWaypointCaptureNm;
+  if (distToNm <= turnPointNm) return true;
+
+  const double bearingFixToAcDeg =
+      navBearingDeg(target.lat, target.lon, lat, lon);
   const double alongInbound = std::cos(
       shortestTurnDeltaDeg(inboundDeg, bearingFixToAcDeg) * kPi / 180.0);
   const double passedRadiusNm = std::max(kWaypointCaptureNm, leadNm) + 0.75;
@@ -394,11 +442,19 @@ NavigationSolution FmsNavigator::update(double lat, double lon,
   }
 
   if (directToActive_ && !directTo_.id.empty()) {
-    if (captureWaypoint(lat, lon, directTo_)) {
-      const int dtoIdx = legIndexInPlan(plan_, directTo_);
+    const int dtoIdx = legIndexInPlan(plan_, directTo_);
+    if (dtoIdx >= 0 && dtoIdx + 1 < static_cast<int>(plan_.size()) &&
+        shouldSequenceDirectToOnPlan(lat, lon, groundSpeedKts)) {
+      activeLegIndex_ = dtoIdx + 1;
+      exitHold();
+      syncMissedApproachStateFromLeg();
+      clearDirectTo();
+    } else if (captureWaypoint(lat, lon, directTo_)) {
       if (dtoIdx >= 0 && dtoIdx + 1 < static_cast<int>(plan_.size())) {
         activeLegIndex_ = dtoIdx + 1;
       }
+      exitHold();
+      syncMissedApproachStateFromLeg();
       clearDirectTo();
     }
     if (directToActive_) {

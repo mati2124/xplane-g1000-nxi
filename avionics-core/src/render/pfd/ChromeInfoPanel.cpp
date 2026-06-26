@@ -357,6 +357,10 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
       leftInsetMapMode
           ? L.insetMapY + L.insetMapH + kInsetMapOatCyBelowViewportPx * L.sy
           : bottomRowCy;
+  // In inset-map mode OAT drops into the strip below the map viewport; the XPDR
+  // and TMR/clock readouts on the right share that lowered baseline so all three
+  // bottom-bar readouts stay vertically aligned (zero shift in every other mode).
+  const float infoRowShift = oatCy - bottomRowCy;
   const float oatValueX = putText(r, oatW * 0.06f, oatCy, "OAT", labelSize,
                                   colors::kLabelText, 0.55f);
   if (powerUp) {
@@ -409,7 +413,7 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   // XPDR sits on the bottom row of the band, sharing its baseline with the
   // UTC/LCL clock to its right (real NXi: TMR on the upper row, XPDR + clock on
   // the lower row).
-  const float xpdrCy = bottomRowCy;
+  const float xpdrCy = bottomRowCy + infoRowShift;
   const float xpdrLabelColW = 60.0f * L.sx;
   const float xpdrCodeColW = 53.0f * L.sx;
   const float xpdrLabelX = xpdrX + 4.0f * L.sx;
@@ -472,8 +476,8 @@ void drawBottomInfoPanel(Renderer& r, float w, float h, const Layout& L,
   const float timeLabelX = timeX + 2.0f * L.sx;
   const float valueColLeft = timeX + timeLabelColW;
   const float timeValueRight = timeX + 124.0f * L.sx - 2.0f * L.sx;
-  const float tmrRowCy = topRowCy;
-  const float timeRowCy = bottomRowCy;
+  const float tmrRowCy = topRowCy + infoRowShift;
+  const float timeRowCy = bottomRowCy + infoRowShift;
   const float rowXHeight = panelH * 0.30f;
   const float timeValueSize = valueSize;
   const char* clockLabel = d.clockIsUtc ? "UTC" : "LCL";

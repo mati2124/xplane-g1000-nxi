@@ -281,5 +281,93 @@ TEST(CifpParserTest, KpgdR04LegSequenceNearFaf) {
   EXPECT_EQ(idx, legIndexById(legs, "CISTS"));
 }
 
+TEST(CifpParserTest, ExpandsKfmyI05Vectors) {
+  std::ifstream in("C:/X-Plane 12/Resources/default data/CIFP/KFMY.dat");
+  if (!in.good()) {
+    GTEST_SKIP() << "KFMY.dat not available";
+  }
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  CifpFixTable fixes = kfmyR05FixTable();
+  fixes.fixes["CFDZJ"] = {26.490305556, -81.981211111};
+  fixes.fixes["FM"] = {26.583255556, -81.868333333};
+  fixes.fixes["CALOO"] = {26.515875000, -81.949852778};
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "I05", "VECTORS",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 4u);
+  EXPECT_EQ(legIndexById(legs, "CFDZJ"), 0);
+  EXPECT_EQ(legIndexById(legs, "FM"), 1);
+  EXPECT_EQ(legIndexById(legs, "CALOO"), -1);
+  EXPECT_EQ(legIndexById(legs, "RW05"), 2);
+  EXPECT_EQ(legs[static_cast<std::size_t>(1)].procedureRole, "faf");
+}
+
+TEST(CifpParserTest, KfmyI05ParsedFixIdents) {
+  std::ifstream in("C:/X-Plane 12/Resources/default data/CIFP/KFMY.dat");
+  if (!in.good()) {
+    GTEST_SKIP() << "KFMY.dat not available";
+  }
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  bool foundFaf = false;
+  for (const CifpLeg& leg : data.legs) {
+    if (leg.procedureName != "I05" || leg.routeType != "I") continue;
+    if (leg.sequence == 20) {
+      EXPECT_EQ(leg.fixIdent, "FM");
+      foundFaf = true;
+    }
+    if (leg.fixIdent == "CALOO") {
+      ADD_FAILURE() << "unexpected CALOO on I05 seq " << leg.sequence;
+    }
+  }
+  EXPECT_TRUE(foundFaf);
+}
+
+TEST(CifpParserTest, KfmyCalooLegSelection) {
+  std::ifstream in("C:/X-Plane 12/Resources/default data/CIFP/KFMY.dat");
+  if (!in.good()) {
+    GTEST_SKIP() << "KFMY.dat not available";
+  }
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  for (const CifpLeg& leg : data.legs) {
+    if (leg.fixIdent != "CALOO") continue;
+    EXPECT_EQ(leg.procedureName, "R23");
+  }
+}
+
+TEST(CifpParserTest, KfmyParsedFixesForI05Faf) {
+  std::ifstream in("C:/X-Plane 12/Resources/default data/CIFP/KFMY.dat");
+  if (!in.good()) {
+    GTEST_SKIP() << "KFMY.dat not available";
+  }
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  EXPECT_EQ(data.fixes.find("FM"), data.fixes.end());
+  CifpFixTable fixes = kfmyR05FixTable();
+  fixes.fixes["CFDZJ"] = {26.490305556, -81.981211111};
+  fixes.fixes["FM"] = {26.583255556, -81.868333333};
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "I05", "VECTORS",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 4u);
+  EXPECT_EQ(legIndexById(legs, "FM"), 1);
+  EXPECT_EQ(legIndexById(legs, "CALOO"), -1);
+}
+
+TEST(CifpParserTest, ExpandsKfmyI05VectorsWithoutFmFix) {
+  std::ifstream in("C:/X-Plane 12/Resources/default data/CIFP/KFMY.dat");
+  if (!in.good()) {
+    GTEST_SKIP() << "KFMY.dat not available";
+  }
+  const CifpAirportProcedures data = parseCifp(in, "KFMY");
+  CifpFixTable fixes = kfmyR05FixTable();
+  fixes.fixes["CFDZJ"] = {26.490305556, -81.981211111};
+  fixes.fixes["CALOO"] = {26.515875000, -81.949852778};
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "I05", "VECTORS",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 3u);
+  EXPECT_EQ(legIndexById(legs, "FM"), -1);
+  EXPECT_EQ(legIndexById(legs, "CALOO"), -1);
+}
+
 }  // namespace
 }  // namespace avionics::test

@@ -509,6 +509,8 @@ int DrawDevice(AvionicsDevice& dev) {
     // ownship or the pointer geo alone.
     g_dataSource->syncWeatherRadar(ui);
     ui.applyMapPanToDataSource(*g_dataSource, g_dataSource->snapshot());
+    ui.applyDirectToInsetToDataSource(*g_dataSource,
+                                      g_dataSource->mapSnapshot());
   }
 
   if (!dev.engine) {

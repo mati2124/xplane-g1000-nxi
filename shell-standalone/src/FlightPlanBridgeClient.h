@@ -45,9 +45,19 @@ class FlightPlanBridgeClient {
   // vector clears the FMS plan.
   void writePlan(std::vector<MapLeg> legs);
 
-  // Activate / cancel a present-position Direct-To in the FMS.
-  void writeDirectTo(MapLeg target);
+  // Activate / cancel a present-position Direct-To in the FMS. The origin fields
+  // are stored by the plugin for map course restoration after a standalone restart.
+  void writeDirectTo(MapLeg target, bool originValid = false,
+                     double originLat = 0.0, double originLon = 0.0,
+                     bool programFms = true);
   void clearDirectTo();
+  // Drop the plugin's stored Direct-To display state without reprogramming the
+  // sim FMS (used when AP NAV is coupled through Direct-To capture).
+  void clearDirectToDisplay();
+
+  // Latest Direct-To display state from the plugin bridge. Meaningful only when
+  // `available` is true (same cadence as flightPlan()).
+  fpbridge::DirectToState directToState(bool& available) const;
 
   // Set the sim FMS destination to the given flight-plan leg index.
   void writeActiveLeg(int legIndex);
@@ -64,6 +74,7 @@ class FlightPlanBridgeClient {
 
   mutable std::mutex mutex_;
   std::vector<MapLeg> plan_;
+  fpbridge::DirectToState dtoState_;
   bool available_ = false;
 
   // Pending writes from the render thread, drained by the background thread.
@@ -72,6 +83,11 @@ class FlightPlanBridgeClient {
   bool hasDtoCmd_ = false;
   bool dtoCmdActive_ = false;
   MapLeg dtoCmdTarget_;
+  bool dtoCmdOriginValid_ = false;
+  double dtoCmdOriginLat_ = 0.0;
+  double dtoCmdOriginLon_ = 0.0;
+  bool dtoCmdProgramFms_ = true;
+  bool hasDtoDisplayClearCmd_ = false;
   bool hasActiveLegCmd_ = false;
   int activeLegCmdIndex_ = -1;
 

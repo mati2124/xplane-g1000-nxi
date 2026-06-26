@@ -23,10 +23,17 @@ namespace {
 // Raster edge length in pixels at close range. Halved above
 // kFullDetailTerrainMaxNm where each pixel already spans several NM.
 constexpr int kFullRasterSize = kTerrainFullRasterSize;
+constexpr int kHiResRasterSize = kTerrainHiResRasterSize;
 constexpr int kCoarseRasterSize = kTerrainCoarseRasterSize;
 
-int rasterSizeFor(bool coarseSample) {
-  return coarseSample ? kCoarseRasterSize : kFullRasterSize;
+int rasterSizeFor(bool coarseSample, float halfNm, float pixelsPerNm) {
+  if (coarseSample) return kCoarseRasterSize;
+  const float minSize = static_cast<float>(kFullRasterSize);
+  const float target =
+      kTerrainMinRasterCellsPerScreenPixel * 2.0f * halfNm * pixelsPerNm;
+  return static_cast<int>(std::min(
+      static_cast<float>(kHiResRasterSize),
+      std::max(minSize, std::ceil(target))));
 }
 
 bool allowTerrainStagingSwap(float rangeNm, bool zoomSettled) {
@@ -293,6 +300,71 @@ void writePixel(unsigned char* px, const Color& c) {
       std::lround(std::min(1.0f, std::max(0.0f, c.a)) * 255.0f));
 }
 
+// One separable triangular-weighted low-pass of the given cell radius. NaN
+// (water / no-data) samples are skipped so coastlines are not pulled inland.
+void smoothElevationPass(const std::vector<float>& src, std::vector<float>& dst,
+                         int n, int radius) {
+  dst.resize(src.size());
+  std::vector<float> tmp(src.size());
+  const auto readRow = [&](const std::vector<float>& grid, int r) {
+    return grid.data() + static_cast<std::size_t>(r) * n;
+  };
+  const auto writeRow = [&](std::vector<float>& grid, int r) {
+    return grid.data() + static_cast<std::size_t>(r) * n;
+  };
+  for (int i = 0; i < n; ++i) {
+    const float* in = readRow(src, i);
+    float* out = writeRow(tmp, i);
+    for (int j = 0; j < n; ++j) {
+      const int j0 = std::max(j - radius, 0);
+      const int j1 = std::min(j + radius, n - 1);
+      float sum = 0.0f;
+      float weight = 0.0f;
+      for (int k = j0; k <= j1; ++k) {
+        if (std::isnan(in[k])) continue;
+        const float w = static_cast<float>(radius + 1 - std::abs(k - j));
+        sum += in[k] * w;
+        weight += w;
+      }
+      out[j] = weight > 0.0f ? sum / weight : in[j];
+    }
+  }
+  for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < n; ++i) {
+      const int i0 = std::max(i - radius, 0);
+      const int i1 = std::min(i + radius, n - 1);
+      float sum = 0.0f;
+      float weight = 0.0f;
+      for (int k = i0; k <= i1; ++k) {
+        const float v = readRow(tmp, k)[j];
+        if (std::isnan(v)) continue;
+        const float w = static_cast<float>(radius + 1 - std::abs(k - i));
+        sum += v * w;
+        weight += w;
+      }
+      writeRow(dst, i)[j] =
+          weight > 0.0f ? sum / weight : readRow(tmp, i)[j];
+    }
+  }
+}
+
+void smoothElevationForHillshade(const std::vector<float>& src,
+                                 std::vector<float>& smooth, int n, int radius,
+                                 int passes) {
+  if (passes <= 0 || radius <= 0) {
+    smooth = src;
+    return;
+  }
+  std::vector<float> a;
+  std::vector<float> b;
+  smoothElevationPass(src, a, n, radius);
+  for (int p = 1; p < passes; ++p) {
+    smoothElevationPass(a, b, n, radius);
+    a.swap(b);
+  }
+  smooth = std::move(a);
+}
+
 // Converts the sampled elevation grid into RGBA. Absolute mode applies the
 // topo ramp plus a NW-lit hillshade (slope from the DEM gradient) so relief
 // reads like the real TOPO map; Relative mode applies the TER REL proximity
@@ -309,12 +381,30 @@ void colorize(ViewRaster& v) {
   const float ownAltFt =
       static_cast<float>(s.relAltBucket) * kRelAltBucketFt;
 
+  std::vector<float> shadeElev;
+  const std::vector<float>* hillshadeGrid = &v.elevFt;
+  if (s.mode == TerrainRasterMode::Absolute && !s.coarseSample) {
+    // Size the kernel from ground distance so the whole-meter DEM quantization
+    // is bridged consistently at every range (texel spacing varies with range).
+    const float cellNm = 2.0f * s.halfNm / static_cast<float>(rasterSize);
+    const int smoothRadius = std::max(
+        kTerrainHillshadeSmoothMinRadiusCells,
+        std::min(kTerrainHillshadeSmoothMaxRadiusCells,
+                 static_cast<int>(std::lround(
+                     kTerrainHillshadeSmoothRadiusNm / cellNm))));
+    smoothElevationForHillshade(v.elevFt, shadeElev, rasterSize, smoothRadius,
+                                kTerrainHillshadeSmoothPasses);
+    hillshadeGrid = &shadeElev;
+  }
+
   for (int i = 0; i < rasterSize; ++i) {
     const float* row =
         v.elevFt.data() + static_cast<std::size_t>(i) * rasterSize;
-    const float* rowN = v.elevFt.data() +
+    const float* shadeRow =
+        hillshadeGrid->data() + static_cast<std::size_t>(i) * rasterSize;
+    const float* rowN = hillshadeGrid->data() +
         static_cast<std::size_t>(std::max(i - 1, 0)) * rasterSize;
-    const float* rowS = v.elevFt.data() +
+    const float* rowS = hillshadeGrid->data() +
         static_cast<std::size_t>(std::min(i + 1, rasterSize - 1)) * rasterSize;
     unsigned char* px =
         v.rgba.data() + static_cast<std::size_t>(i) * rasterSize * 4;
@@ -343,11 +433,13 @@ void colorize(ViewRaster& v) {
         continue;
       }
 
-      Color c = terrainColor(e);
+      const float colorFt = hillshadeGrid == &v.elevFt ? e : shadeRow[j];
+      Color c = terrainColor(colorFt);
       if (e > 0.5f && !s.coarseSample) {
         const int jW = std::max(j - 1, 0);
         const int jE = std::min(j + 1, rasterSize - 1);
-        const float dzdx = kSlopeGain * (row[jE] - row[jW]) / (2.0f * cellFt);
+        const float dzdx =
+            kSlopeGain * (shadeRow[jE] - shadeRow[jW]) / (2.0f * cellFt);
         const float dzdy = kSlopeGain * (rowS[j] - rowN[j]) / (2.0f * cellFt);
         const float invLen =
             1.0f / std::sqrt(dzdx * dzdx + dzdy * dzdy + 1.0f);
@@ -546,17 +638,23 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   Snapshot desired;
   desired.centerLat = viewCenterLat;
   desired.centerLon = viewCenterLon;
-  desired.halfNm =
-      std::max(rangeNm * kCoverageRangeFactor,
-               std::max(viewHalfAtLadder * kViewExtentMargin,
-                        rangeNm * kMfdMapCornerFactor));
+  const float viewHalfMargin =
+      viewHalfAtLadder > 0.5f ? viewHalfAtLadder * kViewExtentMargin : 0.0f;
+  if (viewHalfMargin > 0.0f) {
+    desired.halfNm =
+        std::max(rangeNm * kCoverageRangeFactor, viewHalfMargin);
+  } else {
+    desired.halfNm = std::max(rangeNm * kCoverageRangeFactor,
+                              rangeNm * kMfdMapCornerFactor);
+  }
   desired.mode = mode;
   desired.relAltBucket =
       mode == TerrainRasterMode::Relative
           ? static_cast<int>(std::lround(ownAltFt / kRelAltBucketFt))
           : 0;
   desired.coarseSample = rangeNm > kFullDetailTerrainMaxNm;
-  desired.rasterSize = rasterSizeFor(desired.coarseSample);
+  desired.rasterSize =
+      rasterSizeFor(desired.coarseSample, desired.halfNm, pixelsPerNm);
   desired.detailHalfNm =
       desired.coarseSample ? rangeNm * 0.25f : desired.halfNm;
   desired.builtRangeNm = rangeNm;

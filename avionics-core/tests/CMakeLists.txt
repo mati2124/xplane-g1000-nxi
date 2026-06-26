@@ -17,6 +17,7 @@ add_executable(avionics-core-tests
   NearbyFeatureSelectTest.cpp
   RadioVolumeAnnunciationTest.cpp
   FlightPlanPersistenceTest.cpp
+  FlightPlanBridgeProtocolTest.cpp
 )
 
 target_compile_definitions(avionics-core-tests PRIVATE
