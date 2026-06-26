@@ -34,8 +34,8 @@ struct CifpLeg {
   float legLengthNm = 0.0f;
   float legTimeMin = 0.0f;
   std::string turnDirection;  // L/R/E from col 10 when present
-  float rfRadiusNm = 0.0f;    // RF radius from APPCH col 18 (NM)
-  std::string rfCenterIdent;  // RF center fix from APPCH col 31
+  float arcRadiusNm = 0.0f;   // RF/AF radius (NM)
+  std::string arcCenterIdent; // RF center fix or AF recommended navaid
 };
 
 // Parsed terminal procedures for one airport.

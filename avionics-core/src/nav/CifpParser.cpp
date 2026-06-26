@@ -177,12 +177,12 @@ void parseLegLengthOrTimeField(const std::string& raw, float& legLengthNm,
   if (v > 0.0) legLengthNm = static_cast<float>(v / 10.0);
 }
 
-float parseRfRadiusNmField(const std::string& raw) {
+float parseScaledRadiusNmField(const std::string& raw, double divisor) {
   const std::string s = trim(raw);
   if (s.empty()) return 0.0f;
   const double v = std::strtod(s.c_str(), nullptr);
   if (v <= 0.0) return 0.0f;
-  return static_cast<float>(v / 1000.0);
+  return static_cast<float>(v / divisor);
 }
 
 HoldTurnDirection parseHoldTurnDirection(const CifpLeg& leg) {
@@ -216,18 +216,21 @@ void applyPathTerminatorFields(const CifpLeg& leg, MapLeg& ml) {
   }
 }
 
-void applyRfArcFromCifpLeg(const CifpLeg& leg, MapLeg& ml,
-                           CifpFixLookup lookup, void* ctx) {
-  if (leg.pathTerminator != "RF" || leg.rfCenterIdent.empty()) return;
+void applyProcedureArcFromCifpLeg(const CifpLeg& leg, MapLeg& ml,
+                                  CifpFixLookup lookup, void* ctx) {
+  if ((leg.pathTerminator != "RF" && leg.pathTerminator != "AF") ||
+      leg.arcCenterIdent.empty()) {
+    return;
+  }
   double lat = 0.0;
   double lon = 0.0;
-  if (!lookup(leg.rfCenterIdent, lat, lon, ctx)) return;
-  ml.rfArc.active = true;
-  ml.rfArc.centerIdent = leg.rfCenterIdent;
-  ml.rfArc.centerLat = lat;
-  ml.rfArc.centerLon = lon;
-  ml.rfArc.radiusNm = leg.rfRadiusNm;
-  ml.rfArc.turn = parseHoldTurnDirection(leg);
+  if (!lookup(leg.arcCenterIdent, lat, lon, ctx)) return;
+  ml.procedureArc.active = true;
+  ml.procedureArc.centerIdent = leg.arcCenterIdent;
+  ml.procedureArc.centerLat = lat;
+  ml.procedureArc.centerLon = lon;
+  ml.procedureArc.radiusNm = leg.arcRadiusNm;
+  ml.procedureArc.turn = parseHoldTurnDirection(leg);
 }
 
 // ARINC 424 HM/HA/HF magnetic course is the inbound course to the holding fix.
@@ -709,8 +712,17 @@ CifpAirportProcedures parseCifp(std::istream& in, const std::string& icao) {
     if (fields.size() > 21) {
       parseLegLengthOrTimeField(fields[21], leg.legLengthNm, leg.legTimeMin);
     }
-    if (fields.size() > 17) leg.rfRadiusNm = parseRfRadiusNmField(fields[17]);
-    if (fields.size() > 30) leg.rfCenterIdent = trim(fields[30]);
+    if (leg.pathTerminator == "RF") {
+      if (fields.size() > 17) {
+        leg.arcRadiusNm = parseScaledRadiusNmField(fields[17], 1000.0);
+      }
+      if (fields.size() > 30) leg.arcCenterIdent = trim(fields[30]);
+    } else if (leg.pathTerminator == "AF") {
+      if (fields.size() > 19) {
+        leg.arcRadiusNm = parseScaledRadiusNmField(fields[19], 10.0);
+      }
+      if (fields.size() > 13) leg.arcCenterIdent = trim(fields[13]);
+    }
     if (fields.size() > 35) leg.gpsFmsIndication = trim(fields[35]);
     if (fields.size() > 36) leg.qualifier1 = trim(fields[36]);
     if (fields.size() > 37) leg.qualifier2 = trim(fields[37]);
@@ -842,7 +854,7 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     ml.lon = lon;
     ml.procedureRole = role;
     applyPathTerminatorFields(leg, ml);
-    applyRfArcFromCifpLeg(leg, ml, lookup, ctx);
+    applyProcedureArcFromCifpLeg(leg, ml, lookup, ctx);
     if (leg.kind == ProcedureType::Approach) {
       applyArincAltitudeConstraint(leg, ml);
       if (leg.verticalAngleDeg > 0.0f) {

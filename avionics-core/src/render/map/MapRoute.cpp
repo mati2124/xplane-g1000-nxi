@@ -134,9 +134,9 @@ struct SmoothedRoute {
   std::vector<std::size_t> legEnd;
 };
 
-bool hasRfArcLegs(const std::vector<MapLeg>& legs) {
+bool hasProcedureArcLegs(const std::vector<MapLeg>& legs) {
   for (const MapLeg& leg : legs) {
-    if (leg.rfArc.active) return true;
+    if (leg.procedureArc.active) return true;
   }
   return false;
 }
@@ -148,25 +148,28 @@ double rfSweepDeg(double startDeg, double endDeg, HoldTurnDirection turn) {
   return sweep;
 }
 
-void appendRfArcPoints(std::vector<Point>& points, const MapLeg& from,
-                       const MapLeg& to, const Proj& proj) {
-  if (!to.rfArc.active) {
+void appendProcedureArcPoints(std::vector<Point>& points, const MapLeg& from,
+                              const MapLeg& to, const Proj& proj) {
+  if (!to.procedureArc.active) {
     points.push_back(projectLeg(proj, to));
     return;
   }
 
   const double startDeg =
-      navBearingDeg(to.rfArc.centerLat, to.rfArc.centerLon, from.lat, from.lon);
+      navBearingDeg(to.procedureArc.centerLat, to.procedureArc.centerLon,
+                    from.lat, from.lon);
   const double endDeg =
-      navBearingDeg(to.rfArc.centerLat, to.rfArc.centerLon, to.lat, to.lon);
-  const double sweep = rfSweepDeg(startDeg, endDeg, to.rfArc.turn);
-  double radiusNm = to.rfArc.radiusNm;
+      navBearingDeg(to.procedureArc.centerLat, to.procedureArc.centerLon, to.lat,
+                    to.lon);
+  const double sweep = rfSweepDeg(startDeg, endDeg, to.procedureArc.turn);
+  double radiusNm = to.procedureArc.radiusNm;
   if (radiusNm <= 0.0) {
     radiusNm =
-        0.5 * (navDistanceNm(to.rfArc.centerLat, to.rfArc.centerLon, from.lat,
-                             from.lon) +
-               navDistanceNm(to.rfArc.centerLat, to.rfArc.centerLon, to.lat,
-                             to.lon));
+        0.5 *
+        (navDistanceNm(to.procedureArc.centerLat, to.procedureArc.centerLon,
+                       from.lat, from.lon) +
+         navDistanceNm(to.procedureArc.centerLat, to.procedureArc.centerLon,
+                       to.lat, to.lon));
   }
   if (radiusNm <= 0.0 || std::fabs(sweep) < 0.1) {
     points.push_back(projectLeg(proj, to));
@@ -181,8 +184,8 @@ void appendRfArcPoints(std::vector<Point>& points, const MapLeg& from,
     const double brg = startDeg + sweep * t;
     double lat = 0.0;
     double lon = 0.0;
-    navOffsetPoint(to.rfArc.centerLat, to.rfArc.centerLon, brg, radiusNm, lat,
-                   lon);
+    navOffsetPoint(to.procedureArc.centerLat, to.procedureArc.centerLon, brg,
+                   radiusNm, lat, lon);
     if (i == segments) {
       lat = to.lat;
       lon = to.lon;
@@ -194,8 +197,8 @@ void appendRfArcPoints(std::vector<Point>& points, const MapLeg& from,
   }
 }
 
-SmoothedRoute buildRfAwareRoute(const std::vector<MapLeg>& legs,
-                                const Proj& proj) {
+SmoothedRoute buildProcedureArcAwareRoute(const std::vector<MapLeg>& legs,
+                                          const Proj& proj) {
   SmoothedRoute out;
   if (legs.empty()) return out;
   out.points.push_back(projectLeg(proj, legs.front()));
@@ -205,7 +208,7 @@ SmoothedRoute buildRfAwareRoute(const std::vector<MapLeg>& legs,
   out.legEnd.resize(legs.size() - 1);
   for (std::size_t i = 0; i + 1 < legs.size(); ++i) {
     out.legStart[i] = out.points.size() - 1;
-    appendRfArcPoints(out.points, legs[i], legs[i + 1], proj);
+    appendProcedureArcPoints(out.points, legs[i], legs[i + 1], proj);
     out.legEnd[i] = out.points.size() - 1;
   }
   return out;
@@ -239,7 +242,7 @@ void drawRouteLeg(Renderer& r, const SmoothedRoute& route, std::size_t leg,
 // is used (procedure preview, which has no live speed).
 SmoothedRoute buildSmoothedRoute(const std::vector<MapLeg>& legs,
                                  const Proj& proj, float groundSpeedKts = 0.0f) {
-  if (hasRfArcLegs(legs)) return buildRfAwareRoute(legs, proj);
+  if (hasProcedureArcLegs(legs)) return buildProcedureArcAwareRoute(legs, proj);
 
   SmoothedRoute out;
   if (legs.empty()) return out;

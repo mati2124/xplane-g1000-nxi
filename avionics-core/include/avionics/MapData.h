@@ -133,9 +133,9 @@ struct MapLeg {
   // Published magnetic course for course-to-altitude / heading legs (degrees).
   float legCourseDeg = 0.0f;
 
-  // Published ARINC RF (radius-to-fix) arc. The arc terminates at this leg's
-  // fix and starts at the previous route fix.
-  struct RadiusToFixArc {
+  // Published ARINC curved segment (RF radius-to-fix or AF DME arc). The arc
+  // terminates at this leg's fix and starts at the previous route fix.
+  struct ProcedureArc {
     bool active = false;
     double centerLat = 0.0;
     double centerLon = 0.0;
@@ -143,7 +143,7 @@ struct MapLeg {
     HoldTurnDirection turn = HoldTurnDirection::None;
     std::string centerIdent;
   };
-  RadiusToFixArc rfArc;
+  ProcedureArc procedureArc;
 
   // Missed-approach initial maneuver without a fix (CA climb, etc.). Not shown
   // as a separate FPL/map waypoint; flown from the MAPt before the next fix.

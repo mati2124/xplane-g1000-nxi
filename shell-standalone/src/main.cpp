@@ -559,7 +559,7 @@ struct ArticleApproachScenario {
   const char* flightPathUrl;
 };
 
-constexpr std::array<ArticleApproachScenario, 9> kArticleApproaches = {{
+constexpr std::array<ArticleApproachScenario, 10> kArticleApproaches = {{
     {"kpsp-rnpz13r-fernn", "KPSP",
      "KPSP RNAV (RNP) Z RW13R via FERNN", "RNAV", "13R", "FERNN",
      "R13RZ", 15.0f,
@@ -577,6 +577,10 @@ constexpr std::array<ArticleApproachScenario, 9> kArticleApproaches = {{
      "BEDEX", "D34-Y", 15.0f,
      "https://www.x-plane.com/wp-content/uploads/2026/02/LGKR-VORY-34-BEDEX-preview.png",
      "https://www.x-plane.com/wp-content/uploads/2026/02/LGKR-VORY-34-BEDEX-flightpath.png"},
+    {"kcmi-vor22-fexil", "KCMI", "KCMI VOR RWY 22 DME arc via FEXIL", "VOR",
+     "22", "FEXIL", "D22", 10.0f,
+     "https://aeronav.faa.gov/d-tpp/2606/00709v22.pdf",
+     "https://aeronav.faa.gov/d-tpp/2606/00709v22.pdf"},
     {"lpma-rnpz05", "LPMA", "LPMA RNP (AR) Z RW05", "RNAV", "05", "",
      "R05-Z", 10.0f,
      "https://www.x-plane.com/wp-content/uploads/2026/02/LPMA-RNPZ-05-preview.png",
@@ -659,7 +663,7 @@ struct ResolvedArticleApproach {
   std::string transition;
   std::vector<avionics::MapLeg> legs;
   std::string message;
-  int rfLegCount = 0;
+  int arcLegCount = 0;
   bool ok = false;
 };
 
@@ -772,7 +776,7 @@ ResolvedArticleApproach resolveArticleApproach(
       avionics::ProcedureType::Approach, bestName, bestTransition, catalog);
   out.label = avionics::formatApproachProcedureLabel(out.procedure);
   for (const avionics::MapLeg& leg : out.legs) {
-    if (upperCopy(leg.pathTerminator) == "RF") ++out.rfLegCount;
+    if (leg.procedureArc.active) ++out.arcLegCount;
   }
   out.ok = true;
   return out;
@@ -802,11 +806,11 @@ int runArticleApproachReport(const char* onlyKey) {
       continue;
     }
     std::printf(
-        "OK %s %s: cifp=%s transition=%s label=\"%s\" legs=%zu rf=%d first=%s "
+        "OK %s %s: cifp=%s transition=%s label=\"%s\" legs=%zu arcs=%d first=%s "
         "last=%s preview=%s flightpath=%s\n",
         scenario.key, scenario.title, resolved.procedure.name.c_str(),
         resolved.transition.c_str(), resolved.label.c_str(),
-        resolved.legs.size(), resolved.rfLegCount, resolved.legs.front().id.c_str(),
+        resolved.legs.size(), resolved.arcLegCount, resolved.legs.front().id.c_str(),
         resolved.legs.back().id.c_str(), scenario.previewUrl,
         scenario.flightPathUrl);
   }
