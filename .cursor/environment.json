@@ -1,0 +1,4 @@
+{
+  "install": "./tools/install_test_navdata.sh",
+  "terminals": []
+}

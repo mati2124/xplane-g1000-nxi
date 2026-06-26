@@ -116,6 +116,16 @@ app also reads a saved `navDataDir=` entry from its settings file (under
 `%APPDATA%\XPlaneAvionics`, `~/Library/Application Support/XPlaneAvionics`, or
 `~/.config/XPlaneAvionics`). The `--nav-data-dir` flag overrides the saved value.
 
+**Cursor cloud agents:** the repo ships compressed X-Plane nav databases under
+`test-fixtures/xplane-navdata/` (see `tools/package_xplane_navdata.sh`). Cloud
+agent startup runs `tools/install_test_navdata.sh` via `.cursor/environment.json`
+to decompress them, then use:
+
+```bash
+./build/shell-standalone/avionics-standalone \
+  --nav-data-dir "$(pwd)/test-fixtures/xplane-navdata"
+```
+
 #### Choosing monitors (full screen)
 
 For a two-screen cockpit, run each display full screen on its own monitor with
