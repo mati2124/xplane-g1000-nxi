@@ -29,7 +29,9 @@ compile_commands.json
 !.vscode/launch.json
 !.vscode/tasks.json
 !.vscode/extensions.json
-.cursor/
+.cursor/*
+!.cursor/environment.json
+!.cursor/Dockerfile
 *.user
 
 # Third-party SDKs (download locally, do not commit)
@@ -64,3 +66,8 @@ node_modules/
 
 # FAA DDOF download cache for tools/fetch_obstacles.py
 /tools/.dof_cache/
+
+# X-Plane nav fixtures: store compressed blobs only; cloud/local install script
+# expands apt.dat and CIFP on demand.
+test-fixtures/xplane-navdata/Global Scenery/Global Airports/Earth nav data/apt.dat
+test-fixtures/xplane-navdata/Resources/default data/CIFP/
