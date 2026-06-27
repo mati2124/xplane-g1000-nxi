@@ -343,6 +343,13 @@ inline constexpr const char* kBatteryAmpsStandby =
 inline constexpr const char* kAcfIcao = "sim/aircraft/view/acf_ICAO";
 inline constexpr const char* kAcfRelativePath =
     "sim/aircraft/view/acf_relative_path";
+// Plane Maker V-speed limits (KIAS) for the loaded aircraft. Drive the PFD
+// airspeed-tape color bands (white / green / yellow / red).
+inline constexpr const char* kAcfVso = "sim/aircraft/view/acf_Vso";
+inline constexpr const char* kAcfVs = "sim/aircraft/view/acf_Vs";
+inline constexpr const char* kAcfVfe = "sim/aircraft/view/acf_Vfe";
+inline constexpr const char* kAcfVno = "sim/aircraft/view/acf_Vno";
+inline constexpr const char* kAcfVne = "sim/aircraft/view/acf_Vne";
 
 // GDU power switches, used to gate the PFD/MFD power-up (real-world G1000
 // behavior: master lights the PFD, avionics master lights the MFD). Both are

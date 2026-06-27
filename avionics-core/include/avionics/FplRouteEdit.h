@@ -34,7 +34,33 @@ struct FplRouteEdit {
   std::string* approachHeaderLabel = nullptr;
   bool directToActive = false;
   bool localDraft = false;
+  // Optional departure / arrival procedure blocks. When set, cursor-row math
+  // uses the same procedure display rows as the PFD/MFD FPL list renderer.
+  int* departureLegStart = nullptr;
+  int* departureLegCount = nullptr;
+  std::string* departureHeaderLabel = nullptr;
+  MapProcedure* loadedDeparture = nullptr;
+  int* arrivalLegStart = nullptr;
+  int* arrivalLegCount = nullptr;
+  std::string* arrivalHeaderLabel = nullptr;
+  MapProcedure* loadedArrival = nullptr;
 };
+
+inline void fplRouteEditWireTerminalProcedures(
+    FplRouteEdit& edit, int& departureLegStart, int& departureLegCount,
+    std::string& departureHeaderLabel, int& arrivalLegStart,
+    int& arrivalLegCount, std::string& arrivalHeaderLabel,
+    MapProcedure* loadedDeparture = nullptr,
+    MapProcedure* loadedArrival = nullptr) {
+  edit.departureLegStart = &departureLegStart;
+  edit.departureLegCount = &departureLegCount;
+  edit.departureHeaderLabel = &departureHeaderLabel;
+  edit.loadedDeparture = loadedDeparture;
+  edit.arrivalLegStart = &arrivalLegStart;
+  edit.arrivalLegCount = &arrivalLegCount;
+  edit.arrivalHeaderLabel = &arrivalHeaderLabel;
+  edit.loadedArrival = loadedArrival;
+}
 
 // Leg count for section-row cursor math. During GPS Direct-To the editor shows
 // the blank Origin/Enroute/Destination template even if stale legs remain.
@@ -89,6 +115,22 @@ bool fplDestinationFilledForDisplay(int legCount, bool directToActive);
 
 inline bool fplApproachLayoutDestFilled(bool destinationFilled, int approachStart) {
   return destinationFilled || approachStart >= 2;
+}
+
+// FPL list layout: destination is the airport (plus STAR/approach when loaded).
+// The sim-readiness destinationFilled flag may be true for fix-ending routes;
+// layout uses this stricter rule instead.
+inline bool fplLayoutDestinationFilled(const std::vector<MapLeg>& legs,
+                                       bool destinationFilled,
+                                       int approachLegCount) {
+  if (approachLegCount > 0) return true;
+  if (!destinationFilled || legs.empty()) return false;
+  return isAirportIdent(legs.back().id);
+}
+
+inline bool fplEditLayoutDestinationFilled(const FplRouteEdit& edit) {
+  return fplLayoutDestinationFilled(edit.legs, edit.destinationFilled,
+                                    edit.approachLegCount);
 }
 
 std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,

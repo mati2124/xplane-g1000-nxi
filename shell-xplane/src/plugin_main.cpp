@@ -2150,6 +2150,17 @@ float UpdatePumpFlightLoop(float /*sinceLast*/, float /*sinceLoop*/,
                            int /*counter*/, void* /*ref*/) {
   avionics::pumpPluginSelfUpdate();
   PumpNavigraph();
+
+  // Remember the pilot's V-speed reference bugs per aircraft type: restore them
+  // when the airframe changes, and persist any edits made since the last check.
+  if (g_pfd.engine && g_dataSource) {
+    static avionics::VspeedAircraftMemory vspeedMemory;
+    if (vspeedMemory.sync(g_pfd.engine->softkeyController(),
+                          g_dataSource->aircraftIcaoType(),
+                          g_avionicsState.vspeedByAircraft)) {
+      SaveConfig();
+    }
+  }
   if (!g_installUpdateMenuShown && avionics::updateAvailable() &&
       g_rateMenu != nullptr && g_installUpdateMenuIndex >= 0) {
     const std::string label =

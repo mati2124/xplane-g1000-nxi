@@ -1432,6 +1432,12 @@ void MfdController::setChartsState(const ChartsState& state) {
   if (count > 0 && chartsPending_ >= count) chartsPending_ = count - 1;
 }
 
+bool MfdController::fplDestinationFilledForLayout() const {
+  if (fplApproachLegCount_ > 0) return true;
+  if (!fplDestinationFilled_ || fplLegs_.empty()) return false;
+  return isKnownAirportIdent(fplLegs_.back().id, mapData_, navSource_);
+}
+
 std::string MfdController::chartsDestinationAirport() const {
   int approachStart = fplApproachLegStart_;
   int approachCount = fplApproachLegCount_;

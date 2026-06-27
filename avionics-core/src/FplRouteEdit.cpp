@@ -18,18 +18,75 @@ using pfd::fplApproachInsertIndexForSelectable;
 using pfd::fplApproachLegIndexForSelectable;
 using pfd::fplApproachSelectableCount;
 using pfd::fplApproachSelectableRow;
-using pfd::fplEnrouteSelectableBase;
 using pfd::buildFplSectionRows;
 using pfd::fplApproachSelectableRowForLegIndex;
+using pfd::fplFilteredSectionRows;
+using pfd::fplFilteredSectionSelectableCount;
 using pfd::fplFilterDuplicateLegSectionRows;
+using pfd::fplProcedureInsertIndexForSelectable;
+using pfd::fplProcedureLegIndexForSelectable;
+using pfd::fplProcedureSelectableCount;
+using pfd::fplProcedureSelectableRow;
+using pfd::fplProcedureSelectableRowForLegIndex;
 using pfd::fplSectionSelectableRowForLegIndex;
-using pfd::fplInsertIndexForSectionRow;
-using pfd::fplLegIndexForSectionRow;
-using pfd::fplSectionSelectableCount;
-using pfd::fplShowsDestinationBlankRow;
+using pfd::fplSectionLegIndexForSelectable;
+using pfd::fplSectionInsertIndexForSelectable;
+using pfd::fplSectionSelectableRow;
+using pfd::fplUsesProcedureDisplayRows;
 
 bool approachLayoutDestFilled(const FplRouteEdit& edit) {
-  return fplApproachLayoutDestFilled(edit.destinationFilled, edit.approachLegStart);
+  return fplEditLayoutDestinationFilled(edit);
+}
+
+int fplEditDepartureLegStart(const FplRouteEdit& edit) {
+  return edit.departureLegStart != nullptr ? *edit.departureLegStart : 0;
+}
+
+int fplEditDepartureLegCount(const FplRouteEdit& edit) {
+  return edit.departureLegCount != nullptr ? *edit.departureLegCount : 0;
+}
+
+std::string fplEditDepartureHeader(const FplRouteEdit& edit) {
+  return edit.departureHeaderLabel != nullptr ? *edit.departureHeaderLabel
+                                              : std::string();
+}
+
+int fplEditArrivalLegStart(const FplRouteEdit& edit) {
+  return edit.arrivalLegStart != nullptr ? *edit.arrivalLegStart : 0;
+}
+
+int fplEditArrivalLegCount(const FplRouteEdit& edit) {
+  return edit.arrivalLegCount != nullptr ? *edit.arrivalLegCount : 0;
+}
+
+std::string fplEditArrivalHeader(const FplRouteEdit& edit) {
+  return edit.arrivalHeaderLabel != nullptr ? *edit.arrivalHeaderLabel
+                                            : std::string();
+}
+
+bool fplEditUsesProcedureDisplay(const FplRouteEdit& edit) {
+  return fplUsesProcedureDisplayRows(
+      fplEditDepartureHeader(edit), fplEditDepartureLegCount(edit),
+      fplEditArrivalHeader(edit), fplEditArrivalLegCount(edit),
+      edit.approachLegCount);
+}
+
+bool fplEditProcedureBlankOriginSection(const FplRouteEdit& edit,
+                                        const std::string& approachAirport) {
+  const bool directToPlanBody =
+      edit.directToActive && !edit.localDraft && edit.approachLegCount <= 0;
+  const bool destOnlyPlan =
+      edit.destinationFilled && edit.legs.size() == 1;
+  const bool hasDeparture = !fplEditDepartureHeader(edit).empty() ||
+                            fplEditDepartureLegCount(edit) > 0;
+  const bool approachLoaded = edit.approachLegCount > 0;
+  return directToPlanBody || destOnlyPlan || hasDeparture ||
+         (approachLoaded && edit.approachLegStart <= 1 && !edit.legs.empty() &&
+          !approachAirport.empty() && edit.legs.front().id == approachAirport);
+}
+
+bool fplEditProcedureDestinationFilled(const FplRouteEdit& edit) {
+  return fplEditLayoutDestinationFilled(edit);
 }
 
 bool fplCommitApproachIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
@@ -99,19 +156,33 @@ bool fplCommitSectionIdent(FplRouteEdit& edit, const NavFeatureSource* navSource
                            const MapFeature& match, const std::string& ident,
                            int selectableCursorRow) {
   const int legCount = fplEditSectionLegCount(edit);
+  const bool layoutDestFilled = fplEditLayoutDestinationFilled(edit);
+  const bool directToPlanBody =
+      edit.directToActive && !edit.localDraft && edit.approachLegCount <= 0;
+  const std::vector<pfd::FplSectionRow> sectionRows = fplFilteredSectionRows(
+      legCount, layoutDestFilled, directToPlanBody, edit.legs);
   const int lastSection =
-      std::max(0, fplSectionSelectableCount(legCount, edit.destinationFilled,
-                                            edit.directToActive) - 1);
-  const int legIndex = fplLegIndexForSectionRow(
-      selectableCursorRow, legCount, edit.destinationFilled, edit.directToActive);
-  const int row = fplInsertIndexForSectionRow(
-      selectableCursorRow, legCount, edit.destinationFilled, edit.directToActive);
+      std::max(0, fplFilteredSectionSelectableCount(
+                       sectionRows, legCount, layoutDestFilled) -
+                       1);
+  const int legIndex = fplSectionLegIndexForSelectable(
+      selectableCursorRow, sectionRows, legCount, layoutDestFilled);
+  const int row = fplSectionInsertIndexForSelectable(
+      selectableCursorRow, sectionRows, legCount, layoutDestFilled);
 
-  if (selectableCursorRow == lastSection ||
-      (fplShowsDestinationBlankRow(legCount, edit.destinationFilled) &&
-       selectableCursorRow == lastSection - 1)) {
+  // Decide destination-filled by the kind of row the cursor sits on, not its
+  // positional index, since the Origin/Destination dashed rows are now their
+  // own cursor stops and shift the index ordering.
+  const pfd::FplSectionRow* selRow = pfd::fplSectionSelectableRow(
+      selectableCursorRow, sectionRows, legCount, layoutDestFilled);
+  const pfd::FplSectionRow::Kind selKind =
+      selRow != nullptr ? selRow->kind : pfd::FplSectionRow::Kind::EnrouteBlank;
+  if (selKind == pfd::FplSectionRow::Kind::Destination ||
+      selKind == pfd::FplSectionRow::Kind::DestinationBlank) {
     edit.destinationFilled = true;
-  } else if (selectableCursorRow == fplEnrouteSelectableBase(legCount) &&
+  } else if ((selKind == pfd::FplSectionRow::Kind::Origin ||
+              selKind == pfd::FplSectionRow::Kind::OriginBlank ||
+              selKind == pfd::FplSectionRow::Kind::EnrouteBlank) &&
              legCount < 2) {
     edit.destinationFilled = false;
   }
@@ -141,6 +212,87 @@ bool fplCommitSectionIdent(FplRouteEdit& edit, const NavFeatureSource* navSource
     edit.legs.insert(edit.legs.begin() + row, leg);
   }
   if (edit.legs.size() >= 3) edit.destinationFilled = true;
+  return true;
+}
+
+bool fplCommitProcedureIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
+                             const MapFeature& match, const std::string& ident,
+                             int selectableCursorRow,
+                             const std::string& approachAirport) {
+  const int legCount = static_cast<int>(edit.legs.size());
+  const bool blankOrigin =
+      fplEditProcedureBlankOriginSection(edit, approachAirport);
+  const bool layoutDestFilled = fplEditLayoutDestinationFilled(edit);
+  const int depStart = fplEditDepartureLegStart(edit);
+  const int depCount = fplEditDepartureLegCount(edit);
+  const int arrStart = fplEditArrivalLegStart(edit);
+  const int arrCount = fplEditArrivalLegCount(edit);
+  const int selectableLast = fplProcedureSelectableCount(
+                                 edit.legs, depStart, depCount,
+                                 fplEditDepartureHeader(edit), arrStart,
+                                 arrCount, fplEditArrivalHeader(edit),
+                                 edit.approachLegStart, edit.approachLegCount,
+                                 blankOrigin, layoutDestFilled) -
+                             1;
+  const int legIndex = fplProcedureLegIndexForSelectable(
+      selectableCursorRow, edit.legs, depStart, depCount,
+      fplEditDepartureHeader(edit), arrStart, arrCount,
+      fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
+      blankOrigin, layoutDestFilled);
+  const int row = fplProcedureInsertIndexForSelectable(
+      selectableCursorRow, edit.legs, depStart, depCount,
+      fplEditDepartureHeader(edit), arrStart, arrCount,
+      fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
+      legCount, blankOrigin, layoutDestFilled);
+  const pfd::FplDisplayRow* dr = fplProcedureSelectableRow(
+      selectableCursorRow, edit.legs, depStart, depCount,
+      fplEditDepartureHeader(edit), arrStart, arrCount,
+      fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
+      blankOrigin, layoutDestFilled);
+  if (dr != nullptr && dr->kind == FplDisplayRowKind::Destination &&
+      dr->legIndex < 0) {
+    edit.destinationFilled = true;
+  }
+
+  if (navSource != nullptr && navSource->isAirwayName(ident) && row > 0 &&
+      row < legCount) {
+    const std::vector<MapLeg> expanded = navSource->expandAirway(
+        ident, edit.legs[static_cast<std::size_t>(row - 1)].id,
+        edit.legs[static_cast<std::size_t>(row)].id);
+    if (!expanded.empty()) {
+      edit.legs.insert(edit.legs.begin() + row, expanded.begin(), expanded.end());
+      if (row <= edit.approachLegStart) {
+        edit.approachLegStart += static_cast<int>(expanded.size());
+      }
+      if (edit.arrivalLegStart != nullptr && row <= *edit.arrivalLegStart) {
+        *edit.arrivalLegStart += static_cast<int>(expanded.size());
+      }
+      if (edit.legs.size() >= 3) edit.destinationFilled = true;
+      edit.cursorRow = std::min(
+          selectableLast,
+          selectableCursorRow + static_cast<int>(expanded.size()));
+      return true;
+    }
+    return false;
+  }
+
+  MapLeg leg;
+  leg.lat = match.lat;
+  leg.lon = match.lon;
+  leg.id = ident;
+  if (legIndex >= 0 && legIndex < legCount) {
+    edit.legs[static_cast<std::size_t>(legIndex)] = leg;
+  } else {
+    edit.legs.insert(edit.legs.begin() + row, leg);
+    if (row <= edit.approachLegStart) {
+      ++edit.approachLegStart;
+    }
+    if (edit.arrivalLegStart != nullptr && row <= *edit.arrivalLegStart) {
+      ++(*edit.arrivalLegStart);
+    }
+    if (edit.legs.size() >= 3) edit.destinationFilled = true;
+    edit.cursorRow = std::min(selectableLast, selectableCursorRow + 1);
+  }
   return true;
 }
 
@@ -351,19 +503,26 @@ int fplCursorLegIndex(const FplRouteEdit& edit,
                       FplCursorLayout layout) {
   const int legCount = static_cast<int>(edit.legs.size());
   const int sectionLegCount = fplEditSectionLegCount(edit);
-  if (edit.approachLegCount > 0) {
-    return fplApproachLegIndexForSelectable(
-        edit.cursorRow, edit.legs, edit.approachLegStart, edit.approachLegCount,
-        fplApproachBlankOriginSection(edit.legs, edit.approachLegStart,
-                                      approachAirport),
-        approachLayoutDestFilled(edit));
+  if (fplEditUsesProcedureDisplay(edit)) {
+    return fplProcedureLegIndexForSelectable(
+        edit.cursorRow, edit.legs, fplEditDepartureLegStart(edit),
+        fplEditDepartureLegCount(edit), fplEditDepartureHeader(edit),
+        fplEditArrivalLegStart(edit), fplEditArrivalLegCount(edit),
+        fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
+        fplEditProcedureBlankOriginSection(edit, approachAirport),
+        fplEditProcedureDestinationFilled(edit));
   }
   if (layout == FplCursorLayout::FlatLegList) {
     if (edit.cursorRow >= 0 && edit.cursorRow < legCount) return edit.cursorRow;
     return -1;
   }
-  return fplLegIndexForSectionRow(edit.cursorRow, sectionLegCount,
-                                  edit.destinationFilled, edit.directToActive);
+  const bool directToPlanBody =
+      edit.directToActive && !edit.localDraft && edit.approachLegCount <= 0;
+  const bool layoutDestFilled = fplEditLayoutDestinationFilled(edit);
+  const std::vector<pfd::FplSectionRow> sectionRows = fplFilteredSectionRows(
+      sectionLegCount, layoutDestFilled, directToPlanBody, edit.legs);
+  return fplSectionLegIndexForSelectable(edit.cursorRow, sectionRows,
+                                         sectionLegCount, layoutDestFilled);
 }
 
 bool fplCursorOnHoldRow(const FplRouteEdit& edit,
@@ -382,21 +541,30 @@ bool fplCursorOnHoldRow(const FplRouteEdit& edit,
 int fplCursorSelectableLast(const FplRouteEdit& edit,
                             const std::string& approachAirport,
                             FplCursorLayout layout) {
-  if (edit.approachLegCount > 0) {
-    return fplApproachSelectableCount(
-               edit.legs, edit.approachLegStart, edit.approachLegCount,
-               fplApproachBlankOriginSection(edit.legs, edit.approachLegStart,
-                                             approachAirport),
-               approachLayoutDestFilled(edit)) -
-           1;
+  if (fplEditUsesProcedureDisplay(edit)) {
+    return std::max(
+        0, fplProcedureSelectableCount(
+               edit.legs, fplEditDepartureLegStart(edit),
+               fplEditDepartureLegCount(edit), fplEditDepartureHeader(edit),
+               fplEditArrivalLegStart(edit), fplEditArrivalLegCount(edit),
+               fplEditArrivalHeader(edit), edit.approachLegStart,
+               edit.approachLegCount,
+               fplEditProcedureBlankOriginSection(edit, approachAirport),
+               fplEditProcedureDestinationFilled(edit)) -
+               1);
   }
   if (layout == FplCursorLayout::FlatLegList) {
     return static_cast<int>(edit.legs.size());
   }
-  return std::max(0, fplSectionSelectableCount(fplEditSectionLegCount(edit),
-                                               edit.destinationFilled,
-                                               edit.directToActive) -
-                           1);
+  const int sectionLegCount = fplEditSectionLegCount(edit);
+  const bool directToPlanBody =
+      edit.directToActive && !edit.localDraft && edit.approachLegCount <= 0;
+  const bool layoutDestFilled = fplEditLayoutDestinationFilled(edit);
+  const std::vector<pfd::FplSectionRow> sectionRows = fplFilteredSectionRows(
+      sectionLegCount, layoutDestFilled, directToPlanBody, edit.legs);
+  return std::max(0, fplFilteredSectionSelectableCount(
+                           sectionRows, sectionLegCount, layoutDestFilled) -
+                       1);
 }
 
 void fplClampCursorRow(FplRouteEdit& edit, const std::string& approachAirport,
@@ -411,12 +579,14 @@ int fplActiveSelectableRow(const FplRouteEdit& edit,
                              FplCursorLayout layout) {
   const int activeLegIdx =
       fplActiveLegIndexInPlan(edit.legs, activeToIdent);
-  if (edit.approachLegCount > 0) {
-    return fplApproachSelectableRowForLegIndex(
-        activeLegIdx, edit.legs, edit.approachLegStart, edit.approachLegCount,
-        fplApproachBlankOriginSection(edit.legs, edit.approachLegStart,
-                                      approachAirport),
-        approachLayoutDestFilled(edit));
+  if (fplEditUsesProcedureDisplay(edit)) {
+    return fplProcedureSelectableRowForLegIndex(
+        activeLegIdx, edit.legs, fplEditDepartureLegStart(edit),
+        fplEditDepartureLegCount(edit), fplEditDepartureHeader(edit),
+        fplEditArrivalLegStart(edit), fplEditArrivalLegCount(edit),
+        fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
+        fplEditProcedureBlankOriginSection(edit, approachAirport),
+        fplEditProcedureDestinationFilled(edit));
   }
   if (layout == FplCursorLayout::FlatLegList) {
     return activeLegIdx;
@@ -424,12 +594,13 @@ int fplActiveSelectableRow(const FplRouteEdit& edit,
   const int legCount = fplEditSectionLegCount(edit);
   const bool directToPlanBody =
       edit.directToActive && !edit.localDraft && edit.approachLegCount <= 0;
+  const bool layoutDestFilled = fplEditLayoutDestinationFilled(edit);
   const std::vector<pfd::FplSectionRow> sectionRows =
       fplFilterDuplicateLegSectionRows(
-          buildFplSectionRows(legCount, edit.destinationFilled, directToPlanBody),
+          buildFplSectionRows(legCount, layoutDestFilled, directToPlanBody),
           edit.legs);
   return fplSectionSelectableRowForLegIndex(
-      activeLegIdx, sectionRows, legCount, edit.destinationFilled,
+      activeLegIdx, sectionRows, legCount, layoutDestFilled,
       directToPlanBody);
 }
 
@@ -474,6 +645,47 @@ void fplAdjustApproachGroupingAfterRemove(FplRouteEdit& edit,
   }
 }
 
+void fplAdjustTerminalProcedureGroupingAfterRemove(FplRouteEdit& edit,
+                                                   int removedLegIndex) {
+  // Departure block: when its last leg is removed, drop the whole procedure
+  // (header label + loaded procedure) so the FPL list no longer shows the
+  // empty "RWxx.SIDx" departure heading.
+  if (edit.departureLegCount != nullptr && *edit.departureLegCount > 0) {
+    const int depStart =
+        edit.departureLegStart != nullptr ? *edit.departureLegStart : 0;
+    if (removedLegIndex >= depStart &&
+        removedLegIndex < depStart + *edit.departureLegCount) {
+      --(*edit.departureLegCount);
+      if (*edit.departureLegCount <= 0) {
+        if (edit.departureLegStart != nullptr) *edit.departureLegStart = 0;
+        if (edit.departureHeaderLabel != nullptr) {
+          edit.departureHeaderLabel->clear();
+        }
+        if (edit.loadedDeparture != nullptr) *edit.loadedDeparture = {};
+      }
+    } else if (removedLegIndex < depStart && edit.departureLegStart != nullptr) {
+      --(*edit.departureLegStart);
+    }
+  }
+
+  // Arrival block: same treatment as the departure.
+  if (edit.arrivalLegCount != nullptr && *edit.arrivalLegCount > 0) {
+    const int arrStart =
+        edit.arrivalLegStart != nullptr ? *edit.arrivalLegStart : 0;
+    if (removedLegIndex >= arrStart &&
+        removedLegIndex < arrStart + *edit.arrivalLegCount) {
+      --(*edit.arrivalLegCount);
+      if (*edit.arrivalLegCount <= 0) {
+        if (edit.arrivalLegStart != nullptr) *edit.arrivalLegStart = 0;
+        if (edit.arrivalHeaderLabel != nullptr) edit.arrivalHeaderLabel->clear();
+        if (edit.loadedArrival != nullptr) *edit.loadedArrival = {};
+      }
+    } else if (removedLegIndex < arrStart && edit.arrivalLegStart != nullptr) {
+      --(*edit.arrivalLegStart);
+    }
+  }
+}
+
 bool fplRemoveLegAtIndex(FplRouteEdit& edit, int legIndex) {
   if (legIndex < 0 || legIndex >= static_cast<int>(edit.legs.size())) {
     return false;
@@ -482,6 +694,7 @@ bool fplRemoveLegAtIndex(FplRouteEdit& edit, int legIndex) {
   fplRefreshDestinationFilledAfterRemove(
       edit, static_cast<int>(edit.legs.size()));
   fplAdjustApproachGroupingAfterRemove(edit, legIndex);
+  fplAdjustTerminalProcedureGroupingAfterRemove(edit, legIndex);
   return true;
 }
 
@@ -493,6 +706,16 @@ void fplClearFlightPlan(FplRouteEdit& edit) {
   edit.approachLegCount = 0;
   if (edit.loadedApproach != nullptr) *edit.loadedApproach = {};
   if (edit.approachHeaderLabel != nullptr) edit.approachHeaderLabel->clear();
+  // Drop any loaded departure / arrival terminal procedure as well, so a
+  // deleted flight plan does not leave the SID/STAR heading behind.
+  if (edit.departureLegStart != nullptr) *edit.departureLegStart = 0;
+  if (edit.departureLegCount != nullptr) *edit.departureLegCount = 0;
+  if (edit.departureHeaderLabel != nullptr) edit.departureHeaderLabel->clear();
+  if (edit.loadedDeparture != nullptr) *edit.loadedDeparture = {};
+  if (edit.arrivalLegStart != nullptr) *edit.arrivalLegStart = 0;
+  if (edit.arrivalLegCount != nullptr) *edit.arrivalLegCount = 0;
+  if (edit.arrivalHeaderLabel != nullptr) edit.arrivalHeaderLabel->clear();
+  if (edit.loadedArrival != nullptr) *edit.loadedArrival = {};
 }
 
 bool fplCommitWaypointIdent(FplRouteEdit& edit, const NavFeatureSource* navSource,
@@ -503,6 +726,10 @@ bool fplCommitWaypointIdent(FplRouteEdit& edit, const NavFeatureSource* navSourc
   if (edit.approachLegCount > 0) {
     return fplCommitApproachIdent(edit, navSource, match, ident,
                                   selectableCursorRow, approachAirport);
+  }
+  if (fplEditUsesProcedureDisplay(edit)) {
+    return fplCommitProcedureIdent(edit, navSource, match, ident,
+                                   selectableCursorRow, approachAirport);
   }
   if (layout == FplCursorLayout::FlatLegList) {
     return fplCommitFlatIdent(edit, navSource, match, ident, selectableCursorRow);

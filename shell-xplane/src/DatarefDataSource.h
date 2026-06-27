@@ -202,6 +202,9 @@ class DatarefDataSource : public DataSource {
   // EIS and checklist stores at the matching per-aircraft profile.
   void updateAircraftProfile();
 
+  // Plane Maker V-speed limits for the loaded aircraft (PFD tape color bands).
+  void refreshAirspeedEnvelope();
+
   FlightData data_;
   MapData map_;
 
@@ -389,6 +392,11 @@ class DatarefDataSource : public DataSource {
   bool eisWasReady_ = false;
   XPLMDataRef acfRelativePath_ = nullptr;
   XPLMDataRef acfIcao_ = nullptr;
+  XPLMDataRef acfVso_ = nullptr;
+  XPLMDataRef acfVs_ = nullptr;
+  XPLMDataRef acfVfe_ = nullptr;
+  XPLMDataRef acfVno_ = nullptr;
+  XPLMDataRef acfVne_ = nullptr;
 
   // Display-only Direct-To course (the live FMS route is unchanged).
   bool directToActive_ = false;

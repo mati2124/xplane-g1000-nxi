@@ -16,6 +16,18 @@ inline bool isBaroStandard(float baroInHg) {
   return delta <= kBaroStandardEpsilonInHg && delta >= -kBaroStandardEpsilonInHg;
 }
 
+// Cessna 172S defaults for the PFD airspeed-tape color bands (KIAS). X-Plane
+// replaces these from sim/aircraft/view/acf_V* when a live feed is connected.
+inline constexpr float kDefaultAirspeedVsoKt = 33.0f;
+inline constexpr float kDefaultAirspeedVfeKt = 85.0f;
+inline constexpr float kDefaultAirspeedVs1Kt = 48.0f;
+inline constexpr float kDefaultAirspeedVnoKt = 129.0f;
+inline constexpr float kDefaultAirspeedVneKt = 163.0f;
+
+inline float sanitizeAirspeedEnvelopeKt(float kt, float fallbackKt) {
+  return kt > 1.0f ? kt : fallbackKt;
+}
+
 // Active navigation source annunciated on the HSI / CDI.
 enum class CdiSource { Gps, Nav1, Nav2 };
 
@@ -270,6 +282,14 @@ struct FlightData {
   float airspeedTrendKts = 0.0f;
   float altitudeTrendFt = 0.0f;
 
+  // Airspeed-tape color-band limits (KIAS), sourced from X-Plane's acf_V*
+  // datarefs when connected. Defaults match the Cessna 172S envelope.
+  float airspeedEnvelopeVsoKt = kDefaultAirspeedVsoKt;
+  float airspeedEnvelopeVfeKt = kDefaultAirspeedVfeKt;
+  float airspeedEnvelopeVs1Kt = kDefaultAirspeedVs1Kt;
+  float airspeedEnvelopeVnoKt = kDefaultAirspeedVnoKt;
+  float airspeedEnvelopeVneKt = kDefaultAirspeedVneKt;
+
   // Wind for the HSI wind box: direction the wind is coming FROM (true deg).
   bool windValid = true;
   float windDirectionDeg = 0.0f;
@@ -339,5 +359,21 @@ struct FlightData {
   // channels into the scalar fields above for CAS and trip-planning consumers.
   std::unordered_map<std::string, float> eisChannels;
 };
+
+// Replaces any unset / non-positive airspeed-envelope limits on `d` with the
+// Cessna 172S defaults (defined above struct FlightData so the helper can see
+// the completed type).
+inline void applyAirspeedEnvelopeDefaults(FlightData& d) {
+  d.airspeedEnvelopeVsoKt =
+      sanitizeAirspeedEnvelopeKt(d.airspeedEnvelopeVsoKt, kDefaultAirspeedVsoKt);
+  d.airspeedEnvelopeVfeKt =
+      sanitizeAirspeedEnvelopeKt(d.airspeedEnvelopeVfeKt, kDefaultAirspeedVfeKt);
+  d.airspeedEnvelopeVs1Kt =
+      sanitizeAirspeedEnvelopeKt(d.airspeedEnvelopeVs1Kt, kDefaultAirspeedVs1Kt);
+  d.airspeedEnvelopeVnoKt =
+      sanitizeAirspeedEnvelopeKt(d.airspeedEnvelopeVnoKt, kDefaultAirspeedVnoKt);
+  d.airspeedEnvelopeVneKt =
+      sanitizeAirspeedEnvelopeKt(d.airspeedEnvelopeVneKt, kDefaultAirspeedVneKt);
+}
 
 }  // namespace avionics

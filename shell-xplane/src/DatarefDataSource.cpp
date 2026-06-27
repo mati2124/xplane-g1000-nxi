@@ -390,6 +390,11 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   failTransponder_ = XPLMFindDataRef(datarefs::kFailTransponder);
   acfRelativePath_ = XPLMFindDataRef(datarefs::kAcfRelativePath);
   acfIcao_ = XPLMFindDataRef(datarefs::kAcfIcao);
+  acfVso_ = XPLMFindDataRef(datarefs::kAcfVso);
+  acfVs_ = XPLMFindDataRef(datarefs::kAcfVs);
+  acfVfe_ = XPLMFindDataRef(datarefs::kAcfVfe);
+  acfVno_ = XPLMFindDataRef(datarefs::kAcfVno);
+  acfVne_ = XPLMFindDataRef(datarefs::kAcfVne);
 
   rebuildEisBindings();
 
@@ -410,6 +415,15 @@ void DatarefDataSource::rebuildEisBindings() {
                               spec.offset, spec.channel});
     }
   }
+}
+
+void DatarefDataSource::refreshAirspeedEnvelope() {
+  if (acfVso_) data_.airspeedEnvelopeVsoKt = XPLMGetDataf(acfVso_);
+  if (acfVs_) data_.airspeedEnvelopeVs1Kt = XPLMGetDataf(acfVs_);
+  if (acfVfe_) data_.airspeedEnvelopeVfeKt = XPLMGetDataf(acfVfe_);
+  if (acfVno_) data_.airspeedEnvelopeVnoKt = XPLMGetDataf(acfVno_);
+  if (acfVne_) data_.airspeedEnvelopeVneKt = XPLMGetDataf(acfVne_);
+  applyAirspeedEnvelopeDefaults(data_);
 }
 
 void DatarefDataSource::updateAircraftProfile() {
@@ -557,6 +571,7 @@ void DatarefDataSource::update(double dtSeconds) {
   ensureInstallDataLoaded();
   metar_.poll(dtSeconds);
   updateAircraftProfile();
+  refreshAirspeedEnvelope();
   if (eisSource_ != nullptr) {
     eisSource_->refreshIfChanged();
     const bool ready = eisSource_->ready();

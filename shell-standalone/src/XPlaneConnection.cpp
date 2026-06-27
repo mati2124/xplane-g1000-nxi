@@ -191,6 +191,13 @@ const DatarefBinding kBindings[] = {
     {datarefs::kCom2Volume, 1.0f, &FlightData::com2Volume, Smooth::Snap},
     {datarefs::kNav1Volume, 1.0f, &FlightData::nav1Volume, Smooth::Snap},
     {datarefs::kNav2Volume, 1.0f, &FlightData::nav2Volume, Smooth::Snap},
+
+    // Loaded-aircraft V-speed envelope for the PFD airspeed-tape color bands.
+    {datarefs::kAcfVso, 1.0f, &FlightData::airspeedEnvelopeVsoKt, Smooth::Snap},
+    {datarefs::kAcfVs, 1.0f, &FlightData::airspeedEnvelopeVs1Kt, Smooth::Snap},
+    {datarefs::kAcfVfe, 1.0f, &FlightData::airspeedEnvelopeVfeKt, Smooth::Snap},
+    {datarefs::kAcfVno, 1.0f, &FlightData::airspeedEnvelopeVnoKt, Smooth::Snap},
+    {datarefs::kAcfVne, 1.0f, &FlightData::airspeedEnvelopeVneKt, Smooth::Snap},
 };
 constexpr int kBindingCount =
     static_cast<int>(sizeof(kBindings) / sizeof(kBindings[0]));
@@ -912,7 +919,11 @@ void XPlaneConnection::update(double dtSeconds) {
       primed_ = true;
       linkWasPrimed_ = true;
       if (reconnect) {
-        setRouteOverride({});
+        // Drop the in-session override so the live sim FMS can be adopted again,
+        // but do not call setRouteOverride({}): that also clears an active
+        // Direct-To, which must survive sim reconnects (and false-positive UDP
+        // gaps right after a standalone restart when settings were just restored).
+        clearRouteOverride();
         reconnectFlightPlanClearPending_ = true;
       }
     } else {
@@ -976,6 +987,7 @@ void XPlaneConnection::update(double dtSeconds) {
     updateMap(dtSeconds);
     updateFmaModes();
     syncDisplayBackup(data_, dtSeconds);
+    applyAirspeedEnvelopeDefaults(data_);
   } else {
     // Link down: re-prime on the next reconnect, and periodically re-subscribe
     // so we recover if X-Plane was started after us (or restarted).
@@ -1253,7 +1265,7 @@ void XPlaneConnection::updateMap(double dtSeconds) {
 
   if (routeOverrideSet_) {
     map_.flightPlan = routeOverride_;
-  } else if (!directToActive_) {
+  } else {
     map_.flightPlan.clear();
     bool bridgeAvailable = false;
     std::vector<MapLeg> bridgePlan = fmsBridge_.flightPlan(bridgeAvailable);
@@ -1265,8 +1277,6 @@ void XPlaneConnection::updateMap(double dtSeconds) {
         map_.flightPlan = fmsPlan_.flightPlan();
       }
     }
-  } else {
-    map_.flightPlan.clear();
   }
   if (map_.flightPlanRouteStartIndex >=
       static_cast<int>(map_.flightPlan.size())) {

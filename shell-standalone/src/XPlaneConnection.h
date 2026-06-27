@@ -80,8 +80,8 @@ class XPlaneConnection : public SimulatorConnection {
   const char* simulatorName() const override { return "X-PLANE"; }
 
   // True once after X-Plane drops and reconnects (e.g. sim restart). Clears the
-  // in-session route override; consume from the shell to blank the FPL editors
-  // without overwriting the persisted settings file.
+  // in-session route override without wiping Direct-To; consume from the shell
+  // to re-apply persisted navigation or blank the FPL editors.
   bool consumeReconnectFlightPlanClear();
 
   // Show a pilot-built route on the map feed without programming X-Plane's FMS.

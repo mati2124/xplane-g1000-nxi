@@ -42,7 +42,7 @@ using avionics::pfd::fplSectionSelectableRowForLegIndex;
 using avionics::pfd::fplApproachDisplayRowIndexForLegIndex;
 using avionics::pfd::fplApproachDisplayRowIndexForHoldLegIndex;
 using avionics::pfd::fplApproachLegIndexForSelectable;
-using avionics::pfd::fplLegIndexForSectionRow;
+using avionics::pfd::fplSectionLegIndexForSelectable;
 using avionics::pfd::fplListScrollFirst;
 using avionics::pfd::fplPinActiveApproachLeg;
 using avionics::pfd::fplShowActiveLegHighlight;
@@ -2097,8 +2097,8 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     const bool blinkOn = ui.blinkOn();
     const int listCursorRow = ui.fplCursorRow();
     const int wptCount = static_cast<int>(plan.size());
-    const bool destFilled =
-        ui.fplDestinationFilled() || approachStart >= 2;
+    const bool layoutDestFilled = ui.fplDestinationFilledForLayout();
+    const bool destFilled = layoutDestFilled;
     const bool directToPlanBody = directToFplView;
     const bool blankOriginSection =
         directToFplView || destOnlyPlan || ui.fplHasLoadedDeparture() ||
@@ -2119,10 +2119,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
             : wptCount;
     const int fplActiveLayoutLegCount =
         approachLoaded ? sectionLegCount : bodyLegCount;
-    const bool fplActiveLayoutDestFilled =
-        approachLoaded
-            ? (ui.fplDestinationFilled() || approachStart >= 2)
-            : ui.fplDestinationFilled();
+    const bool fplActiveLayoutDestFilled = layoutDestFilled;
     const std::vector<FplDisplayRow> procedureDisplayRows =
         procedureDisplay
             ? buildFplProcedureDisplayRows(
@@ -2134,7 +2131,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         procedureDisplay ? std::vector<FplSectionRow>{}
                        : fplFilterDuplicateLegSectionRows(
                              buildFplSectionRows(bodyLegCount,
-                                                 ui.fplDestinationFilled(),
+                                                 layoutDestFilled,
                                                  directToPlanBody),
                              plan);
     const int displayRowCount =
@@ -2152,7 +2149,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                         approachCount, blankOriginSection, destFilled)
                   : fplSectionSelectableRowForLegIndex(
                         activeLegIdx, sectionRows, bodyLegCount,
-                        ui.fplDestinationFilled(), directToPlanBody);
+                        layoutDestFilled, directToPlanBody);
           if (procedureDisplay && activeLegIdx >= 0 &&
               activeLegIdx < static_cast<int>(plan.size())) {
             const MapLeg& activeLeg =
@@ -2181,9 +2178,8 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           arrCount, arrHeader, approachStart, approachCount, blankOriginSection,
           destFilled);
     } else {
-      cursorLegIdx = fplLegIndexForSectionRow(
-          listCursorRow, bodyLegCount, ui.fplDestinationFilled(),
-          directToPlanBody);
+      cursorLegIdx = fplSectionLegIndexForSelectable(
+          listCursorRow, sectionRows, bodyLegCount, layoutDestFilled);
     }
     const bool activeHighlight =
         ((directToFplView || map.directToActive) && activeLegIdx >= 0) ||
@@ -2206,7 +2202,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     } else if (!sectionRows.empty()) {
       scrollAnchor = sectionDisplayRowForSelectable(
           listCursorRow, sectionRows, bodyLegCount,
-          ui.fplDestinationFilled());
+          layoutDestFilled);
     }
 
     const int maxRows =
@@ -2247,7 +2243,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         }
       } else {
         countSectionSelectablesBefore(start, sectionRows, bodyLegCount,
-                                      ui.fplDestinationFilled(), selectableIdx);
+                                      layoutDestFilled, selectableIdx);
       }
     }
     for (int row = start; row < end; ++row) {
@@ -2364,6 +2360,16 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
             fy += rowH;
             continue;
           }
+          case FplDisplayRowKind::DestinationLabel:
+            drawFplDestinationLabelRow(r, labelX, cy, rowSize);
+            fy += rowH;
+            continue;
+          case FplDisplayRowKind::DestinationBlank:
+            ++selectableIdx;
+            drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                           colors::kPopoutCyan, showSelection, blinkOn);
+            fy += rowH;
+            continue;
           case FplDisplayRowKind::EnrouteBlank: {
             ++selectableIdx;
             drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
@@ -2419,21 +2425,13 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         continue;
       }
       if (sr.kind == FplSectionRow::Kind::Origin && sr.legIndex < 0 &&
-          !sectionRowIsSelectable(sr, bodyLegCount, ui.fplDestinationFilled())) {
+          !sectionRowIsSelectable(sr, bodyLegCount, layoutDestFilled)) {
         drawFplSectionIdent(r, labelX, cy, "Origin - ", std::string(), true,
                             false, false, rowSize, colors::kPopoutCyan);
         fy += rowH;
         continue;
       }
-      if (sr.kind == FplSectionRow::Kind::OriginBlank ||
-          sr.kind == FplSectionRow::Kind::DestinationBlank) {
-        drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
-                       colors::kPopoutCyan, false, false);
-        fy += rowH;
-        continue;
-      }
-
-      if (!sectionRowIsSelectable(sr, bodyLegCount, ui.fplDestinationFilled())) {
+      if (!sectionRowIsSelectable(sr, bodyLegCount, layoutDestFilled)) {
         fy += rowH;
         continue;
       }
@@ -2463,6 +2461,8 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           break;
         }
         case FplSectionRow::Kind::OriginBlank:
+          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                         colors::kPopoutCyan, showSelection, blinkOn);
           break;
         case FplSectionRow::Kind::EnrouteBlank: {
           const bool active = fplSectionRowIsActiveDisplay(
@@ -2520,6 +2520,8 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           }
           break;
         case FplSectionRow::Kind::DestinationBlank:
+          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+                         colors::kPopoutCyan, showSelection, blinkOn);
           break;
         default:
           break;

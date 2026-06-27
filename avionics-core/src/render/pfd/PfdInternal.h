@@ -284,11 +284,6 @@ constexpr int kAsiReadoutOffScaleDashCount = 3;
 constexpr float kAirspeedBandWidthFraction = 0.12f;
 constexpr float kVspeedBugWidthFraction = 0.20f;
 
-constexpr float kVsoKt = 33.0f;
-constexpr float kVfeKt = 85.0f;
-constexpr float kVs1Kt = 48.0f;
-constexpr float kVnoKt = 129.0f;
-constexpr float kVneKt = 163.0f;
 // Mach replaces TAS in the bottom readout box at or above this value (TBM 900
 // uses 0.30; suppressed in the normal C172 envelope).
 constexpr float kMachDisplayThreshold = 0.40f;

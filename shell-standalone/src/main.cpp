@@ -4733,14 +4733,44 @@ int main(int argc, char** argv) {
     }
 
     if (xplane.consumeReconnectFlightPlanClear()) {
-      if (pfdEngine != nullptr) {
-        pfdEngine->softkeyController().replaceFlightPlanFromExternal({});
+      // Re-apply the durable settings snapshot so a sim reconnect (or a brief
+      // UDP gap after standalone restart) cannot wipe a restored Direct-To or
+      // flight plan. When nothing was persisted, blank the editors as before.
+      if (app.settings.persistedFlightPlan.active) {
+        if (pfdEngine != nullptr) {
+          pfdEngine->softkeyController().restorePersistedFlightPlan(
+              app.settings.persistedFlightPlan);
+          if (app.settings.persistedFlightPlan.approachMeta.active) {
+            pfdEngine->softkeyController().setPersistedLoadedApproach(
+                app.settings.persistedFlightPlan.approachMeta);
+          }
+        }
+        if (mfdEngine != nullptr) {
+          mfdEngine->mfdController().restorePersistedFlightPlan(
+              app.settings.persistedFlightPlan);
+          if (app.settings.persistedFlightPlan.approachMeta.active) {
+            mfdEngine->mfdController().setPersistedLoadedApproach(
+                app.settings.persistedFlightPlan.approachMeta);
+          }
+        }
+        ApplyConsumedFlightPlan(
+            xplane, app.demoSource, app.settings.persistedFlightPlan.legs,
+            app.settings.persistedFlightPlan.destinationFilled);
+      } else {
+        if (pfdEngine != nullptr) {
+          pfdEngine->softkeyController().replaceFlightPlanFromExternal({});
+        }
+        if (mfdEngine != nullptr) {
+          mfdEngine->mfdController().replaceFlightPlanFromExternal({});
+        }
+        if (app.demoSource != nullptr) {
+          app.demoSource->updateRoute({});
+        }
       }
-      if (mfdEngine != nullptr) {
-        mfdEngine->mfdController().replaceFlightPlanFromExternal({});
-      }
-      if (app.demoSource != nullptr) {
-        app.demoSource->updateRoute({});
+      if (app.settings.persistedDirectTo.active) {
+        ApplyRestoredDirectTo(xplane, app.demoSource,
+                              app.settings.persistedDirectTo);
+      } else if (app.demoSource != nullptr) {
         app.demoSource->cancelDirectTo();
       }
     }
@@ -4789,6 +4819,14 @@ int main(int argc, char** argv) {
       }
       if (mfdEngine != nullptr) {
         avionics::captureMfdState(mfdEngine->mfdController(), current.mfd);
+      }
+      // Remember the pilot's V-speed reference bugs per aircraft type: restore
+      // them when the airframe changes, capture edits otherwise.
+      static avionics::VspeedAircraftMemory vspeedMemory;
+      if (pfdEngine != nullptr && app.activeSource != nullptr) {
+        vspeedMemory.sync(pfdEngine->softkeyController(),
+                          app.activeSource->aircraftIcaoType(),
+                          current.vspeedByAircraft);
       }
       if (current != app.settings.avionics) {
         app.settings.avionics = current;

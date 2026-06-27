@@ -7,8 +7,9 @@ namespace avionics::pfd {
 namespace {
 
 void drawAirspeedColorBands(Renderer& r, float tapeX, float tapeW,
-                            float stripTop, float stripH, float cy,
-                            float value) {
+                            float stripTop, float stripH, float cy, float value,
+                            float vsoKt, float vfeKt, float vs1Kt, float vnoKt,
+                            float vneKt) {
   const float ppu = stripH / kAirspeedViewableKnots;
   const float innerX = tapeX + tapeW;
   const float bandW = tapeW * kAirspeedBandWidthFraction;
@@ -25,16 +26,16 @@ void drawAirspeedColorBands(Renderer& r, float tapeX, float tapeW,
 
   r.save();
   r.clip(tapeX, stripTop, tapeW, stripH);
-  fillBand(bandX, bandW, kVs1Kt, kVnoKt, colors::kBandGreen);
-  fillBand(bandX, bandW, kVnoKt, kVneKt, colors::kBandYellow);
-  fillBand(whiteX, whiteW, kVsoKt, kVfeKt, colors::kWhite);
+  fillBand(bandX, bandW, vs1Kt, vnoKt, colors::kBandGreen);
+  fillBand(bandX, bandW, vnoKt, vneKt, colors::kBandYellow);
+  fillBand(whiteX, whiteW, vsoKt, vfeKt, colors::kWhite);
 
-  const float vsoY = yOf(kVsoKt);
+  const float vsoY = yOf(vsoKt);
   r.fillRect(bandX, vsoY, bandW, stripH, colors::kBandRed);
 
   // High-speed warning range above VNE: red/white "barber pole" hatching, per
   // the G1000 NXi. Drawn as alternating red diagonal parallelograms over white.
-  const float vneY = yOf(kVneKt);
+  const float vneY = yOf(vneKt);
   const float poleTop = stripTop;
   if (vneY > poleTop) {
     r.save();
@@ -352,7 +353,9 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
                    kTapeCornerRadiusWt * L.s,
                    L.asiW * kAirspeedBandWidthFraction, 0, L.tapeBgH);
   drawAirspeedColorBands(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy,
-                         d.airspeedKts);
+                         d.airspeedKts, d.airspeedEnvelopeVsoKt,
+                         d.airspeedEnvelopeVfeKt, d.airspeedEnvelopeVs1Kt,
+                         d.airspeedEnvelopeVnoKt, d.airspeedEnvelopeVneKt);
   drawVspeedBugs(r, L.asiX, L.asiW, L.stripTop, L.stripH, L.attCy, h,
                  d.airspeedKts, ui);
   if (d.airspeedKts < kAirspeedMinKnots) {
@@ -371,8 +374,9 @@ void drawAirspeedTape(Renderer& r, const Layout& L, const FlightData& d,
 
   // The pointer is black until VNE, then red. If the trend vector crosses VNE
   // (but current speed has not), the digits turn amber as an early warning.
-  const bool overVne = d.airspeedKts >= kVneKt;
-  const bool trendOverVne = (d.airspeedKts + d.airspeedTrendKts) >= kVneKt;
+  const bool overVne = d.airspeedKts >= d.airspeedEnvelopeVneKt;
+  const bool trendOverVne =
+      (d.airspeedKts + d.airspeedTrendKts) >= d.airspeedEnvelopeVneKt;
   const Color boxColor = overVne ? colors::kBandRed : colors::kReadoutBox;
   const Color textColor =
       (!overVne && trendOverVne) ? colors::kBandYellow : colors::kWhite;

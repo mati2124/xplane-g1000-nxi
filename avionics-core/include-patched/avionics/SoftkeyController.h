@@ -22,6 +22,8 @@ namespace avionics {
 
 // Persisted-preferences view of this controller (avionics/PersistentState.h).
 struct PfdPersistentState;
+// Per-aircraft V-speed reference snapshot (avionics/PersistentState.h).
+struct VspeedProfile;
 
 // The PFD softkey bar has 12 cells (the bottom-of-screen menu row).
 inline constexpr int kSoftkeyCount = 12;
@@ -335,6 +337,12 @@ class SoftkeyController {
   // enroute, or a three-or-more-leg route). Distinguishes [origin, enroute] from
   // [origin, destination] when both have two legs.
   bool flightPlanDestinationFilled() const { return fplDestinationFilled_; }
+  // FPL list layout: destination is the airport (plus STAR/approach when loaded).
+  bool flightPlanDestinationFilledForLayout() const {
+    if (fplApproachLegCount_ > 0) return true;
+    if (!fplDestinationFilled_ || fplLegs_.empty()) return false;
+    return isKnownAirportIdent(fplLegs_.back().id, mapData_, navSource_);
+  }
   // True while the pilot is building a route locally that has not been adopted
   // from the simulator feed (partial plans stay in-app only).
   bool flightPlanLocalDraft() const { return fplLocalDraft_; }
@@ -357,6 +365,10 @@ class SoftkeyController {
   // True while the FMS selection cursor is on (knob pushed), so a row highlights
   // and the knob/ENT/CLR edit instead of scroll.
   bool flightPlanCursorOn() const { return fplCursorOn_; }
+  // True while the list cursor tracks the active nav leg (false after scrolling).
+  bool flightPlanListCursorFollowsActive() const {
+    return fplListCursorFollowsActive_;
+  }
 
   // Waypoint-ident entry overlay (the insert "Waypoint Information" entry):
   // active while spelling an identifier to insert before the cursor row.
@@ -406,6 +418,8 @@ class SoftkeyController {
       const FlightPlanApproachState& approach,
       const FlightPlanTerminalProcedureState& departure = {},
       const FlightPlanTerminalProcedureState& arrival = {});
+  // Mirror the peer GDU's FPL list scroll/selection (PFD window vs MFD page).
+  void adoptFlightPlanCursorFromPeer(int cursorRow, bool followsActive);
 
   // ---- Procedures window (PROC bezel key) ----
   using ProcStep = avionics::ProcStep;
@@ -759,6 +773,8 @@ class SoftkeyController {
   // The persistence helpers read/write the durable display options directly.
   friend void capturePfdState(const SoftkeyController&, PfdPersistentState&);
   friend void applyPfdState(SoftkeyController&, const PfdPersistentState&);
+  friend void captureVspeeds(const SoftkeyController&, VspeedProfile&);
+  friend void applyVspeeds(SoftkeyController&, const VspeedProfile&);
   friend void syncRadioVolumeAnnunciation(SoftkeyController&, SoftkeyController&);
 
   void rebuildAlerts(const FlightData& data);
@@ -784,6 +800,9 @@ class SoftkeyController {
   void requestActivateFlightPlanLeg(int toLegIndex);
   // Direct-To a plan leg while keeping the route (FPL ENT / approach activate).
   void requestDirectToFlightPlanLeg(int legIndex);
+  FplRouteEdit flightPlanRouteEditState() const;
+  // Ident at the current FPL list cursor (section-row layout).
+  std::string flightPlanCursorLegIdent() const;
   // Ident of the waypoint highlighted on the FPL window (empty when none).
   std::string flightPlanSelectedLegIdent() const;
   int flightPlanSelectedLegIndex() const;
@@ -982,6 +1001,7 @@ class SoftkeyController {
   // fix (skip), rather than replacing the plan with a single leg.
   bool dtoPreservePlan_ = false;
   int dtoPreserveLegIndex_ = -1;
+  int dtoPreserveFplCursorRow_ = -1;
 
   // Page Menu (MENU on an open popout): option list for the active window.
   std::vector<PfdPageMenuItem> pageMenuItems_;

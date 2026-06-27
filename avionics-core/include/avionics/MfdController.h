@@ -276,10 +276,11 @@ class MfdController {
   MfdPageGroup pageGroup() const { return pageGroup_; }
   // True when this MFD page group owns ENT/CLR/FMS-push on the MFD GDU even if
   // a PFD pop-up would otherwise claim GCU FMS input (Active Flight Plan,
-  // Checklist).
+  // Checklist, and the WPT - Airport Information chart view, which uses ENT to
+  // commit the highlighted chart and the FMS knob to browse the chart list).
   bool ownsLocalFmsInput() const {
     return pageGroup_ == MfdPageGroup::FlightPlan ||
-           pageGroup_ == MfdPageGroup::Checklist;
+           pageGroup_ == MfdPageGroup::Checklist || chartViewActive_;
   }
 
   // Number of pages in a group and the index of the page currently selected
@@ -545,6 +546,8 @@ class MfdController {
       const FlightPlanApproachState& approach,
       const FlightPlanTerminalProcedureState& departure = {},
       const FlightPlanTerminalProcedureState& arrival = {});
+  // Mirror the peer GDU's FPL list scroll/selection (PFD window vs MFD page).
+  void adoptFlightPlanCursorFromPeer(int cursorRow, bool followsActive);
 
   // Infer approach grouping from procedure-tagged legs when metadata is missing.
   void fplEnsureApproachInferred();
@@ -567,6 +570,8 @@ class MfdController {
     return !fplLoadedArrival_.name.empty() || fplArrivalLegCount_ > 0;
   }
   bool fplDestinationFilled() const { return fplDestinationFilled_; }
+  // FPL list layout: destination is the airport (plus STAR/approach when loaded).
+  bool fplDestinationFilledForLayout() const;
   bool fplLocalDraft() const { return fplLocalDraft_; }
   int fplDepartureLegStart() const { return fplDepartureLegStart_; }
   int fplDepartureLegCount() const { return fplDepartureLegCount_; }
@@ -601,6 +606,8 @@ class MfdController {
   // legCount selects the blank slot after the last waypoint (append).
   bool fplCursorOn() const { return fplCursorOn_; }
   int fplCursorRow() const { return fplCursorRow_; }
+  // True while the list cursor tracks the active nav leg (false after scrolling).
+  bool fplListCursorFollowsActive() const { return fplListCursorFollowsActive_; }
   // Waypoint Information entry window state. The displayed ident is the typed
   // prefix completed by the database spell-ahead match (no padding).
   bool fplEntryActive() const { return fplEntry_.active; }
@@ -948,6 +955,16 @@ class MfdController {
   // (MFD only)"). The shell calls this after kClrDefaultMapHoldSeconds.
   void clrDefaultMap();
 
+  // True when a modal popup currently owns the CLR key (Remove/Delete
+  // confirmation, waypoint or VNAV-altitude entry, catalog confirmation). While
+  // one is open the press-and-hold CLR (DFLT MAP) must not fire, or it would
+  // blow away the popup the same CLR press just opened.
+  bool clrDefaultMapHoldSuppressed() const {
+    return fplConfirm_ != FplConfirm::None ||
+           catalogConfirm_ != CatalogConfirm::None || fplEntry_.active ||
+           fplAltEntry_.active;
+  }
+
  private:
   // The persistence helpers read/write the durable display options directly.
   friend void captureMfdState(const MfdController&, MfdPersistentState&);
@@ -957,6 +974,7 @@ class MfdController {
   void reinferApproachFromProcedureLegs();
   // Leg index under the FPL cursor (-1 for blank / sep rows in approach view).
   int fplCursorLegIndex() const;
+  FplRouteEdit fplRouteEditState() const;
   void fplClampCursorRow();
 
   // The MFD softkey bar is a small menu stack like the PFD's: the root bar

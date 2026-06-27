@@ -144,6 +144,7 @@ class AvionicsEngine {
   bool handleBezelKnob(BezelKey key);
   void syncSoftkeyPeerRadioVolume();
   void syncFlightPlanPeer();
+  void syncFlightPlanCursorPeer();
   void syncFlightPlanApproachPeer();
   // Mirror the HILPT "Fly Course Reversal?" prompt across both GDUs so it shows
   // on the PFD and MFD, and clear it on both once answered.

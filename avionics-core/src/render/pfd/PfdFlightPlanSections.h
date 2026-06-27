@@ -76,6 +76,11 @@ inline FplSectionLayout fplSectionLayout(int legCount, bool destinationFilled) {
 
   }
 
+  if (!destinationFilled) {
+    layout.enrouteCount = legCount - 1;
+    return layout;
+  }
+
   layout.destLegIndex = legCount - 1;
 
   layout.enrouteCount = legCount - 2;
@@ -125,19 +130,14 @@ inline std::vector<FplSectionRow> buildFplSectionRows(int legCount,
 
     }
 
-    if (destinationFilled && layout.destLegIndex >= 0) {
-      rows.push_back({FplSectionRow::Kind::EnrouteBlank, -1});
-    }
-
-  } else {
-
-    rows.push_back({FplSectionRow::Kind::EnrouteBlank, -1});
-
   }
+
+  rows.push_back({FplSectionRow::Kind::EnrouteBlank, -1});
 
   if (layout.destLegIndex >= 0 && destinationFilled && legCount >= 2) {
     rows.push_back({FplSectionRow::Kind::DestinationLabel, -1});
     rows.push_back({FplSectionRow::Kind::Destination, layout.destLegIndex});
+    rows.push_back({FplSectionRow::Kind::DestinationBlank, -1});
   } else if (!hideDestination) {
     rows.push_back({FplSectionRow::Kind::Destination, layout.destLegIndex});
     if (layout.destLegIndex < 0) {
@@ -168,14 +168,17 @@ inline bool fplSectionRowIsSelectable(const FplSectionRow& sr, int legCount,
   switch (sr.kind) {
     case FplSectionRow::Kind::EnrouteLabel:
     case FplSectionRow::Kind::DestinationLabel:
-    case FplSectionRow::Kind::OriginBlank:
-    case FplSectionRow::Kind::DestinationBlank:
       return false;
     case FplSectionRow::Kind::Origin:
       return sr.legIndex >= 0 || fplShowsOriginBlankRow(legCount);
     case FplSectionRow::Kind::Destination:
       return sr.legIndex >= 0 ||
              fplShowsDestinationBlankRow(legCount, destinationFilled);
+    // The dashed "add a fix" rows under Origin and Destination are cursor stops
+    // too: Origin blank inserts at the start of Enroute, Destination blank
+    // appends after the destination (mirrors the trainer's blank entry lines).
+    case FplSectionRow::Kind::OriginBlank:
+    case FplSectionRow::Kind::DestinationBlank:
     case FplSectionRow::Kind::EnrouteBlank:
     case FplSectionRow::Kind::EnrouteLeg:
       return true;
@@ -194,11 +197,7 @@ inline int fplEnrouteSelectableBase(int /*legCount*/) { return 1; }
 
 inline int fplEnrouteSelectableSlots(int legCount, bool destinationFilled) {
   const FplSectionLayout layout = fplSectionLayout(legCount, destinationFilled);
-  int slots = layout.enrouteCount > 0 ? layout.enrouteCount : 1;
-  if (layout.enrouteCount > 0 && destinationFilled && layout.destLegIndex >= 0) {
-    ++slots;
-  }
-  return slots;
+  return layout.enrouteCount > 0 ? layout.enrouteCount + 1 : 1;
 }
 
 inline int fplSectionSelectableCount(int legCount, bool destinationFilled,
@@ -256,9 +255,11 @@ inline int fplInsertIndexForSectionRow(int sectionRow, int legCount,
 
   const int enrouteSlot = sectionRow - fplEnrouteSelectableBase(legCount);
 
-  if (layout.enrouteCount > 0 && destinationFilled && layout.destLegIndex >= 0 &&
-      enrouteSlot == layout.enrouteCount) {
-    return layout.destLegIndex;
+  if (layout.enrouteCount > 0 && enrouteSlot == layout.enrouteCount) {
+    if (destinationFilled && layout.destLegIndex >= 0) {
+      return layout.destLegIndex;
+    }
+    return legCount;
   }
 
   if (layout.enrouteCount > 0 && enrouteSlot >= 0 &&
@@ -302,8 +303,7 @@ inline int fplLegIndexForSectionRow(int sectionRow, int legCount,
 
   const int enrouteSlot = sectionRow - fplEnrouteSelectableBase(legCount);
 
-  if (layout.enrouteCount > 0 && destinationFilled && layout.destLegIndex >= 0 &&
-      enrouteSlot == layout.enrouteCount) {
+  if (layout.enrouteCount > 0 && enrouteSlot == layout.enrouteCount) {
     return -1;
   }
 
@@ -314,22 +314,6 @@ inline int fplLegIndexForSectionRow(int sectionRow, int legCount,
 
   }
 
-  return -1;
-}
-
-inline int fplSectionSelectableRowForLegIndex(
-    int legIndex, const std::vector<FplSectionRow>& sectionRows, int legCount,
-    bool destinationFilled, bool directToActive = false) {
-  if (legIndex < 0) return -1;
-  int sel = 0;
-  for (const FplSectionRow& sr : sectionRows) {
-    if (!fplSectionRowIsSelectable(sr, legCount, destinationFilled)) continue;
-    if (fplLegIndexForSectionRow(sel, legCount, destinationFilled,
-                                 directToActive) == legIndex) {
-      return sel;
-    }
-    ++sel;
-  }
   return -1;
 }
 
@@ -516,6 +500,8 @@ enum class FplDisplayRowKind {
   EnrouteBlank,
   EnrouteLeg,
   Destination,
+  DestinationLabel,
+  DestinationBlank,
   DepartureHeader,
   DepartureLeg,
   ArrivalHeader,
@@ -596,8 +582,8 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
 
       case FplSectionRow::Kind::EnrouteBlank:
 
-        // Enroute blank slot is represented by the SepDash before the approach
-        // header; do not show the separate template dash row here.
+        // The enroute add-fix slot is represented by the SepDash before the
+        // approach header; do not show a separate template dash row here.
         enrouteBlock = true;
 
         break;
@@ -680,6 +666,97 @@ inline std::vector<FplSectionRow> fplFilterDuplicateLegSectionRows(
   return out;
 }
 
+inline std::vector<FplSectionRow> fplFilteredSectionRows(
+    int legCount, bool destinationFilled, bool directToActive,
+    const std::vector<MapLeg>& legs) {
+  return fplFilterDuplicateLegSectionRows(
+      buildFplSectionRows(legCount, destinationFilled, directToActive), legs);
+}
+
+inline int fplFilteredSectionSelectableCount(
+    const std::vector<FplSectionRow>& sectionRows, int legCount,
+    bool destinationFilled) {
+  int count = 0;
+  for (const FplSectionRow& sr : sectionRows) {
+    if (fplSectionRowIsSelectable(sr, legCount, destinationFilled)) ++count;
+  }
+  return count;
+}
+
+inline const FplSectionRow* fplSectionSelectableRow(
+    int selectableRow, const std::vector<FplSectionRow>& sectionRows,
+    int legCount, bool destinationFilled) {
+  int sel = 0;
+  for (const FplSectionRow& sr : sectionRows) {
+    if (!fplSectionRowIsSelectable(sr, legCount, destinationFilled)) continue;
+    if (sel == selectableRow) return &sr;
+    ++sel;
+  }
+  return nullptr;
+}
+
+inline bool fplSectionRowCarriesLegIndex(FplSectionRow::Kind kind) {
+  switch (kind) {
+    case FplSectionRow::Kind::OriginBlank:
+    case FplSectionRow::Kind::EnrouteBlank:
+    case FplSectionRow::Kind::DestinationBlank:
+      return false;
+    default:
+      return true;
+  }
+}
+
+inline int fplSectionLegIndexForSelectable(
+    int selectableRow, const std::vector<FplSectionRow>& sectionRows,
+    int legCount, bool destinationFilled) {
+  const FplSectionRow* sr = fplSectionSelectableRow(
+      selectableRow, sectionRows, legCount, destinationFilled);
+  if (sr == nullptr || !fplSectionRowCarriesLegIndex(sr->kind)) return -1;
+  return sr->legIndex;
+}
+
+inline int fplSectionInsertIndexForSelectable(
+    int selectableRow, const std::vector<FplSectionRow>& sectionRows,
+    int legCount, bool destinationFilled) {
+  const FplSectionRow* sr = fplSectionSelectableRow(
+      selectableRow, sectionRows, legCount, destinationFilled);
+  if (sr == nullptr) return legCount;
+  switch (sr->kind) {
+    case FplSectionRow::Kind::Origin:
+      return sr->legIndex >= 0 ? sr->legIndex : 0;
+    case FplSectionRow::Kind::OriginBlank:
+      return 0;
+    case FplSectionRow::Kind::EnrouteLeg:
+      return sr->legIndex >= 0 ? sr->legIndex : legCount;
+    case FplSectionRow::Kind::EnrouteBlank:
+      return legCount;
+    case FplSectionRow::Kind::Destination:
+      if (sr->legIndex >= 0) return sr->legIndex;
+      return fplSectionLayout(legCount, destinationFilled).destLegIndex >= 0
+                 ? fplSectionLayout(legCount, destinationFilled).destLegIndex
+                 : legCount;
+    case FplSectionRow::Kind::DestinationBlank:
+      return legCount;
+    default:
+      return legCount;
+  }
+}
+
+inline int fplSectionSelectableRowForLegIndex(
+    int legIndex, const std::vector<FplSectionRow>& sectionRows, int legCount,
+    bool destinationFilled, bool /*directToActive*/ = false) {
+  if (legIndex < 0) return -1;
+  int sel = 0;
+  for (const FplSectionRow& sr : sectionRows) {
+    if (!fplSectionRowIsSelectable(sr, legCount, destinationFilled)) continue;
+    if (fplSectionRowCarriesLegIndex(sr.kind) && sr.legIndex == legIndex) {
+      return sel;
+    }
+    ++sel;
+  }
+  return -1;
+}
+
 
 
 inline bool fplApproachDisplayRowSelectable(FplDisplayRowKind kind) {
@@ -693,6 +770,8 @@ inline bool fplApproachDisplayRowSelectable(FplDisplayRowKind kind) {
     case FplDisplayRowKind::EnrouteLeg:
 
     case FplDisplayRowKind::Destination:
+
+    case FplDisplayRowKind::DestinationBlank:
 
     case FplDisplayRowKind::EnrouteBlank:
 
@@ -995,10 +1074,10 @@ inline bool fplLegInProcedureBlock(int legIndex, int blockStart, int blockCount)
 
 inline std::vector<int> fplProcedureEnrouteLegIndices(
     int legCount, int depStart, int depCount, int arrStart, int arrCount,
-    int approachStart, int approachCount) {
+    int approachStart, int approachCount, bool destinationFilled) {
   std::vector<int> out;
   if (legCount < 2) return out;
-  const int lastEnroute = legCount - 2;
+  const int lastEnroute = destinationFilled ? legCount - 2 : legCount - 1;
   for (int i = 1; i <= lastEnroute; ++i) {
     if (fplLegInProcedureBlock(i, depStart, depCount)) continue;
     if (fplLegInProcedureBlock(i, arrStart, arrCount)) continue;
@@ -1067,15 +1146,16 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
   rows.push_back({FplDisplayRowKind::EnrouteLabel, -1});
   const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
       static_cast<int>(legs.size()), depStart, depCount, arrStart, arrCount,
-      approachStart, approachCount);
-  if (enrouteLegs.empty()) {
+      approachStart, approachCount, destinationFilled);
+  for (const int legIdx : enrouteLegs) {
+    if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
+    rows.push_back({FplDisplayRowKind::EnrouteLeg, legIdx});
+    pushHoldRowIfPresent(legIdx);
+  }
+  // The enroute add-fix slot: a standalone blank dash row only when no
+  // arrival/approach follows (otherwise the SepDash separator is that slot).
+  if (!hasArrival && approachCount <= 0) {
     rows.push_back({FplDisplayRowKind::EnrouteBlank, -1});
-  } else {
-    for (const int legIdx : enrouteLegs) {
-      if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
-      rows.push_back({FplDisplayRowKind::EnrouteLeg, legIdx});
-      pushHoldRowIfPresent(legIdx);
-    }
   }
 
   if (hasArrival) {
@@ -1089,11 +1169,18 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
       rows.push_back({FplDisplayRowKind::ArrivalLeg, legIdx});
       pushHoldRowIfPresent(legIdx);
     }
-  } else if (destinationFilled && legs.size() >= 2 && approachCount <= 0) {
-    const FplSectionLayout layout =
-        fplSectionLayout(static_cast<int>(legs.size()), destinationFilled);
-    if (layout.destLegIndex >= 0 && legs.size() >= 2) {
-      rows.push_back({FplDisplayRowKind::Destination, layout.destLegIndex});
+  } else if (approachCount <= 0) {
+    if (destinationFilled && legs.size() >= 2) {
+      const FplSectionLayout layout =
+          fplSectionLayout(static_cast<int>(legs.size()), destinationFilled);
+      if (layout.destLegIndex >= 0) {
+        rows.push_back({FplDisplayRowKind::DestinationLabel, -1});
+        rows.push_back({FplDisplayRowKind::Destination, layout.destLegIndex});
+        rows.push_back({FplDisplayRowKind::DestinationBlank, -1});
+      }
+    } else {
+      rows.push_back({FplDisplayRowKind::Destination, -1});
+      rows.push_back({FplDisplayRowKind::DestinationBlank, -1});
     }
   }
 
@@ -1235,6 +1322,55 @@ inline int fplProcedureDisplayRowIndexForSelectable(
     ++sel;
   }
   return 0;
+}
+
+
+
+inline int fplProcedureInsertIndexForSelectable(
+    int selectableRow, const std::vector<MapLeg>& legs, int depStart,
+    int depCount, const std::string& departureHeader, int arrStart,
+    int arrCount, const std::string& arrivalHeader, int approachStart,
+    int approachCount, int legCount, bool blankOriginSection,
+    bool destinationFilled) {
+  const FplDisplayRow* dr = fplProcedureSelectableRow(
+      selectableRow, legs, depStart, depCount, departureHeader, arrStart,
+      arrCount, arrivalHeader, approachStart, approachCount, blankOriginSection,
+      destinationFilled);
+  if (dr == nullptr) return legCount;
+  switch (dr->kind) {
+    case FplDisplayRowKind::Origin:
+    case FplDisplayRowKind::OriginBlank:
+      return 0;
+    case FplDisplayRowKind::DepartureLeg:
+      return dr->legIndex >= 0 ? dr->legIndex : depStart;
+    case FplDisplayRowKind::EnrouteLeg:
+      return dr->legIndex >= 0 ? dr->legIndex : legCount;
+    case FplDisplayRowKind::EnrouteBlank: {
+      const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
+          legCount, depStart, depCount, arrStart, arrCount, approachStart,
+          approachCount, destinationFilled);
+      if (!enrouteLegs.empty()) return enrouteLegs.back() + 1;
+      return depCount > 0 ? depStart + depCount : 1;
+    }
+    case FplDisplayRowKind::Destination:
+      if (dr->legIndex >= 0) return dr->legIndex;
+      return legCount;
+    case FplDisplayRowKind::ArrivalLeg:
+      return dr->legIndex >= 0 ? dr->legIndex : legCount;
+    case FplDisplayRowKind::ApproachLeg:
+      return dr->legIndex >= 0 ? dr->legIndex : approachStart;
+    case FplDisplayRowKind::Hold:
+      return dr->legIndex >= 0 ? dr->legIndex : legCount;
+    case FplDisplayRowKind::SepDash: {
+      const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
+          legCount, depStart, depCount, arrStart, arrCount, approachStart,
+          approachCount, destinationFilled);
+      if (!enrouteLegs.empty()) return enrouteLegs.back() + 1;
+      return approachStart > 0 ? approachStart : legCount;
+    }
+    default:
+      return legCount;
+  }
 }
 
 

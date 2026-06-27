@@ -29,13 +29,18 @@ add_executable(avionics-core-tests
   FlightPlanPersistenceTest.cpp
   FlightPlanBridgeProtocolTest.cpp
   FplHoldRowTest.cpp
+  FplCursorLegIndexTest.cpp
+  DirectToFplSelectionTest.cpp
   ChecklistPageTest.cpp
   WptAirportInfoPageTest.cpp
   ProcedureMenuCourseReversalTest.cpp
   DeleteFlightPlanTest.cpp
+  RemoveWaypointTest.cpp
   FlightPlanPeerSyncTest.cpp
   FlightPlanCatalogTest.cpp
   SimBriefParseTest.cpp
+  FplLayoutDestinationTest.cpp
+  DirectToRestoreTest.cpp
   stb_image_impl.cpp
 )
 

@@ -132,7 +132,18 @@ void MfdController::directToOpen() {
       dtoPreservePlan_ = true;
       initial = fplLegs_[static_cast<std::size_t>(legIdx)].id;
     }
-  } else if (!activeWaypoint_.empty()) {
+  }
+  if (initial.empty() && !fplListCursorFollowsActive_ && !fplLegs_.empty()) {
+    const int legIdx = fplCursorLegIndex();
+    if (legIdx >= 0 && legIdx < static_cast<int>(fplLegs_.size())) {
+      dtoPreserveLegIndex_ = legIdx;
+      dtoPreserveFplCursorRow_ = fplCursorRow_;
+      dtoPreservePlan_ = true;
+      initial = fplLegs_[static_cast<std::size_t>(legIdx)].id;
+    }
+  }
+  if (initial.empty() && !activeWaypoint_.empty() &&
+      fplListCursorFollowsActive_) {
     initial = activeWaypoint_;
   }
   dtoEntry_.open(navSource_, mapData_, initial);

@@ -91,11 +91,19 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
     }
     dtoPreservePlan_ = false;
     dtoPreserveLegIndex_ = -1;
+    dtoPreserveFplCursorRow_ = -1;
     std::string initial;
     if (window_ == PfdWindow::FlightPlan) {
       dtoPreserveLegIndex_ = flightPlanSelectedLegIndex();
+      dtoPreserveFplCursorRow_ = fplCursorRow_;
       dtoPreservePlan_ = dtoPreserveLegIndex_ >= 0;
       initial = flightPlanSelectedLegIdent();
+      if (initial.empty() && !fplListCursorFollowsActive_) {
+        dtoPreserveLegIndex_ = flightPlanSelectedLegIndex();
+        dtoPreserveFplCursorRow_ = fplCursorRow_;
+        dtoPreservePlan_ = dtoPreserveLegIndex_ >= 0;
+        initial = flightPlanCursorLegIdent();
+      }
     }
     if (initial.empty() && window_ == PfdWindow::Nearest && !nearest_.empty()) {
       const int idx = std::max(
@@ -103,7 +111,11 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
       initial = nearest_[static_cast<std::size_t>(idx)].id;
     }
     if (initial.empty() && !activeWaypoint_.empty()) {
-      initial = activeWaypoint_;
+      const bool fplExplicit =
+          window_ == PfdWindow::FlightPlan && !fplListCursorFollowsActive_;
+      if (!fplExplicit) {
+        initial = activeWaypoint_;
+      }
     }
     directToOpen(initial);
     return true;
@@ -117,6 +129,7 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
     dtoEntry_.reset();
     dtoPreservePlan_ = false;
     dtoPreserveLegIndex_ = -1;
+    dtoPreserveFplCursorRow_ = -1;
     return true;
   }
 
@@ -127,6 +140,7 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
     dtoEntry_.reset();
     dtoPreservePlan_ = false;
     dtoPreserveLegIndex_ = -1;
+    dtoPreserveFplCursorRow_ = -1;
     return false;
   }
 
@@ -138,14 +152,15 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
       dtoRequestHold_ = false;
       dtoRequestPending_ = true;
       if (dtoPreservePlan_) {
-        if (dtoPreserveLegIndex_ >= 0) {
-          fplCursorRow_ = dtoPreserveLegIndex_;
+        if (dtoPreserveFplCursorRow_ >= 0) {
+          fplCursorRow_ = dtoPreserveFplCursorRow_;
         }
       } else {
         flightPlanApplyDirectTo(dtoRequestTarget_);
       }
       dtoPreservePlan_ = false;
       dtoPreserveLegIndex_ = -1;
+      dtoPreserveFplCursorRow_ = -1;
       dtoOpen_ = false;
       dtoArmed_ = false;
       dtoEntry_.reset();

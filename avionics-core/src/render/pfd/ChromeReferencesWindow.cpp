@@ -11,9 +11,25 @@ namespace avionics::pfd {
 // moves the cursor between fields; ENT activates the highlighted field.
 void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
                           const SoftkeyController& ui) {
+  // Row metrics: the References window has only a handful of rows, so the
+  // panel is sized to its content (like the real unit, which grows when MINS
+  // is in TEMP COMP) and the rows use a generous font/spacing. The old tight
+  // 18/20 px WT base left the lower half of the fixed popout box empty.
+  const float size = fontPx(21.0f, h);
+  const float unitSize = fontPx(16.0f, h);
+  const float lineH = fontPx(26.0f, h);
+
   float panelW = 0.0f;
   float panelH = 0.0f;
-  popoutPanelSize(w, h, panelW, panelH);
+  popoutPanelSize(w, h, panelW, panelH);  // width only; height set to content
+  const bool tempComp = ui.minimumsMode() == MinimumsMode::Temp;
+  // Title chrome + top padding (timer 0.85, gap 1.25), four V-speed rows, the
+  // MINS row, an optional Temp-At row, and a bottom padding of ~0.9 lineH.
+  const float titleChromePx = fontPx(34.0f, h);
+  const float rowsLineH = (0.85f + 1.25f + kVSpeedRefCount +
+                           (tempComp ? 1.0f : 0.0f) + 0.9f) * lineH;
+  panelH = titleChromePx + rowsLineH;
+
   const WindowFrame f =
       drawWindowFrame(r, w, h, L, ui.windowAnim(PfdWindow::References),
                       "References", panelW, panelH);
@@ -22,16 +38,12 @@ void drawReferencesWindow(Renderer& r, float w, float h, const Layout& L,
   const RefField cursor = ui.referencesCursor();
   const bool blinkOn = ui.blinkOn();
 
-  // WT .timerref-container: 18 px base; ref rows are 20 px tall.
-  const float size = fontPx(18.0f, h);
-  const float unitSize = fontPx(14.0f, h);
-  const float lineH = fontPx(20.0f, h);
-  const float labelX = f.x + f.w * 0.06f;
+  const float labelX = f.x + f.w * 0.07f;
   const float numRightX = f.x + f.w * 0.60f;    // right edge of a V-speed value
-  const float minsNumRightX = f.x + f.w * 0.80f;  // right edge of the MINS value
+  const float minsNumRightX = f.x + f.w * 0.82f;  // right edge of the MINS value
   const float toggleCenterX = f.x + f.w * 0.85f;  // On/Off toggle center
   const float minsModeCenterX = f.x + f.w * 0.46f;
-  float cy = f.contentTop + lineH * 0.65f;
+  float cy = f.contentTop + lineH * 0.85f;
 
   // Small filled triangle carrot; the available toggle direction is green.
   const auto carrot = [&](float ax, float acy, bool pointRight, bool active) {

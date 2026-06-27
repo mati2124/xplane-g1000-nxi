@@ -100,28 +100,31 @@ MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const 
   return out;
 }
 
-int MfdController::fplCursorLegIndex() const {
-  FplRouteEdit edit{
-      const_cast<std::vector<MapLeg>&>(fplLegs_),
-      const_cast<bool&>(fplDestinationFilled_),
-      const_cast<int&>(fplApproachLegStart_),
-      const_cast<int&>(fplApproachLegCount_),
-      const_cast<int&>(fplCursorRow_),
-      const_cast<MapProcedure*>(&fplLoadedApproach_),
-      const_cast<std::string*>(&fplApproachHeaderLabel_)};
+FplRouteEdit MfdController::fplRouteEditState() const {
+  auto* self = const_cast<MfdController*>(this);
+  FplRouteEdit edit{self->fplLegs_,           self->fplDestinationFilled_,
+                    self->fplApproachLegStart_, self->fplApproachLegCount_,
+                    self->fplCursorRow_,         &self->fplLoadedApproach_,
+                    &self->fplApproachHeaderLabel_};
   edit.directToActive = fplNavDirectToActive_;
   edit.localDraft = fplLocalDraft_;
+  fplRouteEditWireTerminalProcedures(
+      edit, self->fplDepartureLegStart_, self->fplDepartureLegCount_,
+      self->fplDepartureHeaderLabel_, self->fplArrivalLegStart_,
+      self->fplArrivalLegCount_, self->fplArrivalHeaderLabel_,
+      &self->fplLoadedDeparture_, &self->fplLoadedArrival_);
+  return edit;
+}
+
+int MfdController::fplCursorLegIndex() const {
   const FplCursorLayout layout = FplCursorLayout::SectionRows;
-  return ::avionics::fplCursorLegIndex(edit, fplApproachAirportIcao(), layout);
+  return ::avionics::fplCursorLegIndex(fplRouteEditState(), fplApproachAirportIcao(),
+                                       layout);
 }
 
 void MfdController::fplClampCursorRow() {
   fplEnsureApproachInferred();
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    &fplApproachHeaderLabel_};
-  edit.directToActive = fplNavDirectToActive_;
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = fplRouteEditState();
   ::avionics::fplClampCursorRow(edit, fplApproachAirportIcao(),
                                 FplCursorLayout::SectionRows);
   fplCursorCol_ = FplCursorCol::Ident;
@@ -154,9 +157,7 @@ void MfdController::syncFlightPlan(const MapData& map,
       !fplEditPending_) {
     const MapProcedure savedApproach = fplLoadedApproach_;
     const std::string savedHeader = fplApproachHeaderLabel_;
-    FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                      fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                      &fplApproachHeaderLabel_};
+    FplRouteEdit edit = fplRouteEditState();
     if (fplAdoptMapPlanDuringDirectTo(edit, map.flightPlan, fplLastPublished_)) {
       tryRestorePersistedApproach();
       if (fplApproachLegCount_ <= 0) {
@@ -247,11 +248,7 @@ void MfdController::syncFlightPlan(const MapData& map,
   }
 
   fplEnsureApproachInferred();
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    &fplApproachHeaderLabel_};
-  edit.directToActive = fplNavDirectToActive_;
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = fplRouteEditState();
   fplSyncListCursorToActiveLeg(edit, fplApproachAirportIcao(), activeWaypoint_,
                                fplListCursorFollowsActive_);
   fplClampCursorRow();
@@ -337,11 +334,7 @@ void MfdController::fplCommitEntry() {
     return;
   }
 
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    &fplApproachHeaderLabel_};
-  edit.directToActive = fplNavDirectToActive_;
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = fplRouteEditState();
   const FplCursorLayout layout = FplCursorLayout::SectionRows;
   const std::string ident =
       fplEntry_.autofill.empty() ? fplEntry_.chars : fplEntry_.autofill;
@@ -366,11 +359,7 @@ bool MfdController::fplBezelKey(BezelKey key) {
 
   fplEnsureApproachInferred();
   const int legCount = static_cast<int>(fplLegs_.size());
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    &fplApproachHeaderLabel_};
-  edit.directToActive = fplNavDirectToActive_;
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = fplRouteEditState();
   const std::string approachAirport = fplApproachAirportIcao();
   const FplCursorLayout layout = FplCursorLayout::SectionRows;
   const bool approachView = fplApproachLegCount_ > 0;
@@ -396,6 +385,8 @@ bool MfdController::fplBezelKey(BezelKey key) {
           } else {
             ::avionics::fplClearFlightPlan(edit);
             persistedApproachRestore_ = {};
+            persistedDepartureRestore_ = {};
+            persistedArrivalRestore_ = {};
             dtoRequestTarget_ = {};
             dtoRequestPending_ = true;
             fplPublishEdit();
@@ -503,6 +494,19 @@ bool MfdController::fplBezelKey(BezelKey key) {
       fplListCursorFollowsActive_ = false;
       fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
       return true;
+    }
+    // A fix highlighted by scrolling the list (the cyan selection plate shows
+    // even with the cursor off) removes on CLR, instead of falling through to
+    // page stepping / DFLT MAP. CLR still falls through when the cursor is just
+    // following the active leg (no explicit selection made yet).
+    if (key == BezelKey::Clr && !fplListCursorFollowsActive_) {
+      const int legIndex = fplCursorLegIndex();
+      if (legIndex >= 0 && legIndex < legCount) {
+        fplConfirm_ = FplConfirm::RemoveWaypoint;
+        fplConfirmOk_ = true;
+        fplRemoveIdent_ = fplLegs_[static_cast<std::size_t>(legIndex)].id;
+        return true;
+      }
     }
     // Small FMS knob with the cursor off steps the FPL group's pages (Active
     // Flight Plan <-> Flight Plan Catalog), like the real unit's small knob.
@@ -729,6 +733,21 @@ void MfdController::adoptFlightPlanFromPeer(
   fplAltEntry_.active = false;
   fplConfirm_ = FplConfirm::None;
   pageMenuOpen_ = false;
+  fplClampCursorRow();
+}
+
+void MfdController::adoptFlightPlanCursorFromPeer(int cursorRow,
+                                                bool followsActive) {
+  if (fplEntry_.active || fplAltEntry_.active ||
+      fplConfirm_ != FplConfirm::None) {
+    return;
+  }
+  if (fplCursorRow_ == cursorRow &&
+      fplListCursorFollowsActive_ == followsActive) {
+    return;
+  }
+  fplListCursorFollowsActive_ = followsActive;
+  fplCursorRow_ = cursorRow;
   fplClampCursorRow();
 }
 

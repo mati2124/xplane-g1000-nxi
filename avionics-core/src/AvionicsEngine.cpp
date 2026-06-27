@@ -373,6 +373,7 @@ void AvionicsEngine::syncFlightPlanPeer() {
     lastPeerPlan_ = skLegs;
     lastPeerDestFilled_ = skDest;
     lastPeerPlanValid_ = true;
+    syncFlightPlanCursorPeer();
     return;
   }
 
@@ -429,6 +430,41 @@ void AvionicsEngine::syncFlightPlanPeer() {
     }
   }
   lastPeerPlanValid_ = true;
+  syncFlightPlanCursorPeer();
+}
+
+void AvionicsEngine::syncFlightPlanCursorPeer() {
+  if (!softkeyPeer_) return;
+
+  SoftkeyController& pfdSk =
+      page_ == DisplayPage::PrimaryFlightDisplay
+          ? softkeys_
+          : softkeyPeer_->softkeyController();
+  MfdController& mfdFpl =
+      page_ == DisplayPage::MultiFunctionDisplay
+          ? mfd_
+          : softkeyPeer_->mfdController();
+
+  const bool pfdFplUi = pfdSk.activeWindow() == PfdWindow::FlightPlan;
+  const bool mfdFplUi = mfdFpl.pageGroup() == MfdPageGroup::FlightPlan;
+
+  if (pfdFplUi && mfdFplUi) {
+    if (!pfdSk.flightPlanListCursorFollowsActive()) {
+      mfdFpl.adoptFlightPlanCursorFromPeer(pfdSk.flightPlanCursor(),
+                                           pfdSk.flightPlanListCursorFollowsActive());
+    } else if (!mfdFpl.fplListCursorFollowsActive()) {
+      pfdSk.adoptFlightPlanCursorFromPeer(mfdFpl.fplCursorRow(),
+                                          mfdFpl.fplListCursorFollowsActive());
+    } else {
+      mfdFpl.adoptFlightPlanCursorFromPeer(pfdSk.flightPlanCursor(), true);
+    }
+  } else if (pfdFplUi) {
+    mfdFpl.adoptFlightPlanCursorFromPeer(pfdSk.flightPlanCursor(),
+                                         pfdSk.flightPlanListCursorFollowsActive());
+  } else if (mfdFplUi) {
+    pfdSk.adoptFlightPlanCursorFromPeer(mfdFpl.fplCursorRow(),
+                                        mfdFpl.fplListCursorFollowsActive());
+  }
 }
 
 void AvionicsEngine::syncFlightPlanApproachPeer() {
@@ -891,6 +927,10 @@ void AvionicsEngine::holdBezelKey(BezelKey key) {
   if (!isLivePageUp()) return;
   // CLR (DFLT MAP) is an MFD-only function (Pilot's Guide).
   if (key == BezelKey::Clr && page_ == DisplayPage::MultiFunctionDisplay) {
+    // A short CLR press may have just opened a modal popup (e.g. the FPL
+    // "Remove <wpt>?" confirmation). Holding CLR must not escalate to DFLT MAP
+    // and tear that popup down a second later.
+    if (mfd_.clrDefaultMapHoldSuppressed()) return;
     mfd_.clrDefaultMap();
   }
 }

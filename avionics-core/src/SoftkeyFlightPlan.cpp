@@ -69,9 +69,7 @@ void SoftkeyController::syncFlightPlanLegs(const MapData& map, bool navDirectTo)
 
   if ((navDirectTo || map.directToActive) && !fplEditPending_ && !fplLocalDraft_) {
     const MapProcedure savedApproach = fplLoadedApproach_;
-    FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                      fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                      nullptr};
+    FplRouteEdit edit = flightPlanRouteEditState();
     if (fplAdoptMapPlanDuringDirectTo(edit, map.flightPlan, fplLastPublished_)) {
       tryRestorePersistedApproach();
       if (fplApproachLegCount_ <= 0) {
@@ -141,11 +139,7 @@ void SoftkeyController::syncFlightPlanLegs(const MapData& map, bool navDirectTo)
     fplEntry_.notFound = false;
     fplConfirm_ = FplConfirm::None;
   }
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    nullptr};
-  edit.directToActive = mapDirectToActive();
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = flightPlanRouteEditState();
   fplSyncListCursorToActiveLeg(edit, flightPlanApproachAirportIcao(), activeWaypoint_,
                                fplListCursorFollowsActive_);
   fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
@@ -176,36 +170,38 @@ void SoftkeyController::stripCourseReversalHoldAtFix(const std::string& fixId) {
   }
 }
 
-std::string SoftkeyController::flightPlanSelectedLegIdent() const {
-  if (window_ != PfdWindow::FlightPlan) return {};
-  FplRouteEdit edit{
-      const_cast<std::vector<MapLeg>&>(fplLegs_),
-      const_cast<bool&>(fplDestinationFilled_),
-      const_cast<int&>(fplApproachLegStart_),
-      const_cast<int&>(fplApproachLegCount_),
-      const_cast<int&>(fplCursorRow_),
-      nullptr,
-      nullptr};
+FplRouteEdit SoftkeyController::flightPlanRouteEditState() const {
+  auto* self = const_cast<SoftkeyController*>(this);
+  FplRouteEdit edit{self->fplLegs_,           self->fplDestinationFilled_,
+                    self->fplApproachLegStart_, self->fplApproachLegCount_,
+                    self->fplCursorRow_,         &self->fplLoadedApproach_,
+                    nullptr};
   edit.directToActive = mapDirectToActive();
   edit.localDraft = fplLocalDraft_;
+  fplRouteEditWireTerminalProcedures(
+      edit, self->fplDepartureLegStart_, self->fplDepartureLegCount_,
+      self->fplDepartureHeaderLabel_, self->fplArrivalLegStart_,
+      self->fplArrivalLegCount_, self->fplArrivalHeaderLabel_,
+      &self->fplLoadedDeparture_, &self->fplLoadedArrival_);
+  return edit;
+}
+
+std::string SoftkeyController::flightPlanCursorLegIdent() const {
+  const FplRouteEdit edit = flightPlanRouteEditState();
   const int legIndex = fplCursorLegIndex(edit, flightPlanApproachAirportIcao(),
                                          FplCursorLayout::SectionRows);
   if (legIndex < 0 || legIndex >= static_cast<int>(fplLegs_.size())) return {};
   return fplLegs_[static_cast<std::size_t>(legIndex)].id;
 }
 
+std::string SoftkeyController::flightPlanSelectedLegIdent() const {
+  if (window_ != PfdWindow::FlightPlan) return {};
+  return flightPlanCursorLegIdent();
+}
+
 int SoftkeyController::flightPlanSelectedLegIndex() const {
   if (window_ != PfdWindow::FlightPlan) return -1;
-  FplRouteEdit edit{
-      const_cast<std::vector<MapLeg>&>(fplLegs_),
-      const_cast<bool&>(fplDestinationFilled_),
-      const_cast<int&>(fplApproachLegStart_),
-      const_cast<int&>(fplApproachLegCount_),
-      const_cast<int&>(fplCursorRow_),
-      nullptr,
-      nullptr};
-  edit.directToActive = mapDirectToActive();
-  edit.localDraft = fplLocalDraft_;
+  const FplRouteEdit edit = flightPlanRouteEditState();
   return fplCursorLegIndex(edit, flightPlanApproachAirportIcao(),
                            FplCursorLayout::SectionRows);
 }
@@ -232,11 +228,7 @@ void SoftkeyController::flightPlanCommitEntry() {
     return;
   }
 
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    nullptr};
-  edit.directToActive = mapDirectToActive();
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = flightPlanRouteEditState();
   const std::string ident =
       fplEntry_.autofill.empty() ? fplEntry_.chars : fplEntry_.autofill;
   if (!fplCommitWaypointIdent(edit, navSource_, fplEntry_.match, ident, fplCursorRow_,
@@ -271,11 +263,7 @@ float SoftkeyController::flightPlanEntryDistanceNm() const {
 
 bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
   const int legCount = static_cast<int>(fplLegs_.size());
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    nullptr};
-  edit.directToActive = mapDirectToActive();
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = flightPlanRouteEditState();
   const std::string approachAirport = flightPlanApproachAirportIcao();
   const int selectableLast =
       fplCursorSelectableLast(edit, approachAirport, FplCursorLayout::SectionRows);
@@ -295,6 +283,8 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
           } else {
             fplClearFlightPlan(edit);
             persistedApproachRestore_ = {};
+            persistedDepartureRestore_ = {};
+            persistedArrivalRestore_ = {};
             dtoRequestTarget_ = {};
             dtoRequestPending_ = true;
             flightPlanPublishEdit();
@@ -386,6 +376,20 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
       fplEntry_.turnChar(navSource_, mapData_,
                          key == BezelKey::FmsInnerCw ? +1 : -1);
       return true;
+    }
+    // A fix highlighted by scrolling the list (the cyan selection plate shows
+    // even with the cursor off) removes on CLR, instead of falling through to
+    // close the window. CLR still closes when the cursor is just following the
+    // active leg (no explicit selection made yet).
+    if (key == BezelKey::Clr && !fplListCursorFollowsActive_) {
+      const int legIndex =
+          fplCursorLegIndex(edit, approachAirport, FplCursorLayout::SectionRows);
+      if (legIndex >= 0 && legIndex < legCount) {
+        fplConfirm_ = FplConfirm::RemoveWaypoint;
+        fplConfirmOk_ = true;
+        fplRemoveIdent_ = fplLegs_[static_cast<std::size_t>(legIndex)].id;
+        return true;
+      }
     }
     return false;
   }
@@ -649,11 +653,21 @@ void SoftkeyController::adoptFlightPlanFromPeer(
   fplEntry_.active = false;
   fplEntry_.notFound = false;
   fplConfirm_ = FplConfirm::None;
-  FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
-                    fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
-                    nullptr};
-  edit.directToActive = mapDirectToActive();
-  edit.localDraft = fplLocalDraft_;
+  FplRouteEdit edit = flightPlanRouteEditState();
+  fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
+                    FplCursorLayout::SectionRows);
+}
+
+void SoftkeyController::adoptFlightPlanCursorFromPeer(int cursorRow,
+                                                      bool followsActive) {
+  if (fplEntry_.active || fplConfirm_ != FplConfirm::None) return;
+  if (fplCursorRow_ == cursorRow &&
+      fplListCursorFollowsActive_ == followsActive) {
+    return;
+  }
+  fplListCursorFollowsActive_ = followsActive;
+  fplCursorRow_ = cursorRow;
+  FplRouteEdit edit = flightPlanRouteEditState();
   fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
                     FplCursorLayout::SectionRows);
 }
