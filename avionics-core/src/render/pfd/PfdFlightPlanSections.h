@@ -8,6 +8,8 @@
 
 #include "avionics/FlightPlanPersistence.h"
 
+#include "avionics/FplRouteEdit.h"
+
 
 
 namespace avionics::pfd {
@@ -135,9 +137,10 @@ inline std::vector<FplSectionRow> buildFplSectionRows(int legCount,
   rows.push_back({FplSectionRow::Kind::EnrouteBlank, -1});
 
   if (layout.destLegIndex >= 0 && destinationFilled && legCount >= 2) {
+    // Filled destination: Destination - RW__ label then the airport ident, with
+    // no trailing blank "add a fix" row (the airport is the route end).
     rows.push_back({FplSectionRow::Kind::DestinationLabel, -1});
     rows.push_back({FplSectionRow::Kind::Destination, layout.destLegIndex});
-    rows.push_back({FplSectionRow::Kind::DestinationBlank, -1});
   } else if (!hideDestination) {
     rows.push_back({FplSectionRow::Kind::Destination, layout.destLegIndex});
     if (layout.destLegIndex < 0) {
@@ -855,7 +858,10 @@ inline const FplDisplayRow* fplApproachSelectableRow(
 
     if (!fplApproachDisplayRowSelectable(dr.kind)) continue;
 
-    if (sel == selectableRow) return &dr;
+    if (sel == selectableRow) {
+      scratch = dr;
+      return &scratch;
+    }
 
     ++sel;
 
@@ -1073,15 +1079,19 @@ inline bool fplLegInProcedureBlock(int legIndex, int blockStart, int blockCount)
 
 
 inline std::vector<int> fplProcedureEnrouteLegIndices(
-    int legCount, int depStart, int depCount, int arrStart, int arrCount,
-    int approachStart, int approachCount, bool destinationFilled) {
+    const std::vector<MapLeg>& legs, int depStart, int depCount, int arrStart,
+    int arrCount, int approachStart, int approachCount, bool destinationFilled) {
   std::vector<int> out;
+  const int legCount = static_cast<int>(legs.size());
   if (legCount < 2) return out;
   const int lastEnroute = destinationFilled ? legCount - 2 : legCount - 1;
   for (int i = 1; i <= lastEnroute; ++i) {
     if (fplLegInProcedureBlock(i, depStart, depCount)) continue;
     if (fplLegInProcedureBlock(i, arrStart, arrCount)) continue;
     if (fplLegInProcedureBlock(i, approachStart, approachCount)) continue;
+    // The destination airport sits before the approach/arrival block; it is
+    // shown in the procedure header, never as an Enroute leg.
+    if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) continue;
     out.push_back(i);
   }
   return out;
@@ -1145,7 +1155,7 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
 
   rows.push_back({FplDisplayRowKind::EnrouteLabel, -1});
   const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
-      static_cast<int>(legs.size()), depStart, depCount, arrStart, arrCount,
+      legs, depStart, depCount, arrStart, arrCount,
       approachStart, approachCount, destinationFilled);
   for (const int legIdx : enrouteLegs) {
     if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
@@ -1174,9 +1184,9 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
       const FplSectionLayout layout =
           fplSectionLayout(static_cast<int>(legs.size()), destinationFilled);
       if (layout.destLegIndex >= 0) {
+        // Filled destination airport ends the route; no trailing blank row.
         rows.push_back({FplDisplayRowKind::DestinationLabel, -1});
         rows.push_back({FplDisplayRowKind::Destination, layout.destLegIndex});
-        rows.push_back({FplDisplayRowKind::DestinationBlank, -1});
       }
     } else {
       rows.push_back({FplDisplayRowKind::Destination, -1});
@@ -1251,7 +1261,10 @@ inline const FplDisplayRow* fplProcedureSelectableRow(
            arrivalHeader, approachStart, approachCount, blankOriginSection,
            destinationFilled)) {
     if (!fplProcedureDisplayRowSelectable(dr.kind)) continue;
-    if (sel == selectableRow) return &dr;
+    if (sel == selectableRow) {
+      scratch = dr;
+      return &scratch;
+    }
     ++sel;
   }
   scratch = {};
@@ -1347,7 +1360,7 @@ inline int fplProcedureInsertIndexForSelectable(
       return dr->legIndex >= 0 ? dr->legIndex : legCount;
     case FplDisplayRowKind::EnrouteBlank: {
       const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
-          legCount, depStart, depCount, arrStart, arrCount, approachStart,
+          legs, depStart, depCount, arrStart, arrCount, approachStart,
           approachCount, destinationFilled);
       if (!enrouteLegs.empty()) return enrouteLegs.back() + 1;
       return depCount > 0 ? depStart + depCount : 1;
@@ -1363,7 +1376,7 @@ inline int fplProcedureInsertIndexForSelectable(
       return dr->legIndex >= 0 ? dr->legIndex : legCount;
     case FplDisplayRowKind::SepDash: {
       const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
-          legCount, depStart, depCount, arrStart, arrCount, approachStart,
+          legs, depStart, depCount, arrStart, arrCount, approachStart,
           approachCount, destinationFilled);
       if (!enrouteLegs.empty()) return enrouteLegs.back() + 1;
       return approachStart > 0 ? approachStart : legCount;

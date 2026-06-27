@@ -47,6 +47,41 @@ TEST(FplHoldRowTest, ApproachDisplayRowsInsertHoldAfterFixWithPublishedHold) {
   EXPECT_TRUE(fplApproachDisplayRowSelectable(FplDisplayRowKind::Hold));
 }
 
+TEST(FplHoldRowTest, ApproachDisplayKeepsDestinationAirportOutOfEnroute) {
+  // KFMY -> ... -> KJAX, then RNAV 08 (WADOR iaf / GRRDN faf). With the
+  // destination section filled, the airport (KJAX) belongs in the approach
+  // header, never as an Enroute leg.
+  const auto leg = [](const char* id) {
+    MapLeg l;
+    l.id = id;
+    return l;
+  };
+  std::vector<MapLeg> legs = {
+      leg("KFMY"), leg("LAL"), leg("JINOS"), leg("TEBOW"), leg("KJAX"),
+      leg("WADOR"), leg("AMXUQ"),
+  };
+  legs.back().procedureRole = "faf";
+  // approachStart at WADOR (index 5), two approach legs.
+  const auto rows = buildFplApproachDisplayRows(legs, 5, 2,
+                                                /*blankOriginSection=*/false,
+                                                /*destinationFilled=*/true);
+  for (const FplDisplayRow& dr : rows) {
+    if (dr.kind == FplDisplayRowKind::EnrouteLeg && dr.legIndex >= 0) {
+      EXPECT_FALSE(isAirportIdent(legs[static_cast<std::size_t>(dr.legIndex)].id))
+          << "airport leg leaked into Enroute: "
+          << legs[static_cast<std::size_t>(dr.legIndex)].id;
+    }
+  }
+  // KJAX (index 4) must not appear as an Enroute leg at all.
+  bool kjaxEnroute = false;
+  for (const FplDisplayRow& dr : rows) {
+    if (dr.kind == FplDisplayRowKind::EnrouteLeg && dr.legIndex == 4) {
+      kjaxEnroute = true;
+    }
+  }
+  EXPECT_FALSE(kjaxEnroute);
+}
+
 TEST(FplHoldRowTest, ApproachDisplayRowsOmitHoldWhenHoldInactive) {
   MapLeg bostn;
   bostn.id = "BOSTN";

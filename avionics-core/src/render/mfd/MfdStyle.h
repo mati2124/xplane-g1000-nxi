@@ -24,6 +24,10 @@ inline constexpr float kWtBoxTitle = 14.0f;
 inline constexpr float kWtRow = 20.0f;
 inline constexpr float kWtFieldLabel = 15.0f;
 inline constexpr float kWtFieldValue = 20.0f;
+// Active VNV Profile values sit close to their labels on the real unit (Garmin
+// trainer: value cap-height ~ the field label), not at the larger field-value
+// size used by other boxes.
+inline constexpr float kWtVnvValue = 16.0f;
 inline constexpr float kWtHeader = 14.0f;
 inline constexpr float kWtIdentLarge = 26.0f;
 // MFD Direct-To popout (match PFD ChromeDirectToWindow proportions).
@@ -214,11 +218,12 @@ inline Rect drawProcOverlayPanel(Renderer& r, const Rect& box, float displayH) {
 // editable, magenta = GPS derived). Returns the next row's y.
 inline float drawField(Renderer& r, const Rect& area, float y, float rowH,
                        const char* label, const std::string& value,
-                       float displayH, const Color& valueColor) {
+                       float displayH, const Color& valueColor,
+                       float valueWtPx = kWtFieldValue) {
   const float cy = y + rowH * 0.5f;
   r.fillText(area.x, cy, label, mfdFontPx(kWtFieldLabel, displayH),
              TextAlign::Left, colors::kTitleGray);
-  r.fillText(area.x + area.w, cy, value, mfdFontPx(kWtFieldValue, displayH),
+  r.fillText(area.x + area.w, cy, value, mfdFontPx(valueWtPx, displayH),
              TextAlign::Right, valueColor);
   return y + rowH;
 }

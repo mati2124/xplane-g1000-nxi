@@ -133,30 +133,20 @@ TEST(RemoveWaypointTest, PfdClrOnLegArmsRemoveConfirmAndEntDeletes) {
 
 // MFD: scrolling the list with the cursor OFF still highlights a fix; CLR there
 // must remove it (arm the confirm), not fall through to page-step / DFLT MAP.
-TEST(RemoveWaypointTest, MfdClrOnScrolledFixWithCursorOffRemoves) {
+// With the FMS cursor off, the MFD FPL page has no selection to act on (the
+// knobs navigate pages, like the real unit), so CLR must not arm a Remove and
+// the leg list is left intact. The cursor must be pushed on first to edit.
+TEST(RemoveWaypointTest, MfdClrWithCursorOffDoesNotRemove) {
   MfdController ui;
   ui.syncFlightPlan(ThreeLegPlan(), /*activeWaypoint=*/{}, /*navDirectTo=*/false);
 
   ui.pressBezelKey(BezelKey::Fpl);
   ASSERT_EQ(ui.fplLegs().size(), 3u);
+  ASSERT_FALSE(ui.fplCursorOn());
 
-  // No FmsPush: cursor stays off. Scroll the list to highlight a fix.
-  std::string removedIdent;
-  for (int i = 0; i < 12; ++i) {
-    ui.pressBezelKey(BezelKey::FmsOuterCw);
-    ui.pressBezelKey(BezelKey::Clr);
-    if (ui.fplConfirm() == MfdController::FplConfirm::RemoveWaypoint) {
-      removedIdent = ui.fplRemoveIdent();
-      break;
-    }
-  }
-
-  ASSERT_EQ(ui.fplConfirm(), MfdController::FplConfirm::RemoveWaypoint);
-  ASSERT_FALSE(removedIdent.empty());
-
-  ui.pressBezelKey(BezelKey::Ent);
-  EXPECT_EQ(ui.fplLegs().size(), 2u);
-  EXPECT_FALSE(PlanContains(ui.fplLegs(), removedIdent));
+  ui.pressBezelKey(BezelKey::Clr);
+  EXPECT_NE(ui.fplConfirm(), MfdController::FplConfirm::RemoveWaypoint);
+  EXPECT_EQ(ui.fplLegs().size(), 3u);
 }
 
 // PFD: same as above, and CLR must NOT close the Active Flight Plan window when
@@ -258,6 +248,7 @@ TEST(RemoveWaypointTest, MfdClrOnKjaxWithDepartureProcedureConfirmsKjax) {
 
   ui.pressBezelKey(BezelKey::Fpl);
   ui.adoptFlightPlanCursorFromPeer(kjaxRow, /*followsActive=*/false);
+  ui.pressBezelKey(BezelKey::FmsPush);  // cursor on at the adopted KJAX row
   ui.pressBezelKey(BezelKey::Clr);
 
   ASSERT_EQ(ui.fplConfirm(), MfdController::FplConfirm::RemoveWaypoint);

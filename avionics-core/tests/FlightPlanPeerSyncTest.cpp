@@ -58,6 +58,29 @@ class TestDataSource : public DataSource {
   FlightData data_;
 };
 
+// Powered source that publishes a flight plan in its map snapshot plus a live
+// active leg (FMA TO waypoint), mirroring the real standalone where the engine
+// adopts the route from the map and the list cursor follows the active leg.
+class PlanDataSource : public DataSource {
+ public:
+  PlanDataSource(std::vector<MapLeg> plan, std::string activeFromIdent,
+                 std::string activeToIdent) {
+    map_.flightPlan = std::move(plan);
+    // A real active leg has both a FROM and a TO waypoint; leaving FROM empty
+    // would put the engine into GPS Direct-To mode (no enroute leg list).
+    data_.fmaFromWpt = std::move(activeFromIdent);
+    data_.fmaToWpt = std::move(activeToIdent);
+  }
+  void update(double) override {}
+  const FlightData& snapshot() const override { return data_; }
+  const MapData& mapSnapshot() const override { return map_; }
+  bool requiresPowerUpAcknowledge() const override { return false; }
+
+ private:
+  FlightData data_;
+  MapData map_;
+};
+
 MapLeg MakeLeg(const std::string& id, double lat, double lon) {
   MapLeg leg;
   leg.id = id;
@@ -129,6 +152,366 @@ TEST(FlightPlanPeerSyncTest, DeleteOnMfdIsNotRevivedByPeerSync) {
 
   EXPECT_TRUE(mfd.mfdController().fplLegs().empty());
   EXPECT_TRUE(pfd.softkeyController().flightPlanLegs().empty());
+}
+
+const std::vector<MapLeg> kReproPlan = {
+    MakeLeg("KFMY", 26.586, -81.863),
+    MakeLeg("BOSTN", 26.700, -81.500),
+    MakeLeg("WINCO", 27.100, -81.200),
+    MakeLeg("KCMI", 40.039, -88.278),
+};
+
+// Steps the MFD large knob clockwise, settling a frame of engine reconciliation
+// between detents like the real per-frame update loop.
+int DriveMfdCursorDownTwoSteps(AvionicsEngine& mfd, AvionicsEngine* pfd) {
+  MfdController& ui = mfd.mfdController();
+  const int startLeg = ui.fplCursorLegIndexPublic();
+  for (int i = 0; i < 8 && ui.fplCursorLegIndexPublic() <= startLeg; ++i) {
+    ui.pressBezelKey(BezelKey::FmsOuterCw);
+    if (pfd != nullptr) pfd->update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+  return ui.fplCursorLegIndexPublic();
+}
+
+// The MFD FMS selection cursor must advance through the leg list as the large
+// knob is turned, even though the engine reconciles the flight-plan cursor every
+// frame. (Regression: the per-frame clamp wiped the VNAV ALT column back to the
+// Ident column, so the large knob oscillated Ident<->ALT and never stepped row.)
+TEST(FlightPlanPeerSyncTest, MfdFmsCursorAdvancesWithEnginePerFrameSync) {
+  NullRenderer renderer;
+  TestDataSource source;
+
+  AvionicsEngine mfd(source, renderer, "TEST");
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  mfd.skipBoot();
+
+  mfd.mfdController().adoptFlightPlanFromPeer(kReproPlan, /*destinationFilled=*/true,
+                                              {});
+  mfd.update(0.0);
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  mfd.mfdController().pressBezelKey(BezelKey::FmsPush);  // cursor on
+  ASSERT_TRUE(mfd.mfdController().fplCursorOn());
+
+  const int startLeg = mfd.mfdController().fplCursorLegIndexPublic();
+  const int afterLeg = DriveMfdCursorDownTwoSteps(mfd, /*pfd=*/nullptr);
+  EXPECT_GT(afterLeg, startLeg);
+}
+
+// Reported bug: the MFD FMS cursor misbehaves on the Active Flight Plan page when
+// the PFD Active Flight Plan window is also open. With both displays running, the
+// peer cursor sync (PFD passively following the active leg) must not clobber the
+// row/column the pilot is actively driving on the MFD.
+TEST(FlightPlanPeerSyncTest, MfdFmsCursorAdvancesWhenPfdFplWindowOpen) {
+  NullRenderer renderer;
+  TestDataSource source;
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+
+  pfd.softkeyController().adoptFlightPlanFromPeer(kReproPlan,
+                                                  /*destinationFilled=*/true, {});
+  mfd.mfdController().adoptFlightPlanFromPeer(kReproPlan, /*destinationFilled=*/true,
+                                              {});
+  pfd.update(0.0);
+  mfd.update(0.0);
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  // Open the PFD Active Flight Plan window and the MFD Active Flight Plan page.
+  pfd.softkeyController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(pfd.softkeyController().activeWindow(), PfdWindow::FlightPlan);
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  pfd.update(1.0 / 60.0);
+  mfd.update(1.0 / 60.0);
+
+  mfd.mfdController().pressBezelKey(BezelKey::FmsPush);  // MFD cursor on
+  ASSERT_TRUE(mfd.mfdController().fplCursorOn());
+
+  const int startLeg = mfd.mfdController().fplCursorLegIndexPublic();
+  const int afterLeg = DriveMfdCursorDownTwoSteps(mfd, &pfd);
+  EXPECT_GT(afterLeg, startLeg);
+}
+
+// Turns the MFD large knob `detents` times, settling engine frames between each
+// detent like the real per-frame update loop, and reports the furthest leg index
+// the selection cursor reached.
+int DriveMfdLargeKnob(AvionicsEngine& mfd, AvionicsEngine* pfd, int detents) {
+  MfdController& ui = mfd.mfdController();
+  int maxLeg = ui.fplCursorLegIndexPublic();
+  for (int i = 0; i < detents; ++i) {
+    ui.pressBezelKey(BezelKey::FmsOuterCw);
+    for (int f = 0; f < 3; ++f) {
+      if (pfd != nullptr) pfd->update(1.0 / 60.0);
+      mfd.update(1.0 / 60.0);
+    }
+    maxLeg = std::max(maxLeg, ui.fplCursorLegIndexPublic());
+  }
+  return maxLeg;
+}
+
+// Faithful repro: the route comes from the map snapshot and the list cursor
+// follows the active leg (FMA TO = BOSTN), exactly like the live standalone. The
+// MFD FMS cursor must still walk down the leg list when only the MFD FPL page is
+// open.
+TEST(FlightPlanPeerSyncTest, MfdFmsCursorWalksLegListWithActiveLeg) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine mfd(source, renderer, "TEST");
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  mfd.mfdController().pressBezelKey(BezelKey::FmsPush);  // cursor on
+  ASSERT_TRUE(mfd.mfdController().fplCursorOn());
+
+  EXPECT_GE(DriveMfdLargeKnob(mfd, /*pfd=*/nullptr, /*detents=*/6),
+            static_cast<int>(kReproPlan.size()) - 1);
+}
+
+// Faithful repro of the reported bug: same live active leg, but with the PFD
+// Active Flight Plan window also open (its cursor passively following the active
+// leg). The MFD FMS cursor must still walk to the end of the leg list.
+TEST(FlightPlanPeerSyncTest, MfdFmsCursorWalksLegListWithPfdFplOpenAndActiveLeg) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  pfd.softkeyController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(pfd.softkeyController().activeWindow(), PfdWindow::FlightPlan);
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  for (int i = 0; i < 3; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  mfd.mfdController().pressBezelKey(BezelKey::FmsPush);  // MFD cursor on
+  ASSERT_TRUE(mfd.mfdController().fplCursorOn());
+
+  EXPECT_GE(DriveMfdLargeKnob(mfd, &pfd, /*detents=*/6),
+            static_cast<int>(kReproPlan.size()) - 1);
+}
+
+// The MFD Active Flight Plan page opens with the FMS cursor inactive, like the
+// real unit: the active leg is shown, but no selection cursor is engaged until
+// the FMS knob is pushed.
+TEST(FlightPlanPeerSyncTest, MfdFplPageOpensWithCursorInactive) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine mfd(source, renderer, "TEST");
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  EXPECT_FALSE(mfd.mfdController().fplCursorOn());
+}
+
+// With the cursor inactive, the large FMS knob navigates page groups (it steps
+// out of the FPL group) instead of scrolling the leg list. The selection cursor
+// only engages once the FMS knob is pushed.
+TEST(FlightPlanPeerSyncTest, MfdFplCursorOffLargeKnobNavigatesPageGroups) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine mfd(source, renderer, "TEST");
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  ASSERT_FALSE(mfd.mfdController().fplCursorOn());
+
+  mfd.mfdController().pressBezelKey(BezelKey::FmsOuterCw);
+  EXPECT_NE(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+}
+
+// With the cursor inactive, the small FMS knob steps pages within the FPL group
+// (Active Flight Plan <-> Flight Plan Catalog), staying in the group.
+TEST(FlightPlanPeerSyncTest, MfdFplCursorOffSmallKnobStepsPages) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine mfd(source, renderer, "TEST");
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  ASSERT_FALSE(mfd.mfdController().fplCursorOn());
+  const MfdPage startPage = mfd.mfdController().page();
+
+  mfd.mfdController().pressBezelKey(BezelKey::FmsInnerCw);
+  EXPECT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  EXPECT_NE(mfd.mfdController().page(), startPage);
+}
+
+// With both displays open, the MFD page large knob (cursor off) must navigate
+// page groups rather than scroll — and must not disturb the PFD window cursor.
+TEST(FlightPlanPeerSyncTest, MfdFplCursorOffLargeKnobNavigatesWithPfdFplOpen) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  pfd.softkeyController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(pfd.softkeyController().activeWindow(), PfdWindow::FlightPlan);
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  for (int i = 0; i < 3; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  ASSERT_FALSE(mfd.mfdController().fplCursorOn());
+  const int pfdRow0 = pfd.softkeyController().flightPlanCursor();
+  mfd.mfdController().pressBezelKey(BezelKey::FmsOuterCw);
+  EXPECT_NE(mfd.mfdController().pageGroup(), MfdPageGroup::FlightPlan);
+  EXPECT_EQ(pfd.softkeyController().flightPlanCursor(), pfdRow0);
+}
+
+int ScrollPfdCursorOff(AvionicsEngine& pfd, AvionicsEngine* mfd, int detents) {
+  SoftkeyController& ui = pfd.softkeyController();
+  int maxRow = ui.flightPlanCursor();
+  for (int i = 0; i < detents; ++i) {
+    ui.pressBezelKey(BezelKey::FmsOuterCw);
+    for (int f = 0; f < 3; ++f) {
+      pfd.update(1.0 / 60.0);
+      if (mfd != nullptr) mfd->update(1.0 / 60.0);
+    }
+    maxRow = std::max(maxRow, ui.flightPlanCursor());
+  }
+  return maxRow;
+}
+
+// Each GDU owns its own FMS list cursor. Driving one must not move the other
+// when both the PFD window and the MFD page are visible.
+TEST(FlightPlanPeerSyncTest, FplCursorsIndependentWhenBothDisplaysOpen) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  pfd.softkeyController().pressBezelKey(BezelKey::Fpl);
+  mfd.mfdController().pressBezelKey(BezelKey::Fpl);
+  for (int i = 0; i < 3; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  const int pfdRow0 = pfd.softkeyController().flightPlanCursor();
+  const int mfdRow0 = mfd.mfdController().fplCursorRow();
+
+  // Drive the MFD selection cursor (knob pushed on) down the leg list; the PFD
+  // window's own cursor must not move.
+  mfd.mfdController().pressBezelKey(BezelKey::FmsPush);
+  ASSERT_TRUE(mfd.mfdController().fplCursorOn());
+  DriveMfdLargeKnob(mfd, &pfd, /*detents=*/4);
+  const int mfdRowAfter = mfd.mfdController().fplCursorRow();
+  EXPECT_GT(mfdRowAfter, mfdRow0);
+  EXPECT_EQ(pfd.softkeyController().flightPlanCursor(), pfdRow0);
+
+  // Scroll the PFD window (its own cursor); the MFD selection must hold.
+  const int pfdAfter = ScrollPfdCursorOff(pfd, &mfd, /*detents=*/3);
+  EXPECT_GT(pfdAfter, pfdRow0);
+  EXPECT_EQ(mfd.mfdController().fplCursorRow(), mfdRowAfter);
+}
+
+// With the cursor on, the large knob must step the MFD selection from a leg's
+// ident to its VNAV ALT column (and the column must survive the engine's
+// per-frame flight-plan reconciliation so the small knob can then edit it).
+TEST(FlightPlanPeerSyncTest, MfdCursorCanSelectAltitudeColumn) {
+  NullRenderer renderer;
+  PlanDataSource source(kReproPlan, /*activeFromIdent=*/"KFMY",
+                        /*activeToIdent=*/"BOSTN");
+
+  AvionicsEngine mfd(source, renderer, "TEST");
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  mfd.skipBoot();
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), 4u);
+
+  MfdController& ui = mfd.mfdController();
+  ui.pressBezelKey(BezelKey::Fpl);
+  // Frames run between mouse clicks in the real app.
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  ui.pressBezelKey(BezelKey::FmsPush);  // cursor on
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  ASSERT_TRUE(ui.fplCursorOn());
+  ASSERT_EQ(ui.fplCursorCol(), MfdController::FplCursorCol::Ident);
+
+  // One large-knob detent moves from the ident to the ALT column on the same
+  // leg row.
+  ui.pressBezelKey(BezelKey::FmsOuterCw);
+  EXPECT_EQ(ui.fplCursorCol(), MfdController::FplCursorCol::Altitude);
+
+  // The ALT column selection must persist across engine frames (the per-frame
+  // clamp must not snap it back to the ident column).
+  for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
+  EXPECT_EQ(ui.fplCursorCol(), MfdController::FplCursorCol::Altitude);
 }
 
 }  // namespace

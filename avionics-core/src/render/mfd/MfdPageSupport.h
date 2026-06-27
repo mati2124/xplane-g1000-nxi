@@ -93,6 +93,31 @@ struct PanelStack {
 // value the view centers on `center` (or the ownship if `center` is null).
 inline constexpr double kNoViewCenter = 1.0e9;
 
+// PROC -> Select Approach preview auto-fit. The framed procedure (legs + its
+// airport) should fill at most this fraction of the available half-extent along
+// each axis, leaving the rest as margin so the airport and legs sit clear of
+// the viewport edges.
+inline constexpr float kProcPreviewFillFrac = 0.7f;
+
+// Auto-fit framing for the procedure preview shown while PROC -> Select is open
+// (Pilot's Guide 5.8): the center and the smallest range-ladder step that frame
+// the highlighted procedure's legs together with its airport. Shared by the
+// navigation Map page and the FPL inset so both zoom to display the whole
+// approach. The fit honors the usable viewport size (`usableWPx`/`usableHPx`)
+// so the narrower FPL inset -- and the Map page's window-occluded width -- zoom
+// out enough to fit the procedure horizontally as well as vertically. `airport`
+// is included in the bounds when non-null so the field is always visible.
+// `valid` is false when there are too few legs to frame (size < 2).
+struct ProcPreviewFit {
+  double centerLat = 0.0;
+  double centerLon = 0.0;
+  int ladderIndex = 0;
+  bool valid = false;
+};
+ProcPreviewFit procPreviewMapFit(const std::vector<MapLeg>& legs,
+                                 const MapFeature* airport, float usableWPx,
+                                 float usableHPx);
+
 void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
                  const Rect& area, float rangeNm, const MapFeature* center,
                  float displayH, bool showFixes = false,

@@ -127,7 +127,17 @@ void MfdController::fplClampCursorRow() {
   FplRouteEdit edit = fplRouteEditState();
   ::avionics::fplClampCursorRow(edit, fplApproachAirportIcao(),
                                 FplCursorLayout::SectionRows);
-  fplCursorCol_ = FplCursorCol::Ident;
+  // The VNAV ALT column only exists while the selection cursor sits on a
+  // populated leg row. Snap back to the Ident column when that is no longer
+  // true, but do not clear it unconditionally: this clamp also runs from the
+  // engine's per-frame flight-plan reconciliation, and wiping the column every
+  // frame stranded the large knob oscillating Ident<->ALT (the cursor never
+  // stepped to the next leg row).
+  const int legIndex = fplCursorLegIndex();
+  if (!fplCursorOn_ || legIndex < 0 ||
+      legIndex >= static_cast<int>(fplLegs_.size())) {
+    fplCursorCol_ = FplCursorCol::Ident;
+  }
 }
 
 void MfdController::syncFlightPlan(const MapData& map,
@@ -483,35 +493,12 @@ bool MfdController::fplBezelKey(BezelKey key) {
   }
 
   if (!fplCursorOn_) {
-    // Cursor off: outer knob scrolls the section list. Inner knob on the
-    // highlighted ident row opens waypoint entry (trainer / Pilot's Guide).
-    if (key == BezelKey::FmsOuterCw) {
-      fplListCursorFollowsActive_ = false;
-      fplCursorRow_ = std::min(selectableLast, fplCursorRow_ + 1);
-      return true;
-    }
-    if (key == BezelKey::FmsOuterCcw) {
-      fplListCursorFollowsActive_ = false;
-      fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
-      return true;
-    }
-    // A fix highlighted by scrolling the list (the cyan selection plate shows
-    // even with the cursor off) removes on CLR, instead of falling through to
-    // page stepping / DFLT MAP. CLR still falls through when the cursor is just
-    // following the active leg (no explicit selection made yet).
-    if (key == BezelKey::Clr && !fplListCursorFollowsActive_) {
-      const int legIndex = fplCursorLegIndex();
-      if (legIndex >= 0 && legIndex < legCount) {
-        fplConfirm_ = FplConfirm::RemoveWaypoint;
-        fplConfirmOk_ = true;
-        fplRemoveIdent_ = fplLegs_[static_cast<std::size_t>(legIndex)].id;
-        return true;
-      }
-    }
-    // Small FMS knob with the cursor off steps the FPL group's pages (Active
-    // Flight Plan <-> Flight Plan Catalog), like the real unit's small knob.
-    // Falls through to the common stepPage handling.
-    return false;  // other keys fall through to page stepping
+    // Cursor inactive: the FPL page opens with no FMS cursor (real unit). While
+    // the cursor is off the FMS knobs do page navigation, not list scrolling —
+    // the large knob steps page groups and the small knob steps pages (Active
+    // Flight Plan <-> Flight Plan Catalog). A fix is not selectable until the
+    // FMS knob is pushed, so fall through to the common page-navigation handler.
+    return false;
   }
 
   const int legIndex = fplCursorLegIndex();
@@ -803,8 +790,14 @@ void MfdController::tryRestorePersistedApproach() {
 void MfdController::reinferApproachFromProcedureLegs() {
   const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
   if (!block.valid()) return;
-  fplApproachLegStart_ = block.start;
-  fplApproachLegCount_ = block.count;
+  int start = block.start;
+  std::string transition = fplLoadedApproach_.transition;
+  if (transition.empty() && persistedApproachRestore_.active) {
+    transition = persistedApproachRestore_.transition;
+  }
+  start = approachBlockStartFromTransition(fplLegs_, transition, start);
+  fplApproachLegStart_ = start;
+  fplApproachLegCount_ = static_cast<int>(fplLegs_.size()) - start;
   if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
     fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
     fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);

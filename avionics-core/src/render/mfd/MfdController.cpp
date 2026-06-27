@@ -920,7 +920,11 @@ void MfdController::pressBezelKey(BezelKey key) {
       } else {
         groupBeforeFpl_ = pageGroup_;
         pageGroup_ = MfdPageGroup::FlightPlan;
-        fplPreviewRangeManual_ = false;
+        // Open the page with the FMS cursor inactive, like the real unit: no fix
+        // is selected until the FMS knob is pushed, and until then the large /
+        // small knobs navigate page groups / pages rather than scrolling the
+        // list. fplResetInteraction() also clears fplPreviewRangeManual_.
+        fplResetInteraction();
       }
       chartViewActive_ = false;
       pageSelectSec_ = kPageSelectSeconds;
@@ -978,27 +982,55 @@ void MfdController::pressBezelKey(BezelKey key) {
 }
 
 void MfdController::stepPageGroup(int direction) {
-  // The large knob cycles the softkey-selectable groups; the FPL and
-  // Checklist groups are entered with their own keys on the real unit, so
-  // turning the knob inside them steps back out to the MAP group.
+  // The large knob cycles every page group, including FPL and Checklist, in the
+  // on-unit order shown on the page-select popup tabs (drawPageIndicator):
+  // MAP -> WPT -> AUX -> FPL -> NRST -> CHK and wrap. The FPL and Checklist keys
+  // remain shortcuts to those groups, but the knob no longer skips them.
   static constexpr MfdPageGroup kCycle[] = {
-      MfdPageGroup::Map, MfdPageGroup::Waypoint, MfdPageGroup::Aux,
-      MfdPageGroup::Nearest};
-  constexpr int kCycleCount = 4;
+      MfdPageGroup::Map,        MfdPageGroup::Waypoint, MfdPageGroup::Aux,
+      MfdPageGroup::FlightPlan, MfdPageGroup::Nearest,  MfdPageGroup::Checklist};
+  constexpr int kCycleCount =
+      static_cast<int>(sizeof(kCycle) / sizeof(kCycle[0]));
   pageSelectSec_ = kPageSelectSeconds;
   menu_ = Menu::Root;
   pageMenuOpen_ = false;
   mapSettingsOpen_ = false;
-  chartViewActive_ = false;
   wptInfoView_ = WptInfoView::Airport;
+  MfdPageGroup target = MfdPageGroup::Map;
   for (int i = 0; i < kCycleCount; ++i) {
     if (kCycle[i] == pageGroup_) {
-      pageGroup_ = kCycle[((i + direction) % kCycleCount + kCycleCount) %
-                          kCycleCount];
-      return;
+      target = kCycle[((i + direction) % kCycleCount + kCycleCount) %
+                      kCycleCount];
+      break;
     }
   }
-  pageGroup_ = MfdPageGroup::Map;
+  if (target == pageGroup_) return;
+  // Drop any per-group interaction state of the group we are leaving, mirroring
+  // selectGroup() so the knob and the group keys behave identically.
+  switch (pageGroup_) {
+    case MfdPageGroup::Map:
+      mapResetPointer();
+      break;
+    case MfdPageGroup::Waypoint:
+      wptResetInteraction();
+      break;
+    case MfdPageGroup::Nearest:
+      nrstResetInteraction();
+      break;
+    case MfdPageGroup::FlightPlan:
+      fplResetInteraction();
+      break;
+    default:
+      break;
+  }
+  chartViewActive_ = false;
+  // Entering FPL by the knob behaves like the FPL key: the page opens with the
+  // cursor off, and the FPL key still toggles back to the prior group.
+  if (target == MfdPageGroup::FlightPlan) {
+    groupBeforeFpl_ = pageGroup_;
+    fplResetInteraction();
+  }
+  pageGroup_ = target;
 }
 
 void MfdController::clrDefaultMap() {

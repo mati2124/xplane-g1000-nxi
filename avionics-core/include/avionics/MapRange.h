@@ -107,6 +107,10 @@ inline constexpr float kWptNavInfoRangeNm = 2.5f;
 // ownship->target leg. Slightly wider than the airport diagram so nearby fixes
 // around the field stay visible regardless of how far the target is.
 inline constexpr float kDirectToInsetRangeNm = 10.0f;
+// FPL page route-preview range when the FMS list cursor is parked on a flight
+// plan fix: the inset centers on that fix and zooms in this tight so the
+// highlighted waypoint and its immediate surroundings read clearly.
+inline constexpr float kFplFixFocusRangeNm = 10.0f;
 // Nominal Direct-To / FPL-entry inset map viewport (1024×768 MFD layout) used
 // to size the inset land-data query bbox before the popup is laid out.
 inline constexpr float kDirectToInsetMapWidthPx = 180.0f;

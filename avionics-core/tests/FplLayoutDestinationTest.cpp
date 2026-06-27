@@ -35,6 +35,57 @@ TEST(FplLayoutDestinationTest, SectionLayoutKeepsFixInEnroute) {
   EXPECT_EQ(layout.enrouteCount, 4);
 }
 
+TEST(FplLayoutDestinationTest, ProcedureDisplaySelectableRowFindsDestinationAirport) {
+  std::vector<MapLeg> legs = {
+      makeLeg("KFMY"), makeLeg("CSHEL"), makeLeg("LAL"), makeLeg("JINOS"),
+      makeLeg("TEBOW"), makeLeg("KJAX"),
+  };
+  const bool destFilled = fplLayoutDestinationFilled(legs, true, 0);
+  ASSERT_TRUE(destFilled);
+  const auto rows = pfd::buildFplProcedureDisplayRows(
+      legs, 1, 1, "KFMY-RW05.CSHEL8", 0, 0, std::string(), 0, 0, true,
+      destFilled);
+  bool sawKjaxDestination = false;
+  for (const pfd::FplDisplayRow& dr : rows) {
+    if (dr.kind == pfd::FplDisplayRowKind::Destination && dr.legIndex == 5) {
+      sawKjaxDestination = true;
+    }
+  }
+  EXPECT_TRUE(sawKjaxDestination);
+  const int kjaxRow = pfd::fplProcedureSelectableRowForLegIndex(
+      5, legs, 1, 1, "KFMY-RW05.CSHEL8", 0, 0, std::string(), 0, 0, true,
+      destFilled);
+  EXPECT_GE(kjaxRow, 0);
+}
+
+TEST(FplLayoutDestinationTest, ProcedureRowsKeepDestinationAirportOutOfEnroute) {
+  // KFMY (CSHEL8 SID) -> ... -> KJAX, then RNAV 08 (WADOR iaf). With a
+  // departure loaded the procedure-display path is used; the destination
+  // airport KJAX must stay in the approach header, never under Enroute.
+  std::vector<MapLeg> legs = {
+      makeLeg("KFMY"), makeLeg("CSHEL"), makeLeg("LAL"), makeLeg("JINOS"),
+      makeLeg("TEBOW"), makeLeg("KJAX"), makeLeg("WADOR"), makeLeg("AMXUQ")};
+  legs[6].procedureRole = "iaf";
+  legs[7].procedureRole = "faf";
+  const int depStart = 1;
+  const int depCount = 1;
+  const int approachStart = 6;
+  const int approachCount = 2;
+  const auto rows = pfd::buildFplProcedureDisplayRows(
+      legs, depStart, depCount, "RW05.CSHEL8", -1, 0, std::string(),
+      approachStart, approachCount, /*blankOriginSection=*/true,
+      /*destinationFilled=*/true);
+
+  for (const pfd::FplDisplayRow& dr : rows) {
+    if (dr.kind == pfd::FplDisplayRowKind::EnrouteLeg && dr.legIndex >= 0) {
+      EXPECT_FALSE(isAirportIdent(legs[static_cast<std::size_t>(dr.legIndex)].id))
+          << "airport leaked into Enroute: "
+          << legs[static_cast<std::size_t>(dr.legIndex)].id;
+      EXPECT_NE(dr.legIndex, 5) << "KJAX must not be an Enroute leg";
+    }
+  }
+}
+
 TEST(FplLayoutDestinationTest, ProcedureRowsFixEndingSidPlan) {
   const std::vector<MapLeg> legs = {makeLeg("KFMY"), makeLeg("CSHEL"),
                                     makeLeg("LAL"), makeLeg("JINOS"),

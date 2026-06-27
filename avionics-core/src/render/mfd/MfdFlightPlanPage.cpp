@@ -54,6 +54,21 @@ namespace avionics::mfd {
 
 namespace {
 
+// MFD-specific active-leg flash. Unlike the PFD FPL window (which opens with the
+// list cursor live, so the active fix flashes immediately), the MFD FPL page
+// opens with the FMS cursor inactive and the knobs doing page navigation. Until
+// the FMS knob is pushed, nothing on the page flashes — the active TO fix is
+// steady magenta. Once the cursor is engaged, defer to the shared rule (the
+// cursored leg flashes).
+bool mfdActiveNavRowBlink(int legIdx, int activeLegIdx, int cursorLegIdx,
+                          bool cursorOn, int listCursorRow,
+                          int activeSelectableRow) {
+  if (!cursorOn) return false;
+  return ::avionics::fplActiveNavRowBlink(legIdx, activeLegIdx, cursorLegIdx,
+                                          cursorOn, listCursorRow,
+                                          activeSelectableRow);
+}
+
 const char* fplFeatureTypeName(MapFeatureType type) {
   switch (type) {
     case MapFeatureType::Airport:
@@ -95,12 +110,13 @@ void drawFplActiveIdentFlash(Renderer& r, float x, float cy,
 void drawAltEntryCells(Renderer& r, float rightX, float cy,
                        const std::string& digits, int cursor, float displayH) {
   const float cellSize = mfdFontPx(kWtRow, displayH);
-  const float cellW = cellSize * 0.66f;
-  const float cellGap = cellSize * 0.08f;
+  const float cellW = cellSize * 0.56f;
+  const float cellGap = cellSize * 0.04f;
   const int n = 5;
-  const float unitW = mfdFontPx(34.0f, displayH);
-  r.fillText(rightX, cy, "FT", cellSize * 0.8f, TextAlign::Right,
-             colors::kWhitesmoke);
+  const float unitSize = cellSize * kUnitEm;
+  const float unitW =
+      r.measureTextWidth("FT", unitSize) + mfdFontPx(2.0f, displayH);
+  r.fillText(rightX, cy, "FT", unitSize, TextAlign::Right, colors::kWhitesmoke);
   float cx = rightX - unitW - (cellW + cellGap) * static_cast<float>(n);
   for (int i = 0; i < n; ++i) {
     const bool isCursor = i == cursor;
@@ -154,10 +170,6 @@ constexpr int kDtoCityDashCount = 16;
 constexpr int kDtoNameDashCount = 15;
 constexpr int kDtoRegionDashCount = 10;
 constexpr int kDtoAltDashCount = 5;
-
-bool mapFeatureHasGeo(const MapFeature& f) {
-  return mfd::mapFeatureHasGeo(f);
-}
 
 const MapFeature* directToInsetCenter(const MapData& map, bool hasMatch,
                                     const MapFeature& wpt,
@@ -516,6 +528,30 @@ void countSectionSelectablesBefore(int before,
   }
 }
 
+// Empty VNAV altitude-constraint field on the FPL list: five evenly spaced
+// underscores with a small "FT" suffix, cyan, right-aligned to end at rightX
+// (trainer FPL ALT column). The spaced dash run reads as five distinct
+// underscores instead of a merged bar and keeps a gap from the DIS column.
+// When parked under the FMS cursor it shows the pulsing cyan select plate.
+void drawFplAltPlaceholder(Renderer& r, float rightX, float cy, float size,
+                           bool selected, bool blinkOn) {
+  const float unitSize = size * kUnitEm;
+  const float unitW = r.measureTextWidth("FT", unitSize);
+  const float unitGap = size * 0.12f;
+  const int n = 5;
+  const float runW = tightDashRunWidth(n, size);
+  const float fieldLeft = rightX - unitW - unitGap - runW;
+  const bool plate = selected && blinkOn;
+  const Color fg = plate ? colors::kBlack : colors::kCyan;
+  if (plate) {
+    r.fillRect(fieldLeft, cy - size * 0.62f, rightX - fieldLeft, size * 1.24f,
+               colors::kPopoutCyan);
+  }
+  r.fillText(rightX, cy, "FT", unitSize, TextAlign::Right, fg);
+  // Underscores sit low at the text baseline, like the real unit.
+  drawTightDashRun(r, fieldLeft, cy + size * 0.30f, n, size, fg);
+}
+
 void drawFplLegRow(Renderer& r, const FlightData& d, const MapData& map,
                    const std::vector<MapLeg>& plan, int legIdx,
                    const std::string& activeToIdent, int activeLegIdx,
@@ -598,12 +634,8 @@ void drawFplLegRow(Renderer& r, const FlightData& d, const MapData& map,
     } else {
       drawValueWithUnit(r, colAltR, cy, buf, "FT", rowSize, altColor);
     }
-  } else if (altSel) {
-    drawCursorSelect(r, colAltR, cy, "_____FT", rowSize, TextAlign::Right,
-                     ui.blinkOn());
   } else {
-    drawValueWithUnit(r, colAltR, cy, "_____", "FT", rowSize,
-                      colors::kWhitesmoke);
+    drawFplAltPlaceholder(r, colAltR, cy, rowSize, altSel, ui.blinkOn());
   }
   (void)rowH;
 }
@@ -1936,31 +1968,70 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
   // Route preview map around ownship, wide enough to show the plan. The RANGE
   // knob zooms this inset (Pilot's Guide); auto-frame the route until the pilot
   // turns the knob, then honor the manual ladder step.
-  float previewRangeNm = 25.0f;
-  if (!ui.fplPreviewRangeManual()) {
+  const std::vector<MapLeg> procPreview =
+      ui.procMenuOpen() ? ui.procPreviewLegs() : std::vector<MapLeg>{};
+  const std::vector<MapLeg>* procPreviewPtr =
+      procPreview.empty() ? nullptr : &procPreview;
+
+  // While PROC -> Select is open the inset frames the highlighted procedure's
+  // legs the way the navigation Map page does (Pilot's Guide 5.8), centering
+  // and zooming so the approach is visible; the RANGE knob then zooms the
+  // preview until the pilot turns it. The FPL map sits left of the PROC window,
+  // so the legs are centered without the Map page's east shift. Otherwise the
+  // inset auto-frames the active route around ownship.
+  double viewCenterLat = kNoViewCenter;
+  double viewCenterLon = kNoViewCenter;
+  const MapFeature procApt = ui.procAirportFeature();
+  const MapFeature* procAptPtr =
+      mfd::mapFeatureHasGeo(procApt) ? &procApt : nullptr;
+  const ProcPreviewFit procFit =
+      procPreviewMapFit(procPreview, procAptPtr, f.map.w, f.map.h);
+  // Flight-plan fix under the FMS list cursor (valid geo only). When parked on
+  // a fix the route preview centers on and zooms into it.
+  int cursorFixLeg = -1;
+  if (ui.fplCursorOn()) {
+    const int cl = ui.fplCursorLegIndexPublic();
+    if (cl >= 0 && cl < static_cast<int>(plan.size()) &&
+        (plan[static_cast<std::size_t>(cl)].lat != 0.0 ||
+         plan[static_cast<std::size_t>(cl)].lon != 0.0)) {
+      cursorFixLeg = cl;
+    }
+  }
+  if (procFit.valid) {
+    ui.setProcPreviewFitRange(procFit.ladderIndex);
+    viewCenterLat = procFit.centerLat;
+    viewCenterLon = procFit.centerLon;
+  } else if (cursorFixLeg >= 0) {
+    // FMS list cursor parked on a fix: center the preview on it and zoom in
+    // tight (keeping the drawn route and the TER/AWY/NEXRAD map-display
+    // settings), so the highlighted waypoint reads clearly like the trainer.
+    // A manual RANGE knob turn still wins (we then only recenter).
+    const MapLeg& cursorFix = plan[static_cast<std::size_t>(cursorFixLeg)];
+    viewCenterLat = cursorFix.lat;
+    viewCenterLon = cursorFix.lon;
+    ui.setFplPreviewFitRange(mapRangeIndexForNm(kFplFixFocusRangeNm));
+  } else if (!ui.fplPreviewRangeManual()) {
+    float routeRangeNm = 25.0f;
     if (map.positionValid && plan.size() >= 2) {
       double maxNm = 0.0;
       for (const MapLeg& leg : plan) {
         maxNm = std::max(maxNm, navDistanceNm(map.ownshipLat, map.ownshipLon,
                                               leg.lat, leg.lon));
       }
-      previewRangeNm =
+      routeRangeNm =
           std::max(10.0f, std::min(150.0f, static_cast<float>(maxNm) * 1.2f));
     }
-    ui.setFplPreviewFitRange(mapRangeIndexForNm(previewRangeNm));
+    ui.setFplPreviewFitRange(mapRangeIndexForNm(routeRangeNm));
   }
-  previewRangeNm = ui.rangeNm();
+  const float previewRangeNm = ui.rangeNm();
   const float previewDisplayRangeNm = ui.displayRangeNm();
-  const std::vector<MapLeg> procPreview =
-      ui.procMenuOpen() ? ui.procPreviewLegs() : std::vector<MapLeg>{};
-  const std::vector<MapLeg>* procPreviewPtr =
-      procPreview.empty() ? nullptr : &procPreview;
   // Honor the map-display softkeys (Map Opt: TER / AWY / NEXRAD) on the FPL
   // page's route preview, so the inset matches the navigation map instead of
   // always drawing topo terrain.
   drawPageMap(r, d, map, f.map, previewRangeNm, nullptr, displayH, false,
               procPreviewPtr, previewDisplayRangeNm, ui.terrainDisplay(), false,
-              ui.airwayDisplay(), ui.showWeather());
+              ui.airwayDisplay(), ui.showWeather(), viewCenterLat,
+              viewCenterLon);
 
   PanelStack stack(f.panel, displayH);
   const float promptWt = 34.0f;
@@ -1978,27 +2049,10 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     // window: stored start/count when valid, otherwise infer from procedureRole.
     int approachStart = ui.fplApproachLegStart();
     int approachCount = ui.fplApproachLegCount();
-    if (!ui.fplHasLoadedApproach() || approachCount <= 0) {
-      const InferredProcedureBlock block = inferProcedureBlockInPlan(plan);
-      if (block.valid()) {
-        approachStart = block.start;
-        approachCount = block.count;
-      }
-    } else {
-      FlightPlanApproachState stored;
-      stored.legStart = approachStart;
-      stored.legCount = approachCount;
-      if (!approachStateFitsPlan(stored, plan)) {
-        const InferredProcedureBlock block = inferProcedureBlockInPlan(plan);
-        if (block.valid()) {
-          approachStart = block.start;
-          approachCount = block.count;
-        } else {
-          approachStart = 0;
-          approachCount = 0;
-        }
-      }
-    }
+    const InferredProcedureBlock approachBlock = resolveApproachBlockInPlan(
+        plan, approachStart, approachCount, ui.fplApproachTransition());
+    approachStart = approachBlock.start;
+    approachCount = approachBlock.count;
     if (approachCount > 0 && approachStart >= 0 &&
         approachStart + approachCount < static_cast<int>(plan.size())) {
       approachCount = fplNormalizedApproachCount(
@@ -2031,7 +2085,9 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     const bool destOnlyPlan =
         ui.fplDestinationFilled() && plan.size() == 1;
     const float colDtkR = inner.x + mfdFontPx(210.0f, displayH);
-    const float colDisR = inner.x + mfdFontPx(330.0f, displayH);
+    // DIS sits left of the trainer's value column so the longest distance
+    // ("999NM") clears the ALT constraint field / entry cells to its right.
+    const float colDisR = inner.x + mfdFontPx(300.0f, displayH);
 
     std::string orig;
     std::string dest;
@@ -2077,7 +2133,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     if (!directToFplView) {
       r.fillText(inner.x + mfdFontPx(170.0f, displayH), fy + colHdrSize * 0.6f,
                  "DTK", colHdrSize, TextAlign::Left, colors::kWhite);
-      r.fillText(inner.x + mfdFontPx(250.0f, displayH), fy + colHdrSize * 0.6f,
+      r.fillText(inner.x + mfdFontPx(235.0f, displayH), fy + colHdrSize * 0.6f,
                  "DIS", colHdrSize, TextAlign::Left, colors::kWhite);
       r.fillText(inner.x + mfdFontPx(320.0f, displayH), fy + colHdrSize * 0.6f,
                  "ALT", colHdrSize, TextAlign::Left, colors::kWhite);
@@ -2098,7 +2154,13 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     const int listCursorRow = ui.fplCursorRow();
     const int wptCount = static_cast<int>(plan.size());
     const bool layoutDestFilled = ui.fplDestinationFilledForLayout();
-    const bool destFilled = layoutDestFilled;
+    // A loaded approach always ends the route at the approach airport, so the
+    // destination section is filled — keep the destination airport (e.g. KJAX)
+    // in the approach header rather than letting it fall into the Enroute list.
+    // The display resolves the approach block locally, so do not depend solely
+    // on the controller's stored approach count (which can lag for imported
+    // routes whose approach is only inferred here).
+    const bool destFilled = layoutDestFilled || approachLoaded;
     const bool directToPlanBody = directToFplView;
     const bool blankOriginSection =
         directToFplView || destOnlyPlan || ui.fplHasLoadedDeparture() ||
@@ -2252,8 +2314,9 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
       if (procedureDisplay) {
         const FplDisplayRow& dr =
             procedureDisplayRows[static_cast<std::size_t>(row)];
-        const bool showSelection = fplShowListRowSelection(
-            selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+        const bool showSelection =
+            cursorOn && fplShowListRowSelection(selectableIdx, listCursorRow,
+                                                activeSelectableRow, cursorOn);
         switch (dr.kind) {
           case FplDisplayRowKind::DepartureHeader:
             drawFplApproachHeader(r, labelX, cy, depAirport, depHeader, rowSize,
@@ -2292,7 +2355,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                 dr.legIndex, activeLegIdx, leg);
             const bool activeNavBlink =
                 showActive &&
-                fplActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
+                mfdActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
                                      cursorOn, listCursorRow,
                                      activeSelectableRow);
             drawFplHoldRow(r, d, plan, dr.legIndex, inner.x, filledIdentX,
@@ -2315,7 +2378,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                   plan[static_cast<std::size_t>(dr.legIndex)], navToIdent);
               const bool activeNavBlink =
                   showActive &&
-                  fplActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
+                  mfdActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
                                        cursorOn, listCursorRow,
                                        activeSelectableRow);
               drawFplLegRow(r, d, map, plan, dr.legIndex, activeToIdent, activeLegIdx,
@@ -2332,7 +2395,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           }
           case FplDisplayRowKind::OriginBlank: {
             ++selectableIdx;
-            drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+            drawFplDashRow(r, filledIdentX, cy, kFplDashCount, rowSize,
                            colors::kPopoutCyan, showSelection, blinkOn);
             fy += rowH;
             continue;
@@ -2345,7 +2408,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                   plan[static_cast<std::size_t>(dr.legIndex)], navToIdent);
               const bool activeNavBlink =
                   showActive &&
-                  fplActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
+                  mfdActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
                                        cursorOn, listCursorRow,
                                        activeSelectableRow);
               drawFplLegRow(r, d, map, plan, dr.legIndex, activeToIdent, activeLegIdx,
@@ -2366,14 +2429,14 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
             continue;
           case FplDisplayRowKind::DestinationBlank:
             ++selectableIdx;
-            drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+            drawFplDashRow(r, filledIdentX, cy, kFplDashCount, rowSize,
                            colors::kPopoutCyan, showSelection, blinkOn);
             fy += rowH;
             continue;
           case FplDisplayRowKind::EnrouteBlank: {
             ++selectableIdx;
-            drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
-                           colors::kTitleGray, showSelection, blinkOn);
+            drawFplDashRow(r, filledIdentX, cy, kFplDashCount, rowSize,
+                           colors::kPopoutCyan, showSelection, blinkOn);
             fy += rowH;
             continue;
           }
@@ -2395,7 +2458,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                                     leg, navToIdent);
             const bool activeNavBlink =
                 showActive &&
-                fplActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
+                mfdActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
                                      cursorOn, listCursorRow,
                                      activeSelectableRow);
             drawFplLegRow(r, d, map, plan, dr.legIndex, activeToIdent, activeLegIdx, inner.x,
@@ -2436,8 +2499,9 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         continue;
       }
 
-      const bool showSelection = fplShowListRowSelection(
-          selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+      const bool showSelection =
+          cursorOn && fplShowListRowSelection(selectableIdx, listCursorRow,
+                                              activeSelectableRow, cursorOn);
       switch (sr.kind) {
         case FplSectionRow::Kind::Origin: {
           if (sr.legIndex >= 0) {
@@ -2446,7 +2510,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                 plan[static_cast<std::size_t>(sr.legIndex)], navToIdent);
             const bool activeNavBlink =
                 showActive &&
-                fplActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
+                mfdActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
                                      cursorOn, listCursorRow,
                                      activeSelectableRow);
             drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
@@ -2461,7 +2525,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           break;
         }
         case FplSectionRow::Kind::OriginBlank:
-          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+          drawFplDashRow(r, filledIdentX, cy, kFplDashCount, rowSize,
                          colors::kPopoutCyan, showSelection, blinkOn);
           break;
         case FplSectionRow::Kind::EnrouteBlank: {
@@ -2470,7 +2534,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
               activeLegIdx);
           const bool showActive = active && activeHighlight;
           drawFplDashRow(
-              r, labelX, cy, kFplDashCount, rowSize,
+              r, filledIdentX, cy, kFplDashCount, rowSize,
               showActive ? colors::kMagenta : colors::kPopoutCyan,
               showSelection, blinkOn);
           if (showActive) {
@@ -2492,7 +2556,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
               plan[static_cast<std::size_t>(sr.legIndex)], navToIdent);
           const bool activeNavBlink =
               showActive &&
-              fplActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
+              mfdActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
                                    cursorOn, listCursorRow, activeSelectableRow);
           drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
                         filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
@@ -2507,7 +2571,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                 plan[static_cast<std::size_t>(sr.legIndex)], navToIdent);
             const bool activeNavBlink =
                 showActive &&
-                fplActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
+                mfdActiveNavRowBlink(sr.legIndex, activeLegIdx, cursorLegIdx,
                                      cursorOn, listCursorRow, activeSelectableRow);
             drawFplLegRow(r, d, map, plan, sr.legIndex, activeToIdent, activeLegIdx, inner.x,
                           filledIdentX, colDtkR, colDisR, colAltR, cy, rowSize,
@@ -2520,7 +2584,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           }
           break;
         case FplSectionRow::Kind::DestinationBlank:
-          drawFplDashRow(r, labelX, cy, kFplDashCount, rowSize,
+          drawFplDashRow(r, filledIdentX, cy, kFplDashCount, rowSize,
                          colors::kPopoutCyan, showSelection, blinkOn);
           break;
         default:
@@ -2549,8 +2613,8 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     const VnvProfile& vnv = d.vnv;
     char vb[24];
 
-    std::string vsTgt = "_____FPM";
-    std::string vsReq = "_____FPM";
+    std::string vsTgt = "_ _ _ _ _FPM";
+    std::string vsReq = "_ _ _ _ _FPM";
     if (vnv.active) {
       std::snprintf(vb, sizeof(vb), "%+dFPM",
                     static_cast<int>(std::lround(vnv.vsTargetFpm)));
@@ -2571,7 +2635,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                     static_cast<double>(-std::fabs(vnv.fpaDeg)));
       fpa = vb;
     }
-    std::string vdev = "_____FT";
+    std::string vdev = "_ _ _ _ _FT";
     if (vnv.active && vnv.capturing) {
       std::snprintf(vb, sizeof(vb), "%+dFT",
                     static_cast<int>(std::lround(vnv.verticalDeviationFt)));
@@ -2592,7 +2656,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
       // so right-align it further across (matching the trainer) for clear
       // spacing between the ident/role and the altitude.
       const float xR = inner.x + inner.w * 0.66f;
-      const float valSize = mfdFontPx(kWtFieldValue, displayH);
+      const float valSize = mfdFontPx(kWtVnvValue, displayH);
       if (vnv.active && !vnv.targetWpt.empty()) {
         std::string role;
         for (const MapLeg& leg : plan) {
@@ -2630,21 +2694,34 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
         r.fillText(tx, cy, "FT", unitSize, TextAlign::Left,
                    colors::kWhitesmoke);
       } else {
-        r.fillText(xR, cy, "_ _ _ _ _ _", valSize, TextAlign::Right,
+        // Empty profile: a long spaced ident dash run on the left and the
+        // altitude placeholder (spaced dashes + small FT) right-aligned at xR,
+        // matching the trainer's two-group layout.
+        const float unitSize = valSize * kUnitEm;
+        const std::string altDash = "_ _ _ _ _";
+        const float unitW = r.measureTextWidth("FT", unitSize);
+        const float altW = r.measureTextWidth(altDash, valSize);
+        r.fillText(xR, cy, "FT", unitSize, TextAlign::Right,
+                   colors::kWhitesmoke);
+        r.fillText(xR - unitW, cy, altDash, valSize, TextAlign::Right,
+                   colors::kWhitesmoke);
+        const float identStart = inner.x + inner.w * 0.16f;
+        r.fillText(identStart, cy, "_ _ _ _ _ _ _ _", valSize, TextAlign::Left,
                    colors::kWhitesmoke);
       }
       ly += rowH;
     }
     ly = drawField(r, left, ly, rowH, "VS TGT", vsTgt, displayH,
-                   colors::kWhitesmoke);
+                   colors::kWhitesmoke, kWtVnvValue);
     ly = drawField(r, left, ly, rowH, "VS REQ", vsReq, displayH,
-                   colors::kWhitesmoke);
+                   colors::kWhitesmoke, kWtVnvValue);
     float ry = right.y;
     ry = drawField(r, todRow, ry, rowH, "TOD", tod, displayH,
-                   colors::kWhitesmoke);
-    ry = drawField(r, right, ry, rowH, "FPA", fpa, displayH, colors::kCyan);
+                   colors::kWhitesmoke, kWtVnvValue);
+    ry = drawField(r, right, ry, rowH, "FPA", fpa, displayH,
+                   colors::kWhitesmoke, kWtVnvValue);
     ry = drawField(r, right, ry, rowH, "V DEV", vdev, displayH,
-                   colors::kWhitesmoke);
+                   colors::kWhitesmoke, kWtVnvValue);
   }
 
   // Selected Waypoint Weather (WT MFDFPLPage): the box for the highlighted

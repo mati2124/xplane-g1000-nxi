@@ -21,10 +21,6 @@ namespace avionics::mfd {
 
 namespace {
 
-// PROC approach preview auto-fit. The procedure's half-extent (from its bbox
-// center) should fill this fraction of the labeled range ring when the map
-// zooms to frame it; smaller leaves more margin around the legs.
-constexpr float kProcPreviewFitFactor = 1.7f;
 // The PROC window covers this fraction of the map body on the right; the
 // preview view is nudged east by half of it so the legs sit in the uncovered
 // area to the left rather than behind the window (matches the trainer).
@@ -241,32 +237,21 @@ void drawMapPage(Renderer& r, const FlightData& d, const MapData& map,
   if (!ui.mapPointerActive() && ui.procMenuOpen() && ui.procSelectMode()) {
     procPreview = ui.procPreviewLegs();
   }
-  if (procPreview.size() >= 2) {
-    double minLat = procPreview.front().lat;
-    double maxLat = minLat;
-    double minLon = procPreview.front().lon;
-    double maxLon = minLon;
-    for (const MapLeg& leg : procPreview) {
-      minLat = std::min(minLat, leg.lat);
-      maxLat = std::max(maxLat, leg.lat);
-      minLon = std::min(minLon, leg.lon);
-      maxLon = std::max(maxLon, leg.lon);
-    }
-    const double previewCenterLat = (minLat + maxLat) * 0.5;
-    const double previewCenterLon = (minLon + maxLon) * 0.5;
-    double maxNm = 0.0;
-    for (const MapLeg& leg : procPreview) {
-      maxNm = std::max(maxNm, navDistanceNm(previewCenterLat, previewCenterLon,
-                                            leg.lat, leg.lon));
-    }
+  // Frame the legs together with the approach airport, fitting within the map
+  // width left uncovered by the PROC window so neither the field nor the legs
+  // hide behind it.
+  const MapFeature procApt = ui.procAirportFeature();
+  const MapFeature* procAptPtr = mapFeatureHasGeo(procApt) ? &procApt : nullptr;
+  const float procUsableW = w * (1.0f - kProcPreviewWindowFrac);
+  const ProcPreviewFit procFit =
+      procPreviewMapFit(procPreview, procAptPtr, procUsableW, h);
+  if (procFit.valid) {
+    const double previewCenterLat = procFit.centerLat;
+    const double previewCenterLon = procFit.centerLon;
     config.orientation = MapOrientation::NorthUp;
     // The real unit shows no terrain shading on the approach preview.
     config.style.terrain = TerrainDisplay::Off;
-    const float fitRingNm = static_cast<float>(maxNm) / kProcPreviewFitFactor;
-    int idx = kMapRangeCloseRungCount;  // start at 0.5 NM, skip the foot steps
-    while (idx < kMapRangeLadderCount - 1 && mapRangeNmAt(idx) < fitRingNm) {
-      ++idx;
-    }
+    const int idx = procFit.ladderIndex;
     // The RANGE knob still zooms the preview (Pilot's Guide 5.8): auto-frame the
     // legs until the user turns the knob, then honor the manual range. Keep the
     // ladder synced to the fit while auto-ranging so the first turn steps from

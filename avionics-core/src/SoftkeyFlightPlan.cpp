@@ -554,8 +554,14 @@ void SoftkeyController::tryRestorePersistedApproach() {
 void SoftkeyController::reinferApproachFromProcedureLegs() {
   const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
   if (!block.valid()) return;
-  fplApproachLegStart_ = block.start;
-  fplApproachLegCount_ = block.count;
+  int start = block.start;
+  std::string transition = fplLoadedApproach_.transition;
+  if (transition.empty() && persistedApproachRestore_.active) {
+    transition = persistedApproachRestore_.transition;
+  }
+  start = approachBlockStartFromTransition(fplLegs_, transition, start);
+  fplApproachLegStart_ = start;
+  fplApproachLegCount_ = static_cast<int>(fplLegs_.size()) - start;
   if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
     fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
   }

@@ -540,13 +540,17 @@ void drawTransferKey(Renderer& r, const Cell& c, float press) {
 
 // Hit-test a dual-concentric knob: center push, then inner ring (left/right =
 // ccw/cw), then outer ring. Returns BezelKey::Count when outside.
+// pushHitScale widens the center-push disc (the drawn cap is small; mouse
+// clicks otherwise land on the inner ring and never toggle the FMS cursor).
+constexpr float kFmsKnobPushHitScale = 1.65f;
+
 BezelKey hitConcentric(const Knob& k, float xPx, float yPx, BezelKey outerCcw,
                        BezelKey outerCw, BezelKey innerCcw, BezelKey innerCw,
-                       BezelKey push) {
+                       BezelKey push, float pushHitScale = 1.0f) {
   const float dx = xPx - k.cx;
   const float dy = yPx - k.cy;
   const float d = std::sqrt(dx * dx + dy * dy);
-  if (d <= k.rCenter) return push;
+  if (d <= k.rCenter * pushHitScale) return push;
   if (d <= k.rInner) return dx < 0.0f ? innerCcw : innerCw;
   if (d <= k.rOuter) return dx < 0.0f ? outerCcw : outerCw;
   return BezelKey::Count;
@@ -683,7 +687,7 @@ BezelKey BezelKeyPanel::hitTest(float xPx, float yPx, float x, float y, float w,
   const BezelKey fms = hitConcentric(
       fmsKnobRect(x, w, cluster), xPx, yPx, BezelKey::FmsOuterCcw,
       BezelKey::FmsOuterCw, BezelKey::FmsInnerCcw, BezelKey::FmsInnerCw,
-      BezelKey::FmsPush);
+      BezelKey::FmsPush, kFmsKnobPushHitScale);
   if (fms != BezelKey::Count) return fms;
 
   const BezelKey com = hitConcentric(

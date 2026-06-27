@@ -534,13 +534,10 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const bool approachLoadedUi = ui.flightPlanHasLoadedApproach();
   int approachStart = ui.flightPlanApproachLegStart();
   int approachCount = ui.flightPlanApproachLegCount();
-  if (!approachLoadedUi || approachCount <= 0) {
-    const InferredProcedureBlock block = inferProcedureBlockInPlan(legs);
-    if (block.valid()) {
-      approachStart = block.start;
-      approachCount = block.count;
-    }
-  }
+  const InferredProcedureBlock approachBlock = resolveApproachBlockInPlan(
+      legs, approachStart, approachCount, ui.flightPlanApproachTransition());
+  approachStart = approachBlock.start;
+  approachCount = approachBlock.count;
   if (approachCount > 0 && approachStart >= 0 &&
       approachStart + approachCount < static_cast<int>(legs.size())) {
     approachCount = fplNormalizedApproachCount(
@@ -556,7 +553,13 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const std::string arrHeader = ui.flightPlanArrivalHeaderLabel();
   const std::string arrAirport = ui.flightPlanArrivalAirportIcao();
   const bool layoutDestFilled = ui.flightPlanDestinationFilledForLayout();
-  const bool destFilled = layoutDestFilled;
+  // A loaded approach always ends the route at the approach airport, so the
+  // destination section is filled — keep the destination airport (e.g. KJAX)
+  // in the approach header rather than letting it fall into the Enroute list.
+  // The display resolves the approach block locally, so do not depend solely
+  // on the controller's stored approach count (which can lag for imported
+  // routes whose approach is only inferred here).
+  const bool destFilled = layoutDestFilled || approachLoaded;
   const bool procedureDisplay = fplUsesProcedureDisplayRows(
       depHeader, depCount, arrHeader, arrCount, approachCount);
   std::string approachAirport;
@@ -1154,7 +1157,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
               selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
           ++selectableIdx;
           drawFplDashRow(r, identX, rowCy, kFplDashCount, size,
-                         withAlpha(colors::kTitleGray, a), showSelection, blinkOn, a);
+                         withAlpha(colors::kPopoutCyan, a), showSelection, blinkOn, a);
           continue;
         }
         default:

@@ -2,11 +2,110 @@
 
 #include <cmath>
 #include <cctype>
+#include <cstdio>
+#include <vector>
 
 #include "avionics/FplRouteEdit.h"
 #include "avionics/NavFeatureSource.h"
 
 namespace avionics {
+namespace {
+
+std::vector<std::string> splitPipeFields(const std::string& value) {
+  std::vector<std::string> fields;
+  std::size_t start = 0;
+  for (;;) {
+    const std::size_t sep = value.find('|', start);
+    if (sep == std::string::npos) {
+      fields.push_back(value.substr(start));
+      break;
+    }
+    fields.push_back(value.substr(start, sep - start));
+    start = sep + 1;
+  }
+  return fields;
+}
+
+bool parseAltConstraintKind(const std::string& raw, AltConstraintType& out) {
+  try {
+    const int v = std::stoi(raw);
+    if (v < static_cast<int>(AltConstraintType::None) ||
+        v > static_cast<int>(AltConstraintType::AtOrBelow)) {
+      return false;
+    }
+    out = static_cast<AltConstraintType>(v);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+void applyPersistedLegAltitudeFields(const std::vector<std::string>& fields,
+                                     std::size_t offset, MapLeg& legOut) {
+  if (fields.size() < offset + 3) return;
+  try {
+    legOut.altitudeConstraintFt = std::stoi(fields[offset]);
+    AltConstraintType kind = AltConstraintType::None;
+    if (parseAltConstraintKind(fields[offset + 1], kind)) {
+      legOut.altitudeConstraint = kind;
+    }
+    legOut.altitudeDesignated = fields[offset + 2] == "1";
+  } catch (...) {
+  }
+}
+
+bool legHasPersistedAltitude(const MapLeg& leg) {
+  return leg.altitudeConstraintFt > 0 ||
+         leg.altitudeConstraint != AltConstraintType::None ||
+         leg.altitudeDesignated;
+}
+
+}  // namespace
+
+bool parsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
+  const std::vector<std::string> fields = splitPipeFields(value);
+  if (fields.size() < 3) return false;
+  try {
+    legOut = MapLeg{};
+    legOut.id = fields[0];
+    legOut.lat = std::stod(fields[1]);
+    legOut.lon = std::stod(fields[2]);
+    if (fields.size() == 3) {
+      return !legOut.id.empty();
+    }
+    if (fields.size() == 4) {
+      legOut.procedureRole = fields[3];
+      return !legOut.id.empty();
+    }
+    if (fields.size() >= 7) {
+      legOut.procedureRole = fields[3];
+      applyPersistedLegAltitudeFields(fields, 4, legOut);
+      return !legOut.id.empty();
+    }
+    return false;
+  } catch (...) {
+    return false;
+  }
+}
+
+std::string formatPersistedFlightPlanLeg(const MapLeg& leg) {
+  char buf[256];
+  const bool hasAlt = legHasPersistedAltitude(leg);
+  if (!leg.procedureRole.empty() && !hasAlt) {
+    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s", leg.id.c_str(), leg.lat,
+                  leg.lon, leg.procedureRole.c_str());
+  } else if (hasAlt) {
+    const int kind = static_cast<int>(leg.altitudeConstraint);
+    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s|%d|%d|%d",
+                  leg.id.c_str(), leg.lat, leg.lon, leg.procedureRole.c_str(),
+                  leg.altitudeConstraintFt, kind,
+                  leg.altitudeDesignated ? 1 : 0);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f", leg.id.c_str(), leg.lat,
+                  leg.lon);
+  }
+  return std::string(buf);
+}
 
 bool isFmsLatLonIdent(const std::string& id) {
   if (id.empty()) return false;
@@ -71,14 +170,22 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
     }
   }
   if (out.start < 0) return out;
-  // Untagged feeder/hold fixes may sit immediately before the first tagged IAF/FAF
-  // when a route A/B hold duplicates the final-segment IAF fix (BULOW on R04).
+  // Untagged approach fixes may precede the first tagged IAF/FAF (e.g. WADOR
+  // before AMXUQ when only GRRDN carries procedureRole after a sim re-import).
+  // Walk back through those intermediates but stop at the destination airport
+  // (KJAX) — it belongs in the approach header, not the approach leg block.
   while (out.start > 0 &&
          legs[static_cast<std::size_t>(out.start - 1)].procedureRole.empty()) {
+    if (isAirportIdent(legs[static_cast<std::size_t>(out.start - 1)].id)) {
+      break;
+    }
     const std::string& taggedRole =
         legs[static_cast<std::size_t>(out.start)].procedureRole;
-    if (taggedRole != "iaf" && taggedRole != "faf") break;
-    --out.start;
+    if (taggedRole.empty() || taggedRole == "iaf" || taggedRole == "faf") {
+      --out.start;
+      continue;
+    }
+    break;
   }
   // CIFP only tags IAF/FAF/MAP legs with procedureRole; the intermediate
   // fixes on a loaded approach are still part of the same tail block.

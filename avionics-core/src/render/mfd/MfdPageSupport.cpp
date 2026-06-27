@@ -262,6 +262,63 @@ std::vector<NearRow> collectNearest(const MapData& map, MapFeatureType type,
   return rows;
 }
 
+ProcPreviewFit procPreviewMapFit(const std::vector<MapLeg>& legs,
+                                 const MapFeature* airport, float usableWPx,
+                                 float usableHPx) {
+  ProcPreviewFit fit;
+  if (legs.size() < 2) return fit;
+  double minLat = legs.front().lat;
+  double maxLat = minLat;
+  double minLon = legs.front().lon;
+  double maxLon = minLon;
+  auto include = [&](double lat, double lon) {
+    minLat = std::min(minLat, lat);
+    maxLat = std::max(maxLat, lat);
+    minLon = std::min(minLon, lon);
+    maxLon = std::max(maxLon, lon);
+  };
+  for (const MapLeg& leg : legs) include(leg.lat, leg.lon);
+  // Keep the airport in frame so the field is always visible (it may sit beyond
+  // the procedure's outermost leg, e.g. a distant feeder route to the IAF).
+  if (airport != nullptr && mapFeatureHasGeo(*airport)) {
+    include(airport->lat, airport->lon);
+  }
+  fit.centerLat = (minLat + maxLat) * 0.5;
+  fit.centerLon = (minLon + maxLon) * 0.5;
+
+  // Bounding-box half-extents in NM along each axis (great-circle so longitude
+  // is foreshortened correctly at the procedure's latitude).
+  const double halfHeightNm =
+      navDistanceNm(minLat, fit.centerLon, maxLat, fit.centerLon) * 0.5;
+  const double halfWidthNm =
+      navDistanceNm(fit.centerLat, minLon, fit.centerLat, maxLon) * 0.5;
+
+  // North-Up map scale (MapView): the range ring sits at `spanFrac` of the
+  // viewport height, so at range R the view reaches R/(2*spanFrac) NM to the
+  // top/bottom edge and R*usableW/(2*spanFrac*H) NM to the usable side edge.
+  // Solve for the smallest R whose framed half-extents leave kProcPreviewFillFrac
+  // margin on each axis, then snap up to a range-ladder step.
+  const float spanFrac =
+      mapview::mapRangeSpanFrac(MapOrientation::NorthUp, usableHPx);
+  const float fill = std::max(0.1f, kProcPreviewFillFrac);
+  const double rangeForHeight =
+      halfHeightNm * 2.0 * spanFrac / fill;
+  double rangeForWidth = 0.0;
+  if (usableWPx > 0.0f && usableHPx > 0.0f) {
+    rangeForWidth = halfWidthNm * 2.0 * spanFrac * usableHPx /
+                    (fill * usableWPx);
+  }
+  const float fitRangeNm =
+      static_cast<float>(std::max(rangeForHeight, rangeForWidth));
+  int idx = kMapRangeCloseRungCount;  // start at 0.5 NM, skip the foot steps
+  while (idx < kMapRangeLadderCount - 1 && mapRangeNmAt(idx) < fitRangeNm) {
+    ++idx;
+  }
+  fit.ladderIndex = idx;
+  fit.valid = true;
+  return fit;
+}
+
 PageFrame beginPanelPage(Renderer& r, float x, float y, float w, float h,
                          bool widePanel) {
   const float panelW = w * (widePanel ? kPanelWideWFrac : kPanelWFrac);

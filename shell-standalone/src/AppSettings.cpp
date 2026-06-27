@@ -95,40 +95,6 @@ DebugDataSource ParseDebugDataSource(const std::string& value,
   return fallback;
 }
 
-bool ParsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
-  const std::size_t sep1 = value.find('|');
-  if (sep1 == std::string::npos) return false;
-  const std::size_t sep2 = value.find('|', sep1 + 1);
-  if (sep2 == std::string::npos) return false;
-  const std::size_t sep3 = value.find('|', sep2 + 1);
-  try {
-    legOut.id = value.substr(0, sep1);
-    legOut.lat = std::stod(value.substr(sep1 + 1, sep2 - sep1 - 1));
-    if (sep3 == std::string::npos) {
-      legOut.lon = std::stod(value.substr(sep2 + 1));
-      legOut.procedureRole.clear();
-    } else {
-      legOut.lon = std::stod(value.substr(sep2 + 1, sep3 - sep2 - 1));
-      legOut.procedureRole = value.substr(sep3 + 1);
-    }
-    return !legOut.id.empty();
-  } catch (...) {
-    return false;
-  }
-}
-
-std::string FormatPersistedFlightPlanLeg(const MapLeg& leg) {
-  char buf[160];
-  if (leg.procedureRole.empty()) {
-    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f", leg.id.c_str(), leg.lat,
-                  leg.lon);
-  } else {
-    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s", leg.id.c_str(),
-                  leg.lat, leg.lon, leg.procedureRole.c_str());
-  }
-  return std::string(buf);
-}
-
 bool ParseBool(const std::string& value, bool fallback);
 
 void ApplyPersistedProcedureMetaField(PersistedLoadedApproach& meta,
@@ -418,7 +384,7 @@ AppSettings LoadAppSettings() {
       }
     } else if (key == kKeyDtoTarget) {
       MapLeg leg;
-      if (ParsePersistedFlightPlanLeg(value, leg)) {
+      if (parsePersistedFlightPlanLeg(value, leg)) {
         settings.persistedDirectTo.target = std::move(leg);
       }
     } else if (key == kKeyDtoOriginLat) {
@@ -437,7 +403,7 @@ AppSettings LoadAppSettings() {
       const int idx = std::atoi(key.c_str() + 6);
       if (idx >= 0 && idx < 64) {
         MapLeg leg;
-        if (ParsePersistedFlightPlanLeg(value, leg)) {
+        if (parsePersistedFlightPlanLeg(value, leg)) {
           if (settings.persistedFlightPlan.legs.size() <=
               static_cast<std::size_t>(idx)) {
             settings.persistedFlightPlan.legs.resize(
@@ -512,7 +478,7 @@ AppSettings LoadAppSettings() {
           const int legIdx = std::atoi(sub.c_str() + 3);
           if (legIdx >= 0 && legIdx < 256) {
             MapLeg leg;
-            if (ParsePersistedFlightPlanLeg(value, leg)) {
+            if (parsePersistedFlightPlanLeg(value, leg)) {
               if (entry.legs.size() <= static_cast<std::size_t>(legIdx)) {
                 entry.legs.resize(static_cast<std::size_t>(legIdx + 1));
               }
@@ -635,7 +601,7 @@ void SaveAppSettings(const AppSettings& settings) {
   }
   for (std::size_t i = 0; i < settings.persistedFlightPlan.legs.size(); ++i) {
     out << "fplLeg" << i << '='
-        << FormatPersistedFlightPlanLeg(
+        << formatPersistedFlightPlanLeg(
                settings.persistedFlightPlan.legs[i])
         << '\n';
   }
@@ -653,14 +619,14 @@ void SaveAppSettings(const AppSettings& settings) {
     }
     for (std::size_t j = 0; j < entry.legs.size(); ++j) {
       out << "fplCat" << i << "Leg" << j << '='
-          << FormatPersistedFlightPlanLeg(entry.legs[j]) << '\n';
+          << formatPersistedFlightPlanLeg(entry.legs[j]) << '\n';
     }
   }
   if (settings.persistedDirectTo.active &&
       !settings.persistedDirectTo.target.id.empty()) {
     out << kKeyDtoActive << "=1\n";
     out << kKeyDtoTarget << '='
-        << FormatPersistedFlightPlanLeg(settings.persistedDirectTo.target)
+        << formatPersistedFlightPlanLeg(settings.persistedDirectTo.target)
         << '\n';
     out << kKeyDtoOriginLat << '=' << settings.persistedDirectTo.originLat
         << '\n';

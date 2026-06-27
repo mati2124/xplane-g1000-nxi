@@ -116,6 +116,75 @@ TEST(FlightPlanPersistenceTest, RemoveLoadedApproachLegsIgnoresOutOfRange) {
   EXPECT_EQ(legs.size(), 1u);
 }
 
+TEST(FlightPlanPersistenceTest, PersistedLegRoundTripsDesignatedAltitude) {
+  MapLeg leg = makeLeg("VASES", 26.5, -81.9);
+  leg.altitudeConstraintFt = 4500;
+  leg.altitudeConstraint = AltConstraintType::At;
+  leg.altitudeDesignated = true;
+
+  const std::string encoded = formatPersistedFlightPlanLeg(leg);
+  MapLeg decoded;
+  ASSERT_TRUE(parsePersistedFlightPlanLeg(encoded, decoded));
+  EXPECT_EQ(decoded.id, "VASES");
+  EXPECT_DOUBLE_EQ(decoded.lat, 26.5);
+  EXPECT_DOUBLE_EQ(decoded.lon, -81.9);
+  EXPECT_EQ(decoded.altitudeConstraintFt, 4500);
+  EXPECT_EQ(decoded.altitudeConstraint, AltConstraintType::At);
+  EXPECT_TRUE(decoded.altitudeDesignated);
+}
+
+TEST(FlightPlanPersistenceTest, PersistedLegParsesLegacyFormatWithoutAltitude) {
+  MapLeg decoded;
+  ASSERT_TRUE(parsePersistedFlightPlanLeg("VASES|26.500000|-81.900000|iaf",
+                                          decoded));
+  EXPECT_EQ(decoded.id, "VASES");
+  EXPECT_EQ(decoded.procedureRole, "iaf");
+  EXPECT_EQ(decoded.altitudeConstraintFt, 0);
+  EXPECT_FALSE(decoded.altitudeDesignated);
+}
+
+TEST(FlightPlanPersistenceTest, InferApproachBlockIncludesUntaggedIafBeforeFaf) {
+  // KFMY->KJAX with RNAV R08-Y via WADOR: sim export often tags only GRRDN
+  // as faf, leaving WADOR/AMXUQ untagged. The approach block must start at
+  // WADOR (after destination KJAX), not at AMXUQ.
+  std::vector<MapLeg> legs = {
+      makeLeg("KFMY", 26.58, -81.87),
+      makeLeg("LAL", 27.98, -82.01),
+      makeLeg("JINOS", 28.50, -82.10),
+      makeLeg("TEBOW", 29.80, -82.00),
+      makeLeg("KJAX", 30.49, -81.69),
+      makeLeg("WADOR", 30.55, -81.75),
+      makeLeg("AMXUQ", 30.52, -81.72),
+      makeLeg("GRRDN", 30.50, -81.70, "faf"),
+  };
+  const InferredProcedureBlock block = inferProcedureBlockInPlan(legs);
+  ASSERT_TRUE(block.valid());
+  EXPECT_EQ(block.start, 5);
+  EXPECT_EQ(legs[static_cast<std::size_t>(block.start)].id, "WADOR");
+  EXPECT_EQ(block.count, 3);
+
+  const int anchored = approachBlockStartFromTransition(legs, "WADOR", 6);
+  EXPECT_EQ(anchored, 5);
+}
+
+TEST(FlightPlanPersistenceTest, ResolveApproachBlockAnchorsLoadedTransition) {
+  std::vector<MapLeg> legs = {
+      makeLeg("KFMY", 26.58, -81.87),
+      makeLeg("TEBOW", 29.80, -82.00),
+      makeLeg("KJAX", 30.49, -81.69),
+      makeLeg("WADOR", 30.55, -81.75),
+      makeLeg("AMXUQ", 30.52, -81.72),
+      makeLeg("GRRDN", 30.50, -81.70, "faf"),
+  };
+  // Stale grouping that omits the IAF but still fits the leg array.
+  const InferredProcedureBlock resolved =
+      resolveApproachBlockInPlan(legs, 4, 2, "WADOR");
+  ASSERT_TRUE(resolved.valid());
+  EXPECT_EQ(resolved.start, 3);
+  EXPECT_EQ(legs[static_cast<std::size_t>(resolved.start)].id, "WADOR");
+  EXPECT_EQ(resolved.count, 3);
+}
+
 TEST(FlightPlanPersistenceTest, PersistedDirectToRoundTripFromMap) {
   MapData map;
   map.directToActive = true;

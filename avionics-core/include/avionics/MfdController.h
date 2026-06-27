@@ -606,6 +606,10 @@ class MfdController {
   // legCount selects the blank slot after the last waypoint (append).
   bool fplCursorOn() const { return fplCursorOn_; }
   int fplCursorRow() const { return fplCursorRow_; }
+  // Leg index (into fplLegs()) under the list cursor, or -1 when the cursor is
+  // on a blank/template/separator row. Lets the FPL page pan its route preview
+  // to the highlighted fix.
+  int fplCursorLegIndexPublic() const { return fplCursorLegIndex(); }
   // True while the list cursor tracks the active nav leg (false after scrolling).
   bool fplListCursorFollowsActive() const { return fplListCursorFollowsActive_; }
   // Waypoint Information entry window state. The displayed ident is the typed

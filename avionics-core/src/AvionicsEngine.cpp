@@ -448,17 +448,14 @@ void AvionicsEngine::syncFlightPlanCursorPeer() {
   const bool pfdFplUi = pfdSk.activeWindow() == PfdWindow::FlightPlan;
   const bool mfdFplUi = mfdFpl.pageGroup() == MfdPageGroup::FlightPlan;
 
+  // Each GDU owns its own FMS list cursor. Mirror cursor position only into the
+  // display whose FPL UI is not visible (so opening FPL on the second unit later
+  // starts from the same row). When both the PFD window and the MFD page are up,
+  // leave them independent — otherwise scrolling on one knob moves the other.
   if (pfdFplUi && mfdFplUi) {
-    if (!pfdSk.flightPlanListCursorFollowsActive()) {
-      mfdFpl.adoptFlightPlanCursorFromPeer(pfdSk.flightPlanCursor(),
-                                           pfdSk.flightPlanListCursorFollowsActive());
-    } else if (!mfdFpl.fplListCursorFollowsActive()) {
-      pfdSk.adoptFlightPlanCursorFromPeer(mfdFpl.fplCursorRow(),
-                                          mfdFpl.fplListCursorFollowsActive());
-    } else {
-      mfdFpl.adoptFlightPlanCursorFromPeer(pfdSk.flightPlanCursor(), true);
-    }
-  } else if (pfdFplUi) {
+    return;
+  }
+  if (pfdFplUi) {
     mfdFpl.adoptFlightPlanCursorFromPeer(pfdSk.flightPlanCursor(),
                                          pfdSk.flightPlanListCursorFollowsActive());
   } else if (mfdFplUi) {

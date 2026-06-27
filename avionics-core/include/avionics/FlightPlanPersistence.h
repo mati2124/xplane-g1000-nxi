@@ -207,6 +207,45 @@ inline bool fplLegIdentsEqual(const std::string& a, const std::string& b) {
   return true;
 }
 
+// When a loaded approach names an IAF transition, anchor the block at that
+// fix if it appears at or before the inferred start (sim exports often omit
+// procedureRole on the IAF while tagging only the FAF downstream).
+inline int approachBlockStartFromTransition(const std::vector<MapLeg>& legs,
+                                            const std::string& transition,
+                                            int inferredStart) {
+  if (transition.empty() || inferredStart < 0) return inferredStart;
+  int start = inferredStart;
+  for (int i = 0; i <= inferredStart && i < static_cast<int>(legs.size()); ++i) {
+    if (fplLegIdentsEqual(legs[static_cast<std::size_t>(i)].id, transition)) {
+      start = i;
+    }
+  }
+  return start;
+}
+
+// Resolve approach grouping for FPL display: honor stored start/count when valid,
+// otherwise infer from procedureRole tags, then anchor at the loaded transition.
+inline InferredProcedureBlock resolveApproachBlockInPlan(
+    const std::vector<MapLeg>& legs, int storedStart, int storedCount,
+    const std::string& transition) {
+  InferredProcedureBlock out;
+  if (storedCount > 0 && storedStart >= 0 &&
+      storedStart + storedCount <= static_cast<int>(legs.size())) {
+    out.start = storedStart;
+    out.count = storedCount;
+  } else {
+    out = inferProcedureBlockInPlan(legs);
+  }
+  if (!out.valid()) return out;
+  out.start = approachBlockStartFromTransition(legs, transition, out.start);
+  out.count = static_cast<int>(legs.size()) - out.start;
+  if (out.count <= 0) {
+    out.start = -1;
+    out.count = 0;
+  }
+  return out;
+}
+
 inline bool fplHideLegForDuplicateIdent(const std::vector<MapLeg>& legs,
                                          int legIndex) {
   if (legIndex < 0 || legIndex >= static_cast<int>(legs.size())) {
@@ -384,7 +423,10 @@ inline bool operator==(const PersistedFlightPlan& a,
   for (std::size_t i = 0; i < a.legs.size(); ++i) {
     if (a.legs[i].id != b.legs[i].id || a.legs[i].lat != b.legs[i].lat ||
         a.legs[i].lon != b.legs[i].lon ||
-        a.legs[i].procedureRole != b.legs[i].procedureRole) {
+        a.legs[i].procedureRole != b.legs[i].procedureRole ||
+        a.legs[i].altitudeConstraintFt != b.legs[i].altitudeConstraintFt ||
+        a.legs[i].altitudeConstraint != b.legs[i].altitudeConstraint ||
+        a.legs[i].altitudeDesignated != b.legs[i].altitudeDesignated) {
       return false;
     }
   }
@@ -410,5 +452,10 @@ std::string inferApproachAirportFromProcedureLegs(
 
 // Fill approach grouping from legs when older settings lack approach* keys.
 void enrichPersistedFlightPlanFromLegs(PersistedFlightPlan& plan);
+
+// Serialize one persisted flight-plan leg for settings.txt (id/lat/lon/role and
+// optional VNAV altitude fields). Older saves omit altitude; parsing accepts both.
+bool parsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut);
+std::string formatPersistedFlightPlanLeg(const MapLeg& leg);
 
 }  // namespace avionics
