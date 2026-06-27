@@ -279,7 +279,8 @@ void drawNavStatusBox(Renderer& r, float centerL, float centerW, float rowH,
 // CenterBarBottomLeft / CenterBarBottomMiddle / fma-ap-vertical-modes). Shown
 // only while the flight director is on (G1000 NXi Pilot's Guide, AFCS).
 void drawAfcsStatusBox(Renderer& r, float centerL, float rowTop, float centerW,
-                       float rowH, float h, const FlightData& d) {
+                       float rowH, float h, const FlightData& d,
+                       const SoftkeyController& ui) {
   const float latW = centerW * (124.0f / 506.0f);
   const float apW = centerW * (114.0f / 506.0f);
   const float vertL = centerL + latW + apW;
@@ -339,9 +340,12 @@ void drawAfcsStatusBox(Renderer& r, float centerL, float rowTop, float centerW,
     putText(r, vx, cy, d.fmaVerticalUnits, smallSize, refColor);
   }
 
-  // The armed vertical mode is right-aligned within the vertical-modes column,
-  // well inboard of the panel edge (G1000 NXi FMA), not flush to the right.
-  float rx = centerL + centerW * 0.87f;
+  // The armed vertical modes are right-aligned to hug the panel's right edge so
+  // they clear the active mode's reference value (e.g. VS "1400FPM") on the left
+  // (G1000 NXi FMA). Order (right to left): approach armed (GP/GS), ALTS, then
+  // VPTH -- so an armed VNAV path reads as an armed mode beside ALTS rather than
+  // overlapping the active vertical mode.
+  float rx = centerL + centerW * 0.985f;
   if (!d.fmaVerticalApproachArmed.empty()) {
     r.fillText(rx, cy, d.fmaVerticalApproachArmed, armedVertSize, TextAlign::Right,
                colors::kWhite);
@@ -351,6 +355,15 @@ void drawAfcsStatusBox(Renderer& r, float centerL, float rowTop, float centerW,
   if (!d.fmaVerticalArmed.empty()) {
     r.fillText(rx, cy, d.fmaVerticalArmed, armedVertSize, TextAlign::Right,
                colors::kWhite);
+    rx -= r.measureTextWidth(d.fmaVerticalArmed, armedVertSize) +
+          armedVertSize * 0.40f;
+  }
+  if (d.fmaVerticalPathArmed) {
+    const Color pathArmedColor =
+        d.fmaVerticalPathArmedFlash && !ui.blinkOn()
+            ? withAlpha(colors::kWhite, 0.0f)
+            : colors::kWhite;
+    r.fillText(rx, cy, "VPTH", armedVertSize, TextAlign::Right, pathArmedColor);
   }
 }
 
@@ -415,7 +428,7 @@ void drawTopBar(Renderer& r, float w, float h, const Layout& L,
   {
     FontScope centerFont(r, FontFace::DejaVuSemiBold);
     drawNavStatusBox(r, centerL, centerW, centerRowH, h, d, ui);
-    drawAfcsStatusBox(r, centerL, centerRowH, centerW, centerRowH, h, d);
+    drawAfcsStatusBox(r, centerL, centerRowH, centerW, centerRowH, h, d, ui);
   }
 }
 

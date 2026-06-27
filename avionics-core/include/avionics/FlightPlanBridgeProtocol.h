@@ -49,7 +49,11 @@ constexpr char kAckMagic[4] = {'F', 'P', 'L', 'A'};      // write acknowledgemen
 // Bump when a payload layout changes; a mismatched version is ignored by the
 // receiver so an old plugin/new shell (or vice versa) fails closed rather than
 // mis-parsing.
-constexpr std::int32_t kProtocolVersion = 3;
+//
+// v4: each leg carries its VNAV altitude constraint (feet + type + designated)
+// so the plugin can program restrictions into the X-Plane FMS -- without them
+// the sim FMS has no vertical path and pressing VNV never arms VNAV.
+constexpr std::int32_t kProtocolVersion = 4;
 
 // Sanity caps so a malformed or hostile datagram cannot drive an unbounded
 // allocation. X-Plane's FMS holds at most ~100 entries; identifiers are short.
@@ -63,6 +67,9 @@ constexpr std::size_t kMaxDatagramBytes = 65536;
 // Fixed sizes of the reply framing, in bytes.
 constexpr std::size_t kReplyHeaderBytes = 4 /*magic*/ + 4 /*version*/ + 4 /*count*/;
 constexpr std::size_t kLegFixedBytes = 8 /*lat*/ + 8 /*lon*/ + 4 /*idLen*/;
+// VNAV altitude-constraint trailer appended after each leg's id (protocol v4+).
+constexpr std::size_t kLegAltitudeBytes =
+    4 /*altitudeConstraintFt*/ + 4 /*altitudeConstraint*/ + 4 /*altitudeDesignated*/;
 constexpr std::size_t kDirectToOriginBytes = 4 /*originValid*/ + 8 /*originLat*/ +
                                              8 /*originLon*/;
 
@@ -120,6 +127,21 @@ inline bool hasMagic(const unsigned char* data, std::size_t len,
 
 // Append one route leg: lat(f64) lon(f64) idLen(i32) id[idLen]. The id is
 // truncated to kMaxIdLength so a pathological waypoint still fits the cap.
+// Map the VNAV constraint enum to/from the wire (a plain i32) defensively, so a
+// future enum value or a corrupt datagram never yields an out-of-range type.
+inline AltConstraintType altConstraintFromWire(std::int32_t v) {
+  switch (v) {
+    case static_cast<std::int32_t>(AltConstraintType::At):
+      return AltConstraintType::At;
+    case static_cast<std::int32_t>(AltConstraintType::AtOrAbove):
+      return AltConstraintType::AtOrAbove;
+    case static_cast<std::int32_t>(AltConstraintType::AtOrBelow):
+      return AltConstraintType::AtOrBelow;
+    default:
+      return AltConstraintType::None;
+  }
+}
+
 inline void putLeg(std::vector<unsigned char>& out, const MapLeg& leg) {
   putF64(out, leg.lat);
   putF64(out, leg.lon);
@@ -128,6 +150,9 @@ inline void putLeg(std::vector<unsigned char>& out, const MapLeg& leg) {
   putI32(out, idLen);
   out.insert(out.end(), leg.id.begin(),
              leg.id.begin() + static_cast<std::ptrdiff_t>(idLen));
+  putI32(out, leg.altitudeConstraintFt);
+  putI32(out, static_cast<std::int32_t>(leg.altitudeConstraint));
+  putI32(out, leg.altitudeDesignated ? 1 : 0);
 }
 
 // Read one leg starting at `off`, advancing it. Returns false on truncation or
@@ -146,6 +171,14 @@ inline bool getLeg(const unsigned char* data, std::size_t len, std::size_t& off,
   leg.id.assign(reinterpret_cast<const char*>(data + off),
                 static_cast<std::size_t>(idLen));
   off += static_cast<std::size_t>(idLen);
+  // VNAV altitude constraint trailer (protocol v4+).
+  if (off + kLegAltitudeBytes > len) return false;
+  leg.altitudeConstraintFt = getI32(data + off);
+  off += 4;
+  leg.altitudeConstraint = altConstraintFromWire(getI32(data + off));
+  off += 4;
+  leg.altitudeDesignated = getI32(data + off) != 0;
+  off += 4;
   return true;
 }
 

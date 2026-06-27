@@ -19,6 +19,7 @@ add_library(avionics-core STATIC
   src/ProcedureSupport.cpp
   src/ProcedureMenu.cpp
   src/GlidepathGuidance.cpp
+  src/VnavGuidance.cpp
   src/MissedApproachGuidance.cpp
   src/GpsLegCourse.cpp
   src/FmsNavigator.cpp

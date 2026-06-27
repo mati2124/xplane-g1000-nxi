@@ -16,6 +16,7 @@
 
 #include "XPLMNavigation.h"
 
+#include "avionics/MapData.h"
 #include "avionics/NavMath.h"
 
 
@@ -29,6 +30,14 @@ namespace {
 constexpr int kFmsIdBufferSize = 256;
 
 constexpr int kNoAltitudeConstraint = 0;
+
+int fmsAltitudeFtForLeg(const MapLeg& leg) {
+  if (leg.altitudeConstraintFt <= 0) return kNoAltitudeConstraint;
+  if (leg.altitudeConstraint == AltConstraintType::None) {
+    return kNoAltitudeConstraint;
+  }
+  return leg.altitudeConstraintFt;
+}
 
 std::string trimNavIdent(const char* id) {
 
@@ -159,21 +168,15 @@ XPLMNavRef resolveNavRef(const MapLeg& leg) {
 
 
 void writeEntry(int index, const MapLeg& leg) {
-
+  const int altFt = fmsAltitudeFtForLeg(leg);
   const XPLMNavRef ref = resolveNavRef(leg);
 
   if (ref != XPLM_NAV_NOT_FOUND) {
-
-    XPLMSetFMSEntryInfo(index, ref, kNoAltitudeConstraint);
-
+    XPLMSetFMSEntryInfo(index, ref, altFt);
   } else {
-
     XPLMSetFMSEntryLatLon(index, static_cast<float>(leg.lat),
-
-                          static_cast<float>(leg.lon), kNoAltitudeConstraint);
-
+                          static_cast<float>(leg.lon), altFt);
   }
-
 }
 
 

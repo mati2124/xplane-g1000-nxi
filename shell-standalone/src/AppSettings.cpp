@@ -65,6 +65,7 @@ constexpr const char* kKeyDtoTarget = "dtoTarget";
 constexpr const char* kKeyDtoOriginLat = "dtoOriginLat";
 constexpr const char* kKeyDtoOriginLon = "dtoOriginLon";
 constexpr const char* kKeyDtoOriginValid = "dtoOriginValid";
+constexpr const char* kKeyDtoActiveLegIndex = "dtoActiveLegIndex";
 
 // Stable text tokens for the persisted DebugDataSource selection.
 constexpr const char* kSourceXPlane = "xplane";
@@ -399,6 +400,11 @@ AppSettings LoadAppSettings() {
       }
     } else if (key == kKeyDtoOriginValid) {
       settings.persistedDirectTo.originValid = ParseBool(value, false);
+    } else if (key == kKeyDtoActiveLegIndex) {
+      try {
+        settings.persistedDirectTo.activeLegIndex = std::stoi(value);
+      } catch (...) {
+      }
     } else if (key.rfind("fplLeg", 0) == 0 && key.size() > 6) {
       const int idx = std::atoi(key.c_str() + 6);
       if (idx >= 0 && idx < 64) {
@@ -636,6 +642,10 @@ void SaveAppSettings(const AppSettings& settings) {
         << (settings.persistedDirectTo.originValid ? '1' : '0') << '\n';
   } else {
     out << kKeyDtoActive << "=0\n";
+    if (settings.persistedDirectTo.activeLegIndex >= 0) {
+      out << kKeyDtoActiveLegIndex << '='
+          << settings.persistedDirectTo.activeLegIndex << '\n';
+    }
   }
   // Window coordinates are only written once a position has been captured, so
   // a fresh install never restores a bogus (0, 0) placement.

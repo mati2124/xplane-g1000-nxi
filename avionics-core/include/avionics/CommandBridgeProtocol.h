@@ -58,6 +58,12 @@ enum class Kind : std::uint8_t {
   BezelDiagonal = 2,
   Radio = 3,
   GcuEntry = 4,  // GCU alphanumeric keypad character (value = ASCII code)
+  Autopilot = 5,  // hardware AP panel (value = AutopilotAction)
+};
+
+// Hardware autopilot panel actions forwarded from sim/autopilot/* commands.
+enum class AutopilotAction : std::uint8_t {
+  Vnav = 0,
 };
 
 // NAV/COM knob actions. Ordinal values must stay stable across releases.

@@ -363,13 +363,16 @@ struct PersistedDirectTo {
   double originLat = 0.0;
   double originLon = 0.0;
   bool originValid = false;
+  // When Direct-To is not active, the GPS active leg index in the loaded plan
+  // (so a relaunch does not default back to the departure airport).
+  int activeLegIndex = -1;
 };
 
 inline bool operator==(const PersistedDirectTo& a, const PersistedDirectTo& b) {
   return a.active == b.active && a.target.id == b.target.id &&
          a.target.lat == b.target.lat && a.target.lon == b.target.lon &&
          a.originLat == b.originLat && a.originLon == b.originLon &&
-         a.originValid == b.originValid;
+         a.originValid == b.originValid && a.activeLegIndex == b.activeLegIndex;
 }
 
 inline bool operator!=(const PersistedDirectTo& a, const PersistedDirectTo& b) {
@@ -384,6 +387,18 @@ inline PersistedDirectTo persistedDirectToFromMap(const MapData& map) {
   out.originLat = map.directToOriginLat;
   out.originLon = map.directToOriginLon;
   out.originValid = map.directToOriginValid;
+  out.activeLegIndex = -1;
+  return out;
+}
+
+inline PersistedDirectTo persistedNavigationSnapshot(const MapData& map,
+                                                     const FlightData& data) {
+  PersistedDirectTo out = persistedDirectToFromMap(map);
+  if (out.active) return out;
+  if (data.fmaActiveLegIndex >= 0 &&
+      data.fmaActiveLegIndex < static_cast<int>(map.flightPlan.size())) {
+    out.activeLegIndex = data.fmaActiveLegIndex;
+  }
   return out;
 }
 

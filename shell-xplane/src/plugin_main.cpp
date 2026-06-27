@@ -1246,6 +1246,38 @@ bool ForwardRadioEvent(RadioAction action) {
   return g_commandBridge->sendEvent(ev);
 }
 
+// Hardware autopilot panel (GFC700 etc.): forward to the networked standalone,
+// which owns VNAV path guidance when using external PFD/MFD displays.
+XPLMCommandRef g_apVnavCmd = nullptr;
+
+int ApVnavCommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
+                         void* /*ref*/) {
+  if (phase != xplm_CommandBegin) return 0;
+  if (g_commandBridge == nullptr) return 0;
+  avionics::cmdbridge::Event ev;
+  ev.phase = avionics::cmdbridge::Phase::Begin;
+  ev.kind = avionics::cmdbridge::Kind::Autopilot;
+  ev.value =
+      static_cast<std::int32_t>(avionics::cmdbridge::AutopilotAction::Vnav);
+  return g_commandBridge->sendEvent(ev) ? 1 : 0;
+}
+
+void RegisterAutopilotCommands() {
+  g_apVnavCmd = XPLMFindCommand("sim/autopilot/vnav");
+  if (g_apVnavCmd != nullptr) {
+    XPLMRegisterCommandHandler(g_apVnavCmd, &ApVnavCommandHandler, /*before=*/1,
+                               nullptr);
+  }
+}
+
+void UnregisterAutopilotCommands() {
+  if (g_apVnavCmd != nullptr) {
+    XPLMUnregisterCommandHandler(g_apVnavCmd, &ApVnavCommandHandler,
+                                 /*before=*/1, nullptr);
+    g_apVnavCmd = nullptr;
+  }
+}
+
 int G1000CommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
                         void* ref) {
   // Route GDU keys to our in-sim engines when active and/or forward them to the
@@ -2051,6 +2083,7 @@ void RegisterG1000Commands() {
     XPLMRegisterCommandHandler(b.cmd, &RadioCommandHandler, /*before=*/1, &b);
   }
   RegisterDisplayBackupCommands();
+  RegisterAutopilotCommands();
 }
 
 void UnregisterG1000Commands() {
@@ -2077,6 +2110,7 @@ void UnregisterG1000Commands() {
   }
   g_radioBindings.clear();
   UnregisterDisplayBackupCommands();
+  UnregisterAutopilotCommands();
 }
 
 void EnableGlassTakeover();

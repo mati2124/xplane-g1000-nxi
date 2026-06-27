@@ -121,6 +121,7 @@ class XPlaneConnection : public SimulatorConnection {
   // plugin bridge). programBridgeFms controls whether the sim FMS is reprogrammed.
   void restoreDirectTo(MapLeg target, double originLat, double originLon,
                        bool originValid, bool programBridgeFms = true);
+  void restoreActiveLegIndex(int legIndex);
   void clearDirectTo();
 
   void setMapPanCenter(bool active, double lat, double lon) override;
@@ -151,6 +152,9 @@ class XPlaneConnection : public SimulatorConnection {
                           CdiSource cdiSource, float nmPerDot) override;
   void syncSimulatorActiveLeg(int legIndex) override;
 
+  // Hardware autopilot panel: VNV button (sim/autopilot/vnav via command bridge).
+  void onVnavButtonPressed();
+
  private:
   void sendDataref(const char* path, float value);
   void sendSubscriptions(int frequencyHz);
@@ -180,6 +184,10 @@ class XPlaneConnection : public SimulatorConnection {
   // Standalone-only: feed CIFP-computed GPS glidepath into X-Plane and capture
   // GS when APP mode is armed but the sim has no RNAV vertical signal.
   void updateGpsGlidepathCoupling();
+
+  // Standalone-only: arm/capture VNAV descent on the computed VNV profile when
+  // the pilot presses VNAV and the sim FMS lacks our altitude constraints.
+  void updateVnavCoupling();
 
   // Flight plan shown on the map/FPL (same precedence as updateMap).
   std::vector<MapLeg> displayedFlightPlan() const;
@@ -360,6 +368,15 @@ class XPlaneConnection : public SimulatorConnection {
   bool gpsGlidepathHasSignal_ = false;
   bool gpsGlidepathCaptured_ = false;
   bool gpsGlidepathPitchSteering_ = false;
+  bool vnavCaptured_ = false;
+  bool vnavPitchSteering_ = false;
+  bool vnavPilotArmed_ = false;
+  bool vnavWasArmed_ = false;
+  bool vnavAcknowledgedForCapture_ = false;
+  bool vnavReAckRequested_ = false;
+  float lastVnavAckSelectedAltFt_ = 0.0f;
+  int autopilotState_ = 0;
+  float lastSentVnavTrackVsFpm_ = 99999.0f;
   bool gpsOverrideActive_ = false;
   bool apOverrideForGsActive_ = false;
   float lastPushedCourseDeg_ = -999.0f;
@@ -370,6 +387,7 @@ class XPlaneConnection : public SimulatorConnection {
   void setGpsOverride(bool active);
   void setApOverrideForGs(bool active);
   void engageGsCapture(const GlidepathSolution& gp);
+  void engageVnavCapture(float targetVerticalSpeedFpm);
 
   // Native socket handle stored width-safe: -1 is "invalid" on both POSIX (int
   // fd) and Windows (SOCKET, where INVALID_SOCKET is all-ones == -1).
@@ -381,6 +399,7 @@ class XPlaneConnection : public SimulatorConnection {
   bool everConnected_ = false;
   bool linkWasPrimed_ = false;
   bool reconnectFlightPlanClearPending_ = false;
+  int pendingRestoredActiveLegIndex_ = -1;
 };
 
 }  // namespace avionics

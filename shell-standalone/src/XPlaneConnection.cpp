@@ -7,6 +7,7 @@
 
 #include "avionics/Datarefs.h"
 #include "avionics/GlidepathGuidance.h"
+#include "avionics/VnavGuidance.h"
 #include "avionics/GpsLegCourse.h"
 #include "avionics/MissedApproachGuidance.h"
 #include "avionics/NavigationComputer.h"
@@ -50,6 +51,9 @@ constexpr int kApModeActive = 2;
 constexpr float kAltModeVerticalSpeed = 4.0f;
 // Re-send glidepath steering VS when the target moves by more than this (fpm).
 constexpr float kGsTrackVsSendDeadbandFpm = 3.0f;
+constexpr float kVnavTrackVsSendDeadbandFpm = 3.0f;
+// sim/cockpit/autopilot/autopilot_state vertical-mode bits (X-Plane 9.40+).
+constexpr int kApStateVnavPathArmed = 131072;
 
 // X-Plane transponder_mode enum. Note this is NOT the legacy off/stdby/on/test
 // set: X-Plane 12 inserted ALT (Mode C) at 3 and pushed Test to 4, and the
@@ -293,9 +297,12 @@ const char* const kApModePaths[kApModeCount] = {
 
 constexpr int kApModeBaseIndex = kZuluSubscriptionIndex + 1;
 
+// Autopilot state bitmask (VNAV arm edge detection when vnav_status stays 0).
+constexpr int kAutopilotStateIndex = kApModeBaseIndex + kApModeCount;
+
 // The GPS CDI-sensitivity subscription rides one index past the AP-mode block.
 // It is decoded into the gpsFlightPhase string rather than a float field.
-constexpr int kGpsSensitivityIndex = kApModeBaseIndex + kApModeCount;
+constexpr int kGpsSensitivityIndex = kAutopilotStateIndex + 1;
 
 // Ownship latitude/longitude subscriptions for the moving map. Like the zulu
 // clock they decode into dedicated members (not a FlightData field) since the
@@ -705,6 +712,7 @@ void XPlaneConnection::sendSubscriptions(int frequencyHz) {
   for (int k = 0; k < kApModeCount; ++k) {
     subscribe(kApModeBaseIndex + k, kApModePaths[k]);
   }
+  subscribe(kAutopilotStateIndex, datarefs::kAutopilotState);
   subscribe(kGpsSensitivityIndex, datarefs::kGpsHdefNmPerDot);
   subscribe(kLatitudeIndex, datarefs::kLatitudeDeg);
   subscribe(kLongitudeIndex, datarefs::kLongitudeDeg);
@@ -808,8 +816,24 @@ void XPlaneConnection::drainSocket() {
         zuluHasTarget_ = true;
       } else if (index >= kApModeBaseIndex &&
                  index < kApModeBaseIndex + kApModeCount) {
-        apModeStatus_[index - kApModeBaseIndex] =
-            static_cast<int>(std::lround(value));
+        const int modeIdx = index - kApModeBaseIndex;
+        const int prev = apModeStatus_[modeIdx];
+        const int next = static_cast<int>(std::lround(value));
+        apModeStatus_[modeIdx] = next;
+        if (modeIdx == kApVnav && prev != kApModeArmed && next == kApModeArmed) {
+          vnavPilotArmed_ = true;
+          vnavReAckRequested_ = true;
+        }
+      } else if (index == kAutopilotStateIndex) {
+        const int state = static_cast<int>(std::lround(value));
+        const bool vnavArmEdge =
+            (state & kApStateVnavPathArmed) &&
+            !(autopilotState_ & kApStateVnavPathArmed);
+        if (vnavArmEdge) {
+          vnavPilotArmed_ = true;
+          vnavReAckRequested_ = true;
+        }
+        autopilotState_ = state;
       } else if (index == kGpsSensitivityIndex) {
         gpsHdefNmPerDot_ = value;
       } else if (index == kLatitudeIndex) {
@@ -1149,6 +1173,12 @@ void XPlaneConnection::restoreDirectTo(MapLeg target, double originLat,
   directToOriginLon_ = originLon;
   directToOriginValid_ = originValid;
   directToOriginPending_ = !originValid;
+  map_.directToActive = true;
+  map_.directToHold = directToHold_;
+  map_.directTo = directTo_;
+  map_.directToOriginValid = directToOriginValid_;
+  map_.directToOriginLat = directToOriginLat_;
+  map_.directToOriginLon = directToOriginLon_;
   const std::vector<MapLeg> plan = displayedFlightPlan();
   if (!plan.empty()) {
     applyInPlanDirectToRouteSlice(map_, plan, directTo_);
@@ -1159,6 +1189,10 @@ void XPlaneConnection::restoreDirectTo(MapLeg target, double originLat,
     syncDirectToToBridge(true);
     directToFmsProgrammed_ = true;
   }
+}
+
+void XPlaneConnection::restoreActiveLegIndex(int legIndex) {
+  pendingRestoredActiveLegIndex_ = legIndex;
 }
 
 void XPlaneConnection::clearDirectTo() {
@@ -1424,6 +1458,8 @@ void XPlaneConnection::updateFmaModes() {
     data_.fmaVerticalActive.clear();
     data_.fmaVerticalArmed.clear();
     data_.fmaVerticalApproachArmed.clear();
+    data_.fmaVerticalPathArmed = false;
+    data_.fmaVerticalPathArmedFlash = false;
     data_.fmaVerticalValue = 0;
     data_.fmaVerticalUnits.clear();
     data_.selectedAirspeedValid = false;
@@ -1475,8 +1511,13 @@ void XPlaneConnection::updateFmaModes() {
   const bool glidepathActive =
       (gpsGlidepathCaptured_ || mode(kApGlideslope) == kApModeActive) &&
       !suppressGlidepath(map_, data_);
+  const bool vnavActive =
+      (vnavCaptured_ || mode(kApVnav) == kApModeActive) &&
+      !suppressVnav(map_, data_);
   if (glidepathActive) {
     vertActive = vertApproachLabel;
+  } else if (vnavActive) {
+    vertActive = "VPTH";
   } else if (mode(kApAltitudeHold) == kApModeActive) {
     vertActive = "ALT";
     vertValue = static_cast<int>(std::lround(data_.selectedAltitudeFt));
@@ -1500,7 +1541,8 @@ void XPlaneConnection::updateFmaModes() {
   data_.selectedAirspeedValid =
       mode(kApSpeed) == kApModeActive && data_.selectedAirspeedKts > 0.5f;
   data_.selectedVsValid =
-      mode(kApVerticalSpeed) == kApModeActive && !gpsGlidepathPitchSteering_;
+      mode(kApVerticalSpeed) == kApModeActive && !gpsGlidepathPitchSteering_ &&
+      !vnavPitchSteering_;
 
   // Vertical armed: ALTS (altitude preselect) whenever altitude capture is
   // armed; an armed glideslope occupies the rightmost approach-armed slot.
@@ -1593,6 +1635,27 @@ void XPlaneConnection::engageGsCapture(const GlidepathSolution& gp) {
   apModeStatus_[kApGlideslope] = kApModeActive;
   gpsGlidepathCaptured_ = true;
   gpsGlidepathPitchSteering_ = true;
+}
+
+void XPlaneConnection::onVnavButtonPressed() {
+  if (vnavCaptured_ || vnavPitchSteering_) return;
+  if (vnavPilotArmed_) {
+    vnavPilotArmed_ = false;
+    vnavReAckRequested_ = false;
+  } else {
+    vnavPilotArmed_ = true;
+    vnavReAckRequested_ = true;
+  }
+}
+
+void XPlaneConnection::engageVnavCapture(float targetVerticalSpeedFpm) {
+  setApOverrideForGs(true);
+  sendDataref(datarefs::kApAltitudeMode, kAltModeVerticalSpeed);
+  sendDataref(datarefs::kSelectedVerticalSpeedFpm, targetVerticalSpeedFpm);
+  lastSentVnavTrackVsFpm_ = targetVerticalSpeedFpm;
+  apModeStatus_[kApVnav] = kApModeActive;
+  vnavCaptured_ = true;
+  vnavPitchSteering_ = true;
 }
 
 void XPlaneConnection::updateGpsGlidepathCoupling() {
@@ -1713,6 +1776,131 @@ void XPlaneConnection::updateGpsGlidepathCoupling() {
                 gsStatus, gp.altitudeErrorFt, gp.deviationDots,
                 interceptable ? 1 : 0, inEnvelope ? 1 : 0);
   data_.gpCouplingDebug = buf;
+}
+
+void XPlaneConnection::updateVnavCoupling() {
+  data_.fmaVerticalPathArmed = false;
+  data_.fmaVerticalPathArmedFlash = false;
+
+  auto clearCoupling = [&]() {
+    vnavCaptured_ = false;
+    vnavPitchSteering_ = false;
+    vnavWasArmed_ = false;
+    vnavAcknowledgedForCapture_ = false;
+    vnavReAckRequested_ = false;
+    if (!gpsGlidepathCaptured_ && !gpsGlidepathPitchSteering_) {
+      setApOverrideForGs(false);
+    }
+    lastSentVnavTrackVsFpm_ = 99999.0f;
+  };
+
+  if (connectionState() != ConnectionState::Connected) {
+    clearCoupling();
+    return;
+  }
+
+  if (data_.cdiSource != CdiSource::Gps || suppressVnav(map_, data_)) {
+    if (apModeStatus_[kApVnav] != kApModeArmed) {
+      apModeStatus_[kApVnav] = 0;
+    }
+    clearCoupling();
+    vnavPilotArmed_ = false;
+    return;
+  }
+
+  const VnvProfile vnv = computeVnvProfile(map_, data_);
+  if (!vnv.active) {
+    if (apModeStatus_[kApVnav] != kApModeArmed) {
+      apModeStatus_[kApVnav] = 0;
+    }
+    clearCoupling();
+    vnavPilotArmed_ = false;
+    return;
+  }
+
+  // Enroute VNAV never descends below the pilot's pre-selected altitude.
+  if (data_.selectedAltitudeFt >= data_.altitudeFt - 50.0f) {
+    if (apModeStatus_[kApVnav] != kApModeArmed) {
+      apModeStatus_[kApVnav] = 0;
+    }
+    clearCoupling();
+    return;
+  }
+
+  const int vnavStatus = apModeStatus_[kApVnav];
+  const bool vnavCurrentlyArmed =
+      vnavStatus == kApModeArmed || vnavPilotArmed_;
+  const bool vnavArmed =
+      vnavCurrentlyArmed || vnavCaptured_ || vnavStatus == kApModeActive;
+  if (!vnavArmed) {
+    vnavWasArmed_ = false;
+    vnavAcknowledgedForCapture_ = false;
+    return;
+  }
+
+  if (vnavCurrentlyArmed && !vnavWasArmed_) {
+    // First arm: counts as acknowledgment only if within 5 minutes of TOD.
+    vnavAcknowledgedForCapture_ =
+        vnv.timeToTodSec <= kVnavAckWindowSec && vnv.timeToTodSec >= 0;
+    lastVnavAckSelectedAltFt_ = data_.selectedAltitudeFt;
+  }
+  if (!vnavCurrentlyArmed && vnavWasArmed_) {
+    vnavAcknowledgedForCapture_ = false;
+  }
+  vnavWasArmed_ = vnavCurrentlyArmed;
+
+  const bool inAckWindow =
+      vnv.timeToTodSec <= kVnavAckWindowSec && vnv.timeToTodSec >= 0;
+  if (vnavCurrentlyArmed && inAckWindow) {
+    if (vnavReAckRequested_) {
+      vnavAcknowledgedForCapture_ = true;
+    }
+    if (std::fabs(data_.selectedAltitudeFt - lastVnavAckSelectedAltFt_) >=
+        1.0f) {
+      vnavAcknowledgedForCapture_ = true;
+      lastVnavAckSelectedAltFt_ = data_.selectedAltitudeFt;
+    }
+  }
+  vnavReAckRequested_ = false;
+
+  if (vnavStatus == kApModeArmed || vnavPilotArmed_) {
+    apModeStatus_[kApVnav] = kApModeArmed;
+  }
+
+  if (vnavCurrentlyArmed && !vnavCaptured_ && vnavStatus != kApModeActive) {
+    data_.fmaVerticalPathArmed = true;
+    data_.fmaVerticalPathArmedFlash =
+        !vnavAcknowledgedForCapture_ &&
+        vnv.timeToTodSec <= kVnavFlashBeforeInterceptSec &&
+        vnv.timeToTodSec >= 0;
+  }
+
+  if (vnv.capturing && data_.apEngaged && vnavAcknowledgedForCapture_) {
+    const float targetVs = computeVnavTargetVerticalSpeed(vnv);
+    if (!vnavCaptured_ && vnavStatus != kApModeActive) {
+      engageVnavCapture(targetVs);
+    } else if (vnavCaptured_ || vnavStatus == kApModeActive) {
+      vnavCaptured_ = true;
+      setApOverrideForGs(true);
+      sendDataref(datarefs::kApAltitudeMode, kAltModeVerticalSpeed);
+      if (std::fabs(targetVs - lastSentVnavTrackVsFpm_) >
+          kVnavTrackVsSendDeadbandFpm) {
+        sendDataref(datarefs::kSelectedVerticalSpeedFpm, targetVs);
+        lastSentVnavTrackVsFpm_ = targetVs;
+      }
+      vnavPitchSteering_ = true;
+    }
+  } else {
+    vnavPitchSteering_ = false;
+    if (!data_.apEngaged) {
+      vnavCaptured_ = false;
+    }
+    if (!vnavCaptured_ && vnavStatus != kApModeActive) {
+      if (!gpsGlidepathCaptured_ && !gpsGlidepathPitchSteering_) {
+        setApOverrideForGs(false);
+      }
+    }
+  }
 }
 
 ConnectionState XPlaneConnection::connectionState() const {
@@ -1939,6 +2127,11 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
                        callbacks);
   }
 
+  if (pendingRestoredActiveLegIndex_ >= 0 && !navigator.directToActive()) {
+    navigator.setActiveLegIndex(pendingRestoredActiveLegIndex_);
+    pendingRestoredActiveLegIndex_ = -1;
+  }
+
   // Automatic leg sequencing must NOT push the active leg into X-Plane's FMS.
   // Lateral steering is injected via override_gps (below), so the sim FMS leg is
   // not needed for the autopilot; writing a new destination briefly invalidates
@@ -1978,6 +2171,7 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
       lastGpsCoupledToWpt_.clear();
     }
     updateGpsGlidepathCoupling();
+    updateVnavCoupling();
     return;
   }
 
@@ -2068,6 +2262,7 @@ void XPlaneConnection::applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
   }
 
   updateGpsGlidepathCoupling();
+  updateVnavCoupling();
 }
 
 void XPlaneConnection::syncSimulatorActiveLeg(int legIndex) {

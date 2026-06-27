@@ -315,6 +315,9 @@ struct FlightData {
   std::string fmaVerticalActive = "VS";
   std::string fmaVerticalArmed = "ALTS";
   std::string fmaVerticalApproachArmed;
+  // Armed (white) VPTH before capture; flashes when re-ack is required near TOD.
+  bool fmaVerticalPathArmed = false;
+  bool fmaVerticalPathArmedFlash = false;
   int fmaVerticalValue = 500;
   std::string fmaVerticalUnits = "FPM";
   // Temporary RNAV glidepath/AP coupling debug (MFD AUX GPS Status).

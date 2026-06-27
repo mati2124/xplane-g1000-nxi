@@ -32,6 +32,17 @@ struct GlidepathSolution {
   float targetVerticalSpeedFpm = 0.0f;
 };
 
+// True once the aircraft has flown up into the glidepath's vertical capture
+// window (from kGlidepathCaptureBelowPathFt below it and above). At that point
+// the approach glidepath supersedes the geometric VNAV descent (VPTH) for both
+// the PFD vertical deviation and the AFCS vertical mode. While still well below
+// the glidepath the VNAV descent keeps flying through the intermediate altitude
+// constraints rather than dropping out the moment a glidepath becomes
+// computable far from the runway.
+inline bool glidepathSupersedesVnav(const GlidepathSolution& gp) {
+  return gp.valid && gp.altitudeErrorFt >= -kGlidepathCaptureBelowPathFt;
+}
+
 // Computes LPV/LNAV+V glidepath deviation from loaded CIFP approach legs.
 GlidepathSolution computeGlidepath(const MapData& map, const FlightData& data);
 

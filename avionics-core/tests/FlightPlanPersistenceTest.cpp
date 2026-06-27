@@ -199,10 +199,27 @@ TEST(FlightPlanPersistenceTest, PersistedDirectToRoundTripFromMap) {
   EXPECT_DOUBLE_EQ(saved.originLat, 26.58);
   EXPECT_DOUBLE_EQ(saved.originLon, -81.87);
   EXPECT_TRUE(saved.originValid);
+  EXPECT_EQ(saved.activeLegIndex, -1);
 
   map.directToActive = false;
   map.directTo = {};
   EXPECT_FALSE(persistedDirectToFromMap(map).active);
+}
+
+TEST(FlightPlanPersistenceTest, PersistedNavigationSnapshotCapturesActiveLeg) {
+  MapData map;
+  map.flightPlan = {
+      makeLeg("KFMY", 26.586617, -81.863247),
+      makeLeg("TEBOW", 30.096092, -82.075750),
+  };
+  FlightData data;
+  data.fmaActiveLegIndex = 1;
+  data.fmaFromWpt = "KFMY";
+  data.fmaToWpt = "TEBOW";
+
+  const PersistedDirectTo saved = persistedNavigationSnapshot(map, data);
+  EXPECT_FALSE(saved.active);
+  EXPECT_EQ(saved.activeLegIndex, 1);
 }
 
 }  // namespace

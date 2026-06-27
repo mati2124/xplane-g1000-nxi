@@ -114,5 +114,30 @@ TEST(FlightPlanBridgeProtocolTest, ClearDirectToDisplayMessage) {
   EXPECT_TRUE(isClearDirectToDisplay(encoded.data(), encoded.size()));
 }
 
+TEST(FlightPlanBridgeProtocolTest, SetPlanCarriesAltitudeConstraints) {
+  std::vector<MapLeg> legs = {
+      makeLeg("WADOR", 26.10, -82.00),
+      makeLeg("AMXUQ", 26.00, -81.90),
+  };
+  legs[0].altitudeConstraintFt = 3000;
+  legs[0].altitudeConstraint = AltConstraintType::AtOrAbove;
+  legs[0].altitudeDesignated = true;
+  legs[1].altitudeConstraintFt = 2200;
+  legs[1].altitudeConstraint = AltConstraintType::At;
+  legs[1].altitudeDesignated = false;
+
+  const std::vector<unsigned char> encoded = encodeSetPlan(legs);
+  std::vector<MapLeg> decoded;
+  ASSERT_TRUE(decodeSetPlan(encoded.data(), encoded.size(), decoded));
+  ASSERT_EQ(decoded.size(), 2u);
+
+  EXPECT_EQ(decoded[0].altitudeConstraintFt, 3000);
+  EXPECT_EQ(decoded[0].altitudeConstraint, AltConstraintType::AtOrAbove);
+  EXPECT_TRUE(decoded[0].altitudeDesignated);
+  EXPECT_EQ(decoded[1].altitudeConstraintFt, 2200);
+  EXPECT_EQ(decoded[1].altitudeConstraint, AltConstraintType::At);
+  EXPECT_FALSE(decoded[1].altitudeDesignated);
+}
+
 }  // namespace
 }  // namespace avionics::fpbridge
