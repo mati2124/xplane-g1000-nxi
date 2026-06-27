@@ -241,6 +241,9 @@ void applyHoldFromCifpLeg(const CifpLeg& leg, MapLeg& ml) {
 
   ml.hold.active = true;
   ml.hold.turn = turn;
+  // HF = hold-to-fix: a single-circuit HILPT course reversal at the IAF. HM
+  // (hold-to-manual) is a missed-approach hold and is not a course reversal.
+  ml.hold.courseReversal = (leg.pathTerminator == "HF");
   ml.hold.legLengthNm = leg.legLengthNm;
   ml.hold.legTimeMin = leg.legTimeMin;
   if (ml.hold.legLengthNm <= 0.0f && ml.hold.legTimeMin <= 0.0f) {
@@ -866,6 +869,22 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     }
     result.push_back(std::move(ml));
   }
+
+  // Transition-segment holds (HF/HA on route A/B) apply at an IAF that also
+  // appears on the final approach segment. When the pilot selects that IAF
+  // directly instead of the named feeder (KCMI RNAV 04 "BOSTN iaf" vs "CMI"),
+  // the feeder legs are omitted but the HILPT must still attach to BOSTN.
+  for (const CifpLeg& leg : data.legs) {
+    if (leg.kind != type || leg.procedureName != name) continue;
+    if (!isHoldTerminator(leg.pathTerminator)) continue;
+    if (!looksLikeFix(leg.fixIdent)) continue;
+    for (MapLeg& existing : result) {
+      if (existing.id != leg.fixIdent) continue;
+      applyHoldFromCifpLeg(leg, existing);
+      break;
+    }
+  }
+
   return result;
 }
 

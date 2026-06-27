@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "avionics/DataSource.h"
 #include "avionics/FmsNavigator.h"
@@ -144,6 +145,9 @@ class AvionicsEngine {
   void syncSoftkeyPeerRadioVolume();
   void syncFlightPlanPeer();
   void syncFlightPlanApproachPeer();
+  // Mirror the HILPT "Fly Course Reversal?" prompt across both GDUs so it shows
+  // on the PFD and MFD, and clear it on both once answered.
+  void syncCourseReversalPromptPeer();
   void applyActivateLegRequests();
   void applyActivateMissedRequests();
 
@@ -201,6 +205,14 @@ class AvionicsEngine {
   SoftkeyController softkeys_;
   MfdController mfd_;
   FmsNavigator navigator_;
+
+  // Last flight plan reconciled between the PFD Active Flight Plan window and
+  // the MFD FPL page, so syncFlightPlanPeer can tell which GDU just changed.
+  // The side that deviates from this wins, so a delete (or any edit) on one GDU
+  // is not overwritten by the other GDU's stale local draft.
+  std::vector<MapLeg> lastPeerPlan_;
+  bool lastPeerDestFilled_ = false;
+  bool lastPeerPlanValid_ = false;
 };
 
 }  // namespace avionics

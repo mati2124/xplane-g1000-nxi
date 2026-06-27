@@ -41,6 +41,7 @@ class DsfTerrainStore : public TerrainSource {
   void setCoarseTerrainSample(bool enabled) const override;
   void setTerrainViewCenter(double lat, double lon,
                             float detailHalfNm) const override;
+  bool hasElevationTiles() const override { return ready(); }
   unsigned revision() const override {
     return revision_.load(std::memory_order_relaxed);
   }

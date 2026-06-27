@@ -442,5 +442,56 @@ TEST(CifpParserTest, ExpandsKfmyI05VectorsWithoutFmFix) {
   EXPECT_EQ(legIndexById(legs, "CALOO"), -1);
 }
 
+// KCMI RNAV 04 via the CMI transition: the HILPT at BOSTN is an HF hold in the
+// transition segment (route type A), while the missed-approach hold is at MUGTE
+// (HM, route type R). Both must attach hold metadata to their fix so the FPL
+// page can show a HOLD row beneath each.
+TEST(CifpParserTest, ExpandsKcmiR04CmiHoldAtBostnAndMugte) {
+  std::ifstream in("C:/X-Plane 12/Custom Data/CIFP/KCMI.dat");
+  if (!in.good()) {
+    in.open("C:/X-Plane 12/Resources/default data/CIFP/KCMI.dat");
+  }
+  if (!in.good()) {
+    GTEST_SKIP() << "KCMI.dat not available";
+  }
+  const CifpAirportProcedures data = parseCifp(in, "KCMI");
+  CifpFixTable fixes;
+  fixes.fixes["CMI"] = {40.034530556, -88.276075000};
+  fixes.fixes["BOSTN"] = {40.207791667, -88.145527778};
+  fixes.fixes["AFTOR"] = {40.121183333, -88.210869444};
+  fixes.fixes["KIOWA"] = {40.080000000, -88.240000000};
+  fixes.fixes["RW04"] = {40.039500000, -88.278000000};
+  fixes.fixes["MUGTE"] = {39.950000000, -88.340000000};
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Approach, "R04", "CMI",
+                          cifpFixLookup, &fixes);
+  ASSERT_GE(legs.size(), 4u);
+
+  const int bostnIdx = legIndexById(legs, "BOSTN");
+  ASSERT_GE(bostnIdx, 0);
+  const MapLeg& bostn = legs[static_cast<std::size_t>(bostnIdx)];
+  EXPECT_TRUE(bostn.hold.active);
+  EXPECT_EQ(bostn.hold.turn, HoldTurnDirection::Right);
+  EXPECT_NEAR(bostn.hold.inboundCourseDeg, 44.0f, 0.1f);
+  EXPECT_NEAR(bostn.hold.legLengthNm, 4.0f, 0.1f);
+  // BOSTN is a hold-in-lieu-of-procedure-turn (HF): it drives the "Fly Course
+  // Reversal?" prompt. The missed-approach hold at MUGTE (HM) is not one.
+  EXPECT_TRUE(bostn.hold.courseReversal);
+
+  const int mugteIdx = legIndexById(legs, "MUGTE");
+  ASSERT_GE(mugteIdx, 0);
+  EXPECT_TRUE(legs[static_cast<std::size_t>(mugteIdx)].hold.active);
+  EXPECT_FALSE(legs[static_cast<std::size_t>(mugteIdx)].hold.courseReversal);
+
+  // Selecting the IAF directly (BOSTN) must still carry the HILPT hold from the
+  // CMI feeder segment; missed-approach holds are on the final segment either way.
+  const std::vector<MapLeg> viaIaf =
+      expandCifpProcedure(data, ProcedureType::Approach, "R04", "BOSTN",
+                          cifpFixLookup, &fixes);
+  const int bostnViaIaf = legIndexById(viaIaf, "BOSTN");
+  ASSERT_GE(bostnViaIaf, 0);
+  EXPECT_TRUE(viaIaf[static_cast<std::size_t>(bostnViaIaf)].hold.active);
+}
+
 }  // namespace
 }  // namespace avionics::test

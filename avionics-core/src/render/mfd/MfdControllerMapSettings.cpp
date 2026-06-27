@@ -115,7 +115,8 @@ bool MfdController::mapSettingsBezelKey(BezelKey key) {
   switch (key) {
     case BezelKey::Clr:
     case BezelKey::FmsPush:
-      // Pilot's Guide: "Press FMS Knob To Return"; CLR also backs out.
+    case BezelKey::Menu:
+      // Pilot's Guide: "Press FMS Knob To Return"; CLR / MENU also back out.
       mapSettingsOpen_ = false;
       break;
     case BezelKey::FmsOuterCw:

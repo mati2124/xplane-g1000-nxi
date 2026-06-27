@@ -3,12 +3,16 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "avionics/Charts.h"
 #include "avionics/Checklist.h"
 #include "avionics/FlightData.h"
+#include "avionics/FlightPlanCatalog.h"
 #include "avionics/FlightPlanPersistence.h"
+#include "avionics/FplRouteEdit.h"
 #include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
 #include "avionics/MapRange.h"
@@ -16,6 +20,8 @@
 #include "avionics/ProcedureMenuTypes.h"
 #include "avionics/ProcedureMenu.h"
 #include "avionics/SimBrief.h"
+#include "avionics/SimBriefOfpSupport.h"
+#include "avionics/StationWeather.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/MapView.h"
 
@@ -62,6 +68,32 @@ enum class MfdPage {
   NearestAirspaces,
   // FPL group.
   ActiveFlightPlan,
+  FlightPlanCatalog,
+};
+
+// Sub-views of the WPT - Airport Information page, selected from that page's
+// softkey bar (NXi trainer apt_054..058). The page reuses one MfdPage value
+// (AirportInformation); this picks which information panel it shows. Airport is
+// the default (the Info softkey); DP/STAR/APR preview the first published
+// procedure of that category for the selected airport; Weather shows the
+// METAR/TAF panel (WX softkey).
+enum class WptInfoView { Airport, Departure, Arrival, Approach, Weather };
+
+// Pre-resolved data for a WPT - Airport Information procedure sub-page (DP /
+// STAR / APR). The page pre-selects the first published procedure of the
+// category for the selected airport and previews it, read-only, mirroring the
+// PROC loading window. `available` is false when the airport publishes no
+// procedure of that category (the page then shows the dashed empty state).
+struct WptProcedureInfo {
+  bool available = false;
+  std::string name;        // CSHEL6 / JOSFF5 / "ILS 05"
+  std::string transition;  // LAL / PIE / VECTORS
+  std::string runway;      // RW05 / ALL
+  // Approach primary nav radio (ILS/LOC/VOR/NDB approaches only); 0 when none.
+  float primaryFreqMhz = 0.0f;
+  std::string primaryIdent;
+  bool primaryIsNdb = false;
+  std::vector<MapLeg> legs;  // sequenced procedure legs (empty when none)
 };
 
 // Map Settings window groups (Navigation Map -> MENU -> Map Settings, Pilot's
@@ -148,6 +180,18 @@ enum class RadarScan { Horizontal, Vertical };
 // Sector-scan width about the bearing line; Full is the 90-degree scan.
 enum class RadarSector { Full, Sixty, Forty, Twenty };
 
+// G1000 NXi chart page softkey levels (Pilot's Guide §8.3).
+enum class ChartsMenu { Selection, ChartOpt };
+enum class ChartsField { Airport, Approach };
+enum class ChartsViewMode { All, Header, Plan, Profile, Minimums };
+enum class ChartsCategoryFilter {
+  All,
+  Departure,
+  Arrival,
+  Approach,
+  Airport,
+};
+
 // Accumulated flight-session statistics for the AUX - Utility page's Timers
 // and Trip Statistics boxes (G1000 Pilot's Guide for Cessna Nav III,
 // Section 5.10). Accumulated since power-on from the live data, the way the
@@ -230,6 +274,13 @@ class MfdController {
   bool pressKey(int key);
 
   MfdPageGroup pageGroup() const { return pageGroup_; }
+  // True when this MFD page group owns ENT/CLR/FMS-push on the MFD GDU even if
+  // a PFD pop-up would otherwise claim GCU FMS input (Active Flight Plan,
+  // Checklist).
+  bool ownsLocalFmsInput() const {
+    return pageGroup_ == MfdPageGroup::FlightPlan ||
+           pageGroup_ == MfdPageGroup::Checklist;
+  }
 
   // Number of pages in a group and the index of the page currently selected
   // within the active group (the FMS rocker / repeated group-softkey presses
@@ -347,6 +398,14 @@ class MfdController {
   bool wptHasSelection() const { return wptHasSelection_; }
   const MapFeature& wptSelectedFeature() const { return wptFeature_; }
 
+  // Which information panel the WPT - Airport Information page shows (Airport /
+  // DP / STAR / APR / Weather). Set by that page's softkey bar.
+  WptInfoView wptInfoView() const { return wptInfoView_; }
+  // First published procedure of `type` for `airport`, expanded for preview on
+  // the WPT DP/STAR/APR sub-pages (read-only, "first available" selection).
+  WptProcedureInfo wptProcedureInfo(const MapFeature& airport,
+                                    ProcedureType type) const;
+
   // NRST nearest-list cursor (Pilot's Guide, Nearest pages).
   bool nrstCursorOn() const { return nrstCursorOn_; }
   int nrstSelected() const { return nrstSelected_; }
@@ -406,23 +465,86 @@ class MfdController {
   void setNavFeatureSource(const NavFeatureSource* source) {
     navSource_ = source;
   }
+  // Datalink weather lookup for the WPT - Weather Information page (the shell
+  // wires its station-weather source in; without one the page shows dashes).
+  void setStationWeatherSource(const StationWeatherSource* source) {
+    weatherSource_ = source;
+  }
+  // Latest weather for an airport ICAO, or nullopt when no source is wired or
+  // the source has no report for the station (the page then dashes the fields).
+  std::optional<StationWeather> stationWeather(const std::string& icao) const;
   // Edited-plan latch for the shell: true once after each edit, copying the
   // new plan out so the shell can push it to the data sources.
   bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
+  void fplPublishEdit();
+  void stripCourseReversalHoldAtFix(const std::string& fixId);
 
   void replaceFlightPlanFromExternal(const std::vector<MapLeg>& plan);
   PersistedFlightPlan persistedFlightPlanSnapshot() const;
   PersistedDirectTo persistedDirectToSnapshot() const;
   void restorePersistedFlightPlan(const PersistedFlightPlan& saved);
 
+  // ---- Flight Plan Catalog (FPL group, 2nd page) ----
+  // Stored flight plans the pilot previews and activates. An imported SimBrief/
+  // Navigraph OFP is stored here (storeFlightPlanInCatalog) instead of being
+  // auto-loaded; only Activate loads a stored plan into the active route.
+  // Confirmation window shown for the destructive / route-changing catalog
+  // actions (matching the real unit's "activate stored flight plan?" etc.).
+  enum class CatalogConfirm { None, Activate, InvertActivate, Delete, DeleteAll };
+
+  const FlightPlanCatalog& flightPlanCatalog() const { return catalog_; }
+  // Highlighted catalog slot (clamped to [0, size)), and whether the list
+  // cursor is on (FMS knob pushed) so the catalog actions apply to a slot.
+  int catalogSelected() const { return catalogSelected_; }
+  bool catalogCursorOn() const { return catalogCursorOn_; }
+  CatalogConfirm catalogConfirm() const { return catalogConfirm_; }
+  bool catalogConfirmOk() const { return catalogConfirmOk_; }
+
+  // Persisted-catalog round trip (the shell saves/restores it in AppSettings).
+  std::vector<PersistedFlightPlan> flightPlanCatalogSnapshot() const {
+    return catalog_.plans();
+  }
+  void restoreFlightPlanCatalog(const std::vector<PersistedFlightPlan>& plans);
+  // Edited-catalog latch for the shell: true once after any catalog change so
+  // the shell re-persists the catalog (import, activate-copy, delete, ...).
+  bool consumeCatalogDirty();
+
+  // Store a route (e.g. a fetched SimBrief OFP) as a new catalog entry WITHOUT
+  // touching the active flight plan or the map. Returns the new slot index, or
+  // -1 when the catalog is full.
+  int storeFlightPlanInCatalog(const std::vector<MapLeg>& legs);
+  int storeFlightPlanFromSimBriefImport(const SimBriefOfpImport& imp);
+
+  // ---- catalog actions (softkeys / page menu; also exercised by tests) ----
+  // Add a new empty stored plan and select it.
+  void catalogCreateNew();
+  // Load the selected stored plan into the active flight plan and publish it so
+  // the shell pushes it to the sim/map. Returns false when nothing to activate.
+  bool catalogActivateSelected();
+  // Invert (reverse) the selected stored plan, then activate it.
+  bool catalogInvertActivateSelected();
+  // Copy the selected stored plan into a new slot. Returns its index, or -1.
+  int catalogCopySelected();
+  // Delete the selected stored plan. Returns false when nothing to delete.
+  bool catalogDeleteSelected();
+  // Delete every stored plan.
+  void catalogDeleteAll();
+
   void setPersistedLoadedApproach(const PersistedLoadedApproach& saved);
   FlightPlanApproachState flightPlanApproachState() const;
   void applyFlightPlanApproachState(const FlightPlanApproachState& state);
+  FlightPlanTerminalProcedureState flightPlanDepartureState() const;
+  void applyFlightPlanDepartureState(
+      const FlightPlanTerminalProcedureState& state);
+  FlightPlanTerminalProcedureState flightPlanArrivalState() const;
+  void applyFlightPlanArrivalState(const FlightPlanTerminalProcedureState& state);
   // Copy the peer GDU's displayed plan so the PFD FPL window and MFD FPL page
   // always show the same route (called from AvionicsEngine::syncFlightPlanPeer).
-  void adoptFlightPlanFromPeer(const std::vector<MapLeg>& legs,
-                               bool destinationFilled,
-                               const FlightPlanApproachState& approach);
+  void adoptFlightPlanFromPeer(
+      const std::vector<MapLeg>& legs, bool destinationFilled,
+      const FlightPlanApproachState& approach,
+      const FlightPlanTerminalProcedureState& departure = {},
+      const FlightPlanTerminalProcedureState& arrival = {});
 
   // Infer approach grouping from procedure-tagged legs when metadata is missing.
   void fplEnsureApproachInferred();
@@ -438,8 +560,36 @@ class MfdController {
   // The plan as the page shows it (mirrors the map plan plus pending edits).
   const std::vector<MapLeg>& fplLegs() const { return fplLegs_; }
   bool fplHasLoadedApproach() const { return fplApproachLegCount_ > 0; }
+  bool fplHasLoadedDeparture() const {
+    return !fplLoadedDeparture_.name.empty() || fplDepartureLegCount_ > 0;
+  }
+  bool fplHasLoadedArrival() const {
+    return !fplLoadedArrival_.name.empty() || fplArrivalLegCount_ > 0;
+  }
   bool fplDestinationFilled() const { return fplDestinationFilled_; }
   bool fplLocalDraft() const { return fplLocalDraft_; }
+  int fplDepartureLegStart() const { return fplDepartureLegStart_; }
+  int fplDepartureLegCount() const { return fplDepartureLegCount_; }
+  int fplArrivalLegStart() const { return fplArrivalLegStart_; }
+  int fplArrivalLegCount() const { return fplArrivalLegCount_; }
+  std::string fplDepartureAirportIcao() const {
+    if (!persistedDepartureRestore_.airportIcao.empty()) {
+      return persistedDepartureRestore_.airportIcao;
+    }
+    return fplLoadedDeparture_.name.empty() || fplLegs_.empty()
+               ? std::string()
+               : fplLegs_.front().id;
+  }
+  std::string fplDepartureHeaderLabel() const { return fplDepartureHeaderLabel_; }
+  std::string fplArrivalAirportIcao() const {
+    if (!persistedArrivalRestore_.airportIcao.empty()) {
+      return persistedArrivalRestore_.airportIcao;
+    }
+    return fplLoadedArrival_.name.empty() || fplLegs_.empty()
+               ? std::string()
+               : fplLegs_.back().id;
+  }
+  std::string fplArrivalHeaderLabel() const { return fplArrivalHeaderLabel_; }
   int fplApproachLegStart() const { return fplApproachLegStart_; }
   int fplApproachLegCount() const { return fplApproachLegCount_; }
   std::string fplApproachAirportIcao() const;
@@ -503,32 +653,106 @@ class MfdController {
   bool directToArmed() const { return dtoArmed_; }
   // Activation latch for the shell: true once after ENT on ACTIVATE?, copying
   // out the target waypoint so the shell engages the direct course.
-  bool consumeDirectToRequest(MapLeg& out);
+  bool consumeDirectToRequest(MapLeg& out, bool* flyHold = nullptr);
+  // "4.0NM hold-icon BOSTN" Activate/Cancel prompt when Direct-To is pressed
+  // on a published HOLD row in the flight plan (trainer FPL Direct-To hold).
+  bool holdActivatePromptActive() const { return holdActivatePromptActive_; }
+  bool holdActivatePromptActivateSelected() const {
+    return holdActivatePromptActivate_;
+  }
+  const MapLeg& holdActivatePromptLeg() const { return holdActivatePromptLeg_; }
   // FPL Activate Leg: ENT on a highlighted waypoint row (Pilot's Guide 5.6).
   bool consumeActivateLegRequest(int& toLegIndex);
 
   // GCU alphanumeric keypad during waypoint-ident entry (Direct-To / FPL / WPT).
   bool applyGcuEntryKey(char ch);
 
-  // ---- SimBrief (AUX - SIMBRIEF page) ----
-  // Latest fetch status, published by the shell each frame (the shell owns the
-  // network client) and read back by the page renderer.
-  void setSimbriefState(const SimBriefState& state) { simbriefState_ = state; }
+  // ---- SimBrief / Navigraph (AUX - SIMBRIEF page) ----
+  // Latest sign-in + fetch status, published by the shell each frame (the shell
+  // owns the network client and token store) and read back by the renderer.
+  void setSimbriefState(const SimBriefState& state) {
+    simbriefState_ = state;
+    updateNavigraphAutoLogin();
+  }
   const SimBriefState& simbriefState() const { return simbriefState_; }
-  // Committed Pilot ID (digits only). The shell seeds it from settings at
-  // startup and persists it when the user commits a new one on the page.
-  void setSimbriefPilotId(const std::string& id) { simbriefPilotId_ = id; }
-  const std::string& simbriefPilotId() const { return simbriefPilotId_; }
-  // True while the softkey bar is in Pilot ID digit-entry mode (the page shows
-  // the in-progress digits with the edit cursor instead of the committed ID).
-  bool simbriefIdEntryActive() const { return simbriefIdEntry_; }
-  const std::string& simbriefPendingId() const { return simbriefPendingId_; }
-  // FETCH softkey latch: returns true once per press and clears it, so the
-  // shell can kick off the OFP download.
+  // LOGIN softkey latch: returns true once per press, so the shell can start
+  // the Navigraph device-authorization sign-in.
+  bool consumeNavigraphLoginRequest();
+  // LOGOUT softkey latch: returns true once per press, so the shell can forget
+  // the session (and clear the persisted refresh token).
+  bool consumeNavigraphLogoutRequest();
+  // FETCH softkey latch: returns true once per press, so the shell can kick off
+  // the OFP download for the signed-in account.
   bool consumeSimbriefFetchRequest();
 
+  // ---- Navigraph charts (AUX - Charts page) ----
+  // Latest chart index + selected chart image, published by the shell each
+  // frame (the shell owns the Charts API client + access token) and read back
+  // by the page renderer. Selection (which chart in the list) is clamped here.
+  void setChartsState(const ChartsState& state);
+  const ChartsState& chartsState() const { return chartsState_; }
+  // The airport the page wants charts for: the active flight plan's destination
+  // when the Airport box is on dest, otherwise its origin. Empty with no plan.
+  // The shell reads this to drive the chart index fetch.
+  std::string chartsDesiredAirport() const;
+  // Which flight-plan endpoint the Airport box shows (false = origin, true =
+  // dest). Seeds the free ICAO entry on the Airport box.
+  bool chartsUseDestination() const { return chartsUseDestination_; }
+  // In-progress free ICAO entry on the Airport box (the FMS knob spells an
+  // airport ident; ENT applies it as the charts airport). Inactive otherwise.
+  bool chartsAirportEntryActive() const { return chartsAirportEntry_.active; }
+  std::string chartsAirportEntryIdent() const {
+    return chartsAirportEntry_.ident();
+  }
+  int chartsAirportEntryCursor() const { return chartsAirportEntry_.pos; }
+  int chartsAirportEntryTypedCount() const {
+    return chartsAirportEntry_.typedCount();
+  }
+  bool chartsAirportEntrySelectAll() const {
+    return chartsAirportEntry_.selectAll;
+  }
+  // Live spell-ahead match for the in-progress ident, so the page can show the
+  // resolved airport's name/city while typing (mirrors the FPL/PROC entry).
+  bool chartsAirportEntryHasMatch() const {
+    return chartsAirportEntry_.hasMatch;
+  }
+  MapFeature chartsAirportEntryMatch() const {
+    return chartsAirportEntry_.match;
+  }
+  ChartsMenu chartsMenu() const { return chartsMenu_; }
+  ChartsField chartsField() const { return chartsField_; }
+  ChartsViewMode chartsViewMode() const { return chartsViewMode_; }
+  ChartsCategoryFilter chartsCategoryFilter() const {
+    return chartsCategoryFilter_;
+  }
+  bool chartsFullScreen() const { return chartsFullScreen_; }
+  // True while the WPT - Airport Information page is showing terminal charts
+  // (entered via the Charts softkey, Pilot's Guide §8.3). On the real unit
+  // charts are part of the Airport Information page, not a standalone page.
+  bool chartViewActive() const { return chartViewActive_; }
+  // Chart softkey toggle: show the associated nav map instead of the chart
+  // image (Pilot's Guide §8.3, "switches between the diagram and the map").
+  bool chartsShowMap() const { return chartsShowMap_; }
+  // RANGE-joystick chart zoom (1 = base fit) and pan offset as a fraction of the
+  // drawn chart size, plus the CHRT Opt "Fit WDTH" base-fit mode.
+  float chartsZoom() const { return chartsZoom_; }
+  float chartsPanXFrac() const { return chartsPanXFrac_; }
+  float chartsPanYFrac() const { return chartsPanYFrac_; }
+  bool chartsFitWidth() const { return chartsFitWidth_; }
+  // Committed chart row (the chart actually shown / downloaded), and its id
+  // (empty when the list is empty). The shell reads the id (with chartsNight())
+  // to drive the chart image download, so the image only changes when the pilot
+  // commits a new selection with ENT.
+  int chartsSelected() const { return chartsSelected_; }
+  std::string chartsSelectedChartId() const;
+  // Highlighted row in the open selection list (the popup). While the pilot
+  // scrolls the list this differs from chartsSelected() until ENT commits it.
+  int chartsPending() const { return chartsPending_; }
+  // Day/night chart variant (Info softkey toggles; Chart Setup on the real unit).
+  bool chartsNight() const { return chartsNight_; }
+
   // True when a modal MFD interaction owns the FMS knob (Direct-To, FPL edit,
-  // WPT ident entry, map pointer, SimBrief ID entry).
+  // WPT ident entry, map pointer).
   bool blocksRadioBezel() const;
 
   // Published approaches for an airport ICAO (from the nav database).
@@ -556,6 +780,18 @@ class MfdController {
   using ProcApproachField = avionics::ProcApproachField;
 
   bool procMenuOpen() const { return procMenuOpen_; }
+  // "Fly Course Reversal at <fix>?" prompt shown after loading an approach via
+  // an IAF that has a HILPT course reversal (overlays the page until answered).
+  bool courseReversalPromptActive() const {
+    return procMenu_.courseReversalPromptActive;
+  }
+  const std::string& courseReversalPromptFix() const {
+    return procMenu_.courseReversalFix;
+  }
+  bool courseReversalPromptYes() const { return procMenu_.courseReversalYes; }
+  // Mutable procedure-menu state, used by the engine to mirror the course-
+  // reversal prompt onto the peer GDU.
+  ProcedureMenuState& procedureMenuStateRef() { return procMenu_; }
   bool procSelectMode() const { return procMenu_.mode == ProcMode::Select; }
   // Approach-loading map preview range: the preview auto-frames the highlighted
   // procedure until the user turns the RANGE knob, after which the manually
@@ -586,12 +822,31 @@ class MfdController {
   std::vector<std::string> procListItems() const;
   bool procSubListOpen() const { return procMenu_.subListOpen; }
   ProcApproachField procApproachField() const { return procMenu_.approachField; }
+  bool procAirportEntryActive() const { return procMenu_.airportEntry.active; }
+  std::string procAirportEntryIdent() const {
+    return procMenu_.airportEntry.ident();
+  }
+  int procAirportEntryCursor() const { return procMenu_.airportEntry.pos; }
+  int procAirportEntryTypedCount() const {
+    return procMenu_.airportEntry.typedCount();
+  }
+  bool procAirportEntrySelectAll() const {
+    return procMenu_.airportEntry.selectAll;
+  }
+  bool procAirportEntryHasMatch() const {
+    return procMenu_.airportEntry.hasMatch;
+  }
+  MapFeature procAirportEntryMatch() const {
+    return procMenu_.airportEntry.match;
+  }
+  std::string procAirportEntryCityLine() const;
   std::string procAirportCityLine() const;
   std::string procAirportNameLine() const;
   MapFeature procAirportFeature() const;
   std::string procApproachDisplayName(int index) const;
   std::string procSelectedApproachDisplay() const;
   std::string procSelectedTransitionDisplay() const;
+  std::string procSelectedRunwayDisplay() const;
   float procPrimaryFreqMhz() const;
   bool procPrimaryNavIsNdb() const;
   bool procShowsPrimaryNavFreq() const;
@@ -623,6 +878,15 @@ class MfdController {
     MapDeclutter,        // cycle the Navigation Map declutter (Detail) level
     OpenMapSettings,     // open the Map Settings window (Fig. 5-7)
     FplDeleteFlightPlan, // open the Delete Flight Plan confirmation
+    ChartsFullScreen,    // Chart Setup: toggle the full-screen chart view
+    ChartsColorScheme,   // Chart Setup: toggle day/night color scheme
+    // Flight Plan Catalog page menu (Pilot's Guide, Flight Plan Storage).
+    CatalogCreateNew,      // add a new (empty) stored flight plan
+    CatalogActivate,       // open "activate stored flight plan?" confirmation
+    CatalogInvertActivate, // open "invert and activate stored flight plan?"
+    CatalogCopy,           // copy the selected stored plan to a new slot
+    CatalogDelete,         // open the "delete flight plan?" confirmation
+    CatalogDeleteAll,      // open the "delete all flight plans?" confirmation
   };
   struct PageMenuItem {
     std::string text;
@@ -715,9 +979,6 @@ class MfdController {
   void checklistEnter();
   // CLR on the Checklist page: uncheck the cursor item.
   void checklistClear();
-  // Apply a softkey press while SimBrief Pilot ID digit entry is active
-  // (digits append, BKSP erases, Back abandons the entry).
-  void simbriefEntryKey(int key);
 
   // Step the page group with the large FMS knob, cycling MAP/WPT/AUX/NRST
   // (the FPL and Checklist groups are entered with their own keys, as on the
@@ -730,6 +991,12 @@ class MfdController {
   // Procedures window (PROC key): build the top-level menu on open, route the
   // FMS knob / ENT / CLR while it is open, and load / activate the selection.
   bool procBezelKey(BezelKey key);
+  // Modal "Fly Course Reversal?" prompt: owns the FMS knob / ENT / CLR while up.
+  bool courseReversalPromptBezelKey(BezelKey key);
+  // Modal hold Direct-To confirmation (Activate/Cancel) on a selected HOLD row.
+  bool holdActivatePromptBezelKey(BezelKey key);
+  void openHoldActivatePrompt(int legIndex);
+  void closeHoldActivatePrompt();
   void buildProcMenu();
   std::string procDefaultAirportIcao() const;
   ProcedureMenuHost procedureMenuHost();
@@ -765,12 +1032,22 @@ class MfdController {
   MapSetting mapSettingAtCursor(int cursor) const;
   // Reset every FPL interaction state (cursor, entry, menu, confirmation).
   void fplResetInteraction();
+  // ---- Flight Plan Catalog ----
+  // Bezel keys while the Flight Plan Catalog page is up: FMS push toggles the
+  // list cursor, the large knob scrolls slots, ENT activates the selection, the
+  // small knob falls through to FPL-group page stepping. Always consumes the
+  // routed keys, returning false only to let a key fall through to page nav.
+  bool catalogBezelKey(BezelKey key);
+  // Move the catalog selection by +/-1 (clamped), turning the cursor on.
+  void catalogStepSelection(int direction);
+  // Clamp the selection to the current catalog size.
+  void catalogClampSelection();
+  // Load a stored plan into the active flight plan and publish the edit.
+  void loadStoredPlanIntoActive(const PersistedFlightPlan& entry);
   // ENT in the FPL entry window: insert the matched waypoint before the cursor
   // row (append on the blank end slot) and advance the cursor.
   void fplCommitEntry();
   FmsWaypointEntry* activeWaypointEntry();
-  // Mark the edited plan for the shell to pick up.
-  void fplPublishEdit();
   void requestActivateFlightPlanLeg(int toLegIndex);
   // ---- VNAV altitude-constraint entry (ALT column) ----
   // Open the 5-digit entry over the given row, seeded with its constraint.
@@ -792,6 +1069,19 @@ class MfdController {
   // antenna tilt, or the bearing line when it is displayed (Pilot's Guide,
   // Radar Controls). The large knob falls through to page-group selection.
   bool radarBezelKey(BezelKey key);
+  // FMS knob handling while the AUX - Charts page is up: the small knob scrolls
+  // the chart list. Returns true only when it consumed the key (charts are
+  // present); otherwise the key falls through to normal page stepping.
+  bool chartsBezelKey(BezelKey key);
+  // True when either the origin or destination airport can be resolved (so the
+  // Charts page Origin/Dest softkeys are live).
+  bool chartsAnyAirportAvailable() const;
+  // Resolve the flight plan's origin / destination airport ICAO for charts
+  // (4-letter idents only); empty when none is available at that end.
+  std::string chartsOriginAirport() const;
+  std::string chartsDestinationAirport() const;
+  // Enter chart view on the WPT - Airport Information page (Charts softkey).
+  void selectChartsPage();
   void wptResetInteraction();
   void nrstResetInteraction();
   // Highlighted NRST list facility (airport / fix / NDB / VOR), or null.
@@ -854,6 +1144,9 @@ class MfdController {
   FmsWaypointEntry wptEntry_;
   MapFeature wptFeature_{};
   bool wptHasSelection_ = false;
+  // WPT - Airport Information sub-view (reset to Airport when the page is left
+  // or the selected airport changes, like chartViewActive_).
+  WptInfoView wptInfoView_ = WptInfoView::Airport;
 
   // NRST list cursor state.
   bool nrstCursorOn_ = false;
@@ -874,6 +1167,7 @@ class MfdController {
   // detects external plan changes, fplLastPublished_ keeps the source catching
   // up with our own edit from being mistaken for one.
   const NavFeatureSource* navSource_ = nullptr;
+  const StationWeatherSource* weatherSource_ = nullptr;
   const MapData* mapData_ = nullptr;  // latest synced map (ownship, features)
   std::string activeWaypoint_;        // FMS active leg TO ident (DTO default)
   std::vector<MapLeg> fplLegs_;
@@ -887,6 +1181,16 @@ class MfdController {
   int fplApproachLegStart_ = 0;
   int fplApproachLegCount_ = 0;
   std::string fplApproachHeaderLabel_;
+  MapProcedure fplLoadedDeparture_{};
+  int fplDepartureLegStart_ = 0;
+  int fplDepartureLegCount_ = 0;
+  std::string fplDepartureHeaderLabel_;
+  PersistedLoadedApproach persistedDepartureRestore_{};
+  MapProcedure fplLoadedArrival_{};
+  int fplArrivalLegStart_ = 0;
+  int fplArrivalLegCount_ = 0;
+  std::string fplArrivalHeaderLabel_;
+  PersistedLoadedApproach persistedArrivalRestore_{};
   PersistedLoadedApproach persistedApproachRestore_{};
   // Re-expand the CIFP approach once nav data is ready so the procedure's holds,
   // altitudes, and glidepath (not persisted per-leg) are re-attached after a
@@ -910,6 +1214,15 @@ class MfdController {
   FplConfirm fplConfirm_ = FplConfirm::None;
   bool fplConfirmOk_ = true;
   std::string fplRemoveIdent_;
+
+  // Flight Plan Catalog page state: the stored plans, the highlighted slot, the
+  // list cursor, the action confirmation window, and the shell re-persist latch.
+  FlightPlanCatalog catalog_;
+  int catalogSelected_ = 0;
+  bool catalogCursorOn_ = false;
+  CatalogConfirm catalogConfirm_ = CatalogConfirm::None;
+  bool catalogConfirmOk_ = true;
+  bool catalogDirty_ = false;
 
   // Page menu (MENU key) state: the option list built for the current page,
   // the highlighted row, and whether the popout is up.
@@ -943,24 +1256,74 @@ class MfdController {
   // Direct-To window state.
   bool dtoOpen_ = false;
   float dtoAnim_ = 0.0f;   // 0..1 open progress, eased by update()
-  bool dtoArmed_ = false;  // waypoint confirmed, ACTIVATE? highlighted
+  bool dtoArmed_ = false;  // waypoint confirmed, ACTIVATE? selectable
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;
+  bool dtoRequestHold_ = false;
   MapLeg dtoRequestTarget_;
+  bool holdActivatePromptActive_ = false;
+  bool holdActivatePromptActivate_ = true;
+  MapLeg holdActivatePromptLeg_;
   bool fplActivateLegPending_ = false;
   int fplActivateLegIndex_ = -1;
   bool dtoPreservePlan_ = false;
   int dtoPreserveLegIndex_ = -1;
   int dtoPreserveFplCursorRow_ = -1;
+  // True while this controller has driven the data source's (shared) Direct-To
+  // inset map query active. Multi-display shells run a PFD and an MFD engine off
+  // one data source; only the controller that requested the inset may relinquish
+  // it, so the PFD's dormant controller cannot clear the MFD popup's request.
+  bool insetQueryOwned_ = false;
 
-  // SimBrief page state. The pending ID is UI-only until ENT commits it; the
-  // fetch state itself lives in the shell (which owns the HTTPS client) and is
-  // mirrored here for rendering.
+  // SimBrief / Navigraph page state. The sign-in and fetch lifecycle lives in
+  // the shell (which owns the HTTPS client and token store) and is mirrored
+  // here for rendering; the softkeys post action latches the shell drains.
   SimBriefState simbriefState_;
-  std::string simbriefPilotId_;
-  std::string simbriefPendingId_;
-  bool simbriefIdEntry_ = false;
+  bool navigraphLoginRequested_ = false;
+  bool navigraphLogoutRequested_ = false;
   bool simbriefFetchRequested_ = false;
+  // Auto-start the device-authorization sign-in once per signed-out visit to the
+  // SimBrief page, so the QR + code appear without a manual Login press. Armed
+  // so exactly one device code is issued (not one request per frame).
+  bool navigraphAutoLoginArmed_ = false;
+  void updateNavigraphAutoLogin();
+
+  // Navigraph charts page state. The chart index + selected image come from the
+  // shell (which owns the Charts API client); selection, layout, and view mode
+  // are local UI state mirroring the NXi chart page (Pilot's Guide §8.3).
+  ChartsState chartsState_;
+  bool chartViewActive_ = false;       // WPT - Airport Info showing charts
+  MfdPageGroup groupBeforeCharts_ = MfdPageGroup::Map;  // for "Go Back"
+  ChartsMenu chartsMenu_ = ChartsMenu::Selection;
+  ChartsField chartsField_ = ChartsField::Airport;
+  ChartsViewMode chartsViewMode_ = ChartsViewMode::All;
+  ChartsCategoryFilter chartsCategoryFilter_ = ChartsCategoryFilter::Airport;
+  bool chartsFullScreen_ = false;
+  bool chartsShowMap_ = false;         // Chart softkey: nav map vs chart image
+  bool chartsFitWidth_ = false;        // CHRT Opt Fit WDTH base-fit mode
+  float chartsZoom_ = 1.0f;            // RANGE-joystick chart zoom (>= 1)
+  float chartsPanXFrac_ = 0.0f;        // pan offset, fraction of drawn width
+  float chartsPanYFrac_ = 0.0f;        // pan offset, fraction of drawn height
+  bool chartsUseDestination_ = true;  // Airport box: dest vs origin (entry seed)
+  int chartsSelected_ = 0;             // committed chart shown / downloaded
+  int chartsPending_ = 0;              // highlighted row in the open list popup
+  bool chartsNight_ = false;           // day/night chart variant
+  // Free ICAO entry on the Airport box and the resulting explicit airport. When
+  // chartsAirportOverride_ is set it wins over the flight-plan origin/dest in
+  // chartsDesiredAirport(), so any airport's charts can be pulled up.
+  FmsWaypointEntry chartsAirportEntry_;
+  std::string chartsAirportOverride_;
+  void chartsSelectCategory(ChartsCategoryFilter filter);
+  // Commit the highlighted popup row (chartsPending_) as the shown chart (ENT).
+  void chartsCommitSelection();
+  // Apply the typed Airport-box ident as the charts airport (ENT).
+  void chartsCommitAirportEntry();
+  // True when the chart index has at least one chart of the given category
+  // (greys the DP/STAR/APR/Info softkeys when none exists).
+  bool chartsHasCategory(ChartsCategoryFilter filter) const;
+  void chartsStepSelection(int delta);
+  // Reset zoom/pan/fit when the displayed chart changes.
+  void chartsResetView();
 
   std::array<std::string, kSoftkeyCount> labels_;
   std::array<float, kSoftkeyCount> press_{};

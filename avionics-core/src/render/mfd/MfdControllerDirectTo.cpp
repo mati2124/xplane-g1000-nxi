@@ -1,12 +1,60 @@
 #include "avionics/MfdController.h"
 
 #include "avionics/DataSource.h"
+#include "avionics/FplRouteEdit.h"
 #include "render/mfd/MfdPageSupport.h"
 
 // Direct-To window (Direct-To bezel key, Pilot's Guide 5.5): opens over any MFD
 // page pre-filled with the active (or FPL-selected) waypoint; the first ENT
 // confirms the waypoint and arms ACTIVATE?, the second engages the direct course.
+// Pressing Direct-To on a published HOLD row in the flight plan opens the compact
+// "Activate hold" confirmation instead (trainer FPL Direct-To hold).
 namespace avionics {
+
+void MfdController::openHoldActivatePrompt(int legIndex) {
+  if (legIndex < 0 || legIndex >= static_cast<int>(fplLegs_.size())) return;
+  const MapLeg& leg = fplLegs_[static_cast<std::size_t>(legIndex)];
+  if (!leg.hold.active) return;
+  holdActivatePromptLeg_ = leg;
+  holdActivatePromptActivate_ = true;
+  holdActivatePromptActive_ = true;
+  dtoOpen_ = false;
+  dtoArmed_ = false;
+  dtoEntry_.reset();
+}
+
+void MfdController::closeHoldActivatePrompt() {
+  holdActivatePromptActive_ = false;
+  holdActivatePromptLeg_ = {};
+  holdActivatePromptActivate_ = true;
+}
+
+bool MfdController::holdActivatePromptBezelKey(BezelKey key) {
+  if (!holdActivatePromptActive_) return false;
+  switch (key) {
+    case BezelKey::FmsOuterCw:
+    case BezelKey::FmsOuterCcw:
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      holdActivatePromptActivate_ = !holdActivatePromptActivate_;
+      return true;
+    case BezelKey::Ent:
+      if (holdActivatePromptActivate_) {
+        dtoRequestTarget_ = holdActivatePromptLeg_;
+        dtoRequestHold_ = true;
+        dtoRequestPending_ = true;
+      }
+      closeHoldActivatePrompt();
+      return true;
+    case BezelKey::Clr:
+    case BezelKey::FmsPush:
+    case BezelKey::DirectTo:
+      closeHoldActivatePrompt();
+      return true;
+    default:
+      return false;
+  }
+}
 
 void MfdController::openDirectToWindow(const std::string& initial) {
   dtoOpen_ = true;
@@ -65,13 +113,25 @@ void MfdController::directToOpen() {
   // Default destination (Pilot's Guide: the field defaults to the active
   // waypoint, or the highlighted flight-plan waypoint when one is selected).
   std::string initial;
-  const int legIdx = fplCursorLegIndex();
-  if (pageGroup_ == MfdPageGroup::FlightPlan && legIdx >= 0 &&
-      legIdx < static_cast<int>(fplLegs_.size())) {
-    dtoPreserveLegIndex_ = legIdx;
-    dtoPreserveFplCursorRow_ = fplCursorRow_;
-    dtoPreservePlan_ = true;
-    initial = fplLegs_[static_cast<std::size_t>(legIdx)].id;
+  if (pageGroup_ == MfdPageGroup::FlightPlan) {
+    FplRouteEdit edit{fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+                      fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+                      &fplApproachHeaderLabel_};
+    edit.directToActive = fplNavDirectToActive_;
+    edit.localDraft = fplLocalDraft_;
+    const std::string approachAirport = fplApproachAirportIcao();
+    if (fplCursorOnHoldRow(edit, approachAirport, FplCursorLayout::SectionRows)) {
+      openHoldActivatePrompt(fplCursorLegIndex());
+      dtoOpen_ = false;
+      return;
+    }
+    const int legIdx = fplCursorLegIndex();
+    if (legIdx >= 0 && legIdx < static_cast<int>(fplLegs_.size())) {
+      dtoPreserveLegIndex_ = legIdx;
+      dtoPreserveFplCursorRow_ = fplCursorRow_;
+      dtoPreservePlan_ = true;
+      initial = fplLegs_[static_cast<std::size_t>(legIdx)].id;
+    }
   } else if (!activeWaypoint_.empty()) {
     initial = activeWaypoint_;
   }
@@ -106,19 +166,13 @@ bool MfdController::directToBezelKey(BezelKey key) {
     return false;
   }
 
-  // Armed: the ACTIVATE? prompt is highlighted; ENT engages the direct course.
+  // Armed: ACTIVATE? is highlighted; ENT engages the direct course.
   if (dtoArmed_) {
     if (isMapRangePanBezelKey(key)) return false;
     if (key == BezelKey::Ent) {
-      if (dtoPreservePlan_ && dtoPreserveLegIndex_ >= 0 &&
-          dtoPreserveLegIndex_ < static_cast<int>(fplLegs_.size())) {
-        dtoRequestTarget_ =
-            fplLegs_[static_cast<std::size_t>(dtoPreserveLegIndex_)];
-      } else {
-        dtoRequestTarget_.lat = dtoEntry_.match.lat;
-        dtoRequestTarget_.lon = dtoEntry_.match.lon;
-        dtoRequestTarget_.id = dtoEntry_.match.id;
-      }
+      dtoRequestTarget_ = resolveDirectToTargetLeg(
+          dtoEntry_, dtoPreservePlan_, dtoPreserveLegIndex_, fplLegs_);
+      dtoRequestHold_ = false;
       dtoRequestPending_ = true;
       if (!dtoPreservePlan_) {
         fplLegs_.clear();
@@ -174,27 +228,44 @@ bool MfdController::directToBezelKey(BezelKey key) {
   }
 }
 
-bool MfdController::consumeDirectToRequest(MapLeg& out) {
+bool MfdController::consumeDirectToRequest(MapLeg& out, bool* flyHold) {
   if (!dtoRequestPending_) return false;
   dtoRequestPending_ = false;
   out = dtoRequestTarget_;
+  if (flyHold != nullptr) *flyHold = dtoRequestHold_;
+  dtoRequestHold_ = false;
   return true;
 }
 
 void MfdController::applyDirectToInsetToDataSource(DataSource& source,
                                                    const MapData& map) {
-  if (!dtoOpen_ || !dtoEntry_.hasMatch) {
-    source.setInsetMapQuery(false, 0.0, 0.0, 0.0f, 0.0f);
+  // Direct-To and FPL waypoint-entry popups both draw an inset map centered on
+  // the matched target using insetLandLines from the data source.
+  const MapFeature* wpt = nullptr;
+  if (dtoOpen_ && dtoEntry_.hasMatch) {
+    wpt = &dtoEntry_.match;
+  } else if (fplEntry_.active && fplEntry_.hasMatch) {
+    wpt = &fplEntry_.match;
+  }
+  MapFeature geo;
+  if (wpt != nullptr) geo = mfd::resolveWaypointGeo(map, *wpt);
+  if (wpt == nullptr || !mfd::mapFeatureHasGeo(geo)) {
+    // Only relinquish the shared inset query if this controller currently owns
+    // it. In a multi-display shell the PFD and MFD run separate engines off one
+    // data source, and the PFD engine's dormant controller would otherwise
+    // clear the inset the MFD's Direct-To/FPL popup just requested -- leaving
+    // the popup map as blank ocean.
+    if (insetQueryOwned_) {
+      source.setInsetMapQuery(false, 0.0, 0.0, 0.0f, 0.0f);
+      insetQueryOwned_ = false;
+    }
     return;
   }
-  const MapFeature& wpt = dtoEntry_.match;
-  if (wpt.lat == 0.0 && wpt.lon == 0.0) {
-    source.setInsetMapQuery(false, 0.0, 0.0, 0.0f, 0.0f);
-    return;
-  }
-  const float rangeNm = mfd::directToInsetRangeNm(map, wpt);
-  const float halfExtent = mfd::directToInsetViewHalfExtentNm(rangeNm);
-  source.setInsetMapQuery(true, wpt.lat, wpt.lon, rangeNm, halfExtent, wpt.id);
+  const mfd::DirectToInsetView dv = mfd::directToInsetView(map, geo);
+  const float halfExtent = mfd::directToInsetViewHalfExtentNm(dv.rangeNm);
+  source.setInsetMapQuery(true, dv.centerLat, dv.centerLon, dv.rangeNm,
+                          halfExtent, geo.id);
+  insetQueryOwned_ = true;
 }
 
 }  // namespace avionics

@@ -3,7 +3,7 @@
 namespace avionics::mapview {
 
 void drawOwnshipSymbol(Renderer& r, float cx, float cy, float size,
-                       float rotationDeg) {
+                       float rotationDeg, const Color& fillColor) {
   // Drawn as the G1000 NXi top-down airplane silhouette (a single-engine plan
   // view: nose, main wing forward, horizontal stabilizer near the tail,
   // fuselage spine), filled white with a dark outline so it reads over any map
@@ -45,7 +45,7 @@ void drawOwnshipSymbol(Renderer& r, float cx, float cy, float size,
   r.save();
   r.translate(cx, cy);
   r.rotateDegrees(rotationDeg);
-  r.fillPolygon(body, kCount, colors::kWhite);
+  r.fillPolygon(body, kCount, fillColor);
   r.strokePolyline(outline, kCount + 1, 1.2f, colors::kMapSymbolOutline);
   r.restore();
 }

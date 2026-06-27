@@ -516,9 +516,17 @@ enum class FplDisplayRowKind {
   EnrouteBlank,
   EnrouteLeg,
   Destination,
+  DepartureHeader,
+  DepartureLeg,
+  ArrivalHeader,
+  ArrivalLeg,
   SepDash,
   ApproachHeader,
   ApproachLeg,
+  // Published hold (HILPT/hold-in-lieu) shown on its own line below its fix,
+  // matching the trainer FPL list ("HOLD" with the inbound course / leg length).
+  // legIndex points at the parent fix leg that carries the hold.
+  Hold,
 };
 
 
@@ -540,6 +548,14 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
     bool blankOriginSection, bool destinationFilled) {
 
   std::vector<FplDisplayRow> rows;
+
+  // A published hold renders as its own "HOLD" line directly below its fix.
+  const auto pushHoldRowIfPresent = [&](int legIdx) {
+    if (legIdx < 0 || legIdx >= static_cast<int>(legs.size())) return;
+    if (legs[static_cast<std::size_t>(legIdx)].hold.active) {
+      rows.push_back({FplDisplayRowKind::Hold, legIdx});
+    }
+  };
 
   const int sectionLegCount =
       blankOriginSection ? 0 : fplEnrouteDisplayLegCount(legs, approachStart);
@@ -593,6 +609,7 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
           break;
         }
         rows.push_back({FplDisplayRowKind::EnrouteLeg, sr.legIndex});
+        pushHoldRowIfPresent(sr.legIndex);
 
         enrouteBlock = true;
 
@@ -626,6 +643,7 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
     const int legIdx = approachStart + i;
     if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
     rows.push_back({FplDisplayRowKind::ApproachLeg, legIdx});
+    pushHoldRowIfPresent(legIdx);
 
   }
 
@@ -681,6 +699,12 @@ inline bool fplApproachDisplayRowSelectable(FplDisplayRowKind kind) {
     case FplDisplayRowKind::SepDash:
 
     case FplDisplayRowKind::ApproachLeg:
+
+    case FplDisplayRowKind::Hold:
+
+    case FplDisplayRowKind::DepartureLeg:
+
+    case FplDisplayRowKind::ArrivalLeg:
 
       return true;
 
@@ -811,6 +835,22 @@ inline int fplApproachDisplayRowIndexForLegIndex(
   return -1;
 }
 
+inline int fplApproachDisplayRowIndexForHoldLegIndex(
+    int legIndex, const std::vector<MapLeg>& legs, int approachStart,
+    int approachCount, bool blankOriginSection, bool destinationFilled) {
+  if (legIndex < 0) return -1;
+  const auto rows =
+      fplApproachDisplayRowList(legs, approachStart, approachCount,
+                                blankOriginSection, destinationFilled);
+  for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+    const FplDisplayRow& dr = rows[static_cast<std::size_t>(i)];
+    if (dr.kind == FplDisplayRowKind::Hold && dr.legIndex == legIndex) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 
 
 inline int fplApproachLegIndexForSelectable(int selectableRow,
@@ -855,6 +895,27 @@ inline int fplApproachSelectableRowForLegIndex(
     if (fplApproachLegIndexForSelectable(sel, legs, approachStart, approachCount,
                                          blankOriginSection,
                                          destinationFilled) == legIndex) {
+      return sel;
+    }
+  }
+  return -1;
+}
+
+// Selectable row index for the HOLD line beneath a fix (not the fix row itself).
+inline int fplApproachSelectableRowForHoldLegIndex(
+    int legIndex, const std::vector<MapLeg>& legs, int approachStart,
+    int approachCount, bool blankOriginSection, bool destinationFilled) {
+  if (legIndex < 0) return -1;
+  const int last = fplApproachSelectableCount(
+                       legs, approachStart, approachCount, blankOriginSection,
+                       destinationFilled) -
+                   1;
+  for (int sel = 0; sel <= last; ++sel) {
+    const FplDisplayRow* dr = fplApproachSelectableRow(
+        sel, legs, approachStart, approachCount, blankOriginSection,
+        destinationFilled);
+    if (dr != nullptr && dr->kind == FplDisplayRowKind::Hold &&
+        dr->legIndex == legIndex) {
       return sel;
     }
   }
@@ -911,12 +972,269 @@ inline int fplApproachInsertIndexForSelectable(int selectableRow,
 
       return dr->legIndex >= 0 ? dr->legIndex : approachStart;
 
+    case FplDisplayRowKind::Hold:
+
+      return dr->legIndex >= 0 ? dr->legIndex : approachStart;
+
     default:
 
       return approachStart;
 
   }
 
+}
+
+
+
+inline bool fplLegInProcedureBlock(int legIndex, int blockStart, int blockCount) {
+  return blockCount > 0 && legIndex >= blockStart &&
+         legIndex < blockStart + blockCount;
+}
+
+
+
+inline std::vector<int> fplProcedureEnrouteLegIndices(
+    int legCount, int depStart, int depCount, int arrStart, int arrCount,
+    int approachStart, int approachCount) {
+  std::vector<int> out;
+  if (legCount < 2) return out;
+  const int lastEnroute = legCount - 2;
+  for (int i = 1; i <= lastEnroute; ++i) {
+    if (fplLegInProcedureBlock(i, depStart, depCount)) continue;
+    if (fplLegInProcedureBlock(i, arrStart, arrCount)) continue;
+    if (fplLegInProcedureBlock(i, approachStart, approachCount)) continue;
+    out.push_back(i);
+  }
+  return out;
+}
+
+
+
+inline bool fplUsesProcedureDisplayRows(const std::string& departureHeader,
+                                         int departureCount,
+                                         const std::string& arrivalHeader,
+                                         int arrivalCount, int approachCount) {
+  return !departureHeader.empty() || departureCount > 0 ||
+         !arrivalHeader.empty() || arrivalCount > 0 || approachCount > 0;
+}
+
+
+
+inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
+    const std::vector<MapLeg>& legs, int depStart, int depCount,
+    const std::string& departureHeader, int arrStart, int arrCount,
+    const std::string& arrivalHeader, int approachStart, int approachCount,
+    bool blankOriginSection, bool destinationFilled) {
+  if (departureHeader.empty() && depCount <= 0 && arrivalHeader.empty() &&
+      arrCount <= 0 && approachCount > 0) {
+    return buildFplApproachDisplayRows(legs, approachStart, approachCount,
+                                      blankOriginSection, destinationFilled);
+  }
+
+  if (departureHeader.empty() && depCount <= 0 && arrivalHeader.empty() &&
+      arrCount <= 0 && approachCount <= 0) {
+    return {};
+  }
+
+  std::vector<FplDisplayRow> rows;
+  const auto pushHoldRowIfPresent = [&](int legIdx) {
+    if (legIdx < 0 || legIdx >= static_cast<int>(legs.size())) return;
+    if (legs[static_cast<std::size_t>(legIdx)].hold.active) {
+      rows.push_back({FplDisplayRowKind::Hold, legIdx});
+    }
+  };
+
+  const bool hasDeparture = !departureHeader.empty() || depCount > 0;
+  const bool hasArrival = !arrivalHeader.empty() || arrCount > 0;
+
+  if (hasDeparture) {
+    if (!departureHeader.empty()) {
+      rows.push_back({FplDisplayRowKind::DepartureHeader, -1});
+    }
+    for (int i = 0; i < depCount; ++i) {
+      const int legIdx = depStart + i;
+      if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
+      rows.push_back({FplDisplayRowKind::DepartureLeg, legIdx});
+      pushHoldRowIfPresent(legIdx);
+    }
+  } else if (!blankOriginSection) {
+    rows.push_back({FplDisplayRowKind::Origin, legs.empty() ? -1 : 0});
+    if (legs.empty()) {
+      rows.push_back({FplDisplayRowKind::OriginBlank, -1});
+    }
+  }
+
+  rows.push_back({FplDisplayRowKind::EnrouteLabel, -1});
+  const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
+      static_cast<int>(legs.size()), depStart, depCount, arrStart, arrCount,
+      approachStart, approachCount);
+  if (enrouteLegs.empty()) {
+    rows.push_back({FplDisplayRowKind::EnrouteBlank, -1});
+  } else {
+    for (const int legIdx : enrouteLegs) {
+      if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
+      rows.push_back({FplDisplayRowKind::EnrouteLeg, legIdx});
+      pushHoldRowIfPresent(legIdx);
+    }
+  }
+
+  if (hasArrival) {
+    rows.push_back({FplDisplayRowKind::SepDash, -1});
+    if (!arrivalHeader.empty()) {
+      rows.push_back({FplDisplayRowKind::ArrivalHeader, -1});
+    }
+    for (int i = 0; i < arrCount; ++i) {
+      const int legIdx = arrStart + i;
+      if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
+      rows.push_back({FplDisplayRowKind::ArrivalLeg, legIdx});
+      pushHoldRowIfPresent(legIdx);
+    }
+  } else if (destinationFilled && legs.size() >= 2 && approachCount <= 0) {
+    const FplSectionLayout layout =
+        fplSectionLayout(static_cast<int>(legs.size()), destinationFilled);
+    if (layout.destLegIndex >= 0 && legs.size() >= 2) {
+      rows.push_back({FplDisplayRowKind::Destination, layout.destLegIndex});
+    }
+  }
+
+  if (approachCount > 0) {
+    rows.push_back({FplDisplayRowKind::SepDash, -1});
+    rows.push_back({FplDisplayRowKind::ApproachHeader, -1});
+    for (int i = 0; i < approachCount; ++i) {
+      const int legIdx = approachStart + i;
+      if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
+      rows.push_back({FplDisplayRowKind::ApproachLeg, legIdx});
+      pushHoldRowIfPresent(legIdx);
+    }
+  }
+
+  return rows;
+}
+
+
+
+inline bool fplProcedureDisplayRowSelectable(FplDisplayRowKind kind) {
+  return fplApproachDisplayRowSelectable(kind);
+}
+
+
+
+inline std::vector<FplDisplayRow> fplProcedureDisplayRowList(
+    const std::vector<MapLeg>& legs, int depStart, int depCount,
+    const std::string& departureHeader, int arrStart, int arrCount,
+    const std::string& arrivalHeader, int approachStart, int approachCount,
+    bool blankOriginSection, bool destinationFilled) {
+  return buildFplProcedureDisplayRows(
+      legs, depStart, depCount, departureHeader, arrStart, arrCount,
+      arrivalHeader, approachStart, approachCount, blankOriginSection,
+      destinationFilled);
+}
+
+
+
+inline int fplProcedureSelectableCount(const std::vector<MapLeg>& legs,
+                                       int depStart, int depCount,
+                                       const std::string& departureHeader,
+                                       int arrStart, int arrCount,
+                                       const std::string& arrivalHeader,
+                                       int approachStart, int approachCount,
+                                       bool blankOriginSection,
+                                       bool destinationFilled) {
+  int count = 0;
+  for (const FplDisplayRow& dr : fplProcedureDisplayRowList(
+           legs, depStart, depCount, departureHeader, arrStart, arrCount,
+           arrivalHeader, approachStart, approachCount, blankOriginSection,
+           destinationFilled)) {
+    if (fplProcedureDisplayRowSelectable(dr.kind)) ++count;
+  }
+  return count;
+}
+
+
+
+inline const FplDisplayRow* fplProcedureSelectableRow(
+    int selectableRow, const std::vector<MapLeg>& legs, int depStart,
+    int depCount, const std::string& departureHeader, int arrStart,
+    int arrCount, const std::string& arrivalHeader, int approachStart,
+    int approachCount, bool blankOriginSection, bool destinationFilled) {
+  static FplDisplayRow scratch;
+  int sel = 0;
+  for (const FplDisplayRow& dr : fplProcedureDisplayRowList(
+           legs, depStart, depCount, departureHeader, arrStart, arrCount,
+           arrivalHeader, approachStart, approachCount, blankOriginSection,
+           destinationFilled)) {
+    if (!fplProcedureDisplayRowSelectable(dr.kind)) continue;
+    if (sel == selectableRow) return &dr;
+    ++sel;
+  }
+  scratch = {};
+  return &scratch;
+}
+
+
+
+inline int fplProcedureLegIndexForSelectable(
+    int selectableRow, const std::vector<MapLeg>& legs, int depStart,
+    int depCount, const std::string& departureHeader, int arrStart,
+    int arrCount, const std::string& arrivalHeader, int approachStart,
+    int approachCount, bool blankOriginSection, bool destinationFilled) {
+  const FplDisplayRow* dr = fplProcedureSelectableRow(
+      selectableRow, legs, depStart, depCount, departureHeader, arrStart,
+      arrCount, arrivalHeader, approachStart, approachCount, blankOriginSection,
+      destinationFilled);
+  if (dr == nullptr || !fplProcedureDisplayRowSelectable(dr->kind)) return -1;
+  if (dr->kind == FplDisplayRowKind::OriginBlank ||
+      dr->kind == FplDisplayRowKind::EnrouteBlank ||
+      dr->kind == FplDisplayRowKind::SepDash) {
+    return -1;
+  }
+  return dr->legIndex;
+}
+
+
+
+inline int fplProcedureSelectableRowForLegIndex(
+    int legIndex, const std::vector<MapLeg>& legs, int depStart, int depCount,
+    const std::string& departureHeader, int arrStart, int arrCount,
+    const std::string& arrivalHeader, int approachStart, int approachCount,
+    bool blankOriginSection, bool destinationFilled) {
+  if (legIndex < 0) return -1;
+  const int last = fplProcedureSelectableCount(
+                       legs, depStart, depCount, departureHeader, arrStart,
+                       arrCount, arrivalHeader, approachStart, approachCount,
+                       blankOriginSection, destinationFilled) -
+                   1;
+  for (int sel = 0; sel <= last; ++sel) {
+    if (fplProcedureLegIndexForSelectable(
+            sel, legs, depStart, depCount, departureHeader, arrStart, arrCount,
+            arrivalHeader, approachStart, approachCount, blankOriginSection,
+            destinationFilled) == legIndex) {
+      return sel;
+    }
+  }
+  return -1;
+}
+
+
+
+inline int fplProcedureDisplayRowIndexForSelectable(
+    int selectableRow, const std::vector<MapLeg>& legs, int depStart,
+    int depCount, const std::string& departureHeader, int arrStart,
+    int arrCount, const std::string& arrivalHeader, int approachStart,
+    int approachCount, bool blankOriginSection, bool destinationFilled) {
+  int sel = 0;
+  const auto rows = fplProcedureDisplayRowList(
+      legs, depStart, depCount, departureHeader, arrStart, arrCount,
+      arrivalHeader, approachStart, approachCount, blankOriginSection,
+      destinationFilled);
+  for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+    if (!fplProcedureDisplayRowSelectable(rows[static_cast<std::size_t>(i)].kind)) {
+      continue;
+    }
+    if (sel == selectableRow) return i;
+    ++sel;
+  }
+  return 0;
 }
 
 

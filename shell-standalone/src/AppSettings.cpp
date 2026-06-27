@@ -4,7 +4,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <ostream>
 #include <string>
+
+#include "avionics/FlightPlanCatalog.h"
 
 namespace avionics {
 namespace {
@@ -12,7 +15,7 @@ namespace {
 constexpr const char* kAppDirName = "XPlaneAvionics";
 constexpr const char* kSettingsFileName = "settings.txt";
 constexpr const char* kKeyShowBezel = "showBezel";
-constexpr const char* kKeySimbriefPilotId = "simbriefPilotId";
+constexpr const char* kKeyNavigraphRefreshToken = "navigraphRefreshToken";
 constexpr const char* kKeyNavDataDir = "navDataDir";
 constexpr const char* kKeyShowWindowChrome = "showWindowChrome";
 constexpr const char* kKeyAlwaysOnTop = "alwaysOnTop";
@@ -41,6 +44,22 @@ constexpr const char* kKeyFplDestFilled = "fplDestFilled";
 constexpr const char* kKeyFplApproachStart = "fplApproachStart";
 constexpr const char* kKeyFplApproachCount = "fplApproachCount";
 constexpr const char* kKeyFplApproachAirport = "fplApproachAirport";
+constexpr const char* kKeyFplDepStart = "fplDepStart";
+constexpr const char* kKeyFplDepCount = "fplDepCount";
+constexpr const char* kKeyFplDepActive = "fplDepActive";
+constexpr const char* kKeyFplDepAirport = "fplDepAirport";
+constexpr const char* kKeyFplDepType = "fplDepType";
+constexpr const char* kKeyFplDepName = "fplDepName";
+constexpr const char* kKeyFplDepTransition = "fplDepTransition";
+constexpr const char* kKeyFplDepRunway = "fplDepRunway";
+constexpr const char* kKeyFplArrStart = "fplArrStart";
+constexpr const char* kKeyFplArrCount = "fplArrCount";
+constexpr const char* kKeyFplArrActive = "fplArrActive";
+constexpr const char* kKeyFplArrAirport = "fplArrAirport";
+constexpr const char* kKeyFplArrType = "fplArrType";
+constexpr const char* kKeyFplArrName = "fplArrName";
+constexpr const char* kKeyFplArrTransition = "fplArrTransition";
+constexpr const char* kKeyFplArrRunway = "fplArrRunway";
 constexpr const char* kKeyDtoActive = "dtoActive";
 constexpr const char* kKeyDtoTarget = "dtoTarget";
 constexpr const char* kKeyDtoOriginLat = "dtoOriginLat";
@@ -110,6 +129,78 @@ std::string FormatPersistedFlightPlanLeg(const MapLeg& leg) {
   return std::string(buf);
 }
 
+bool ParseBool(const std::string& value, bool fallback);
+
+void ApplyPersistedProcedureMetaField(PersistedLoadedApproach& meta,
+                                      const std::string& field,
+                                      const std::string& value) {
+  if (field == "Active") {
+    meta.active = ParseBool(value, meta.active);
+  } else if (field == "Airport") {
+    meta.airportIcao = value;
+  } else if (field == "Type") {
+    try {
+      const int t = std::stoi(value);
+      if (t >= 0 && t <= 2) {
+        meta.type = static_cast<ProcedureType>(t);
+      }
+    } catch (...) {
+    }
+  } else if (field == "Name") {
+    meta.name = value;
+  } else if (field == "Transition") {
+    meta.transition = value;
+  } else if (field == "Runway") {
+    meta.runway = value;
+  } else if (field == "Kind") {
+    meta.approachKind = value;
+  } else if (field == "Los") {
+    meta.levelOfService = value;
+  }
+}
+
+void WritePersistedProcedureMeta(std::ostream& out, const char* prefix,
+                                 const PersistedLoadedApproach& meta) {
+  out << prefix << "Active=" << (meta.active ? '1' : '0') << '\n';
+  out << prefix << "Airport=" << meta.airportIcao << '\n';
+  out << prefix << "Type=" << static_cast<int>(meta.type) << '\n';
+  out << prefix << "Name=" << meta.name << '\n';
+  out << prefix << "Transition=" << meta.transition << '\n';
+  out << prefix << "Runway=" << meta.runway << '\n';
+  out << prefix << "Kind=" << meta.approachKind << '\n';
+  out << prefix << "Los=" << meta.levelOfService << '\n';
+}
+
+bool CatalogEntryHasTerminalProcedureMeta(const PersistedFlightPlan& entry) {
+  return entry.departureMeta.active || entry.departureLegCount > 0 ||
+         entry.arrivalMeta.active || entry.arrivalLegCount > 0 ||
+         entry.approachLegCount > 0 || entry.approachMeta.active;
+}
+
+void WriteCatalogTerminalProcedureMeta(std::ostream& out, std::size_t index,
+                                       const PersistedFlightPlan& entry) {
+  if (entry.departureMeta.active || entry.departureLegCount > 0) {
+    out << "fplCat" << index << "DepStart=" << entry.departureLegStart << '\n';
+    out << "fplCat" << index << "DepCount=" << entry.departureLegCount << '\n';
+    WritePersistedProcedureMeta(out, ("fplCat" + std::to_string(index) + "Dep").c_str(),
+                                entry.departureMeta);
+  }
+  if (entry.arrivalMeta.active || entry.arrivalLegCount > 0) {
+    out << "fplCat" << index << "ArrStart=" << entry.arrivalLegStart << '\n';
+    out << "fplCat" << index << "ArrCount=" << entry.arrivalLegCount << '\n';
+    WritePersistedProcedureMeta(out, ("fplCat" + std::to_string(index) + "Arr").c_str(),
+                                entry.arrivalMeta);
+  }
+  if (entry.approachLegCount > 0 || entry.approachMeta.active) {
+    out << "fplCat" << index << "ApprStart=" << entry.approachLegStart << '\n';
+    out << "fplCat" << index << "ApprCount=" << entry.approachLegCount << '\n';
+    out << "fplCat" << index << "ApprAirport=" << entry.approachAirportIcao
+        << '\n';
+    WritePersistedProcedureMeta(out, ("fplCat" + std::to_string(index) + "Appr").c_str(),
+                                entry.approachMeta);
+  }
+}
+
 // Per-user config directory, following each platform's convention. Empty when
 // the environment does not point anywhere sensible (settings then no-op).
 std::filesystem::path ConfigDir() {
@@ -177,8 +268,8 @@ AppSettings LoadAppSettings() {
     const std::string value = line.substr(eq + 1);
     if (key == kKeyShowBezel) {
       settings.showBezel = ParseBool(value, settings.showBezel);
-    } else if (key == kKeySimbriefPilotId) {
-      settings.simbriefPilotId = value;
+    } else if (key == kKeyNavigraphRefreshToken) {
+      settings.navigraphRefreshToken = value;
     } else if (key == kKeyNavDataDir) {
       settings.navDataDir = value;
     } else if (key == kKeyShowWindowChrome) {
@@ -264,6 +355,62 @@ AppSettings LoadAppSettings() {
       }
     } else if (key == kKeyFplApproachAirport) {
       settings.persistedFlightPlan.approachAirportIcao = value;
+    } else if (key == kKeyFplDepStart) {
+      try {
+        settings.persistedFlightPlan.departureLegStart = std::stoi(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyFplDepCount) {
+      try {
+        settings.persistedFlightPlan.departureLegCount = std::stoi(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyFplDepActive) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.departureMeta,
+                                       "Active", value);
+    } else if (key == kKeyFplDepAirport) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.departureMeta,
+                                       "Airport", value);
+    } else if (key == kKeyFplDepType) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.departureMeta,
+                                       "Type", value);
+    } else if (key == kKeyFplDepName) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.departureMeta,
+                                       "Name", value);
+    } else if (key == kKeyFplDepTransition) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.departureMeta,
+                                       "Transition", value);
+    } else if (key == kKeyFplDepRunway) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.departureMeta,
+                                       "Runway", value);
+    } else if (key == kKeyFplArrStart) {
+      try {
+        settings.persistedFlightPlan.arrivalLegStart = std::stoi(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyFplArrCount) {
+      try {
+        settings.persistedFlightPlan.arrivalLegCount = std::stoi(value);
+      } catch (...) {
+      }
+    } else if (key == kKeyFplArrActive) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.arrivalMeta,
+                                       "Active", value);
+    } else if (key == kKeyFplArrAirport) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.arrivalMeta,
+                                       "Airport", value);
+    } else if (key == kKeyFplArrType) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.arrivalMeta,
+                                       "Type", value);
+    } else if (key == kKeyFplArrName) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.arrivalMeta,
+                                       "Name", value);
+    } else if (key == kKeyFplArrTransition) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.arrivalMeta,
+                                       "Transition", value);
+    } else if (key == kKeyFplArrRunway) {
+      ApplyPersistedProcedureMetaField(settings.persistedFlightPlan.arrivalMeta,
+                                       "Runway", value);
     } else if (key == kKeyDtoActive) {
       settings.persistedDirectTo.active = ParseBool(value, false);
       if (!settings.persistedDirectTo.active) {
@@ -300,6 +447,80 @@ AppSettings LoadAppSettings() {
               std::move(leg);
         }
       }
+    } else if (key.rfind("fplCat", 0) == 0) {
+      // Stored Flight Plan Catalog entries. Keys: "fplCat<i>DestFilled" and
+      // "fplCat<i>Leg<j>" (the entry index <i> always carries a DestFilled key,
+      // so even an empty stored plan round-trips). Grow the catalog as needed.
+      const char* rest = key.c_str() + 6;
+      char* after = nullptr;
+      const long entryIdx = std::strtol(rest, &after, 10);
+      if (after != nullptr && after != rest && entryIdx >= 0 &&
+          entryIdx < kFlightPlanCatalogMaxPlans) {
+        const std::string sub(after);
+        if (settings.flightPlanCatalog.size() <=
+            static_cast<std::size_t>(entryIdx)) {
+          settings.flightPlanCatalog.resize(
+              static_cast<std::size_t>(entryIdx + 1));
+        }
+        PersistedFlightPlan& entry =
+            settings.flightPlanCatalog[static_cast<std::size_t>(entryIdx)];
+        entry.active = true;
+        if (sub == "DestFilled") {
+          entry.destinationFilled = ParseBool(value, false);
+        } else if (sub == "DepStart") {
+          try {
+            entry.departureLegStart = std::stoi(value);
+          } catch (...) {
+          }
+        } else if (sub == "DepCount") {
+          try {
+            entry.departureLegCount = std::stoi(value);
+          } catch (...) {
+          }
+        } else if (sub.rfind("Dep", 0) == 0 && sub.size() > 3) {
+          ApplyPersistedProcedureMetaField(entry.departureMeta, sub.substr(3),
+                                           value);
+        } else if (sub == "ArrStart") {
+          try {
+            entry.arrivalLegStart = std::stoi(value);
+          } catch (...) {
+          }
+        } else if (sub == "ArrCount") {
+          try {
+            entry.arrivalLegCount = std::stoi(value);
+          } catch (...) {
+          }
+        } else if (sub.rfind("Arr", 0) == 0 && sub.size() > 3) {
+          ApplyPersistedProcedureMetaField(entry.arrivalMeta, sub.substr(3),
+                                           value);
+        } else if (sub == "ApprStart") {
+          try {
+            entry.approachLegStart = std::stoi(value);
+          } catch (...) {
+          }
+        } else if (sub == "ApprCount") {
+          try {
+            entry.approachLegCount = std::stoi(value);
+          } catch (...) {
+          }
+        } else if (sub == "ApprAirport") {
+          entry.approachAirportIcao = value;
+        } else if (sub.rfind("Appr", 0) == 0 && sub.size() > 4) {
+          ApplyPersistedProcedureMetaField(entry.approachMeta, sub.substr(4),
+                                           value);
+        } else if (sub.rfind("Leg", 0) == 0) {
+          const int legIdx = std::atoi(sub.c_str() + 3);
+          if (legIdx >= 0 && legIdx < 256) {
+            MapLeg leg;
+            if (ParsePersistedFlightPlanLeg(value, leg)) {
+              if (entry.legs.size() <= static_cast<std::size_t>(legIdx)) {
+                entry.legs.resize(static_cast<std::size_t>(legIdx + 1));
+              }
+              entry.legs[static_cast<std::size_t>(legIdx)] = std::move(leg);
+            }
+          }
+        }
+      }
     } else {
       // Durable avionics display preferences are owned by the shared core, so
       // it parses its own keys; anything else is silently ignored.
@@ -316,6 +537,9 @@ AppSettings LoadAppSettings() {
     }
   }
   enrichPersistedFlightPlanFromLegs(settings.persistedFlightPlan);
+  for (PersistedFlightPlan& entry : settings.flightPlanCatalog) {
+    enrichPersistedFlightPlanFromLegs(entry);
+  }
   settings.loaded = true;
   return settings;
 }
@@ -330,7 +554,8 @@ void SaveAppSettings(const AppSettings& settings) {
   std::ofstream out(path, std::ios::trunc);
   if (!out.is_open()) return;
   out << kKeyShowBezel << '=' << (settings.showBezel ? '1' : '0') << '\n';
-  out << kKeySimbriefPilotId << '=' << settings.simbriefPilotId << '\n';
+  out << kKeyNavigraphRefreshToken << '=' << settings.navigraphRefreshToken
+      << '\n';
   out << kKeyNavDataDir << '=' << settings.navDataDir << '\n';
   out << kKeyShowWindowChrome << '='
       << (settings.showWindowChrome ? '1' : '0') << '\n';
@@ -390,11 +615,46 @@ void SaveAppSettings(const AppSettings& settings) {
     out << kKeyApproachLos << '='
         << settings.persistedApproach.levelOfService << '\n';
   }
+  if (settings.persistedFlightPlan.departureMeta.active ||
+      settings.persistedFlightPlan.departureLegCount > 0) {
+    out << kKeyFplDepStart << '='
+        << settings.persistedFlightPlan.departureLegStart << '\n';
+    out << kKeyFplDepCount << '='
+        << settings.persistedFlightPlan.departureLegCount << '\n';
+    WritePersistedProcedureMeta(out, "fplDep",
+                                settings.persistedFlightPlan.departureMeta);
+  }
+  if (settings.persistedFlightPlan.arrivalMeta.active ||
+      settings.persistedFlightPlan.arrivalLegCount > 0) {
+    out << kKeyFplArrStart << '='
+        << settings.persistedFlightPlan.arrivalLegStart << '\n';
+    out << kKeyFplArrCount << '='
+        << settings.persistedFlightPlan.arrivalLegCount << '\n';
+    WritePersistedProcedureMeta(out, "fplArr",
+                                settings.persistedFlightPlan.arrivalMeta);
+  }
   for (std::size_t i = 0; i < settings.persistedFlightPlan.legs.size(); ++i) {
     out << "fplLeg" << i << '='
         << FormatPersistedFlightPlanLeg(
                settings.persistedFlightPlan.legs[i])
         << '\n';
+  }
+  // Stored Flight Plan Catalog entries. Each entry writes a DestFilled key
+  // (so empty stored plans round-trip) plus one Leg key per leg.
+  for (std::size_t i = 0;
+       i < settings.flightPlanCatalog.size() &&
+       i < static_cast<std::size_t>(kFlightPlanCatalogMaxPlans);
+       ++i) {
+    const PersistedFlightPlan& entry = settings.flightPlanCatalog[i];
+    out << "fplCat" << i << "DestFilled="
+        << (entry.destinationFilled ? '1' : '0') << '\n';
+    if (CatalogEntryHasTerminalProcedureMeta(entry)) {
+      WriteCatalogTerminalProcedureMeta(out, i, entry);
+    }
+    for (std::size_t j = 0; j < entry.legs.size(); ++j) {
+      out << "fplCat" << i << "Leg" << j << '='
+          << FormatPersistedFlightPlanLeg(entry.legs[j]) << '\n';
+    }
   }
   if (settings.persistedDirectTo.active &&
       !settings.persistedDirectTo.target.id.empty()) {

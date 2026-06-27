@@ -8,6 +8,7 @@
 // menu that drives it is currently macOS-only.
 
 #include <string>
+#include <vector>
 
 #include "avionics/PersistentState.h"
 #include "avionics/FlightPlanPersistence.h"
@@ -29,9 +30,11 @@ struct AppSettings {
   // Whether the hardware bezel strips (right-hand key column + bottom softkey
   // row) are drawn around the avionics screen.
   bool showBezel = true;
-  // SimBrief account Pilot ID (digits only; empty = not configured). Entered
-  // on the MFD AUX - SIMBRIEF page and used to fetch the latest OFP.
-  std::string simbriefPilotId;
+  // Navigraph OAuth refresh token from the AUX - SIMBRIEF page sign-in (empty =
+  // signed out). Lets the SimBrief import restore the session on the next
+  // launch without the pilot signing in again. Single-use: rotated on every
+  // token refresh, so it is rewritten whenever the store hands back a new one.
+  std::string navigraphRefreshToken;
   // Directory holding a copied X-Plane nav-data tree (laid out like an install
   // root), used when no local X-Plane install is present so the moving map
   // works on a display-only PC. Empty = discover a local install as usual.
@@ -65,6 +68,9 @@ struct AppSettings {
   PersistedLoadedApproach persistedApproach;
   // Pilot-built flight plan kept in the avionics app (partial routes included).
   PersistedFlightPlan persistedFlightPlan;
+  // Stored flight plans shown on the FPL - Flight Plan Catalog page (imported
+  // SimBrief OFPs, copies, etc.). Each entry reuses the active-plan shape.
+  std::vector<PersistedFlightPlan> flightPlanCatalog;
   // Active GPS Direct-To (target + course origin), restored on next launch.
   PersistedDirectTo persistedDirectTo;
   // Dev-only Debug menu state (only meaningful when launched with --debug-menu,

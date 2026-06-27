@@ -96,6 +96,12 @@ void drawWaypointInformationWindow(Renderer& r, float w, float h, const Layout& 
                                    const SoftkeyController& ui);
 void drawProcWindow(Renderer& r, float w, float h, const Layout& L,
                     const SoftkeyController& ui);
+// "Fly Course Reversal at <fix>?" YES/NO prompt (HILPT load). Overlays any page.
+void drawCourseReversalPrompt(Renderer& r, float w, float h, const Layout& L,
+                              const SoftkeyController& ui);
+// "4.0NM hold-icon BOSTN" Activate/Cancel prompt (FPL Direct-To hold).
+void drawHoldActivatePrompt(Renderer& r, float w, float h, const Layout& L,
+                            const SoftkeyController& ui);
 void drawPfdSetupWindow(Renderer& r, float w, float h, const Layout& L,
                         const SoftkeyController& ui);
 void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,

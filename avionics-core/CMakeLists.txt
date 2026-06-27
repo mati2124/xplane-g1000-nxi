@@ -14,6 +14,8 @@ add_library(avionics-core STATIC
   src/MockDataSource.cpp
   src/PersistentState.cpp
   src/FlightPlanPersistence.cpp
+  src/FlightPlanCatalog.cpp
+  src/SimBriefOfpSupport.cpp
   src/ProcedureSupport.cpp
   src/ProcedureMenu.cpp
   src/GlidepathGuidance.cpp
@@ -66,14 +68,17 @@ add_library(avionics-core STATIC
   src/render/mfd/MfdWeatherRadarPage.cpp
   src/render/mfd/MfdWaypointPages.cpp
   src/render/mfd/MfdAuxPages.cpp
+  src/render/mfd/MfdChartsPage.cpp
   src/render/mfd/MfdNearestPages.cpp
   src/render/mfd/MfdFlightPlanPage.cpp
+  src/render/mfd/MfdFlightPlanCatalogPage.cpp
   src/render/mfd/MfdChecklistPage.cpp
   src/render/mfd/MultiFunctionDisplay.cpp
   src/nav/AptDatParser.cpp
   src/nav/AptDatGeometryCache.cpp
   src/nav/FmsWaypointEntry.cpp
   src/nav/CifpParser.cpp
+  src/nav/MetarParser.cpp
   src/nav/OpenAirParser.cpp
   src/nav/NearbyFeatureSelect.cpp
   src/nav/Terrain.cpp
@@ -126,6 +131,9 @@ add_library(avionics-core STATIC
   src/render/pfd/ChromePfdSetupWindow.cpp
   src/render/pfd/ChromeDirectToWindow.cpp
   src/render/pfd/ChromePageMenuWindow.cpp
+  # Vendored QR Code generator (Nayuki, MIT) used to draw the Navigraph
+  # device-authorization sign-in QR on the AUX - SIMBRIEF page.
+  third_party/qrcodegen/qrcodegen.c
 )
 
 # Generate avionics/Version.h from the release identity cache variables so the
@@ -136,9 +144,12 @@ configure_file(
   @ONLY)
 
 target_include_directories(avionics-core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include-patched
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_include_directories(avionics-core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(avionics-core PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/qrcodegen)
 target_compile_features(avionics-core PUBLIC cxx_std_17)
 target_compile_definitions(avionics-core PRIVATE
   AVIONICS_DEFAULT_EIS="${CMAKE_CURRENT_SOURCE_DIR}/assets/eis/c172s.eis"

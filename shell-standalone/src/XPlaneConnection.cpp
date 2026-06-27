@@ -1032,12 +1032,13 @@ std::vector<MapLeg> XPlaneConnection::displayedFlightPlan() const {
   return {};
 }
 
-void XPlaneConnection::setDirectTo(MapLeg target) {
+void XPlaneConnection::setDirectTo(MapLeg target, bool flyHold) {
   const std::string prevDirectToId = directTo_.id;
   const bool navActive = apModeStatus_[kApNav] == kApModeActive;
   bridgeDtoAdoptAttempted_ = true;
   directTo_ = std::move(target);
   directToActive_ = !directTo_.id.empty();
+  directToHold_ = flyHold && directToActive_;
   directToFmsProgrammed_ = false;
   if (directToActive_) {
     // Each Direct-To activation snapshots present position as the course origin.
@@ -1065,6 +1066,7 @@ void XPlaneConnection::setDirectTo(MapLeg target) {
   } else {
     directToOriginPending_ = false;
     directToOriginValid_ = false;
+    directToHold_ = false;
     clearFlightPlanRouteSlice(map_);
   }
   if (fmsWriteEnabled_) {
@@ -1158,11 +1160,13 @@ void XPlaneConnection::clearDirectTo() {
 
 void XPlaneConnection::releaseDirectToOverride() {
   directToActive_ = false;
+  directToHold_ = false;
   directToFmsProgrammed_ = false;
   directTo_ = {};
   directToOriginPending_ = false;
   directToOriginValid_ = false;
   map_.directToActive = false;
+  map_.directToHold = false;
   map_.directTo = {};
   map_.directToOriginValid = false;
 }
@@ -1224,6 +1228,7 @@ void XPlaneConnection::updateMap(double dtSeconds) {
   //      that works without the plugin installed.
   // Display-only Direct-To course (the live sim navigation is unchanged).
   map_.directToActive = directToActive_;
+  map_.directToHold = directToHold_;
   map_.directTo = directTo_;
   map_.directToOriginValid = directToOriginValid_;
   map_.directToOriginLat = directToOriginLat_;

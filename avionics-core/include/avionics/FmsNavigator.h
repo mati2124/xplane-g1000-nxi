@@ -66,9 +66,10 @@ class FmsNavigator {
   void setActiveLegIndex(int toLegIndex);
 
   void activateDirectTo(MapLeg target, double originLat, double originLon,
-                        bool originValid);
+                        bool originValid, bool flyHold = false);
   void clearDirectTo();
   bool directToActive() const { return directToActive_; }
+  bool directToHold() const { return directToHold_; }
   const MapLeg& directToTarget() const { return directTo_; }
   bool directToOriginValid() const { return directToOriginValid_; }
   double directToOriginLat() const { return directToOriginLat_; }
@@ -109,6 +110,7 @@ class FmsNavigator {
   bool obsMode_ = false;
 
   bool directToActive_ = false;
+  bool directToHold_ = false;
   MapLeg directTo_;
   double directToOriginLat_ = 0.0;
   double directToOriginLon_ = 0.0;

@@ -37,6 +37,21 @@ void drawWaypointNavaidPage(Renderer& r, const FlightData& d,
                             MapFeatureType type, float x, float y, float w,
                             float h, float displayH);
 
+// WPT - Airport Information procedure sub-pages (DP / STAR / APR softkeys):
+// a full procedure map preview on the left and the selector boxes
+// (Departure/Arrival/Approach, Runway, Transition, ...) over a Sequence leg
+// list on the right, pre-selecting the airport's first published procedure
+// read-only (NXi trainer apt_056..058).
+void drawWaypointProcedurePage(Renderer& r, const FlightData& d,
+                               const MapData& map, const MfdController& ui,
+                               ProcedureType type, float x, float y, float w,
+                               float h, float displayH);
+// WPT - Weather Information sub-page (WX softkey): the airport diagram on the
+// left with METAR and TAF group boxes on the right (NXi trainer apt_055).
+void drawWaypointWeatherPage(Renderer& r, const FlightData& d,
+                             const MapData& map, const MfdController& ui,
+                             float x, float y, float w, float h, float displayH);
+
 // AUX group.
 void drawTripPlanningPage(Renderer& r, const FlightData& d, const MapData& map,
                           float x, float y, float w, float h, float displayH);
@@ -59,6 +74,13 @@ void drawSystemStatusPage(Renderer& r, const FlightData& d, const MapData& map,
 void drawSimBriefPage(Renderer& r, const MfdController& ui, float x, float y,
                       float w, float h, float displayH);
 
+// Navigraph charts (AUX - Charts): NXi-style chart page with a full-width chart
+// image, optional right data window (Airport / Approach / Source), and CHRT Opt
+// view slices (Pilot's Guide §8.3). The shell owns the Charts API client.
+void drawChartsPage(Renderer& r, const FlightData& d, const MapData& map,
+                    const MfdController& ui, float x, float y, float w, float h,
+                    float displayH);
+
 // NRST group. The feature page renders Nearest Intersections/NDB/VOR
 // depending on the feature type requested.
 void drawNearestAirportsPage(Renderer& r, const FlightData& d,
@@ -75,8 +97,9 @@ void drawNearestAirspacesPage(Renderer& r, const FlightData& d,
 // Nearest Frequencies: ARTCC / FSS / WX frequency columns for the area
 // (Pilot's Guide, Section 5, NRST - Nearest Frequencies).
 void drawNearestFrequenciesPage(Renderer& r, const FlightData& d,
-                                const MapData& map, float x, float y, float w,
-                                float h, float displayH);
+                                const MapData& map, const MfdController& ui,
+                                float x, float y, float w, float h,
+                                float displayH);
 
 // FPL group. Renders the leg list with the controller's selection cursor and
 // the editing overlays (Waypoint Information entry, Remove/Delete
@@ -85,6 +108,13 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                               const MapData& map, MfdController& ui,
                               float x, float y, float w, float h,
                               float displayH);
+// FPL group - Flight Plan Catalog (2nd page): the navigation map on the left
+// and the stored-flight-plan catalog on the right (Used/Empty summary, the
+// stored plan list with a cursor, and the highlighted plan's info box). This is
+// where imported SimBrief OFPs land; Activate loads one into the active route.
+void drawFlightPlanCatalogPage(Renderer& r, const FlightData& d,
+                               const MapData& map, MfdController& ui, float x,
+                               float y, float w, float h, float displayH);
 
 // The GPS Direct-To window (Direct-To bezel key), drawn over the current MFD
 // page: the destination identifier entry, the resolved waypoint with its map

@@ -1,12 +1,60 @@
 #include "avionics/SoftkeyController.h"
 
+#include "avionics/FplRouteEdit.h"
 #include "avionics/NavMath.h"
 #include "avionics/render/BezelKeys.h"
 
 // Direct-To window (Direct-To bezel key, Pilot's Guide Fig. 5-45): opens over
 // the PFD blank for ident entry; the first ENT confirms the waypoint and arms
-// Activate?, the second engages the direct course.
+// Activate?, the second engages the direct course. Pressing Direct-To on a
+// published HOLD row in the flight plan opens the compact "Activate hold"
+// confirmation instead (trainer FPL Direct-To hold).
 namespace avionics {
+
+void SoftkeyController::openHoldActivatePrompt(int legIndex) {
+  if (legIndex < 0 || legIndex >= static_cast<int>(fplLegs_.size())) return;
+  const MapLeg& leg = fplLegs_[static_cast<std::size_t>(legIndex)];
+  if (!leg.hold.active) return;
+  holdActivatePromptLeg_ = leg;
+  holdActivatePromptActivate_ = true;
+  holdActivatePromptActive_ = true;
+  dtoOpen_ = false;
+  dtoArmed_ = false;
+  dtoEntry_.reset();
+}
+
+void SoftkeyController::closeHoldActivatePrompt() {
+  holdActivatePromptActive_ = false;
+  holdActivatePromptLeg_ = {};
+  holdActivatePromptActivate_ = true;
+}
+
+bool SoftkeyController::holdActivatePromptBezelKey(BezelKey key) {
+  if (!holdActivatePromptActive_) return false;
+  switch (key) {
+    case BezelKey::FmsOuterCw:
+    case BezelKey::FmsOuterCcw:
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      holdActivatePromptActivate_ = !holdActivatePromptActivate_;
+      return true;
+    case BezelKey::Ent:
+      if (holdActivatePromptActivate_) {
+        dtoRequestTarget_ = holdActivatePromptLeg_;
+        dtoRequestHold_ = true;
+        dtoRequestPending_ = true;
+      }
+      closeHoldActivatePrompt();
+      return true;
+    case BezelKey::Clr:
+    case BezelKey::FmsPush:
+    case BezelKey::DirectTo:
+      closeHoldActivatePrompt();
+      return true;
+    default:
+      return false;
+  }
+}
 
 void SoftkeyController::openDirectToWindow(const std::string& initial) {
   directToOpen(initial);
@@ -26,6 +74,21 @@ void SoftkeyController::directToOpen(const std::string& initial) {
 bool SoftkeyController::directToBezelKey(BezelKey key) {
   if (!dtoOpen_) {
     if (key != BezelKey::DirectTo) return false;
+    if (window_ == PfdWindow::FlightPlan) {
+      FplRouteEdit edit{
+          fplLegs_,           fplDestinationFilled_, fplApproachLegStart_,
+          fplApproachLegCount_, fplCursorRow_,         &fplLoadedApproach_,
+          nullptr};
+      edit.directToActive = mapDirectToActive();
+      edit.localDraft = fplLocalDraft_;
+      const std::string approachAirport = flightPlanApproachAirportIcao();
+      if (fplCursorOnHoldRow(edit, approachAirport, FplCursorLayout::SectionRows)) {
+        const int legIndex =
+            fplCursorLegIndex(edit, approachAirport, FplCursorLayout::SectionRows);
+        openHoldActivatePrompt(legIndex);
+        return true;
+      }
+    }
     dtoPreservePlan_ = false;
     dtoPreserveLegIndex_ = -1;
     std::string initial;
@@ -67,18 +130,12 @@ bool SoftkeyController::directToBezelKey(BezelKey key) {
     return false;
   }
 
-  // Armed: the Activate? prompt is highlighted; ENT engages the direct course.
+  // Armed: ACTIVATE? is highlighted; ENT engages the direct course.
   if (dtoArmed_) {
     if (key == BezelKey::Ent) {
-      if (dtoPreservePlan_ && dtoPreserveLegIndex_ >= 0 &&
-          dtoPreserveLegIndex_ < static_cast<int>(fplLegs_.size())) {
-        dtoRequestTarget_ =
-            fplLegs_[static_cast<std::size_t>(dtoPreserveLegIndex_)];
-      } else {
-        dtoRequestTarget_.lat = dtoEntry_.match.lat;
-        dtoRequestTarget_.lon = dtoEntry_.match.lon;
-        dtoRequestTarget_.id = dtoEntry_.match.id;
-      }
+      dtoRequestTarget_ = resolveDirectToTargetLeg(
+          dtoEntry_, dtoPreservePlan_, dtoPreserveLegIndex_, fplLegs_);
+      dtoRequestHold_ = false;
       dtoRequestPending_ = true;
       if (dtoPreservePlan_) {
         if (dtoPreserveLegIndex_ >= 0) {
@@ -148,10 +205,12 @@ float SoftkeyController::directToDistanceNm() const {
                                           dtoEntry_.match.lon));
 }
 
-bool SoftkeyController::consumeDirectToRequest(MapLeg& out) {
+bool SoftkeyController::consumeDirectToRequest(MapLeg& out, bool* flyHold) {
   if (!dtoRequestPending_) return false;
   dtoRequestPending_ = false;
   out = dtoRequestTarget_;
+  if (flyHold != nullptr) *flyHold = dtoRequestHold_;
+  dtoRequestHold_ = false;
   return true;
 }
 

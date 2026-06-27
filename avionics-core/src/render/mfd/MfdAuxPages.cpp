@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -11,9 +12,86 @@
 #include "render/mfd/MfdPageSupport.h"
 #include "render/mfd/MfdStyle.h"
 
+#include "qrcodegen.h"
+
 namespace avionics::mfd {
 
 namespace {
+
+// Cached QR texture. The verification code is stable for the lifetime of a
+// device-auth session, so the bitmap is rasterized once and redrawn as a single
+// textured quad. Drawing a QR as hundreds of individual filled rects every
+// frame swamps the GL driver with draw calls (it crashed the NVIDIA driver in
+// its async present thread); one image keeps it to a single draw call.
+struct QrTextureCache {
+  std::string text;
+  int sidePx = 0;
+  int imageId = -1;
+  Renderer* owner = nullptr;
+};
+QrTextureCache gQrCache;
+
+// Encodes `text` as a QR code and draws it centered in a white quiet-zone square
+// at (cx, cy), as large as fits within `maxSide`. Crisp integer module pixels,
+// rasterized to a cached image and drawn 1:1 (no scaling blur).
+// Returns the drawn square's side length (0 on encode failure / empty text).
+float drawQrCode(Renderer& r, const std::string& text, float cx, float cy,
+                 float maxSide) {
+  if (text.empty() || maxSide < 1.0f) return 0.0f;
+  static thread_local std::vector<std::uint8_t> qr(qrcodegen_BUFFER_LEN_MAX);
+  static thread_local std::vector<std::uint8_t> tmp(qrcodegen_BUFFER_LEN_MAX);
+  if (!qrcodegen_encodeText(text.c_str(), tmp.data(), qr.data(),
+                            qrcodegen_Ecc_MEDIUM, qrcodegen_VERSION_MIN,
+                            qrcodegen_VERSION_MAX, qrcodegen_Mask_AUTO,
+                            /*boostEcl=*/true)) {
+    return 0.0f;
+  }
+  const int modules = qrcodegen_getSize(qr.data());
+  const int quiet = 4;  // standard QR quiet zone (modules)
+  const int total = modules + quiet * 2;
+  int modulePx = static_cast<int>(std::floor(maxSide / static_cast<float>(total)));
+  if (modulePx < 1) modulePx = 1;
+  const int sidePx = modulePx * total;
+
+  // Rebuild the cached texture only when the code or its on-screen size changes.
+  const bool cacheValid = gQrCache.imageId >= 0 && gQrCache.owner == &r &&
+                          gQrCache.text == text && gQrCache.sidePx == sidePx;
+  if (!cacheValid) {
+    if (gQrCache.imageId >= 0 && gQrCache.owner == &r) {
+      r.deleteImage(gQrCache.imageId);
+    }
+    gQrCache = QrTextureCache{};
+    // White (opaque) background covers the quiet zone; paint dark modules black.
+    std::vector<unsigned char> rgba(
+        static_cast<std::size_t>(sidePx) * sidePx * 4, 255);
+    for (int my = 0; my < modules; ++my) {
+      for (int mx = 0; mx < modules; ++mx) {
+        if (!qrcodegen_getModule(qr.data(), mx, my)) continue;
+        const int px0 = (mx + quiet) * modulePx;
+        const int py0 = (my + quiet) * modulePx;
+        for (int py = py0; py < py0 + modulePx; ++py) {
+          unsigned char* row =
+              rgba.data() + (static_cast<std::size_t>(py) * sidePx + px0) * 4;
+          for (int px = 0; px < modulePx; ++px) {
+            row[0] = row[1] = row[2] = 0;  // RGB black, alpha stays 255
+            row += 4;
+          }
+        }
+      }
+    }
+    const int id = r.createImageRGBA(sidePx, sidePx, rgba.data());
+    if (id < 0) return 0.0f;
+    gQrCache.text = text;
+    gQrCache.sidePx = sidePx;
+    gQrCache.imageId = id;
+    gQrCache.owner = &r;
+  }
+
+  const float side = static_cast<float>(sidePx);
+  r.drawImage(gQrCache.imageId, cx - side * 0.5f, cy - side * 0.5f, side, side,
+              1.0f);
+  return side;
+}
 
 // Lays out the AUX pages' column grid (WT System Setup: gray page, three
 // columns of group boxes with 20px gaps).
@@ -748,62 +826,92 @@ void drawSimBriefPage(Renderer& r, const MfdController& ui, float x, float y,
 
   const SimBriefState& sb = ui.simbriefState();
 
-  // Left top: account / fetch status.
+  // Left top: Navigraph account + OFP fetch status.
   const float acctH = colH * 0.42f;
   {
-    Rect inner = drawGroupBox(r, Rect{x + gap, topY, colW, acctH}, "SimBrief",
+    Rect inner = drawGroupBox(r, Rect{x + gap, topY, colW, acctH}, "Navigraph",
                               displayH);
     const float rowH = inner.h / 4.0f;
     float fy = inner.y;
 
-    // PILOT ID row. While the ID softkey entry is open, show the pending
-    // digits with a trailing cursor underscore in reverse video, like an
-    // active cursor field on the real unit.
-    if (ui.simbriefIdEntryActive()) {
-      const std::string pending = ui.simbriefPendingId() + "_";
-      const float cy = fy + rowH * 0.5f;
-      r.fillText(inner.x, cy, "PILOT ID", mfdFontPx(kWtFieldLabel, displayH),
-                 TextAlign::Left, colors::kTitleGray);
-      drawCursorText(r, inner.x + inner.w, cy, pending,
-                     mfdFontPx(kWtFieldValue, displayH), TextAlign::Right);
-      fy += rowH;
-    } else {
-      fy = drawField(r, inner, fy, rowH, "PILOT ID",
-                     ui.simbriefPilotId().empty() ? kDash
-                                                  : ui.simbriefPilotId(),
-                     displayH, colors::kCyan);
-    }
-
-    const char* statusText = kDash;
-    Color statusColor = colors::kWhitesmoke;
-    switch (sb.status) {
-      case SimBriefStatus::NotConfigured:
-        statusText = "NO PILOT ID";
+    // ACCOUNT row: the signed-in Navigraph alias, or the sign-in prompt.
+    const char* acctText = "SIGNED OUT";
+    Color acctColor = colors::kWhitesmoke;
+    switch (sb.loginPhase) {
+      case NavigraphLoginPhase::LoggedOut:
+        acctText = "SIGNED OUT";
         break;
-      case SimBriefStatus::Idle:
-        statusText = "READY";
+      case NavigraphLoginPhase::AwaitingUser:
+        acctText = "SIGNING IN...";
+        acctColor = colors::kCyan;
         break;
-      case SimBriefStatus::Fetching:
-        statusText = "FETCHING...";
-        statusColor = colors::kCyan;
+      case NavigraphLoginPhase::LoggedIn:
+        // Hide the Navigraph alias while the sim link is down so no Navigraph
+        // account data is shown off-sim; still indicate the session is active.
+        acctText = (!sb.commAllowed || sb.username.empty())
+                       ? "SIGNED IN"
+                       : sb.username.c_str();
+        acctColor = colors::kCyan;
         break;
-      case SimBriefStatus::Ok:
-        statusText = "OFP LOADED";
-        statusColor = colors::kActiveGreen;
-        break;
-      case SimBriefStatus::Error:
-        statusText = "FAIL";
-        statusColor = colors::kBandYellow;
+      case NavigraphLoginPhase::Error:
+        acctText = "SIGN IN FAIL";
+        acctColor = colors::kBandYellow;
         break;
     }
-    fy = drawField(r, inner, fy, rowH, "STATUS", statusText, displayH,
-                   statusColor);
+    fy = drawField(r, inner, fy, rowH, "ACCOUNT", acctText, displayH,
+                   acctColor);
 
-    // Failure detail on its own line, amber like a caution message.
-    if (sb.status == SimBriefStatus::Error && !sb.error.empty()) {
-      r.fillText(inner.x, fy + rowH * 0.5f, sb.error,
+    // Secondary line. Navigraph access is gated to a connected sim session
+    // (their terms): when offline, say so. When signed out, the QR sign-in
+    // panel (right column) does the work, so just point the pilot at it. When
+    // signed in, show the OFP fetch status.
+    if (!sb.commAllowed) {
+      fy = drawField(r, inner, fy, rowH, "STATUS", "SIM OFFLINE", displayH,
+                     colors::kBandYellow);
+      r.fillText(inner.x, fy + rowH * 0.5f, "CONNECT X-PLANE",
                  mfdFontPx(kWtFieldLabel, displayH), TextAlign::Left,
                  colors::kBandYellow);
+    } else if (sb.loginPhase != NavigraphLoginPhase::LoggedIn) {
+      const bool failed = sb.loginPhase == NavigraphLoginPhase::Error;
+      const char* statusText =
+          sb.loginPhase == NavigraphLoginPhase::AwaitingUser ? "AWAITING SCAN"
+                                                             : "CONNECTING...";
+      fy = drawField(r, inner, fy, rowH, "STATUS", statusText, displayH,
+                     colors::kCyan);
+      r.fillText(inner.x, fy + rowH * 0.5f,
+                 failed ? "SIGN IN FAILED - RETRYING" : "SCAN QR TO SIGN IN",
+                 mfdFontPx(kWtFieldLabel, displayH), TextAlign::Left,
+                 failed ? colors::kBandYellow : colors::kWhitesmoke);
+    } else {
+      const char* statusText = "READY";
+      Color statusColor = colors::kWhitesmoke;
+      switch (sb.status) {
+        case SimBriefStatus::NotConfigured:
+        case SimBriefStatus::Idle:
+          statusText = "READY";
+          break;
+        case SimBriefStatus::Fetching:
+          statusText = "FETCHING...";
+          statusColor = colors::kCyan;
+          break;
+        case SimBriefStatus::Ok:
+          statusText = "OFP LOADED";
+          statusColor = colors::kActiveGreen;
+          break;
+        case SimBriefStatus::Error:
+          statusText = "FAIL";
+          statusColor = colors::kBandYellow;
+          break;
+      }
+      fy = drawField(r, inner, fy, rowH, "STATUS", statusText, displayH,
+                     statusColor);
+
+      // Failure detail on its own line, amber like a caution message.
+      if (sb.status == SimBriefStatus::Error && !sb.error.empty()) {
+        r.fillText(inner.x, fy + rowH * 0.5f, sb.error,
+                   mfdFontPx(kWtFieldLabel, displayH), TextAlign::Left,
+                   colors::kBandYellow);
+      }
     }
   }
 
@@ -813,7 +921,9 @@ void drawSimBriefPage(Renderer& r, const MfdController& ui, float x, float y,
         r, Rect{x + gap, topY + acctH + grid.px(10.0f), colW,
                 colH - acctH - grid.px(10.0f)},
         "Latest OFP", displayH);
-    const bool haveOfp = sb.status == SimBriefStatus::Ok;
+    // Navigraph's terms only permit showing their data during a connected sim
+    // session: blank the fetched OFP the instant the link drops (commAllowed).
+    const bool haveOfp = sb.commAllowed && sb.status == SimBriefStatus::Ok;
     const float rowH = inner.h / 5.0f;
     float fy = inner.y;
     fy = drawField(r, inner, fy, rowH, "ORIGIN",
@@ -831,43 +941,83 @@ void drawSimBriefPage(Renderer& r, const MfdController& ui, float x, float y,
                    displayH, colors::kWhitesmoke);
   }
 
-  // Right column: the filed route string, word-wrapped.
+  // Right column: the filed route when signed in; otherwise the device-auth QR
+  // so the pilot just scans to sign in (no manual Login press).
   {
-    Rect inner = drawGroupBox(
-        r, Rect{x + colW + 2.0f * gap, topY, colW, colH}, "Route", displayH);
-    const float rowSize = mfdFontPx(kWtRow, displayH);
-    const float lineH = rowSize * 1.6f;
-    if (sb.status != SimBriefStatus::Ok || sb.route.empty()) {
-      r.fillText(inner.x, inner.y + lineH * 0.5f, kDash, rowSize,
-                 TextAlign::Left, colors::kWhitesmoke);
-    } else {
-      // Word wrap: the full text is the origin, route string, destination,
-      // the way the OFP header reads.
-      const std::string text =
-          sb.originIcao + " " + sb.route + " " + sb.destinationIcao;
-      std::string line;
-      float fy = inner.y + lineH * 0.5f;
-      std::size_t pos = 0;
-      while (pos < text.size() && fy < inner.y + inner.h - lineH) {
-        std::size_t next = text.find(' ', pos);
-        if (next == std::string::npos) next = text.size();
-        const std::string word = text.substr(pos, next - pos);
-        const std::string candidate = line.empty() ? word : line + " " + word;
-        if (!line.empty() &&
-            r.measureTextWidth(candidate, rowSize) > inner.w) {
+    const Rect box{x + colW + 2.0f * gap, topY, colW, colH};
+    const bool signedIn = sb.loginPhase == NavigraphLoginPhase::LoggedIn;
+    if (signedIn || !sb.commAllowed) {
+      Rect inner = drawGroupBox(r, box, "Route", displayH);
+      const float rowSize = mfdFontPx(kWtRow, displayH);
+      const float lineH = rowSize * 1.6f;
+      if (!sb.commAllowed || sb.status != SimBriefStatus::Ok ||
+          sb.route.empty()) {
+        r.fillText(inner.x, inner.y + lineH * 0.5f, kDash, rowSize,
+                   TextAlign::Left, colors::kWhitesmoke);
+      } else {
+        // Word wrap: origin, route string, destination, as the OFP header reads.
+        const std::string text =
+            sb.originIcao + " " + sb.route + " " + sb.destinationIcao;
+        std::string line;
+        float fy = inner.y + lineH * 0.5f;
+        std::size_t pos = 0;
+        while (pos < text.size() && fy < inner.y + inner.h - lineH) {
+          std::size_t next = text.find(' ', pos);
+          if (next == std::string::npos) next = text.size();
+          const std::string word = text.substr(pos, next - pos);
+          const std::string candidate = line.empty() ? word : line + " " + word;
+          if (!line.empty() &&
+              r.measureTextWidth(candidate, rowSize) > inner.w) {
+            r.fillText(inner.x, fy, line, rowSize, TextAlign::Left,
+                       colors::kWhitesmoke);
+            fy += lineH;
+            line = word;
+          } else {
+            line = candidate;
+          }
+          pos = next + 1;
+        }
+        if (!line.empty() && fy < inner.y + inner.h) {
           r.fillText(inner.x, fy, line, rowSize, TextAlign::Left,
                      colors::kWhitesmoke);
-          fy += lineH;
-          line = word;
-        } else {
-          line = candidate;
         }
-        pos = next + 1;
       }
-      if (!line.empty() && fy < inner.y + inner.h) {
-        r.fillText(inner.x, fy, line, rowSize, TextAlign::Left,
-                   colors::kWhitesmoke);
+    } else {
+      // Signed out (sim connected): show the scannable sign-in QR + the code and
+      // URL as a fallback for manual entry.
+      Rect inner = drawGroupBox(r, box, "Sign In", displayH);
+      const float cx = inner.x + inner.w * 0.5f;
+      const float rowSize = mfdFontPx(kWtRow, displayH);
+      const float lineH = rowSize * 1.7f;
+      const float topPad = mfdFontPx(10.0f, displayH);
+      const float captionBlock = lineH * 3.2f;  // reserved for text below the QR
+      float qrMax = std::min(inner.w - mfdFontPx(24.0f, displayH),
+                             inner.h - captionBlock - topPad);
+      if (qrMax < 0.0f) qrMax = 0.0f;
+      const std::string qrText = sb.verificationUriComplete.empty()
+                                     ? sb.verificationUri
+                                     : sb.verificationUriComplete;
+      const float qrCY = inner.y + topPad + qrMax * 0.5f;
+      const float side = drawQrCode(r, qrText, cx, qrCY, qrMax);
+      if (side <= 0.0f) {
+        // No device code issued yet (still contacting Navigraph).
+        r.fillText(cx, qrCY, "CONNECTING...", rowSize, TextAlign::Center,
+                   colors::kCyan);
       }
+      float ty = inner.y + topPad + (side > 0.0f ? side : qrMax) + lineH * 0.7f;
+      r.fillText(cx, ty, "SCAN TO SIGN IN", rowSize, TextAlign::Center,
+                 colors::kWhitesmoke);
+      ty += lineH;
+      r.fillText(cx, ty,
+                 sb.verificationUri.empty() ? "navigraph.com/code"
+                                            : sb.verificationUri,
+                 mfdFontPx(kWtFieldLabel, displayH), TextAlign::Center,
+                 colors::kWhitesmoke);
+      ty += lineH;
+      const std::string codeStr =
+          sb.userCode.empty() ? std::string(kDash) : sb.userCode;
+      r.fillText(cx, ty, "CODE  " + codeStr, rowSize, TextAlign::Center,
+                 colors::kCyan);
     }
   }
 }

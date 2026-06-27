@@ -61,7 +61,7 @@ const char* pageTitle(MfdPage page) {
     case MfdPage::SystemStatus:
       return "Aux \xE2\x80\x93 System Status";
     case MfdPage::SimBrief:
-      return "Aux \xE2\x80\x93 SimBrief";
+      return "Aux \xE2\x80\x93 Navigraph";
     case MfdPage::NearestAirports:
       return "NRST \xE2\x80\x93 Nearest Airports";
     case MfdPage::NearestIntersections:
@@ -76,6 +76,8 @@ const char* pageTitle(MfdPage page) {
       return "NRST \xE2\x80\x93 Nearest Airspaces";
     case MfdPage::ActiveFlightPlan:
       return "FPL \xE2\x80\x93 Active Flight Plan";
+    case MfdPage::FlightPlanCatalog:
+      return "FPL \xE2\x80\x93 Flight Plan Catalog";
   }
   return "";
 }
@@ -88,11 +90,11 @@ const char* const kWptPages[] = {"Airport Information",
                                  "NDB Information", "VOR Information"};
 const char* const kAuxPages[] = {"Trip Planning", "Utility",
                                  "GPS Status",     "System Setup",
-                                 "System Status",  "SimBrief"};
+                                 "System Status",  "Navigraph"};
 const char* const kNrstPages[] = {"Nearest Airports", "Nearest Intersections",
                                   "Nearest NDB",      "Nearest VOR",
                                   "Nearest Frequencies", "Nearest Airspaces"};
-const char* const kFplPages[] = {"Active Flight Plan"};
+const char* const kFplPages[] = {"Active Flight Plan", "Flight Plan Catalog"};
 
 // 3-digit bearing/track with degree sign; north reads 360, never 000.
 std::string formatBearing(float deg) {
@@ -247,7 +249,7 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
       break;
     case MfdPageGroup::Aux:
       pages = kAuxPages;
-      pageCount = 6;
+      pageCount = ui.pageCount(MfdPageGroup::Aux);
       break;
     case MfdPageGroup::Nearest:
       pages = kNrstPages;
@@ -255,7 +257,7 @@ void drawPageIndicator(Renderer& r, float w, float h, float bottomBarTop,
       break;
     case MfdPageGroup::FlightPlan:
       pages = kFplPages;
-      pageCount = 1;
+      pageCount = ui.pageCount(MfdPageGroup::FlightPlan);
       break;
     case MfdPageGroup::Checklist:
       pageCount = std::max(1, checklist.totalChecklists());
@@ -400,7 +402,8 @@ void drawPageMenu(Renderer& r, const MfdController& ui, float x, float y,
   // Group-box slot height: the title overhang, top/bottom padding, plus a row
   // per option (drawGroupBox's own insets are folded in here).
   const float groupSlotH = titleSize * 0.55f + pad + n * rowH + pad * 0.8f;
-  const float footH = footSize * 3.4f;
+  const float footGap = mfd::mfdFontPx(10.0f, displayH);
+  const float footH = footSize * 3.4f + footGap;
   const float boxW = w * 0.40f;
   const float boxH =
       titleSize * 1.6f + mfd::mfdFontPx(6.0f, displayH) + groupSlotH + footH +
@@ -445,11 +448,138 @@ void drawPageMenu(Renderer& r, const MfdController& ui, float x, float y,
   }
 
   const float footCx = inner.x + inner.w * 0.5f;
-  const float footY = group.y + n * rowH + footSize * 1.2f;
+  const float footY = group.y + n * rowH + footSize * 1.2f + footGap;
   r.fillText(footCx, footY, "Press the FMS CRSR knob to return", footSize,
              TextAlign::Center, colors::kTitleGray);
   r.fillText(footCx, footY + footSize * 1.3f, "to base page", footSize,
              TextAlign::Center, colors::kTitleGray);
+}
+
+// One YES/NO choice in the course-reversal prompt. Selected = solid cyan plate
+// with black text (matching the trainer); else a grey-outlined chip.
+float drawCrChoice(Renderer& r, float leftX, float cy, const char* label,
+                   float size, bool selected) {
+  const float bw = r.measureTextWidth(label, size) + size * 1.5f;
+  const float bh = size * 1.7f;
+  const float by = cy - bh * 0.5f;
+  const float radius = bh * 0.32f;
+  if (selected) {
+    r.fillRoundedRect(leftX, by, bw, bh, radius, colors::kCyan);
+  } else {
+    r.strokeRoundedRect(leftX + 0.75f, by + 0.75f, bw - 1.5f, bh - 1.5f, radius,
+                        1.5f, colors::kWhite);
+  }
+  r.fillText(leftX + bw * 0.5f, cy, label, size, TextAlign::Center,
+             selected ? colors::kBlack : colors::kWhite);
+  return bw;
+}
+
+// "Fly Course Reversal at <fix>?" YES/NO prompt. On the NXi this overlays the
+// right-hand data-panel column (e.g. the PROC approach-loading window), so it
+// is right-aligned to that column rather than centered over the map body.
+void drawCourseReversalPrompt(Renderer& r, const MfdController& ui, float x,
+                              float y, float w, float h, float displayH) {
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
+  const float textSize = mfd::mfdFontPx(16.0f, displayH);
+  const float boxH = mfd::mfdFontPx(150.0f, displayH);
+  const float panelW = w * mfd::kPanelWFrac;
+  const float inset = mfd::mfdFontPx(7.0f, displayH);
+  const float boxW = panelW - inset * 2.0f;
+  const float boxX = x + w - panelW + inset;
+  const float boxY = y + (h - boxH) * 0.5f;
+  mfd::drawDialog(r, mfd::Rect{boxX, boxY, boxW, boxH}, nullptr, displayH,
+                  colors::kMfdOverlayGray);
+
+  const float cx = boxX + boxW * 0.5f;
+  const float line1Cy = boxY + boxH * 0.30f;
+  const float line2Cy = line1Cy + textSize * 1.2f;
+  r.fillText(cx, line1Cy, "Fly Course Reversal at", textSize, TextAlign::Center,
+             colors::kWhite);
+  r.fillText(cx, line2Cy, ui.courseReversalPromptFix() + "?", textSize,
+             TextAlign::Center, colors::kWhite);
+
+  const bool yes = ui.courseReversalPromptYes();
+  const float btnCy = boxY + boxH * 0.78f;
+  const float yesW = r.measureTextWidth("YES", textSize) + textSize * 1.5f;
+  const float noW = r.measureTextWidth("NO", textSize) + textSize * 1.5f;
+  const char* orText = "or";
+  const float orW = r.measureTextWidth(orText, textSize);
+  const float gap = textSize * 0.9f;
+  const float blockW = yesW + gap + orW + gap + noW;
+  float bx = cx - blockW * 0.5f;
+  drawCrChoice(r, bx, btnCy, "YES", textSize, yes);
+  bx += yesW + gap;
+  r.fillText(bx + orW * 0.5f, btnCy, orText, textSize, TextAlign::Center,
+             colors::kWhite);
+  bx += orW + gap;
+  drawCrChoice(r, bx, btnCy, "NO", textSize, !yes);
+}
+
+float drawHoldPromptIcon(Renderer& r, float x, float cy, float size,
+                         bool rightTurn, const Color& color) {
+  const float w = size * 1.02f;
+  const float h = size * 0.62f;
+  const float top = cy - h * 0.5f;
+  const float stroke = std::max(1.5f, size * 0.11f);
+  r.strokeRoundedRect(x, top, w, h, h * 0.5f, stroke, color);
+  const float ah = size * 0.20f;
+  const float axc = x + w * 0.5f;
+  const float dir = rightTurn ? 1.0f : -1.0f;
+  const Point tri[3] = {{axc + dir * ah, top},
+                        {axc - dir * ah * 0.15f, top - ah * 0.9f},
+                        {axc - dir * ah * 0.15f, top + ah * 0.9f}};
+  r.fillPolygon(tri, 3, color);
+  return x + w;
+}
+
+void drawHoldActivatePrompt(Renderer& r, const MfdController& ui, float x,
+                            float y, float w, float h, float displayH) {
+  if (!ui.holdActivatePromptActive()) return;
+  const FontScope fs(r, FontFace::DejaVuSemiBold);
+  const float textSize = mfd::mfdFontPx(16.0f, displayH);
+  const float boxW = std::min(w * 0.46f, mfd::mfdFontPx(320.0f, displayH));
+  const float boxH = mfd::mfdFontPx(130.0f, displayH);
+  const float boxX = x + (w - boxW) * 0.5f;
+  const float boxY = y + (h - boxH) * 0.5f;
+  mfd::drawDialog(r, mfd::Rect{boxX, boxY, boxW, boxH}, nullptr, displayH,
+                  colors::kMfdOverlayGray);
+
+  const MapLeg& leg = ui.holdActivatePromptLeg();
+  const float lineCy = boxY + boxH * 0.34f;
+  char distBuf[16];
+  if (leg.hold.legLengthNm > 0.0f) {
+    std::snprintf(distBuf, sizeof(distBuf), "%.1fNM", leg.hold.legLengthNm);
+  } else {
+    std::snprintf(distBuf, sizeof(distBuf), "%s", "HOLD");
+  }
+  const float distW = r.measureTextWidth(distBuf, textSize);
+  const bool rightTurn = leg.hold.turn != HoldTurnDirection::Left;
+  const float iconGap = textSize * 0.35f;
+  const float identW = r.measureTextWidth(leg.id, textSize);
+  const float iconW = textSize * 1.02f;
+  const float blockW = distW + iconGap + iconW + iconGap + identW;
+  float bx = boxX + (boxW - blockW) * 0.5f;
+  r.fillText(bx, lineCy, distBuf, textSize, TextAlign::Left, colors::kWhite);
+  bx += distW + iconGap;
+  bx = drawHoldPromptIcon(r, bx, lineCy, textSize, rightTurn, colors::kMagenta);
+  bx += iconGap;
+  r.fillText(bx, lineCy, leg.id, textSize, TextAlign::Left, colors::kMagenta);
+
+  const bool activate = ui.holdActivatePromptActivateSelected();
+  const float btnCy = boxY + boxH * 0.78f;
+  const float actW = r.measureTextWidth("Activate", textSize) + textSize * 1.5f;
+  const float cancelW = r.measureTextWidth("Cancel", textSize) + textSize * 1.5f;
+  const char* orText = "or";
+  const float orW = r.measureTextWidth(orText, textSize);
+  const float gap = textSize * 0.9f;
+  const float btnBlockW = actW + gap + orW + gap + cancelW;
+  bx = boxX + (boxW - btnBlockW) * 0.5f;
+  drawCrChoice(r, bx, btnCy, "Activate", textSize, activate);
+  bx += actW + gap;
+  r.fillText(bx + orW * 0.5f, btnCy, orText, textSize, TextAlign::Center,
+             colors::kWhite);
+  bx += orW + gap;
+  drawCrChoice(r, bx, btnCy, "Cancel", textSize, !activate);
 }
 
 }  // namespace
@@ -497,7 +627,36 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
       mfd::drawWeatherRadarPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::AirportInformation:
-      mfd::drawWaypointPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+      // The Charts softkey turns the Airport Information page into a terminal
+      // chart view (Pilot's Guide §8.3); otherwise the page's softkey bar picks
+      // the information panel (Airport / DP / STAR / APR / Weather).
+      if (ui.chartViewActive()) {
+        mfd::drawChartsPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+      } else {
+        switch (ui.wptInfoView()) {
+          case WptInfoView::Departure:
+            mfd::drawWaypointProcedurePage(r, d, map, ui,
+                                           ProcedureType::Departure, bodyX,
+                                           bodyY, bodyW, bodyH, h);
+            break;
+          case WptInfoView::Arrival:
+            mfd::drawWaypointProcedurePage(r, d, map, ui, ProcedureType::Arrival,
+                                           bodyX, bodyY, bodyW, bodyH, h);
+            break;
+          case WptInfoView::Approach:
+            mfd::drawWaypointProcedurePage(r, d, map, ui,
+                                           ProcedureType::Approach, bodyX, bodyY,
+                                           bodyW, bodyH, h);
+            break;
+          case WptInfoView::Weather:
+            mfd::drawWaypointWeatherPage(r, d, map, ui, bodyX, bodyY, bodyW,
+                                         bodyH, h);
+            break;
+          case WptInfoView::Airport:
+            mfd::drawWaypointPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+            break;
+        }
+      }
       break;
     case MfdPage::IntersectionInformation:
       mfd::drawWaypointNavaidPage(r, d, map, ui, MapFeatureType::Fix, bodyX,
@@ -546,7 +705,8 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
                                   bodyY, bodyW, bodyH, h);
       break;
     case MfdPage::NearestFrequencies:
-      mfd::drawNearestFrequenciesPage(r, d, map, bodyX, bodyY, bodyW, bodyH, h);
+      mfd::drawNearestFrequenciesPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH,
+                                      h);
       break;
     case MfdPage::NearestAirspaces:
       mfd::drawNearestAirspacesPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH,
@@ -556,8 +716,32 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
       mfd::drawActiveFlightPlanPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH,
                                     h);
       break;
+    case MfdPage::FlightPlanCatalog:
+      mfd::drawFlightPlanCatalogPage(r, d, map, ui, bodyX, bodyY, bodyW, bodyH,
+                                     h);
+      break;
   }
   title = pageTitle(ui.page());
+  // The WPT - Airport Information page retitles for its active sub-view
+  // (trainer apt_055..058); the chart view keeps the base title.
+  if (ui.page() == MfdPage::AirportInformation && !ui.chartViewActive()) {
+    switch (ui.wptInfoView()) {
+      case WptInfoView::Departure:
+        title = "WPT \xE2\x80\x93 Departure Information";
+        break;
+      case WptInfoView::Arrival:
+        title = "WPT \xE2\x80\x93 Arrival Information";
+        break;
+      case WptInfoView::Approach:
+        title = "WPT \xE2\x80\x93 Approach Information";
+        break;
+      case WptInfoView::Weather:
+        title = "WPT \xE2\x80\x93 Weather Information";
+        break;
+      case WptInfoView::Airport:
+        break;
+    }
+  }
   }
 
   if (ui.procMenuOpen() && ui.procSelectMode()) {
@@ -612,6 +796,13 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
     r.translate(0.0f, mfd::mfdWindowSlide(mapSettingsAnim, h));
     mfd::drawMapSettingsWindow(r, ui, bodyX, bodyY, bodyW, bodyH, h);
     r.restore();
+  }
+  // The HILPT "Fly Course Reversal?" prompt overlays the page until answered.
+  if (ui.courseReversalPromptActive()) {
+    drawCourseReversalPrompt(r, ui, bodyX, bodyY, bodyW, bodyH, h);
+  }
+  if (ui.holdActivatePromptActive()) {
+    drawHoldActivatePrompt(r, ui, bodyX, bodyY, bodyW, bodyH, h);
   }
   drawPageIndicator(r, w, h, h - bottomBarH, ui, checklist);
   drawNavComBar(r, w, h, topBarH, d, radios, title);

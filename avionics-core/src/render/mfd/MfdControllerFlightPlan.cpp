@@ -6,11 +6,43 @@
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
 #include "avionics/MfdController.h"
+#include "avionics/SimBriefOfpSupport.h"
 
 // Active Flight Plan page (FPL group, Pilot's Guide 5.6): caches the map plan
 // plus local edits, the leg-row cursor, the Waypoint Information insert window,
 // the VNAV altitude-constraint entry, and the remove/delete confirmations.
 namespace avionics {
+namespace {
+
+void applyTerminalProcedureMeta(const PersistedLoadedApproach& meta, int legStart,
+                                int legCount, MapProcedure& loaded,
+                                std::string& headerLabel, int& outStart,
+                                int& outCount) {
+  if (!meta.active || meta.name.empty()) {
+    loaded = {};
+    headerLabel.clear();
+    outStart = 0;
+    outCount = 0;
+    return;
+  }
+  outStart = legStart;
+  outCount = legCount;
+  loaded = mapProcedureFromPersisted(meta);
+  headerLabel = formatTerminalProcedureFplHeaderLabel(
+      loaded.runway, loaded.name, loaded.transition);
+}
+
+void clearTerminalProcedureState(MapProcedure& loaded, int& legStart,
+                                 int& legCount, std::string& headerLabel,
+                                 PersistedLoadedApproach& persisted) {
+  loaded = {};
+  legStart = 0;
+  legCount = 0;
+  headerLabel.clear();
+  persisted = {};
+}
+
+}  // namespace
 
 void MfdController::fplEnsureApproachInferred() {
   if (fplApproachLegCount_ > 0) {
@@ -240,6 +272,15 @@ void MfdController::fplPublishEdit() {
   fplLocalDraft_ = true;
 }
 
+void MfdController::stripCourseReversalHoldAtFix(const std::string& fixId) {
+  if (fixId.empty()) return;
+  for (MapLeg& leg : fplLegs_) {
+    if (leg.id == fixId && leg.hold.courseReversal) {
+      leg.hold = MapHoldPattern{};
+    }
+  }
+}
+
 void MfdController::fplResetInteraction() {
   fplCursorOn_ = false;
   fplListCursorFollowsActive_ = true;
@@ -317,6 +358,11 @@ void MfdController::fplCommitEntry() {
 bool MfdController::fplBezelKey(BezelKey key) {
   // The Procedures overlay is modal over the FPL page (Pilot's Guide 5.8).
   if (procMenuOpen_ && !isMapRangePanBezelKey(key)) return false;
+
+  // The Flight Plan Catalog is the FPL group's 2nd page; it owns the knob/ENT
+  // for slot selection and activation. Unconsumed keys (the small knob) fall
+  // through to FPL-group page stepping (Active <-> Catalog).
+  if (page() == MfdPage::FlightPlanCatalog) return catalogBezelKey(key);
 
   fplEnsureApproachInferred();
   const int legCount = static_cast<int>(fplLegs_.size());
@@ -458,16 +504,9 @@ bool MfdController::fplBezelKey(BezelKey key) {
       fplCursorRow_ = std::max(0, fplCursorRow_ - 1);
       return true;
     }
-    if (key == BezelKey::FmsInnerCw || key == BezelKey::FmsInnerCcw) {
-      if (!fplEntry_.active) {
-        fplEntry_.open(navSource_, mapData_,
-                       fplIdentEntrySeedAtCursor(edit, approachAirport, layout));
-        fplEntry_.selectAll = false;
-      }
-      fplEntry_.turnChar(navSource_, mapData_,
-                         key == BezelKey::FmsInnerCw ? +1 : -1);
-      return true;
-    }
+    // Small FMS knob with the cursor off steps the FPL group's pages (Active
+    // Flight Plan <-> Flight Plan Catalog), like the real unit's small knob.
+    // Falls through to the common stepPage handling.
     return false;  // other keys fall through to page stepping
   }
 
@@ -566,6 +605,7 @@ FmsWaypointEntry* MfdController::activeWaypointEntry() {
   if (dtoOpen_ && dtoEntry_.active && !dtoArmed_) return &dtoEntry_;
   if (fplEntry_.active) return &fplEntry_;
   if (wptEntry_.active) return &wptEntry_;
+  if (procMenu_.airportEntry.active) return &procMenu_.airportEntry;
   return nullptr;
 }
 
@@ -613,16 +653,66 @@ void MfdController::applyFlightPlanApproachState(
   fplApproachHeaderLabel_ = state.headerLabel;
 }
 
+FlightPlanTerminalProcedureState MfdController::flightPlanDepartureState() const {
+  FlightPlanTerminalProcedureState out;
+  out.legStart = fplDepartureLegStart_;
+  out.legCount = fplDepartureLegCount_;
+  out.loaded = fplLoadedDeparture_;
+  out.headerLabel = fplDepartureHeaderLabel_;
+  return out;
+}
+
+void MfdController::applyFlightPlanDepartureState(
+    const FlightPlanTerminalProcedureState& state) {
+  if (!state.active()) {
+    clearTerminalProcedureState(fplLoadedDeparture_, fplDepartureLegStart_,
+                                fplDepartureLegCount_, fplDepartureHeaderLabel_,
+                                persistedDepartureRestore_);
+    return;
+  }
+  fplDepartureLegStart_ = state.legStart;
+  fplDepartureLegCount_ = state.legCount;
+  fplLoadedDeparture_ = state.loaded;
+  fplDepartureHeaderLabel_ = state.headerLabel;
+}
+
+FlightPlanTerminalProcedureState MfdController::flightPlanArrivalState() const {
+  FlightPlanTerminalProcedureState out;
+  out.legStart = fplArrivalLegStart_;
+  out.legCount = fplArrivalLegCount_;
+  out.loaded = fplLoadedArrival_;
+  out.headerLabel = fplArrivalHeaderLabel_;
+  return out;
+}
+
+void MfdController::applyFlightPlanArrivalState(
+    const FlightPlanTerminalProcedureState& state) {
+  if (!state.active()) {
+    clearTerminalProcedureState(fplLoadedArrival_, fplArrivalLegStart_,
+                                fplArrivalLegCount_, fplArrivalHeaderLabel_,
+                                persistedArrivalRestore_);
+    return;
+  }
+  fplArrivalLegStart_ = state.legStart;
+  fplArrivalLegCount_ = state.legCount;
+  fplLoadedArrival_ = state.loaded;
+  fplArrivalHeaderLabel_ = state.headerLabel;
+}
+
 void MfdController::adoptFlightPlanFromPeer(
     const std::vector<MapLeg>& legs, bool destinationFilled,
-    const FlightPlanApproachState& approach) {
+    const FlightPlanApproachState& approach,
+    const FlightPlanTerminalProcedureState& departure,
+    const FlightPlanTerminalProcedureState& arrival) {
   if (fplEntry_.active || fplAltEntry_.active ||
       fplConfirm_ != FplConfirm::None || pageMenuOpen_) {
     return;
   }
   if (flightPlanLegsEqual(fplLegs_, legs) &&
       fplDestinationFilled_ == destinationFilled &&
-      flightPlanApproachState() == approach) {
+      flightPlanApproachState() == approach &&
+      flightPlanDepartureState() == departure &&
+      flightPlanArrivalState() == arrival) {
     return;
   }
   fplLegs_ = legs;
@@ -632,6 +722,8 @@ void MfdController::adoptFlightPlanFromPeer(
   // keeps drawing the blank Direct-To template even though legs were copied).
   fplLocalDraft_ = !fplLegs_.empty();
   applyFlightPlanApproachState(approach);
+  applyFlightPlanDepartureState(departure);
+  applyFlightPlanArrivalState(arrival);
   fplEntry_.active = false;
   fplEntry_.notFound = false;
   fplAltEntry_.active = false;
@@ -732,6 +824,26 @@ PersistedFlightPlan MfdController::persistedFlightPlanSnapshot() const {
       out.approachMeta = persistedApproachRestore_;
     }
   }
+  if (fplDepartureLegCount_ > 0 || persistedDepartureRestore_.active) {
+    out.departureLegStart = fplDepartureLegStart_;
+    out.departureLegCount = fplDepartureLegCount_;
+    if (!fplLoadedDeparture_.name.empty()) {
+      out.departureMeta = persistedFromMapProcedure(fplLoadedDeparture_,
+                                                    fplDepartureAirportIcao());
+    } else if (persistedDepartureRestore_.active) {
+      out.departureMeta = persistedDepartureRestore_;
+    }
+  }
+  if (fplArrivalLegCount_ > 0 || persistedArrivalRestore_.active) {
+    out.arrivalLegStart = fplArrivalLegStart_;
+    out.arrivalLegCount = fplArrivalLegCount_;
+    if (!fplLoadedArrival_.name.empty()) {
+      out.arrivalMeta =
+          persistedFromMapProcedure(fplLoadedArrival_, fplArrivalAirportIcao());
+    } else if (persistedArrivalRestore_.active) {
+      out.arrivalMeta = persistedArrivalRestore_;
+    }
+  }
   return out;
 }
 
@@ -751,6 +863,12 @@ void MfdController::restorePersistedFlightPlan(
   fplApproachLegCount_ = 0;
   fplLoadedApproach_ = {};
   fplApproachHeaderLabel_.clear();
+  clearTerminalProcedureState(fplLoadedDeparture_, fplDepartureLegStart_,
+                              fplDepartureLegCount_, fplDepartureHeaderLabel_,
+                              persistedDepartureRestore_);
+  clearTerminalProcedureState(fplLoadedArrival_, fplArrivalLegStart_,
+                              fplArrivalLegCount_, fplArrivalHeaderLabel_,
+                              persistedArrivalRestore_);
   fplCursorRow_ = 0;
   fplLastPublished_ = saved.legs;
   fplLastMapPlan_ = saved.legs;
@@ -766,6 +884,20 @@ void MfdController::restorePersistedFlightPlan(
     if (!fplDestinationFilled_ && fplApproachLegCount_ > 0) {
       fplDestinationFilled_ = true;
     }
+  }
+  if (saved.departureMeta.active) {
+    persistedDepartureRestore_ = saved.departureMeta;
+    applyTerminalProcedureMeta(saved.departureMeta, saved.departureLegStart,
+                               saved.departureLegCount, fplLoadedDeparture_,
+                               fplDepartureHeaderLabel_, fplDepartureLegStart_,
+                               fplDepartureLegCount_);
+  }
+  if (saved.arrivalMeta.active) {
+    persistedArrivalRestore_ = saved.arrivalMeta;
+    applyTerminalProcedureMeta(saved.arrivalMeta, saved.arrivalLegStart,
+                               saved.arrivalLegCount, fplLoadedArrival_,
+                               fplArrivalHeaderLabel_, fplArrivalLegStart_,
+                               fplArrivalLegCount_);
   }
   if (fplApproachLegCount_ <= 0) {
     reinferApproachFromProcedureLegs();
@@ -788,6 +920,204 @@ void MfdController::restorePersistedFlightPlan(
                                persistedApproachRestore_.active &&
                                !persistedApproachRestore_.name.empty();
   tryRestorePersistedApproach();
+}
+
+// ---- Flight Plan Catalog (FPL group, 2nd page) ----
+
+void MfdController::restoreFlightPlanCatalog(
+    const std::vector<PersistedFlightPlan>& plans) {
+  catalog_.setPlans(plans);
+  catalogClampSelection();
+}
+
+bool MfdController::consumeCatalogDirty() {
+  if (!catalogDirty_) return false;
+  catalogDirty_ = false;
+  return true;
+}
+
+void MfdController::catalogClampSelection() {
+  const int n = catalog_.size();
+  if (n <= 0) {
+    catalogSelected_ = 0;
+    return;
+  }
+  catalogSelected_ = std::max(0, std::min(n - 1, catalogSelected_));
+}
+
+void MfdController::catalogStepSelection(int direction) {
+  catalogCursorOn_ = true;
+  const int n = catalog_.size();
+  if (n <= 0) {
+    catalogSelected_ = 0;
+    return;
+  }
+  catalogSelected_ =
+      std::max(0, std::min(n - 1, catalogSelected_ + (direction >= 0 ? 1 : -1)));
+}
+
+int MfdController::storeFlightPlanInCatalog(const std::vector<MapLeg>& legs) {
+  if (legs.empty()) return -1;
+  const int idx = catalog_.addPlanFromLegs(legs);
+  if (idx < 0) return -1;
+  catalogDirty_ = true;
+  catalogSelected_ = idx;  // highlight the freshly imported plan
+  return idx;
+}
+
+int MfdController::storeFlightPlanFromSimBriefImport(
+    const SimBriefOfpImport& imp) {
+  if (imp.legs.empty()) return -1;
+  const int idx = catalog_.addPlanFromSimBriefImport(imp);
+  if (idx < 0) return -1;
+  catalogDirty_ = true;
+  catalogSelected_ = idx;
+  return idx;
+}
+
+void MfdController::catalogCreateNew() {
+  PersistedFlightPlan empty;
+  empty.active = true;  // a stored (but empty) plan slot
+  const int idx = catalog_.addPlan(empty);
+  if (idx < 0) return;
+  catalogDirty_ = true;
+  catalogSelected_ = idx;
+  catalogCursorOn_ = true;
+}
+
+void MfdController::loadStoredPlanIntoActive(const PersistedFlightPlan& entry) {
+  if (!entry.active || entry.legs.empty()) return;
+  restorePersistedFlightPlan(entry);
+  // Publish so the shell pushes the activated route to the sim/map and the peer
+  // GDU (restorePersistedFlightPlan alone only sets the local draft).
+  fplPublishEdit();
+  // Show the now-active route on the Active Flight Plan page.
+  pageIndex_[static_cast<int>(MfdPageGroup::FlightPlan)] = 0;
+  catalogCursorOn_ = false;
+  catalogConfirm_ = CatalogConfirm::None;
+}
+
+bool MfdController::catalogActivateSelected() {
+  if (catalog_.empty() || catalogSelected_ < 0 ||
+      catalogSelected_ >= catalog_.size()) {
+    return false;
+  }
+  const PersistedFlightPlan& entry = catalog_.plan(catalogSelected_);
+  if (entry.legs.empty()) return false;
+  loadStoredPlanIntoActive(entry);
+  return true;
+}
+
+bool MfdController::catalogInvertActivateSelected() {
+  if (catalog_.empty() || catalogSelected_ < 0 ||
+      catalogSelected_ >= catalog_.size()) {
+    return false;
+  }
+  const PersistedFlightPlan& entry = catalog_.plan(catalogSelected_);
+  if (entry.legs.empty()) return false;
+  loadStoredPlanIntoActive(FlightPlanCatalog::inverted(entry));
+  return true;
+}
+
+int MfdController::catalogCopySelected() {
+  if (catalog_.empty() || catalogSelected_ < 0 ||
+      catalogSelected_ >= catalog_.size()) {
+    return -1;
+  }
+  const int idx = catalog_.addPlan(catalog_.plan(catalogSelected_));
+  if (idx < 0) return -1;
+  catalogDirty_ = true;
+  catalogSelected_ = idx;
+  catalogCursorOn_ = true;
+  return idx;
+}
+
+bool MfdController::catalogDeleteSelected() {
+  if (!catalog_.removePlan(catalogSelected_)) return false;
+  catalogDirty_ = true;
+  catalogClampSelection();
+  return true;
+}
+
+void MfdController::catalogDeleteAll() {
+  if (catalog_.empty()) return;
+  catalog_.clear();
+  catalogDirty_ = true;
+  catalogSelected_ = 0;
+}
+
+bool MfdController::catalogBezelKey(BezelKey key) {
+  catalogClampSelection();
+
+  // The action confirmation window is modal: ENT runs the highlighted choice,
+  // CLR / knob push cancels, any knob turn toggles OK/CANCEL.
+  if (catalogConfirm_ != CatalogConfirm::None) {
+    switch (key) {
+      case BezelKey::Ent:
+        if (catalogConfirmOk_) {
+          switch (catalogConfirm_) {
+            case CatalogConfirm::Activate:
+              catalogActivateSelected();
+              break;
+            case CatalogConfirm::InvertActivate:
+              catalogInvertActivateSelected();
+              break;
+            case CatalogConfirm::Delete:
+              catalogDeleteSelected();
+              break;
+            case CatalogConfirm::DeleteAll:
+              catalogDeleteAll();
+              break;
+            case CatalogConfirm::None:
+              break;
+          }
+        }
+        catalogConfirm_ = CatalogConfirm::None;
+        break;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        catalogConfirm_ = CatalogConfirm::None;
+        break;
+      case BezelKey::FmsOuterCw:
+      case BezelKey::FmsOuterCcw:
+      case BezelKey::FmsInnerCw:
+      case BezelKey::FmsInnerCcw:
+        catalogConfirmOk_ = !catalogConfirmOk_;
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  switch (key) {
+    case BezelKey::FmsPush:
+      catalogCursorOn_ = !catalogCursorOn_;
+      catalogClampSelection();
+      return true;
+    case BezelKey::FmsOuterCw:
+      catalogStepSelection(+1);
+      return true;
+    case BezelKey::FmsOuterCcw:
+      catalogStepSelection(-1);
+      return true;
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      // Small knob steps the FPL group's pages (back to Active Flight Plan);
+      // fall through to the common stepPage handling.
+      return false;
+    case BezelKey::Ent:
+      // ENT on a non-empty slot opens the "activate stored flight plan?"
+      // confirmation (the real unit confirms before activating).
+      if (catalogCursorOn_ && !catalog_.empty() &&
+          !catalog_.plan(catalogSelected_).legs.empty()) {
+        catalogConfirm_ = CatalogConfirm::Activate;
+        catalogConfirmOk_ = true;
+      }
+      return true;
+    default:
+      return false;
+  }
 }
 
 }  // namespace avionics

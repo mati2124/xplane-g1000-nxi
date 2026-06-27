@@ -1,0 +1,141 @@
+#include <gtest/gtest.h>
+
+#include "avionics/FlightData.h"
+#include "avionics/FplRouteEdit.h"
+#include "avionics/FlightPlanPersistence.h"
+#include "render/pfd/PfdFlightPlanSections.h"
+
+namespace avionics::pfd {
+namespace {
+
+TEST(FplHoldRowTest, ApproachDisplayRowsInsertHoldAfterFixWithPublishedHold) {
+  MapLeg cmi;
+  cmi.id = "CMI";
+  cmi.lat = 40.0;
+  cmi.lon = -88.27;
+  MapLeg bostn;
+  bostn.id = "BOSTN";
+  bostn.lat = 40.10;
+  bostn.lon = -88.20;
+  bostn.procedureRole = "iaf";
+  bostn.hold.active = true;
+  bostn.hold.inboundCourseDeg = 44.0f;
+  bostn.hold.legLengthNm = 4.0f;
+  MapLeg faf;
+  faf.id = "AFTOR";
+  faf.lat = 40.05;
+  faf.lon = -88.15;
+  faf.procedureRole = "faf";
+  const std::vector<MapLeg> legs = {cmi, bostn, faf};
+
+  const auto rows = buildFplApproachDisplayRows(legs, 1, 2, false, true);
+  bool sawBostn = false;
+  bool sawHoldAfterBostn = false;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const FplDisplayRow& dr = rows[i];
+    if (dr.kind == FplDisplayRowKind::ApproachLeg && dr.legIndex == 1) {
+      sawBostn = true;
+      if (i + 1 < rows.size() &&
+          rows[i + 1].kind == FplDisplayRowKind::Hold &&
+          rows[i + 1].legIndex == 1) {
+        sawHoldAfterBostn = true;
+      }
+    }
+  }
+  EXPECT_TRUE(sawBostn);
+  EXPECT_TRUE(sawHoldAfterBostn);
+  EXPECT_TRUE(fplApproachDisplayRowSelectable(FplDisplayRowKind::Hold));
+}
+
+TEST(FplHoldRowTest, ApproachDisplayRowsOmitHoldWhenHoldInactive) {
+  MapLeg bostn;
+  bostn.id = "BOSTN";
+  bostn.lat = 40.10;
+  bostn.lon = -88.20;
+  bostn.procedureRole = "iaf";
+  MapLeg faf;
+  faf.id = "AFTOR";
+  faf.lat = 40.05;
+  faf.lon = -88.15;
+  faf.procedureRole = "faf";
+  const std::vector<MapLeg> legs = {bostn, faf};
+
+  const auto rows = buildFplApproachDisplayRows(legs, 0, 2, true, false);
+  for (const FplDisplayRow& dr : rows) {
+    EXPECT_NE(dr.kind, FplDisplayRowKind::Hold);
+  }
+}
+
+TEST(FplHoldRowTest, CursorOnHoldRowDetectsHoldDisplayRow) {
+  MapLeg bostn;
+  bostn.id = "BOSTN";
+  bostn.lat = 40.10;
+  bostn.lon = -88.20;
+  bostn.procedureRole = "iaf";
+  bostn.hold.active = true;
+  bostn.hold.inboundCourseDeg = 44.0f;
+  bostn.hold.legLengthNm = 4.0f;
+  MapLeg faf;
+  faf.id = "AFTOR";
+  faf.lat = 40.05;
+  faf.lon = -88.15;
+  faf.procedureRole = "faf";
+  const std::vector<MapLeg> legs = {bostn, faf};
+
+  bool destinationFilled = true;
+  int approachStart = 0;
+  int approachCount = 2;
+  const bool blankOrigin =
+      ::avionics::fplApproachBlankOriginSection(legs, approachStart, "KCMI");
+  int holdCursor = -1;
+  int selectable = 0;
+  for (const pfd::FplDisplayRow& dr :
+       pfd::fplApproachDisplayRowList(legs, approachStart, approachCount,
+                                      blankOrigin, destinationFilled)) {
+    if (!pfd::fplApproachDisplayRowSelectable(dr.kind)) continue;
+    if (dr.kind == pfd::FplDisplayRowKind::Hold) holdCursor = selectable;
+    ++selectable;
+  }
+  ASSERT_GE(holdCursor, 0);
+
+  int cursorRow = holdCursor;
+  FplRouteEdit edit{const_cast<std::vector<MapLeg>&>(legs), destinationFilled,
+                    approachStart, approachCount, cursorRow, nullptr, nullptr};
+  EXPECT_TRUE(::avionics::fplCursorOnHoldRow(
+      edit, "KCMI", ::avionics::FplCursorLayout::SectionRows));
+  cursorRow = 0;
+  EXPECT_FALSE(::avionics::fplCursorOnHoldRow(
+      edit, "KCMI", ::avionics::FplCursorLayout::SectionRows));
+}
+
+TEST(FplHoldRowTest, HoldNavActiveUsesHoldSelectableRow) {
+  MapLeg bostn;
+  bostn.id = "BOSTN";
+  bostn.lat = 40.10;
+  bostn.lon = -88.20;
+  bostn.procedureRole = "iaf";
+  bostn.hold.active = true;
+  MapLeg faf;
+  faf.id = "AFTOR";
+  faf.lat = 40.05;
+  faf.lon = -88.15;
+  faf.procedureRole = "faf";
+  const std::vector<MapLeg> legs = {bostn, faf};
+
+  FlightData d;
+  d.fmaLegIsHold = true;
+  d.fmaActiveLegIndex = 0;
+  EXPECT_TRUE(::avionics::fplHoldNavActiveOnLeg(d, false, false, false, 0, 0,
+                                                bostn));
+
+  const int fixRow = fplApproachSelectableRowForLegIndex(
+      0, legs, 0, 2, true, false);
+  const int holdRow = fplApproachSelectableRowForHoldLegIndex(
+      0, legs, 0, 2, true, false);
+  EXPECT_GE(fixRow, 0);
+  EXPECT_GE(holdRow, 0);
+  EXPECT_NE(fixRow, holdRow);
+}
+
+}  // namespace
+}  // namespace avionics::pfd

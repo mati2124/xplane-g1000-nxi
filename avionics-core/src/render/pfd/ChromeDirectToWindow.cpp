@@ -4,6 +4,7 @@
 
 #include "render/pfd/ChromeInternal.h"
 
+#include "avionics/FplRouteEdit.h"
 #include "avionics/render/MapSymbols.h"
 
 namespace avionics::pfd {
@@ -414,10 +415,6 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
 
   if (hasMatch) {
     drawDtoButton(r, left, buttonsCy, "Activate?", valueSize, ui.directToArmed(),
-                  blinkOn);
-    const float holdW =
-        r.measureTextWidth("Hold?", valueSize) + valueSize * 1.3f;
-    drawDtoButton(r, right - holdW, buttonsCy, "Hold?", valueSize, false,
                   blinkOn);
   }
 

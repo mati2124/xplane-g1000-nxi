@@ -243,4 +243,84 @@ void drawRangeCompass(Renderer& r, const MapViewConfig& config,
   }
 }
 
+namespace {
+
+// VOR compass rose geometry (G1000 NXi map). The rose is a fixed geographic
+// size around the station; radial ticks step every 10 degrees with longer
+// ticks every 30, and abbreviated cardinal labels (value / 10) sit just inside
+// the ring at the four quadrant radials when zoomed in enough to read them.
+constexpr float kVorRoseRadiusNm = 2.5f;
+constexpr float kVorRoseMinorTickDeg = 10.0f;
+constexpr float kVorRoseMajorTickDeg = 30.0f;
+constexpr float kVorRoseLabelDeg = 90.0f;
+// Declutter the rose at the same range the VOR symbol itself drops off the map.
+constexpr float kVorRoseMaxRangeNm = 100.0f;
+// Below this on-screen radius the rose is too small to read, so only the VOR
+// hexagon is drawn (matches the real unit dropping the rose at wider ranges).
+constexpr float kVorRoseMinRadiusPx = 10.0f;
+// The cardinal labels are only drawn once the rose is large enough to fit them.
+constexpr float kVorRoseLabelMinRadiusPx = 52.0f;
+// The radial labels are a fixed size (they do not scale with zoom) and sit a
+// little smaller than the map fix/ident labels.
+constexpr float kVorRoseLabelScale = 0.85f;
+
+// One rose centered on a station's screen position. `magvarDeg` rotates the
+// rose so the ticks read magnetic radials (true bearing = radial + variation),
+// and `rotationDeg` accounts for the map orientation. `labelSize` is the map
+// label font size, used so the radial numbers stay a fixed size when zooming.
+void drawVorCompassRose(Renderer& r, float cx, float cy, float radiusPx,
+                        float magvarDeg, float rotationDeg, float labelSize,
+                        const Color& c) {
+  const float strokeW = 1.5f;
+  const float majorLen = std::max(3.0f, radiusPx * 0.13f);
+  const float minorLen = majorLen * 0.5f;
+  const bool drawLabels = radiusPx >= kVorRoseLabelMinRadiusPx;
+  const float labelFont = labelSize * kVorRoseLabelScale;
+  const float labelRadial = majorLen + labelFont * 1.05f;
+
+  drawRangeRing(r, cx, cy, radiusPx, c);
+
+  for (int bearing = 0; bearing < 360;
+       bearing += static_cast<int>(kVorRoseMinorTickDeg)) {
+    const float screenDeg = static_cast<float>(bearing) + magvarDeg - rotationDeg;
+    const bool major = (bearing % static_cast<int>(kVorRoseMajorTickDeg)) == 0;
+    const float tickLen = major ? majorLen : minorLen;
+    const Point outer = polarFromUp(cx, cy, radiusPx, screenDeg);
+    const Point inner = polarFromUp(cx, cy, radiusPx - tickLen, screenDeg);
+    r.strokeLine(inner.x, inner.y, outer.x, outer.y, strokeW, c);
+
+    if (drawLabels && bearing % static_cast<int>(kVorRoseLabelDeg) == 0) {
+      char buf[4];
+      std::snprintf(buf, sizeof(buf), "%d", bearing / 10);
+      const Point lp = polarFromUp(cx, cy, radiusPx - labelRadial, screenDeg);
+      r.fillText(lp.x, lp.y, buf, labelFont, TextAlign::Center, c);
+    }
+  }
+}
+
+}  // namespace
+
+void drawVorRoses(Renderer& r, const MapData& map, const Proj& proj,
+                  const MapViewConfig& config, float rangeNm,
+                  float labelSize) {
+  if (rangeNm > kVorRoseMaxRangeNm || !config.style.showNavaids) return;
+
+  const float radiusPx = kVorRoseRadiusNm * proj.pixelsPerNm;
+  if (radiusPx < kVorRoseMinRadiusPx) return;
+
+  for (const MapFeature& f : map.features) {
+    if (f.type != MapFeatureType::Vor) continue;
+
+    float x = 0.0f;
+    float y = 0.0f;
+    proj.toPx(f.lat, f.lon, x, y);
+    if (!proj.onScreen(x, y, radiusPx + kSymbologyClipMarginPx)) continue;
+
+    // proj.rotation already encodes the map orientation (0 for north-up).
+    const float magvar = f.hasMagvar ? f.magvarDeg : 0.0f;
+    drawVorCompassRose(r, x, y, radiusPx, magvar, proj.rotation, labelSize,
+                       colors::kCyan);
+  }
+}
+
 }  // namespace avionics::mapview

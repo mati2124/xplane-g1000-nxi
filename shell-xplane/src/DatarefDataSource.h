@@ -15,6 +15,7 @@
 #include "DsfTerrainStore.h"
 #include "DatarefWeatherRadar.h"
 #include "LandDataStore.h"
+#include "MetarFileStore.h"
 #include "ObstacleStore.h"
 #include "XPLMDataAccess.h"
 #include "avionics/AptDatParser.h"
@@ -81,6 +82,12 @@ class DatarefDataSource : public DataSource {
   // to hide its dedicated Weather Radar page on unequipped aircraft.
   bool weatherRadarEquipped() const { return weather_.equipped(); }
 
+  // Station weather for the WPT - Weather Information page, read from X-Plane
+  // 12's downloaded real-weather METAR files (no TAF source exists in X-Plane).
+  // The pointer is stable for the source's lifetime; the store starts loading
+  // once the install root is resolved (first update()).
+  StationWeatherSource& stationWeatherSource() { return metar_; }
+
   void setMapPanCenter(bool active, double lat, double lon) override;
   void setInsetMapQuery(bool active, double lat, double lon, float rangeNm,
                         float viewHalfExtentNm,
@@ -113,7 +120,7 @@ class DatarefDataSource : public DataSource {
   void setLocalFlightPlan(std::vector<MapLeg> route);
   void setRouteOverride(std::vector<MapLeg> route, bool programSimulator = true);
   void clearRouteOverride();
-  void setDirectTo(MapLeg target);
+  void setDirectTo(MapLeg target, bool flyHold = false);
   void clearDirectTo();
   void onNavigatorDirectToCaptured(int activeLegIndex);
 
@@ -211,6 +218,9 @@ class DatarefDataSource : public DataSource {
 
   // Live datalink NEXRAD (real ground radar) for the map precipitation overlay.
   NexradWeatherRadar nexrad_;
+
+  // X-Plane 12 real-weather METAR files (WPT - Weather Information page).
+  MetarFileStore metar_;
 
   std::vector<MapFeature> navCache_;
   bool navCacheBuilt_ = false;
@@ -382,6 +392,7 @@ class DatarefDataSource : public DataSource {
 
   // Display-only Direct-To course (the live FMS route is unchanged).
   bool directToActive_ = false;
+  bool directToHold_ = false;
   MapLeg directTo_;
   bool directToOriginPending_ = false;
   bool directToOriginValid_ = false;

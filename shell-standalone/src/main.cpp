@@ -59,9 +59,6 @@
 //   --eis PATH                engine display layout file for the MFD EIS strip
 //                             (default: bundled C172S sample, or g1000_eis.txt
 //                             beside the loaded aircraft in the plugin)
-//   --simbrief-id ID          SimBrief Pilot ID for the AUX - SIMBRIEF page's
-//                             OFP fetch (default: the persisted setting,
-//                             entered on the page itself)
 //   --obstacles PATH          override the bundled FAA DDOF CSV for the map's
 //                             obstacle overlay (default: assets/obstacles.csv
 //                             next to the app / plugin when present)
@@ -93,6 +90,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -108,6 +106,7 @@
 #include "AppSettings.h"
 #include "avionics/ChecklistStore.h"
 #include "CommandBridgeClient.h"
+#include "CrashHandler.h"
 #include "avionics/EisStore.h"
 #include "DsfTerrainStore.h"
 #include "FmsPlanStore.h"
@@ -116,7 +115,7 @@
 #include "ObstacleStore.h"
 #include "ProcedureStore.h"
 #include "ShellNavMapData.h"
-#include "SimBriefStore.h"
+#include "NavigraphStore.h"
 #include "UpdateNotify.h"
 #include "XPlaneConnection.h"
 #include "XPlaneInstall.h"
@@ -132,6 +131,7 @@
 #include "avionics/NavMath.h"
 #include "avionics/UpdateChecker.h"
 #include "avionics/SimBrief.h"
+#include "avionics/Charts.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/BootScreen.h"
 #include "avionics/render/GlLoader.h"
@@ -1181,8 +1181,10 @@ void ToggleDisplayBackup(AppState& app) {
   }
 }
 
-// MFD GDU FMS keys are inert while a PFD pop-up owns FMS input. ENT on the MFD
-// still acknowledges the power-up page even when a PFD pop-up is open.
+// MFD GDU ENT/CLR/FMS-push are inert while a PFD pop-up owns FMS input. The MFD's
+// own FMS knob detents still step page groups/pages on the navigation map.
+// ENT on the MFD still acknowledges the power-up page even when a PFD pop-up
+// is open.
 bool BridgeFmsKeyBlockedByPfd(const AppState& app,
                               avionics::cmdbridge::Device device,
                               avionics::BezelKey key) {
@@ -1191,11 +1193,12 @@ bool BridgeFmsKeyBlockedByPfd(const AppState& app,
       app.mfdEngine->awaitingPowerUpAck()) {
     return false;
   }
+  if (avionics::isMfdPageSelectionBezelKey(key)) return false;
   if (app.pfdEngine == nullptr) return false;
-  // The MFD Active Flight Plan page owns its own FMS knob on the MFD GDU.
+  // The MFD Active Flight Plan and Checklist pages own ENT/CLR/FMS-push on the
+  // MFD GDU even when a PFD pop-up would otherwise claim GCU FMS input.
   if (app.mfdEngine != nullptr &&
-      app.mfdEngine->mfdController().pageGroup() ==
-          avionics::MfdPageGroup::FlightPlan) {
+      app.mfdEngine->mfdController().ownsLocalFmsInput()) {
     return false;
   }
   if (!app.pfdEngine->softkeyController().pfdClaimsFmsInput()) return false;
@@ -1435,6 +1438,31 @@ void WarmTerrainTilesForRange(avionics::DsfTerrainStore& terrain,
   terrain.setCoarseTerrainSample(false);
 }
 
+// Parses the full-resolution DSF tiles around `centerLat/centerLon` so the
+// close-range ChartLand land/water mask (terrain display off, <= 15 NM) is
+// already resident the first time the pilot zooms in -- otherwise the first
+// build streams tiles from disk while they wait. ensureCoverage blocks until
+// the handful of tiles load, so this MUST run on a background thread, never the
+// render thread. The footprint matches the 15 NM ChartLand view corner plus a
+// margin; that is well under a degree, so only a few 1-degree tiles are read.
+void WarmChartLandTiles(avionics::DsfTerrainStore& terrain, double centerLat,
+                        double centerLon) {
+  if (!terrain.ready()) return;
+  constexpr double kNmPerDegLat = 60.0;
+  // Cover the widest ChartLand footprint (15 NM view * the raster over-fetch
+  // factor) plus a margin, so a zoom-out to 15 NM finds its edges resident.
+  constexpr double kChartLandWarmHalfNm = 40.0;
+  const double nmLon =
+      kNmPerDegLat * std::cos(centerLat * 3.14159265358979323846 / 180.0);
+  // Full detail (not the coarse summary): ChartLand samples full DEM tiles.
+  terrain.setCoarseTerrainSample(false);
+  terrain.ensureCoverage(centerLat - kChartLandWarmHalfNm / kNmPerDegLat,
+                         centerLat + kChartLandWarmHalfNm / kNmPerDegLat,
+                         centerLon - kChartLandWarmHalfNm / nmLon,
+                         centerLon + kChartLandWarmHalfNm / nmLon,
+                         /*waitForTiles=*/true);
+}
+
 // Renders a deterministic frame offscreen and writes it to a binary PPM
 // (P6). PPM keeps this dependency-free; convert to PNG with `sips` afterwards.
 // Returns 0 on success. The mock state is advanced by `seconds` so we can pick a
@@ -1516,6 +1544,9 @@ int RunScreenshot(const char* path, double seconds, const char* state,
   avionics::AvionicsEngine engine(dataSource, renderer, kLabelMock);
   engine.mfdController().setNavFeatureSource(&navMapData);
   engine.softkeyController().setNavFeatureSource(&navMapData);
+  // Canned METAR/TAF for the WPT - Weather page (mfdwptwx screenshot); the mock
+  // is the authoritative offline feed here, so its KFMY report is shown.
+  engine.mfdController().setStationWeatherSource(&dataSource);
 
   int fbWidth = 0;
   int fbHeight = 0;
@@ -1975,6 +2006,24 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::Ent);  // "Select Approach"
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && (std::strcmp(state, "pfdprocarr") == 0 ||
+                                  std::strcmp(state, "pfdprocdep") == 0)) {
+    // PFD "Select Arrival" / "Select Departure" popup (trainer proc_045 /
+    // proc_051): open PROC, step to the Arrival / Departure menu item, ENT.
+    const bool departure = std::strcmp(state, "pfdprocdep") == 0;
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Proc);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // Select Arrival
+    for (int i = 0; i < 4; ++i) engine.update(1.0 / 60.0);
+    if (departure) {
+      engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // Select Departure
+      for (int i = 0; i < 4; ++i) engine.update(1.0 / 60.0);
+    }
+    engine.pressBezelKey(avionics::BezelKey::Ent);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr &&
              (startsWith(state, "mfdapproach:") ||
               startsWith(state, "mfdapproachloaded:"))) {
@@ -2086,9 +2135,10 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     for (int i = 0; i < 260; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdsimbrief") == 0) {
-    // The AUX - SIMBRIEF page with a Pilot ID entry in progress: step to the
-    // page (fourth AUX page), open the ID digit-entry softkeys, and type two
-    // digits so the cyan edit plate and the digit bar are captured.
+    // The AUX - SIMBRIEF page (fourth AUX page): step to it so the Navigraph
+    // account box and the device-authorization QR sign-in panel are captured.
+    // A mock "awaiting sign-in" state is injected so the QR renders (no live
+    // network is involved in the screenshot path).
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
     engine.skipBoot();
     engine.update(seconds);
@@ -2096,10 +2146,19 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // AUX
     for (int p = 0; p < 5; ++p)
       engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);  // -> SimBrief
-    engine.pressSoftkey(8);  // "ID" -> digit entry
-    engine.pressSoftkey(8);  // digit 8
-    engine.pressSoftkey(4);  // digit 4
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    {
+      avionics::SimBriefState sb;
+      sb.commAllowed = true;
+      sb.loginPhase = avionics::NavigraphLoginPhase::AwaitingUser;
+      sb.userCode = "AMKC-7DZD";
+      sb.verificationUri = "navigraph.com/code";
+      sb.verificationUriComplete =
+          "https://identity.api.navigraph.com/code/default.aspx?user_code="
+          "AMKC7DZD";
+      sb.status = avionics::SimBriefStatus::NotConfigured;
+      engine.mfdController().setSimbriefState(sb);
+    }
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdlayers") == 0) {
     // The MAP page with every optional overlay enabled via the Map Opt
@@ -2150,6 +2209,31 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(3);  // TER Rel -> Off (clean background)
     engine.pressSoftkey(6);  // "NEXRAD" on
     for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);  // settle zoom
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strncmp(state, "mfdwpt", 6) == 0 &&
+             (std::strcmp(state, "mfdwptdp") == 0 ||
+              std::strcmp(state, "mfdwptstar") == 0 ||
+              std::strcmp(state, "mfdwptapr") == 0 ||
+              std::strcmp(state, "mfdwptwx") == 0 ||
+              std::strcmp(state, "mfdwptinfo") == 0)) {
+    // The WPT - Airport Information page sub-views (trainer apt_054..058):
+    // step to the WPT group (first page is Airport Information), then select
+    // the requested sub-view from the page's softkey bar (Info=4, DP=5,
+    // STAR=6, APR=7, WX=8). The procedure sub-views pre-select the airport's
+    // first published procedure when nav data is available.
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // MAP -> WPT
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    int subKey = 4;  // Info (Airport Information)
+    if (std::strcmp(state, "mfdwptdp") == 0) subKey = 5;
+    else if (std::strcmp(state, "mfdwptstar") == 0) subKey = 6;
+    else if (std::strcmp(state, "mfdwptapr") == 0) subKey = 7;
+    else if (std::strcmp(state, "mfdwptwx") == 0) subKey = 8;
+    engine.pressSoftkey(subKey);
+    // Settle past the 3 s page-select popup so it fades clear of the panel.
+    for (int i = 0; i < 260; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdwxr") == 0) {
     // The dedicated MAP - Weather Radar page (airborne GWX radar): step to the
@@ -2253,6 +2337,32 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressBezelKey(avionics::BezelKey::Proc);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "crprompt") == 0) {
+    // PFD "Fly Course Reversal at BOSTN?" HILPT prompt (dev preview).
+    dataSource.setOwnshipPosition(40.0345, -88.2761, 3000.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::PrimaryFlightDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    auto& st = engine.softkeyController().procedureMenuStateRef();
+    st.courseReversalPromptActive = true;
+    st.courseReversalFix = "BOSTN";
+    st.courseReversalYes = false;
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdcrprompt") == 0) {
+    // MFD "Fly Course Reversal at BOSTN?" HILPT prompt (dev preview).
+    dataSource.setOwnshipPosition(40.0345, -88.2761, 3000.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    auto& st = engine.mfdController().procedureMenuStateRef();
+    st.courseReversalPromptActive = true;
+    st.courseReversalFix = "BOSTN";
+    st.courseReversalYes = false;
+    RenderSuite(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdprocsel") == 0) {
     // MFD Approach Loading window for KFMY ILS 05 / VECTORS (trainer screenshot023).
     dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
@@ -2278,6 +2388,30 @@ int RunScreenshot(const char* path, double seconds, const char* state,
       engine.pressBezelKey(avionics::BezelKey::Ent);
       for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
     }
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && (std::strcmp(state, "mfdprocarr") == 0 ||
+                                   std::strcmp(state, "mfdprocdep") == 0)) {
+    // MFD PROC - Arrival / Departure Loading window (trainer proc_048 /
+    // proc_050). Drive it through the Procedures menu so the softkey bar and
+    // selection state match the live path.
+    const bool departure = std::strcmp(state, "mfdprocdep") == 0;
+    dataSource.setOwnshipPosition(26.5862, -81.7552, 500.0f);
+    dataSource.update(0.0);
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    engine.pressBezelKey(avionics::BezelKey::Proc);
+    for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
+    // From the default highlight (Select Approach), step to Select Arrival
+    // (one detent) or Select Departure (two), then ENT to open the form.
+    engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);
+    for (int i = 0; i < 4; ++i) engine.update(1.0 / 60.0);
+    if (departure) {
+      engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);
+      for (int i = 0; i < 4; ++i) engine.update(1.0 / 60.0);
+    }
+    engine.pressBezelKey(avionics::BezelKey::Ent);
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdprocseq") == 0) {
@@ -2667,6 +2801,28 @@ int RunScreenshot(const char* path, double seconds, const char* state,
         engine.pressBezelKey(avionics::BezelKey::PanUp);
         for (int i = 0; i < 10; ++i) engine.update(1.0 / 60.0);
       }
+    } else if (std::strncmp(suffix, "fpldel", 6) == 0) {
+      // FPL page "Delete all waypoints in flight plan?" confirmation over a
+      // populated route, so the popup's placement over the Active Flight Plan
+      // panel (trainer screenshot043) can be verified.
+      avionics::MapLeg origin; origin.id = "KPGD"; origin.lat = 26.9202; origin.lon = -81.9906;
+      avionics::MapLeg enroute; enroute.id = "RSW"; enroute.lat = 26.5362; enroute.lon = -81.7552;
+      avionics::MapLeg dest; dest.id = "KFMY"; dest.lat = 26.5862; dest.lon = -81.8632;
+      dataSource.setRoute({origin, enroute, dest});
+      dataSource.update(0.0);
+      for (int i = 0; i < 60; ++i) engine.update(1.0 / 60.0);
+      engine.pressBezelKey(avionics::BezelKey::Fpl);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+      engine.pressBezelKey(avionics::BezelKey::Menu);
+      for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+      avionics::MfdController& mfd = engine.mfdController();
+      for (int i = 0; i < mfd.pageMenuItemCount(); ++i) {
+        if (mfd.pageMenuItemText(mfd.pageMenuSelected()) == "Delete Flight Plan") {
+          break;
+        }
+        engine.pressBezelKey(avionics::BezelKey::FmsInnerCw);
+      }
+      engine.pressBezelKey(avionics::BezelKey::Ent);  // open the confirmation
     } else if (std::strncmp(suffix, "fpl", 3) == 0) {
       engine.pressBezelKey(avionics::BezelKey::Fpl);
     }
@@ -2764,8 +2920,11 @@ void OnKey(GLFWwindow* window, int key, int /*scancode*/, int action,
         bootEngine->acknowledgePowerUp();
       } else {
         avionics::AvionicsEngine* owner = app->pfdEngine;
-        if (owner != nullptr &&
-            owner->softkeyController().pfdClaimsFmsInput()) {
+        if (app->mfdEngine != nullptr &&
+            app->mfdEngine->mfdController().ownsLocalFmsInput()) {
+          app->mfdEngine->pressBezelKey(avionics::BezelKey::Ent);
+        } else if (owner != nullptr &&
+                   owner->softkeyController().pfdClaimsFmsInput()) {
           owner->pressBezelKey(avionics::BezelKey::Ent);
         } else if (app->mfdEngine != nullptr) {
           app->mfdEngine->pressBezelKey(avionics::BezelKey::Ent);
@@ -3540,6 +3699,16 @@ void IdentifyMonitors(double seconds) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Last-chance crash handler first: this is a GUI app with no console, so an
+  // access violation otherwise dies silently. Writes a symbolized stack to
+  // crash_log.txt beside the exe (covers worker threads and GPU-driver faults).
+  avionics::InstallCrashHandler();
+
+  // Initialize libcurl once on the main thread before any worker thread (update
+  // check, NEXRAD, NavigraphStore) can issue a request. libcurl's implicit init
+  // is not thread-safe; doing it here makes every later curl_easy_init a no-op.
+  avionics::EnsureCurlGlobalInit();
+
   // Locate bundled assets relative to the installed binary before anything that
   // loads them (renderer fonts, land data, EIS, checklists), including the
   // offscreen --screenshot path below.
@@ -3872,21 +4041,22 @@ int main(int argc, char** argv) {
   demoSource.setChecklistSource(&checklists);
   demoSource.setEisSource(&eisStore);
 
-  // SimBrief OFP fetch (AUX - SIMBRIEF page). The Pilot ID comes from the
-  // command line, falling back to the persisted setting; when one is known the
-  // latest OFP is fetched once at startup, and the page's FETCH softkey
-  // re-fetches on demand.
-  avionics::SimBriefStore simbrief;
-  const char* simbriefIdArg = FlagValue(argc, argv, "--simbrief-id");
-  std::string simbriefPilotId =
-      simbriefIdArg != nullptr ? simbriefIdArg : savedSettings.simbriefPilotId;
+  // SimBrief OFP import via Navigraph (AUX - SIMBRIEF page). The store owns the
+  // OAuth device-flow sign-in and the OFP fetch; the page's Login/Logout/FETCH
+  // softkeys drive it. A persisted refresh token silently restores the session
+  // (and auto-fetches the latest OFP) at startup.
+  avionics::NavigraphStore navigraph;
+  const avionics::NavigraphCredentials navigraphCreds =
+      avionics::LoadNavigraphCredentials();
+  navigraph.setCredentials(navigraphCreds);
   avionics::SimBriefState simbriefState;
-  if (simbriefPilotId.empty()) {
-    simbriefState.status = avionics::SimBriefStatus::NotConfigured;
-  } else {
-    simbriefState.status = avionics::SimBriefStatus::Fetching;
-    simbrief.requestFetch(simbriefPilotId);
-  }
+  avionics::ChartsState chartsState;
+  unsigned chartImageGeneration = 0;
+  // Navigraph's terms gate data access to a connected simulator session, so the
+  // standalone defers restoring a saved session (which refreshes the token over
+  // the network) until the X-Plane link is live. Pending until first connect.
+  bool navigraphRestorePending = navigraphCreds.valid() &&
+                                 !savedSettings.navigraphRefreshToken.empty();
 
   // The standalone always reads the live X-Plane connection. Until the sim
   // starts delivering data the engine shows the power-up / waiting screen, then
@@ -3914,7 +4084,6 @@ int main(int argc, char** argv) {
     // otherwise the PFD drives it.
     mfdEngine->setDrivesDataSource(pfdEngine == nullptr);
     mfdEngine->setAutoAcknowledgePowerUp(skipAck);
-    mfdEngine->mfdController().setSimbriefPilotId(simbriefPilotId);
     // Ident lookups for FPL waypoint entry come from the parsed nav database.
     mfdEngine->mfdController().setNavFeatureSource(&navMapData);
   }
@@ -3959,6 +4128,10 @@ int main(int argc, char** argv) {
       mfdEngine->mfdController().setPersistedLoadedApproach(
           savedSettings.persistedApproach);
     }
+    // Restore the stored Flight Plan Catalog (imported OFPs, copies, ...). The
+    // catalog lives on the MFD's FPL group, so only the MFD controller owns it.
+    mfdEngine->mfdController().restoreFlightPlanCatalog(
+        savedSettings.flightPlanCatalog);
   }
 
   AppState app;
@@ -4085,8 +4258,25 @@ int main(int argc, char** argv) {
     // windowed display the rectangle is the whole framebuffer.
     const ContentRect cr = ComputeContentRect(fbWidth, fbHeight, app.showBezel);
     const int glY = fbHeight - (cr.y + cr.h);  // GL viewport origin is bottom-left
+    // Crash breadcrumb: record which screen is being drawn so any crash report
+    // names the page on screen at the time.
+    {
+      const char* win = eng.page() == avionics::DisplayPage::MultiFunctionDisplay
+                            ? "MFD"
+                            : "PFD";
+      const int mfdPage = app.mfdEngine != nullptr
+                              ? static_cast<int>(app.mfdEngine->mfdController().page())
+                              : -1;
+      char crumb[96];
+      std::snprintf(crumb, sizeof(crumb), "rendering=%s mfdPage=%d", win,
+                    mfdPage);
+      avionics::SetCrashBreadcrumb(crumb);
+    }
     RenderSuiteViewport(renderer, eng, cr.x, glY, cr.w, cr.h, app.showBezel,
                         flip180, stats);
+    // When profiling, drain the GL pipeline so the measured time reflects this
+    // window's GPU work rather than just command submission. Off the profiler
+    // path the swap below paces the loop, so no explicit finish is needed.
     if (profile) glFinish();
     const double ms =
         profile ? std::chrono::duration<double, std::milli>(
@@ -4109,6 +4299,16 @@ int main(int argc, char** argv) {
   int profFrames = 0;
   auto profPrev = clock::now();
 
+  // Background prewarm of the close-range ChartLand DEM tiles. As soon as a
+  // valid ownship position arrives, parse the surrounding tiles off-thread so a
+  // zoom-in past 15 NM (terrain off) finds them already resident instead of
+  // streaming from disk. Re-warmed if the aircraft is repositioned far away.
+  std::thread terrainWarmThread;
+  std::atomic<bool> terrainWarmRunning{false};
+  bool terrainWarmStarted = false;
+  double terrainWarmLat = 0.0;
+  double terrainWarmLon = 0.0;
+
   // Closing either window exits: the PFD and MFD are one avionics suite. A
   // suppressed display is null and simply ignored here.
   while ((pfdWindow == nullptr || !glfwWindowShouldClose(pfdWindow)) &&
@@ -4125,27 +4325,85 @@ int main(int argc, char** argv) {
     checklists.refreshIfChanged();
     eisStore.refreshIfChanged();
 
-    // SimBrief: react to the AUX - SIMBRIEF page (a newly committed Pilot ID
-    // is persisted; FETCH kicks off a download), land completed fetches into
-    // the X-Plane feed's flight plan, and publish the status back for rendering.
+    // SimBrief / Navigraph: react to the AUX - SIMBRIEF page softkeys (sign in /
+    // out, FETCH), persist the rotating refresh token, land completed fetches
+    // into the X-Plane feed's flight plan, and publish the status for rendering.
+    //
+    // Navigraph's terms only allow data access from a connected simulator
+    // session, so all Navigraph traffic is gated on a live X-Plane link. The
+    // in-sim plugin is always permitted; here the standalone tracks the link.
+    const bool simConnected =
+        xplane.connectionState() == avionics::ConnectionState::Connected;
+    navigraph.setCommunicationAllowed(simConnected);
+    simbriefState.commAllowed = simConnected;
+    // Restore a saved session once the link comes up (refreshing the token is
+    // network traffic), then auto-fetch the latest OFP.
+    if (simConnected && navigraphRestorePending) {
+      navigraphRestorePending = false;
+      navigraph.restoreSession(savedSettings.navigraphRefreshToken);
+    }
     if (mfdEngine != nullptr) {
       avionics::MfdController& mfdUi = mfdEngine->mfdController();
-      if (mfdUi.simbriefPilotId() != simbriefPilotId) {
-        simbriefPilotId = mfdUi.simbriefPilotId();
-        app.settings.simbriefPilotId = simbriefPilotId;
-        avionics::SaveAppSettings(app.settings);
-        if (simbriefState.status == avionics::SimBriefStatus::NotConfigured) {
-          simbriefState.status = avionics::SimBriefStatus::Idle;
-        }
+      if (mfdUi.consumeNavigraphLoginRequest() && simConnected) {
+        navigraph.requestLogin();
       }
-      if (mfdUi.consumeSimbriefFetchRequest() && !simbriefPilotId.empty() &&
-          !simbrief.fetching()) {
+      if (mfdUi.consumeNavigraphLogoutRequest()) {
+        navigraph.requestLogout();
+        simbriefState.status = avionics::SimBriefStatus::NotConfigured;
+      }
+      if (mfdUi.consumeSimbriefFetchRequest() && simConnected &&
+          !navigraph.fetching()) {
+        navigraph.requestFetch();
+      }
+    }
+    // Persist the refresh token whenever the store rotates it (or clears it on
+    // sign-out), so the next launch restores the session.
+    std::string newRefreshToken;
+    if (navigraph.consumeRefreshToken(newRefreshToken) &&
+        newRefreshToken != app.settings.navigraphRefreshToken) {
+      app.settings.navigraphRefreshToken = newRefreshToken;
+      avionics::SaveAppSettings(app.settings);
+    }
+    // Mirror the store's sign-in state into the rendered page state. The store
+    // and core use parallel enums (shell vs. avionics-core), so map across.
+    {
+      const avionics::NavigraphAuthSnapshot snap = navigraph.snapshot();
+      avionics::NavigraphLoginPhase phase =
+          avionics::NavigraphLoginPhase::LoggedOut;
+      switch (snap.phase) {
+        case avionics::NavigraphAuthPhase::LoggedOut:
+          phase = avionics::NavigraphLoginPhase::LoggedOut;
+          break;
+        case avionics::NavigraphAuthPhase::AwaitingUser:
+          phase = avionics::NavigraphLoginPhase::AwaitingUser;
+          break;
+        case avionics::NavigraphAuthPhase::LoggedIn:
+          phase = avionics::NavigraphLoginPhase::LoggedIn;
+          break;
+        case avionics::NavigraphAuthPhase::Error:
+          phase = avionics::NavigraphLoginPhase::Error;
+          break;
+      }
+      simbriefState.loginPhase = phase;
+      simbriefState.username = snap.username;
+      simbriefState.userCode = snap.userCode;
+      simbriefState.verificationUri = snap.verificationUri;
+      simbriefState.verificationUriComplete = snap.verificationUriComplete;
+      simbriefState.loginError = snap.error;
+      if (navigraph.fetching()) {
         simbriefState.status = avionics::SimBriefStatus::Fetching;
-        simbrief.requestFetch(simbriefPilotId);
+      } else if (phase != avionics::NavigraphLoginPhase::LoggedIn &&
+                 simbriefState.status != avionics::SimBriefStatus::Ok &&
+                 simbriefState.status != avionics::SimBriefStatus::Error) {
+        simbriefState.status = avionics::SimBriefStatus::NotConfigured;
+      } else if (phase == avionics::NavigraphLoginPhase::LoggedIn &&
+                 simbriefState.status ==
+                     avionics::SimBriefStatus::NotConfigured) {
+        simbriefState.status = avionics::SimBriefStatus::Idle;
       }
     }
     avionics::SimBriefFetchResult simbriefResult;
-    if (simbrief.consumeResult(simbriefResult)) {
+    if (navigraph.consumeResult(simbriefResult)) {
       if (simbriefResult.ok) {
         simbriefState.status = avionics::SimBriefStatus::Ok;
         simbriefState.error.clear();
@@ -4155,16 +4413,26 @@ int main(int argc, char** argv) {
         simbriefState.generatedUtc = simbriefResult.generatedUtc;
         simbriefState.waypointCount =
             static_cast<int>(simbriefResult.legs.size());
-        // The OFP becomes the displayed flight plan on the X-Plane feed.
-        xplane.setRouteOverride(simbriefResult.legs);
-        app.flightPlanPersistDirty = true;
-        if (pfdEngine != nullptr) {
-          pfdEngine->softkeyController().replaceFlightPlanFromExternal(
-              simbriefResult.legs);
-        }
+        // The real G1000 NXi NEVER auto-activates an imported OFP: store it as
+        // a new Flight Plan Catalog entry instead of loading it onto the active
+        // route / map. The pilot previews and Activates it from the FPL -
+        // Flight Plan Catalog page, which is what then draws it on the map.
         if (mfdEngine != nullptr) {
-          mfdEngine->mfdController().replaceFlightPlanFromExternal(
-              simbriefResult.legs);
+          avionics::SimBriefOfpImport imp;
+          imp.legs = std::move(simbriefResult.legs);
+          imp.originIcao = simbriefResult.originIcao;
+          imp.destinationIcao = simbriefResult.destinationIcao;
+          imp.sidIdent = simbriefResult.sidIdent;
+          imp.sidTrans = simbriefResult.sidTrans;
+          imp.starIdent = simbriefResult.starIdent;
+          imp.starTrans = simbriefResult.starTrans;
+          imp.originRunway = simbriefResult.originRunway;
+          imp.destRunway = simbriefResult.destRunway;
+          imp.departureLegStart = simbriefResult.departureLegStart;
+          imp.departureLegCount = simbriefResult.departureLegCount;
+          imp.arrivalLegStart = simbriefResult.arrivalLegStart;
+          imp.arrivalLegCount = simbriefResult.arrivalLegCount;
+          mfdEngine->mfdController().storeFlightPlanFromSimBriefImport(imp);
         }
       } else {
         simbriefState.status = avionics::SimBriefStatus::Error;
@@ -4173,6 +4441,82 @@ int main(int argc, char** argv) {
     }
     if (mfdEngine != nullptr) {
       mfdEngine->mfdController().setSimbriefState(simbriefState);
+    }
+
+    // Navigraph charts (WPT - Airport Information chart view): drive index/image
+    // fetches only while chart view is up, the pilot is signed in, and the sim
+    // link is live.
+    if (mfdEngine != nullptr) {
+      avionics::MfdController& mfdUi = mfdEngine->mfdController();
+      const bool chartsActive =
+          mfdUi.chartViewActive() && simConnected &&
+          simbriefState.loginPhase == avionics::NavigraphLoginPhase::LoggedIn;
+
+      chartsState.commAllowed = simConnected;
+      chartsState.loginPhase = simbriefState.loginPhase;
+
+      if (chartsActive) {
+        const std::string apt = mfdUi.chartsDesiredAirport();
+        navigraph.setChartAirport(apt);
+        chartsState.airportIcao = apt;
+
+        const avionics::ChartIndexSnapshot idx = navigraph.chartIndexSnapshot();
+        const std::string chartId = mfdUi.chartsSelectedChartId();
+        if (!chartId.empty()) {
+          for (const avionics::NavigraphChartMeta& meta : idx.charts) {
+            if (meta.id == chartId) {
+              const std::string url = mfdUi.chartsNight() ? meta.imageNightUrl
+                                                          : meta.imageDayUrl;
+              navigraph.setChartSelection(chartId, mfdUi.chartsNight(), url);
+              break;
+            }
+          }
+        }
+
+        switch (idx.status) {
+          case avionics::ChartIndexStatus::Idle:
+            chartsState.status = avionics::ChartsStatus::Idle;
+            break;
+          case avionics::ChartIndexStatus::Loading:
+            chartsState.status = avionics::ChartsStatus::Loading;
+            break;
+          case avionics::ChartIndexStatus::Ready:
+            chartsState.status = avionics::ChartsStatus::Ready;
+            break;
+          case avionics::ChartIndexStatus::Empty:
+            chartsState.status = avionics::ChartsStatus::Empty;
+            break;
+          case avionics::ChartIndexStatus::Error:
+            chartsState.status = avionics::ChartsStatus::Error;
+            break;
+        }
+        chartsState.error = idx.error;
+        chartsState.charts.clear();
+        for (const avionics::NavigraphChartMeta& meta : idx.charts) {
+          chartsState.charts.push_back(avionics::NavigraphChartToListItem(meta));
+        }
+      } else {
+        navigraph.setChartAirport("");
+        chartsState.airportIcao.clear();
+        chartsState.status = avionics::ChartsStatus::Idle;
+        chartsState.error.clear();
+        chartsState.charts.clear();
+      }
+
+      avionics::ChartImageResult imgResult;
+      if (navigraph.consumeChartImage(imgResult)) {
+        ++chartImageGeneration;
+        chartsState.image.generation = chartImageGeneration;
+        if (imgResult.ok && !imgResult.pngBytes.empty()) {
+          chartsState.image.pngBytes =
+              std::make_shared<const std::vector<unsigned char>>(
+                  std::move(imgResult.pngBytes));
+        } else {
+          chartsState.image.pngBytes.reset();
+        }
+      }
+
+      mfdUi.setChartsState(chartsState);
     }
 
     // A loaded PROC approach with an ILS frequency tunes NAV1 standby (same as
@@ -4205,6 +4549,35 @@ int main(int argc, char** argv) {
       mapUi.applyDirectToInsetToDataSource(*mapSource, mapSource->mapSnapshot());
       mapSource->setMapViewHalfExtentNm(mapUi.mapViewHalfExtentNm());
       mapSource->setChartRangeNm(mapUi.rangeNm());
+
+      // Kick off the background ChartLand tile prewarm once a position is known
+      // (and again if the aircraft jumps far from the last warm), reusing the
+      // single warm thread so only one runs at a time.
+      if (terrain.ready() && !terrainWarmRunning.load(std::memory_order_acquire)) {
+        const avionics::MapData& warmMap = mapSource->mapSnapshot();
+        if (warmMap.positionValid) {
+          constexpr double kReWarmDistNm = 12.0;
+          const double dN = (warmMap.ownshipLat - terrainWarmLat) * 60.0;
+          const double dE = (warmMap.ownshipLon - terrainWarmLon) * 60.0 *
+                            std::cos(warmMap.ownshipLat * 3.14159265358979323846 /
+                                     180.0);
+          const bool moved =
+              std::sqrt(dN * dN + dE * dE) > kReWarmDistNm;
+          if (!terrainWarmStarted || moved) {
+            if (terrainWarmThread.joinable()) terrainWarmThread.join();
+            terrainWarmStarted = true;
+            terrainWarmLat = warmMap.ownshipLat;
+            terrainWarmLon = warmMap.ownshipLon;
+            terrainWarmRunning.store(true, std::memory_order_release);
+            terrainWarmThread = std::thread(
+                [&terrain, &terrainWarmRunning, lat = terrainWarmLat,
+                 lon = terrainWarmLon] {
+                  WarmChartLandTiles(terrain, lat, lon);
+                  terrainWarmRunning.store(false, std::memory_order_release);
+                });
+          }
+        }
+      }
     }
 
     // Cockpit bezel / softkey / radio events forwarded from the in-sim plugin.
@@ -4239,8 +4612,10 @@ int main(int argc, char** argv) {
     // before engaging present-position Direct-To to the first approach fix.
     if (pfdEngine != nullptr) {
       avionics::MapLeg pfdDto;
-      if (pfdEngine->softkeyController().consumeDirectToRequest(pfdDto)) {
-        xplane.setDirectTo(pfdDto);
+      bool pfdDtoHold = false;
+      if (pfdEngine->softkeyController().consumeDirectToRequest(pfdDto,
+                                                              &pfdDtoHold)) {
+        xplane.setDirectTo(pfdDto, pfdDtoHold);
         if (app.demoSource != nullptr &&
             app.activeSource == app.demoSource) {
           if (pfdDto.id.empty()) {
@@ -4253,8 +4628,10 @@ int main(int argc, char** argv) {
     }
     if (mfdEngine != nullptr) {
       avionics::MapLeg dtoTarget;
-      if (mfdEngine->mfdController().consumeDirectToRequest(dtoTarget)) {
-        xplane.setDirectTo(dtoTarget);
+      bool dtoHold = false;
+      if (mfdEngine->mfdController().consumeDirectToRequest(dtoTarget,
+                                                            &dtoHold)) {
+        xplane.setDirectTo(dtoTarget, dtoHold);
         if (app.demoSource != nullptr &&
             app.activeSource == app.demoSource) {
           if (dtoTarget.id.empty()) {
@@ -4441,9 +4818,18 @@ int main(int argc, char** argv) {
           avionics::SaveAppSettings(app.settings);
         }
       }
+      if (mfdEngine != nullptr &&
+          mfdEngine->mfdController().consumeCatalogDirty()) {
+        app.settings.flightPlanCatalog =
+            mfdEngine->mfdController().flightPlanCatalog().plans();
+        avionics::SaveAppSettings(app.settings);
+      }
     }
 
   }
+
+  // Join the background tile prewarm before `terrain` (its target) is destroyed.
+  if (terrainWarmThread.joinable()) terrainWarmThread.join();
 
   // Capture the final window placement for the next launch before the windows
   // go away (always remembered).
@@ -4459,6 +4845,10 @@ int main(int argc, char** argv) {
   if (pfdEngine != nullptr) {
     app.settings.persistedDirectTo =
         AuthoritativeDirectToSnapshot(pfdEngine, mfdEngine);
+  }
+  if (mfdEngine != nullptr) {
+    app.settings.flightPlanCatalog =
+        mfdEngine->mfdController().flightPlanCatalog().plans();
   }
   avionics::SaveAppSettings(app.settings);
 

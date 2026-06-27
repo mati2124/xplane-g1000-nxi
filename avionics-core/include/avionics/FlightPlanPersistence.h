@@ -84,8 +84,24 @@ struct FlightPlanApproachState {
   bool active() const { return legCount > 0; }
 };
 
+// Loaded SID/STAR grouping for the FPL parent row (Departure / Arrival headers).
+struct FlightPlanTerminalProcedureState {
+  int legStart = 0;
+  int legCount = 0;
+  MapProcedure loaded;
+  std::string headerLabel;
+  bool active() const { return legCount > 0 || !loaded.name.empty(); }
+};
+
 inline bool approachStateFitsPlan(const FlightPlanApproachState& state,
                                   const std::vector<MapLeg>& legs) {
+  return state.legCount > 0 && state.legStart >= 0 &&
+         state.legStart + state.legCount <= static_cast<int>(legs.size());
+}
+
+inline bool terminalProcedureStateFitsPlan(
+    const FlightPlanTerminalProcedureState& state,
+    const std::vector<MapLeg>& legs) {
   return state.legCount > 0 && state.legStart >= 0 &&
          state.legStart + state.legCount <= static_cast<int>(legs.size());
 }
@@ -103,6 +119,20 @@ inline bool operator==(const FlightPlanApproachState& a,
 
 inline bool operator!=(const FlightPlanApproachState& a,
                        const FlightPlanApproachState& b) {
+  return !(a == b);
+}
+
+inline bool operator==(const FlightPlanTerminalProcedureState& a,
+                       const FlightPlanTerminalProcedureState& b) {
+  return a.legStart == b.legStart && a.legCount == b.legCount &&
+         a.headerLabel == b.headerLabel && a.loaded.type == b.loaded.type &&
+         a.loaded.name == b.loaded.name &&
+         a.loaded.transition == b.loaded.transition &&
+         a.loaded.runway == b.loaded.runway;
+}
+
+inline bool operator!=(const FlightPlanTerminalProcedureState& a,
+                       const FlightPlanTerminalProcedureState& b) {
   return !(a == b);
 }
 
@@ -246,6 +276,17 @@ inline bool fplRowIsNavToTarget(const MapLeg& leg, const std::string& toIdent) {
   return !toIdent.empty() && fplLegIdentsEqual(leg.id, toIdent);
 }
 
+// True when navigation is flying (or Direct-To engaging) the published hold at
+// this leg. The HOLD display row carries the magenta marker, not the fix row.
+inline bool fplHoldNavActiveOnLeg(const FlightData& d, bool directToHold,
+                                  bool directToActive, bool dtoNavActive,
+                                  int legIdx, int activeLegIdx,
+                                  const MapLeg& leg) {
+  if (!leg.hold.active || legIdx < 0 || legIdx != activeLegIdx) return false;
+  if (d.fmaLegIsHold) return true;
+  return directToHold && (directToActive || dtoNavActive);
+}
+
 // Magenta ident flash on the active navigation row follows the list cursor:
 // the arrow and DTK/DIS stay on the TO fix while another row is highlighted.
 inline bool fplActiveNavRowBlink(int legIdx, int activeLegIdx, int cursorLegIdx,
@@ -316,6 +357,12 @@ struct PersistedFlightPlan {
   int approachLegCount = 0;
   std::string approachAirportIcao;
   PersistedLoadedApproach approachMeta;
+  int departureLegStart = -1;
+  int departureLegCount = 0;
+  PersistedLoadedApproach departureMeta;
+  int arrivalLegStart = -1;
+  int arrivalLegCount = 0;
+  PersistedLoadedApproach arrivalMeta;
 };
 
 inline bool operator==(const PersistedFlightPlan& a,
@@ -325,6 +372,12 @@ inline bool operator==(const PersistedFlightPlan& a,
       a.approachLegCount != b.approachLegCount ||
       a.approachAirportIcao != b.approachAirportIcao ||
       a.approachMeta != b.approachMeta ||
+      a.departureLegStart != b.departureLegStart ||
+      a.departureLegCount != b.departureLegCount ||
+      a.departureMeta != b.departureMeta ||
+      a.arrivalLegStart != b.arrivalLegStart ||
+      a.arrivalLegCount != b.arrivalLegCount ||
+      a.arrivalMeta != b.arrivalMeta ||
       a.legs.size() != b.legs.size()) {
     return false;
   }

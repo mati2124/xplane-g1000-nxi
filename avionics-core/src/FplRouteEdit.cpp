@@ -3,6 +3,8 @@
 #include <algorithm>
 
 #include "avionics/FlightPlanPersistence.h"
+#include "avionics/FmsWaypointEntry.h"
+#include "avionics/GpsLegCourse.h"
 #include "avionics/NavFeatureSource.h"
 #include "avionics/NavMath.h"
 #include "render/pfd/PfdFlightPlanSections.h"
@@ -10,6 +12,7 @@
 namespace avionics {
 namespace {
 
+using pfd::FplDisplayRow;
 using pfd::FplDisplayRowKind;
 using pfd::fplApproachInsertIndexForSelectable;
 using pfd::fplApproachLegIndexForSelectable;
@@ -179,11 +182,57 @@ bool isAirportIdent(const std::string& id) {
   return true;
 }
 
+bool isKnownAirportIdent(const std::string& id, const MapData* map,
+                         const NavFeatureSource* navSource) {
+  if (!isAirportIdent(id)) return false;
+  if (navSource != nullptr && navSource->ready()) {
+    const std::vector<MapFeature> hits = navSource->lookupIdent(id, 8);
+    for (const MapFeature& f : hits) {
+      if (f.id == id && f.type == MapFeatureType::Airport) return true;
+    }
+  }
+  if (map != nullptr) {
+    for (const MapFeature& f : map->features) {
+      if (f.type == MapFeatureType::Airport && f.id == id) return true;
+    }
+  }
+  // Nav data still loading: allow well-formed ICAOs through to the Charts API.
+  return navSource == nullptr || !navSource->ready();
+}
+
+std::string firstKnownAirportInPlan(const std::vector<MapLeg>& legs,
+                                    const MapData* map,
+                                    const NavFeatureSource* navSource) {
+  for (const MapLeg& leg : legs) {
+    if (isKnownAirportIdent(leg.id, map, navSource)) return leg.id;
+  }
+  return {};
+}
+
+std::string lastKnownAirportInPlan(const std::vector<MapLeg>& legs,
+                                   const MapData* map,
+                                   const NavFeatureSource* navSource) {
+  for (int i = static_cast<int>(legs.size()) - 1; i >= 0; --i) {
+    if (isKnownAirportIdent(legs[static_cast<std::size_t>(i)].id, map,
+                            navSource)) {
+      return legs[static_cast<std::size_t>(i)].id;
+    }
+  }
+  return {};
+}
+
 std::string airportIcaoBeforeIndex(const std::vector<MapLeg>& legs, int before) {
   for (int i = std::min(before, static_cast<int>(legs.size())) - 1; i >= 0; --i) {
     if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) {
       return legs[static_cast<std::size_t>(i)].id;
     }
+  }
+  return {};
+}
+
+std::string firstAirportInPlan(const std::vector<MapLeg>& legs) {
+  for (const MapLeg& leg : legs) {
+    if (isAirportIdent(leg.id)) return leg.id;
   }
   return {};
 }
@@ -315,6 +364,19 @@ int fplCursorLegIndex(const FplRouteEdit& edit,
   }
   return fplLegIndexForSectionRow(edit.cursorRow, sectionLegCount,
                                   edit.destinationFilled, edit.directToActive);
+}
+
+bool fplCursorOnHoldRow(const FplRouteEdit& edit,
+                        const std::string& approachAirport,
+                        FplCursorLayout layout) {
+  if (edit.approachLegCount <= 0) return false;
+  if (layout != FplCursorLayout::SectionRows) return false;
+  const FplDisplayRow* dr = fplApproachSelectableRow(
+      edit.cursorRow, edit.legs, edit.approachLegStart, edit.approachLegCount,
+      fplApproachBlankOriginSection(edit.legs, edit.approachLegStart,
+                                    approachAirport),
+      approachLayoutDestFilled(edit));
+  return dr != nullptr && dr->kind == FplDisplayRowKind::Hold;
 }
 
 int fplCursorSelectableLast(const FplRouteEdit& edit,
@@ -459,6 +521,30 @@ std::string fplIdentEntrySeedAtCursor(const FplRouteEdit& edit,
   const std::string initial = edit.legs[static_cast<std::size_t>(legIndex)].id;
   if (!initial.empty() && isFmsLatLonIdent(initial)) return {};
   return initial;
+}
+
+std::string fplLegDisplayRole(const MapLeg& leg) {
+  if (!leg.procedureRole.empty()) return leg.procedureRole;
+  if (leg.hold.active) return "hold";
+  return {};
+}
+
+MapLeg resolveDirectToTargetLeg(const FmsWaypointEntry& entry, bool preservePlan,
+                                int preserveLegIndex,
+                                const std::vector<MapLeg>& planLegs) {
+  if (preservePlan && preserveLegIndex >= 0 &&
+      preserveLegIndex < static_cast<int>(planLegs.size())) {
+    return planLegs[static_cast<std::size_t>(preserveLegIndex)];
+  }
+  if (entry.hasMatch && !entry.match.id.empty()) {
+    const int idx = legIndexInPlan(planLegs, entry.match.id);
+    if (idx >= 0) return planLegs[static_cast<std::size_t>(idx)];
+  }
+  MapLeg bare;
+  bare.id = entry.match.id;
+  bare.lat = entry.match.lat;
+  bare.lon = entry.match.lon;
+  return bare;
 }
 
 }  // namespace avionics

@@ -26,6 +26,11 @@ class TerrainSource {
     }
   }
 
+  // True when the backend samples real-world elevation tiles (X-Plane DSF).
+  // Used to replace GSHHG chord land fills with a DEM coastline mask when
+  // terrain display is off but TOPO chart land is on.
+  virtual bool hasElevationTiles() const { return false; }
+
   // Monotonic counter bumped whenever better data becomes available (e.g. a
   // DEM tile finishes loading), so cached terrain rasters know to resample.
   virtual unsigned revision() const { return 0; }

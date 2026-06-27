@@ -12,7 +12,9 @@ namespace avionics::map {
 // How the terrain background colors elevation, mirroring the NXi TER softkey
 // states: absolute topographic shading (Topo) or altitude-relative proximity
 // coloring (REL: red within 100 ft below ownship, yellow within 1000 ft).
-enum class TerrainRasterMode { Absolute, Relative };
+// ChartLand is the TOPO-only navigation chart: black land / navy water from
+// the same DSF DEM, without hillshade or the topo color ramp.
+enum class TerrainRasterMode { Absolute, Relative, ChartLand };
 
 // Draws the terrain background for one map view as a cached raster image:
 // a north-up RGBA texture covering ~2.4x the map range, sampled per-pixel
@@ -27,6 +29,18 @@ enum class TerrainRasterMode { Absolute, Relative };
 // Matches the NXi map ladder top step; Map Setup "Terrain Data" range can
 // declutter below this via MapViewStyle::terrainMaxRangeNm.
 inline constexpr float kTerrainMaxRangeNm = kMapRangeMaxNm;
+// Above this range the ChartLand land/water mask is abandoned in favor of the
+// bundled GSHHG vector coastline: the DEM mask would have to read more 1-degree
+// DSF tiles than fit on screen to cover the view, which is too slow on first
+// load. GSHHG is already in memory and renders instantly. The DEM coastline is
+// only worth its cost at close range where polygon chord fills look wrong.
+inline constexpr float kChartLandMaxRangeNm = 15.0f;
+// At/below this range the ChartLand mask raster is allowed to grow past the
+// usual hillshade cap so the coastline stays crisp when zoomed right in: the
+// footprint is a single tile, so the extra texels are cheap, and a binary
+// land/water threshold has no hillshade cost to amortize.
+inline constexpr float kChartLandHiResRangeNm = 2.5f;
+inline constexpr int kChartLandHiResRasterSize = 2048;
 // Below this range the topo raster samples full-resolution DSF DEM; above it
 // each 1° tile contributes one max-elevation value (continental zoom).
 inline constexpr float kFullDetailTerrainMaxNm = 200.0f;

@@ -2,8 +2,10 @@
 
 #include "avionics/FmsNavigator.h"
 #include "avionics/FlightPlanPersistence.h"
+#include "avionics/FplRouteEdit.h"
 #include "avionics/GpsLegCourse.h"
 #include "avionics/HoldGeometry.h"
+#include "avionics/HoldNavigation.h"
 #include "avionics/NavMath.h"
 #include "avionics/NavigationComputer.h"
 #include "avionics/TurnAnticipation.h"
@@ -351,6 +353,51 @@ TEST(FmsNavigatorTest, EntersHoldAtMahpAndFliesOutbound) {
   EXPECT_NEAR(sol.desiredTrackDeg, 354.0f, 2.0f);
 }
 
+TEST(FmsNavigatorTest, FplLegDisplayRoleShowsHoldForPublishedHold) {
+  MapLeg hilpt;
+  hilpt.hold.active = true;
+  hilpt.hold.inboundCourseDeg = 41.0f;
+  EXPECT_EQ(fplLegDisplayRole(hilpt), "hold");
+
+  MapLeg mahp = makeRnavApproachWithMissedPlan().back();
+  EXPECT_EQ(fplLegDisplayRole(mahp), "mahp");
+}
+
+TEST(FmsNavigatorTest, DirectToHoldEntersPublishedHoldAtFix) {
+  MapLeg cmi;
+  cmi.id = "CMI";
+  cmi.lat = 40.0;
+  cmi.lon = -88.27;
+  MapLeg bostn;
+  bostn.id = "BOSTN";
+  bostn.lat = 40.10;
+  bostn.lon = -88.20;
+  bostn.procedureRole = "hold";
+  bostn.hold.active = true;
+  bostn.hold.inboundCourseDeg = 41.0f;
+  bostn.hold.turn = HoldTurnDirection::Right;
+  bostn.hold.legLengthNm = 4.0f;
+  MapLeg faf;
+  faf.id = "FAF01";
+  faf.lat = 40.05;
+  faf.lon = -88.15;
+  const std::vector<MapLeg> plan = {cmi, bostn, faf};
+
+  FmsNavigator nav;
+  nav.setFlightPlan(plan);
+  nav.activateDirectTo(bostn, cmi.lat, cmi.lon, true, true);
+
+  NavigationSolution enroute = nav.update(cmi.lat, cmi.lon, 116.0f);
+  EXPECT_FALSE(nav.inHold());
+  EXPECT_TRUE(nav.directToActive());
+
+  NavigationSolution atFix = nav.update(bostn.lat, bostn.lon, 116.0f);
+  EXPECT_FALSE(nav.directToActive());
+  EXPECT_TRUE(nav.inHold());
+  EXPECT_TRUE(atFix.inHold);
+  EXPECT_EQ(atFix.toWpt, "BOSTN");
+}
+
 TEST(FmsNavigatorTest, ResumeFromAutoSuspendExitsHold) {
   MapLeg prior;
   prior.id = "IBITE";
@@ -386,6 +433,64 @@ TEST(FmsNavigatorTest, HoldCyclesInboundAfterOutbound) {
   sol = nav.update(northLat, northLon, 90.0f);
   EXPECT_TRUE(nav.inHold());
   EXPECT_TRUE(sol.active);
+}
+
+MapLeg makeCourseReversalIaf() {
+  MapLeg iaf;
+  iaf.id = "BOSTN";
+  iaf.lat = 40.207791667;
+  iaf.lon = -88.145527778;
+  iaf.procedureRole = "iaf";
+  iaf.hold.active = true;
+  iaf.hold.courseReversal = true;
+  iaf.hold.inboundCourseDeg = 44.0f;
+  iaf.hold.legLengthNm = 4.0f;
+  iaf.hold.turn = HoldTurnDirection::Right;
+  return iaf;
+}
+
+void flyHoldRacetrackCircuit(FmsNavigator& nav, const MapLeg& leg, float gs) {
+  const HoldRacetrackGeom geom = buildHoldRacetrack(leg, gs);
+  ASSERT_TRUE(geom.valid);
+  const auto step = [&](double lat, double lon, int frames = 4) {
+    for (int i = 0; i < frames; ++i) {
+      nav.update(lat, lon, gs);
+    }
+  };
+  step(leg.lat, leg.lon);
+  step(geom.outboundParLat, geom.outboundParLon, 6);
+  step(geom.outboundEndLat, geom.outboundEndLon, 6);
+  step(geom.fixLat, geom.fixLon, 6);
+  step(geom.inboundParLat, geom.inboundParLon, 10);
+}
+
+TEST(FmsNavigatorTest, CourseReversalSequencesAfterOneCircuit) {
+  MapLeg prior = makeLeg("CMI", 40.034530556, -88.276075000);
+  MapLeg bostn = makeCourseReversalIaf();
+  MapLeg faf = makeLeg("AFTOR", 40.121183333, -88.210869444);
+  faf.procedureRole = "faf";
+
+  FmsNavigator nav;
+  nav.setFlightPlan({prior, bostn, faf});
+  nav.setActiveLegIndex(1);
+
+  flyHoldRacetrackCircuit(nav, bostn, 116.0f);
+  EXPECT_FALSE(nav.inHold());
+  EXPECT_EQ(nav.activeLegIndex(), 2);
+  const NavigationSolution sol =
+      nav.update(faf.lat, faf.lon, 116.0f);
+  EXPECT_EQ(sol.toWpt, "AFTOR");
+}
+
+TEST(FmsNavigatorTest, MissedApproachHoldStillLoops) {
+  MapLeg mahp = makeRnavApproachWithMissedPlan().back();
+  ASSERT_FALSE(mahp.hold.courseReversal);
+
+  FmsNavigator nav;
+  nav.setFlightPlan({mahp});
+  nav.setActiveLegIndex(0);
+  flyHoldRacetrackCircuit(nav, mahp, 90.0f);
+  EXPECT_TRUE(nav.inHold());
 }
 
 TEST(FmsNavigatorTest, RightHandHoldLiesOnInboundRightSide) {
@@ -1041,6 +1146,47 @@ TEST(FmsNavigatorTest, TurnAnticipationShowsCountdownBeforeTurn) {
   EXPECT_NE(ta.message.find("seconds"), std::string::npos);
   EXPECT_NE(ta.message.find("318"), std::string::npos);
   EXPECT_FALSE(ta.flashing);
+}
+
+// HILPT / holding-pattern fixes are flown over (the hold entry reverses course),
+// so turn anticipation must not lead the turn onto the post-hold leg. Otherwise
+// the autopilot swings toward the post-hold inbound course before the fix
+// instead of entering the hold (KCMI RNAV 04 CMI->BOSTN turned toward 041 for a
+// few seconds before the hold took over).
+TEST(FmsNavigatorTest, TurnAnticipationSuppressedAtHoldFix) {
+  MapLeg citag;
+  citag.id = "CITAG";
+  citag.lat = 26.237036111;
+  citag.lon = -81.779541667;
+  MapLeg butly;
+  butly.id = "BUTLY";
+  butly.lat = 26.351555556;
+  butly.lon = -81.960486111;
+  butly.hold.active = true;
+  butly.hold.turn = HoldTurnDirection::Right;
+  butly.hold.inboundCourseDeg = 41.0f;
+  MapLeg uzawo;
+  uzawo.id = "UZAWO";
+  uzawo.lat = 26.436994444;
+  uzawo.lon = -82.046516667;
+  const std::vector<MapLeg> plan = {citag, butly, uzawo};
+
+  MapData map;
+  map.positionValid = true;
+  map.flightPlan = plan;
+
+  FlightData data;
+  data.dataLinkValid = true;
+  data.cdiSource = CdiSource::Gps;
+  data.groundSpeedKts = 116.0f;
+  data.fmaActiveLegIndex = 1;
+  data.fmaFromWpt = "CITAG";
+  data.fmaToWpt = "BUTLY";
+  data.fmaLegDistanceNm = 0.35f;
+
+  const TurnAnticipation ta =
+      computeTurnAnticipation(map, data, false, CdiSource::Gps);
+  EXPECT_FALSE(ta.active);
 }
 
 TEST(FmsNavigatorTest, TurnAnticipationWorksOnFirstFlightPlanLeg) {

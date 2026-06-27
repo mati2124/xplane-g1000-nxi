@@ -115,7 +115,7 @@ class XPlaneConnection : public SimulatorConnection {
   // write-back is enabled and the plugin bridge is reachable, this also engages
   // a present-position Direct-To in X-Plane's FMS; otherwise it drives the
   // display only. An empty id clears the direct course.
-  void setDirectTo(MapLeg target);
+  void setDirectTo(MapLeg target, bool flyHold = false);
   // Restore a saved Direct-To without re-snapshotting present position as the
   // course origin (used when reloading standalone settings or adopting from the
   // plugin bridge). programBridgeFms controls whether the sim FMS is reprogrammed.
@@ -279,6 +279,7 @@ class XPlaneConnection : public SimulatorConnection {
   bool routeOverrideSet_ = false;      // override active (even when empty)
   MapLeg directTo_;                    // display-only Direct-To target
   bool directToActive_ = false;
+  bool directToHold_ = false;
   bool directToOriginPending_ = false;
   bool directToOriginValid_ = false;
   double directToOriginLat_ = 0.0;

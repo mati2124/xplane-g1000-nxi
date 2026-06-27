@@ -387,7 +387,8 @@ void drawFuelRing(Renderer& r, const FlightData& flight, float ownX, float ownY,
 
 // Ownship symbol, rotated to the aircraft heading in screen space.
 void drawOwnshipSymbol(Renderer& r, float cx, float cy, float size,
-                       float rotationDeg);
+                       float rotationDeg,
+                       const Color& fillColor = colors::kWhite);
 
 // Wind vector (Fig 5-18): a chrome plate in the upper right with a white arrow.
 void drawWindVector(Renderer& r, const FlightData& flight,
@@ -422,5 +423,13 @@ void drawRangeCompass(Renderer& r, const MapViewConfig& config,
                       const FlightData& flight, float cx, float cy,
                       float radiusPx, float rotationDeg, float labelSize,
                       const Color& c);
+
+// VOR compass rose: a cyan compass rose drawn around every VOR station on the
+// map (G1000 NXi), sized to a fixed ~2.5 NM geographic radius and oriented to
+// the station's magnetic variation. Minor radial ticks every 10 degrees, longer
+// ticks every 30, and abbreviated cardinal labels (0/9/18/27) when zoomed in.
+// Drawn beneath the route and feature symbology so they overlay it.
+void drawVorRoses(Renderer& r, const MapData& map, const Proj& proj,
+                  const MapViewConfig& config, float rangeNm, float labelSize);
 
 }  // namespace avionics::mapview

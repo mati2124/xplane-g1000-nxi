@@ -22,6 +22,19 @@ int clampNrstSelected(const MfdController& ui, int rowCount) {
   return std::max(0, std::min(ui.nrstSelected(), rowCount - 1));
 }
 
+// The NRST inset maps share the same global overlay settings as the full MAP
+// page (Terrain, Airways, NEXRAD weather), so route every inset through one
+// helper that applies the controller's current map-option state instead of the
+// drawPageMap defaults (which left terrain on Topo and airways/weather off).
+void drawNrstMap(Renderer& r, const FlightData& d, const MapData& map,
+                 const Rect& area, float rangeNm, const MfdController& ui,
+                 float displayH, bool showFixes = false) {
+  drawPageMap(r, d, map, area, rangeNm, /*center=*/nullptr, displayH, showFixes,
+              /*procedurePreview=*/nullptr, /*displayRangeNm=*/0.0f,
+              ui.terrainDisplay(), /*useInsetMapData=*/false,
+              ui.airwayDisplay(), ui.showWeather());
+}
+
 }  // namespace
 
 void drawNearestAirportsPage(Renderer& r, const FlightData& d,
@@ -38,7 +51,7 @@ void drawNearestAirportsPage(Renderer& r, const FlightData& d,
       airports.empty() ? nullptr : airports[selectedIdx].feature;
 
   PageFrame f = beginPanelPage(r, x, y, w, h, false);
-  drawPageMap(r, d, map, f.map, 25.0f, nullptr, displayH);
+  drawNrstMap(r, d, map, f.map, 25.0f, ui, displayH);
 
   PanelStack stack(f.panel, displayH);
   char buf[24];
@@ -117,7 +130,7 @@ void drawNearestFeaturePage(Renderer& r, const FlightData& d,
       rows.empty() ? nullptr : rows[selectedIdx].feature;
 
   PageFrame f = beginPanelPage(r, x, y, w, h, false);
-  drawPageMap(r, d, map, f.map, 25.0f, nullptr, displayH, isIntersection);
+  drawNrstMap(r, d, map, f.map, 25.0f, ui, displayH, isIntersection);
 
   PanelStack stack(f.panel, displayH);
 
@@ -202,15 +215,16 @@ void drawNearestFeaturePage(Renderer& r, const FlightData& d,
 }
 
 void drawNearestFrequenciesPage(Renderer& r, const FlightData& d,
-                                const MapData& map, float x, float y, float w,
-                                float h, float displayH) {
+                                const MapData& map, const MfdController& ui,
+                                float x, float y, float w, float h,
+                                float displayH) {
   // NRST Nearest Frequencies (G1000 Pilot's Guide, Section 5, NRST - Nearest
   // Frequencies): map left; the panel stacks ARTCC / FSS / WX frequency
   // groups. With no communications-frequency database in this suite, the
   // identifiers and frequency pills dash, like the real unit before a database
   // is loaded.
   PageFrame f = beginPanelPage(r, x, y, w, h, false);
-  drawPageMap(r, d, map, f.map, 60.0f, nullptr, displayH);
+  drawNrstMap(r, d, map, f.map, 60.0f, ui, displayH);
 
   PanelStack stack(f.panel, displayH);
 
@@ -246,7 +260,7 @@ void drawNearestAirspacesPage(Renderer& r, const FlightData& d,
   // proximity status) and the selected airspace's vertical limits on the
   // right (G1000 Pilot's Guide for Cessna Nav III, Section 7.15; not in WT).
   PageFrame f = beginPanelPage(r, x, y, w, h, false);
-  drawPageMap(r, d, map, f.map, 25.0f, nullptr, displayH);
+  drawNrstMap(r, d, map, f.map, 25.0f, ui, displayH);
 
   // Sort airspaces by proximity (inside counts as zero distance).
   struct AirspaceRow {

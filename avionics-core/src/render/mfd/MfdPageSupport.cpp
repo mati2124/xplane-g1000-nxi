@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "avionics/Color.h"
+#include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapRange.h"
 #include "avionics/NavMath.h"
 #include "avionics/render/MapSymbols.h"
@@ -12,23 +13,53 @@
 
 namespace avionics::mfd {
 
-float directToInsetRangeNm(const MapData& map, const MapFeature& wpt) {
-  float dtoRangeNm = 7.5f;
-  if (map.positionValid) {
-    const double dis =
-        navDistanceNm(map.ownshipLat, map.ownshipLon, wpt.lat, wpt.lon);
-    if (dis > 0.1) {
-      dtoRangeNm = static_cast<float>(
-          std::max(2.0, std::min(250.0, dis * 1.2)));
-    }
-  }
-  return dtoRangeNm;
+bool mapFeatureHasGeo(const MapFeature& feature) {
+  return feature.lat != 0.0 || feature.lon != 0.0;
 }
 
-float directToInsetViewHalfExtentNm(float rangeNm) {
+MapFeature resolveWaypointGeo(const MapData& map, const MapFeature& wpt) {
+  MapFeature resolved = wpt;
+  if (mapFeatureHasGeo(resolved)) return resolved;
+  for (const MapFeature& f : map.features) {
+    if (f.id == resolved.id && mapFeatureHasGeo(f)) {
+      resolved = f;
+      return resolved;
+    }
+  }
+  if (map.insetMapActive) {
+    for (const MapFeature& f : map.insetFeatures) {
+      if (f.id == resolved.id && mapFeatureHasGeo(f)) {
+        resolved = f;
+        return resolved;
+      }
+    }
+  }
+  return resolved;
+}
+
+DirectToInsetView directToInsetView(const MapData& map,
+                                    const MapFeature& wpt) {
+  // Always center on the Direct-To target and zoom in tight (like the WPT
+  // Information insets) so the destination and its immediate surroundings read
+  // clearly, regardless of how far away the ownship is.
+  const MapFeature geo = resolveWaypointGeo(map, wpt);
+  DirectToInsetView view;
+  view.centerLat = geo.lat;
+  view.centerLon = geo.lon;
+  view.rangeNm = kDirectToInsetRangeNm;
+  view.centeredOnWaypoint = true;
+  return view;
+}
+
+float directToInsetRangeNm(const MapData& map, const MapFeature& wpt) {
+  return directToInsetView(map, wpt).rangeNm;
+}
+
+float directToInsetViewHalfExtentNm(float rangeNm, float viewportWPx,
+                                    float viewportHPx) {
   MapViewConfig cfg{};
-  cfg.w = 180.0f;
-  cfg.h = 220.0f;
+  cfg.w = viewportWPx > 0.0f ? viewportWPx : kDirectToInsetMapWidthPx;
+  cfg.h = viewportHPx > 0.0f ? viewportHPx : kDirectToInsetMapHeightPx;
   const float mapRadiusPx = mapview::mapRangeSpanPx(cfg);
   if (mapRadiusPx <= 0.0f || rangeNm <= 0.0f) return rangeNm * 1.1f;
   const float pixelsPerNm = mapRadiusPx / rangeNm;
@@ -246,7 +277,9 @@ void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
                  float displayH, bool showFixes,
                  const std::vector<MapLeg>* procedurePreview,
                  float displayRangeNm, TerrainDisplay terrain,
-                 bool useInsetMapData) {
+                 bool useInsetMapData, AirwayDisplay airways,
+                 bool showWeather, double viewCenterLat,
+                 double viewCenterLon) {
   MapViewConfig cfg;
   cfg.x = area.x;
   cfg.y = area.y;
@@ -259,6 +292,8 @@ void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
   cfg.style.showOrientationLabel = true;
   cfg.style.showNorthArrow = true;
   cfg.style.terrain = terrain;
+  cfg.style.airways = airways;
+  cfg.style.showWeather = showWeather;
   cfg.style.showFixes = showFixes;
   cfg.style.labelFontWt = 16.0f;
   cfg.procedurePreview = procedurePreview;
@@ -268,6 +303,14 @@ void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
     cfg.centerLat = center->lat;
     cfg.centerLon = center->lon;
     cfg.centerFeature = center;
+  }
+  // An explicit view center (Direct-To leg framing) places the viewport between
+  // the ownship and the target while `centerFeature` still pins/labels the
+  // target at its true projected position.
+  if (viewCenterLat != kNoViewCenter && viewCenterLon != kNoViewCenter) {
+    cfg.hasCenterOverride = true;
+    cfg.centerLat = viewCenterLat;
+    cfg.centerLon = viewCenterLon;
   }
   r.fillRect(area.x, area.y, area.w, area.h, colors::kBlack);
   MapView::render(r, map, d, cfg, displayH);
@@ -282,6 +325,39 @@ void drawWaypointIcon(Renderer& r, float cx, float cy, float size,
     return;
   }
   drawMapFeatureSymbol(r, type, cx, cy, size * 0.5f, mapFeatureColor(type));
+}
+
+float drawIdentEntryCells(Renderer& r, float startX, float cy,
+                          const std::string& ident, int cursor, int typedCount,
+                          bool selectAll, bool blinkOn, float displayH,
+                          float fontSpec) {
+  const float cellSize = mfdFontPx(fontSpec, displayH);
+  // Advance by each glyph's actual width (the render font is proportional, so a
+  // fixed-width cell would clip wide letters like 'W' into their neighbours),
+  // with a little tracking so the identifier reads as one tight field.
+  const float tracking = cellSize * 0.06f;
+  float cx = startX;
+  for (int i = 0; i < FmsWaypointEntry::kMaxChars; ++i) {
+    const char ch = i < static_cast<int>(ident.size()) ? ident[i] : '_';
+    const bool isBlank = ch == '_';
+    const bool highlightAll = selectAll && !isBlank;
+    const bool isCursor = !selectAll && i == cursor;
+    const bool cursorOn = isCursor && blinkOn;
+    const char text[2] = {ch, '\0'};
+    const float chW = r.measureTextWidth(text, cellSize);
+    if (highlightAll || cursorOn) {
+      r.fillRect(cx - tracking * 0.5f, cy - cellSize * 0.62f, chW + tracking,
+                 cellSize * 1.24f, colors::kPopoutCyan);
+    }
+    const Color color = highlightAll || cursorOn ? colors::kBlack
+                        : isCursor ? colors::kPopoutCyan  // blink-off half pulses cyan
+                        : isBlank  ? colors::kPopoutCyan
+                        : i >= typedCount ? colors::kPopoutCyan  // spell-ahead fill
+                                          : colors::kWhite;
+    r.fillText(cx, cy, text, cellSize, TextAlign::Left, color);
+    cx += chW + tracking;
+  }
+  return cx;
 }
 
 // The white selected-facility arrow from the WT nearest lists
@@ -311,8 +387,12 @@ float drawFacilityHeader(Renderer& r, const Rect& area, const MapFeature* f,
     return area.y + identSize * 1.5f;
   }
   r.fillText(area.x, cy, f->id, identSize, TextAlign::Left, colors::kCyan);
-  drawWaypointIcon(r, area.x + mfdFontPx(120.0f, displayH), cy,
-                   mfdFontPx(26.0f, displayH), f, type);
+  // Symbol sits in a fixed column right of the ident, vertically centered on the
+  // ident's cap height (the glyph is taller than the caps, so nudge it up off the
+  // text baseline-middle to match the trainer's apt/nav Information boxes).
+  drawWaypointIcon(r, area.x + mfdFontPx(140.0f, displayH),
+                   cy - mfdFontPx(3.0f, displayH), mfdFontPx(26.0f, displayH), f,
+                   type);
   const char* rightLabel = nullptr;
   if (type == MapFeatureType::Airport) {
     rightLabel = airportUsageType(*f);
@@ -601,6 +681,33 @@ void drawNearestRows(Renderer& r, const Rect& area,
                       colors::kWhitesmoke);
     yy += rowH;
   }
+}
+
+float drawWrappedText(Renderer& r, const Rect& area, float startY,
+                      const std::string& text, float rowSize, float lineH,
+                      const Color& color) {
+  std::string line;
+  float fy = startY;
+  std::size_t pos = 0;
+  while (pos < text.size() && fy < area.y + area.h) {
+    std::size_t next = text.find(' ', pos);
+    if (next == std::string::npos) next = text.size();
+    const std::string word = text.substr(pos, next - pos);
+    const std::string candidate = line.empty() ? word : line + " " + word;
+    if (!line.empty() && r.measureTextWidth(candidate, rowSize) > area.w) {
+      r.fillText(area.x, fy, line, rowSize, TextAlign::Left, color);
+      fy += lineH;
+      line = word;
+    } else {
+      line = candidate;
+    }
+    pos = next + 1;
+  }
+  if (!line.empty() && fy < area.y + area.h) {
+    r.fillText(area.x, fy, line, rowSize, TextAlign::Left, color);
+    fy += lineH;
+  }
+  return fy;
 }
 
 const char* airspaceClassName(AirspaceClass c) {

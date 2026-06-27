@@ -1,0 +1,4 @@
+{
+  "name": "xplane-g1000-nxi",
+  "install": "cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DBUILD_STANDALONE_SHELL=ON -DBUILD_TESTS=ON && cmake --build build -j\"$(nproc)\""
+}

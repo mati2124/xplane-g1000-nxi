@@ -58,3 +58,24 @@ xvfb-run -a -s "-screen 0 1280x1024x24" \
 ### System dependencies (already provided by the update script / image)
 `libcurl4-openssl-dev libglew-dev xorg-dev libgl1-mesa-dev` plus Mesa software
 GL (`libgl1-mesa-dri`) and `xvfb`. `python3` is used by `tools/fetch_obstacles.py`.
+
+### Required secrets (Navigraph / SimBrief OFP import)
+The SimBrief import authenticates against Navigraph via the OAuth device flow.
+`NavigraphClient::LoadNavigraphCredentials` reads the OAuth client credentials,
+in this precedence order:
+
+1. environment variables (preferred — use these for Cloud Agents)
+2. a git-ignored `navigraph_credentials.txt` (repo root, then per-user config dir)
+
+Required environment-variable **names** (set the values in the Cursor dashboard
+**Secrets** tab at <https://cursor.com/dashboard/cloud-agents>, as Runtime
+Secrets — `environment.json` has no field for secret names/values, so never
+commit them there or anywhere in git):
+
+- `NAVIGRAPH_CLIENT_ID` — Navigraph OAuth client id
+- `NAVIGRAPH_CLIENT_SECRET` — Navigraph OAuth client secret
+
+Note: Navigraph traffic is gated to a connected simulator session (their terms).
+The in-sim plugin is always permitted; the standalone shell only talks to
+Navigraph while it has a live X-Plane link, so interactive sign-in / OFP fetch
+do **not** work in headless `--screenshot` runs.

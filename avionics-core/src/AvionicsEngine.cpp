@@ -273,6 +273,9 @@ void AvionicsEngine::update(double dtSeconds) {
   // is owned by the source; the controller only holds the interactive state).
   mfd_.syncChecklist(dataSource_->checklistSnapshot());
   syncSoftkeyPeerRadioVolume();
+  // Apply course-reversal answers (strip HILPT hold on NO) before peer FPL sync
+  // so the other GDU cannot re-adopt a stale hold row.
+  syncCourseReversalPromptPeer();
   // Peer sync runs before the map-driven FPL adopt so a PFD Active Flight
   // Plan edit is not overwritten by a stale mapSnapshot on the other GDU.
   syncFlightPlanPeer();
@@ -367,23 +370,65 @@ void AvionicsEngine::syncFlightPlanPeer() {
   const bool skDest = pfdSk.flightPlanDestinationFilled();
   const bool mfdDest = mfdFpl.fplDestinationFilled();
   if (::avionics::flightPlanLegsEqual(skLegs, mfdLegs) && skDest == mfdDest) {
+    lastPeerPlan_ = skLegs;
+    lastPeerDestFilled_ = skDest;
+    lastPeerPlanValid_ = true;
     return;
   }
 
-  const bool skDraft = pfdSk.flightPlanLocalDraft();
-  const bool mfdDraft = mfdFpl.fplLocalDraft();
   const FlightPlanApproachState skApproach = pfdSk.flightPlanApproachState();
   const FlightPlanApproachState mfdApproach = mfdFpl.flightPlanApproachState();
+  const FlightPlanTerminalProcedureState skDeparture =
+      pfdSk.flightPlanDepartureState();
+  const FlightPlanTerminalProcedureState mfdDeparture =
+      mfdFpl.flightPlanDepartureState();
+  const FlightPlanTerminalProcedureState skArrival =
+      pfdSk.flightPlanArrivalState();
+  const FlightPlanTerminalProcedureState mfdArrival =
+      mfdFpl.flightPlanArrivalState();
 
-  if (skDraft && !mfdDraft) {
-    mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach);
-  } else if (mfdDraft && !skDraft) {
-    pfdSk.adoptFlightPlanFromPeer(mfdLegs, mfdDest, mfdApproach);
+  // Figure out which GDU moved away from the last plan both sides agreed on.
+  // The side that changed is the one the pilot just edited (e.g. Delete Flight
+  // Plan on the MFD), so it wins — otherwise the other GDU's stale local draft
+  // would overwrite the edit (a deleted plan would immediately reappear).
+  const bool skChanged =
+      !lastPeerPlanValid_ ||
+      !::avionics::flightPlanLegsEqual(skLegs, lastPeerPlan_) ||
+      skDest != lastPeerDestFilled_;
+  const bool mfdChanged =
+      !lastPeerPlanValid_ ||
+      !::avionics::flightPlanLegsEqual(mfdLegs, lastPeerPlan_) ||
+      mfdDest != lastPeerDestFilled_;
+
+  if (mfdChanged && !skChanged) {
+    pfdSk.adoptFlightPlanFromPeer(mfdLegs, mfdDest, mfdApproach, mfdDeparture,
+                                  mfdArrival);
+    lastPeerPlan_ = mfdLegs;
+    lastPeerDestFilled_ = mfdDest;
+  } else if (skChanged && !mfdChanged) {
+    mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach, skDeparture,
+                                   skArrival);
+    lastPeerPlan_ = skLegs;
+    lastPeerDestFilled_ = skDest;
   } else {
-    // Neither side is exclusively drafting — keep the MFD page aligned with
-    // the PFD Active Flight Plan window (the primary route editor on the PFD).
-    mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach);
+    // Both (or neither, on first sync) deviate: fall back to the draft heuristic
+    // and otherwise keep the MFD aligned with the PFD Active Flight Plan window
+    // (the primary route editor on the PFD).
+    const bool skDraft = pfdSk.flightPlanLocalDraft();
+    const bool mfdDraft = mfdFpl.fplLocalDraft();
+    if (mfdDraft && !skDraft) {
+      pfdSk.adoptFlightPlanFromPeer(mfdLegs, mfdDest, mfdApproach, mfdDeparture,
+                                    mfdArrival);
+      lastPeerPlan_ = mfdLegs;
+      lastPeerDestFilled_ = mfdDest;
+    } else {
+      mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach, skDeparture,
+                                     skArrival);
+      lastPeerPlan_ = skLegs;
+      lastPeerDestFilled_ = skDest;
+    }
   }
+  lastPeerPlanValid_ = true;
 }
 
 void AvionicsEngine::syncFlightPlanApproachPeer() {
@@ -409,10 +454,28 @@ void AvionicsEngine::syncFlightPlanApproachPeer() {
   const FlightPlanApproachState peerMfd =
       softkeyPeer_->mfdController().flightPlanApproachState();
 
-  FlightPlanApproachState authoritative = localSk;
-  if (!authoritative.active()) authoritative = peerSk;
-  if (!authoritative.active()) authoritative = localMfd;
-  if (!authoritative.active()) authoritative = peerMfd;
+  // Prefer the GDU that actually loaded the approach (it carries the procedure
+  // name / header label) over a GDU that merely inferred the approach block
+  // from leg roles after adopting the shared route — the latter is "active"
+  // (legCount > 0) but has an empty header label, and must not clobber the
+  // loaded "RNAV 04"-style parent name shown beside the airport.
+  const FlightPlanApproachState candidates[] = {localSk, peerSk, localMfd,
+                                                peerMfd};
+  FlightPlanApproachState authoritative;
+  for (const FlightPlanApproachState& candidate : candidates) {
+    if (candidate.active() && !candidate.headerLabel.empty()) {
+      authoritative = candidate;
+      break;
+    }
+  }
+  if (!authoritative.active()) {
+    for (const FlightPlanApproachState& candidate : candidates) {
+      if (candidate.active()) {
+        authoritative = candidate;
+        break;
+      }
+    }
+  }
   if (!authoritative.active()) return;
 
   const auto stateForLegs = [](const FlightPlanApproachState& source,
@@ -452,6 +515,97 @@ void AvionicsEngine::syncFlightPlanApproachPeer() {
           peerSkState)) {
     softkeyPeer_->softkeyController().applyFlightPlanApproachState(peerSkState);
   }
+}
+
+void AvionicsEngine::syncCourseReversalPromptPeer() {
+  ProcedureMenuState* states[4];
+  int stateCount = 2;
+  states[0] = &softkeys_.procedureMenuStateRef();
+  states[1] = &mfd_.procedureMenuStateRef();
+  if (softkeyPeer_) {
+    states[2] = &softkeyPeer_->softkeyController().procedureMenuStateRef();
+    states[3] = &softkeyPeer_->mfdController().procedureMenuStateRef();
+    stateCount = 4;
+  }
+
+  bool answered = false;
+  bool flyIt = false;
+  bool deferred = false;
+  std::string fix;
+  for (int i = 0; i < stateCount; ++i) {
+    ProcedureMenuState* s = states[i];
+    if (!s->courseReversalAnswered) continue;
+    answered = true;
+    flyIt = s->courseReversalAnswerFlyIt;
+    // A pre-load answer (raised at transition-select) latches a deferred
+    // decision instead of editing the not-yet-loaded plan; the strip happens
+    // when the approach is loaded, so don't touch the flight plan here.
+    if (s->courseReversalDecisionMade) deferred = true;
+    if (!s->courseReversalFix.empty()) fix = s->courseReversalFix;
+  }
+
+  if (answered) {
+    if (!deferred && !flyIt && !fix.empty()) {
+      softkeys_.stripCourseReversalHoldAtFix(fix);
+      mfd_.stripCourseReversalHoldAtFix(fix);
+      if (softkeyPeer_) {
+        softkeyPeer_->softkeyController().stripCourseReversalHoldAtFix(fix);
+        softkeyPeer_->mfdController().stripCourseReversalHoldAtFix(fix);
+      }
+      softkeys_.flightPlanPublishEdit();
+    }
+    for (int i = 0; i < stateCount; ++i) {
+      ProcedureMenuState* s = states[i];
+      s->courseReversalPromptActive = false;
+      s->courseReversalAnswered = false;
+      s->courseReversalAnswerFlyIt = false;
+      s->courseReversalYesDirty = false;
+      s->courseReversalLegIndex = -1;
+      s->courseReversalFix.clear();
+      // A deferred (pre-load) decision is mirrored onto every GDU so the pilot
+      // can answer the prompt on one display and Load/Activate on the other; it
+      // is consumed and cleared by procedureMenuLoadSelected at load time.
+      if (deferred) {
+        s->courseReversalDecisionMade = true;
+        s->courseReversalDecisionFlyIt = flyIt;
+        s->courseReversalDecisionFix = fix;
+      }
+    }
+    return;
+  }
+
+  if (!softkeyPeer_) return;
+
+  // The GDU the pilot just toggled wins the YES/NO selection; otherwise the GDU
+  // that loaded the approach (first active prompt) is authoritative.
+  ProcedureMenuState* src = nullptr;
+  for (int i = 0; i < stateCount; ++i) {
+    ProcedureMenuState* s = states[i];
+    if (s->courseReversalPromptActive && s->courseReversalYesDirty) {
+      src = s;
+      break;
+    }
+  }
+  if (src == nullptr) {
+    for (int i = 0; i < stateCount; ++i) {
+      ProcedureMenuState* s = states[i];
+      if (s->courseReversalPromptActive) {
+        src = s;
+        break;
+      }
+    }
+  }
+  if (src == nullptr) return;
+
+  for (int i = 0; i < stateCount; ++i) {
+    ProcedureMenuState* s = states[i];
+    if (s == src) continue;
+    s->courseReversalPromptActive = true;
+    s->courseReversalFix = src->courseReversalFix;
+    s->courseReversalLegIndex = src->courseReversalLegIndex;
+    s->courseReversalYes = src->courseReversalYes;
+  }
+  src->courseReversalYesDirty = false;
 }
 
 void AvionicsEngine::syncSoftkeyPeerRadioVolume() {
@@ -605,12 +759,19 @@ void AvionicsEngine::pressBezelKey(BezelKey key) {
   }
   if (!displayPowered() || !bootComplete()) return;
   // NAV/COM/CRS/BARO/HDG/VOL knobs work as soon as the display is booted; FMS
-  // keys and softkeys still need a live data link.
+  // keys and softkeys still need a live data link, except MFD page selection
+  // (MAP/WPT/AUX/NRST groups and pages within a group) which is local UI.
   if (handleBezelKnob(key)) {
     syncSoftkeyPeerRadioVolume();
     return;
   }
-  if (!isLivePageUp()) return;
+  if (!isLivePageUp()) {
+    if (!(page_ == DisplayPage::MultiFunctionDisplay &&
+          (isMfdPageSelectionBezelKey(key) ||
+           (mfd_.ownsLocalFmsInput() && isGduFmsInputKey(key))))) {
+      return;
+    }
+  }
   // NAV/COM tuning uses the FMS knob on the PFD bezel only (the MFD uses the
   // same knob for page navigation, map pointer, and FPL editing).
   if (page_ == DisplayPage::PrimaryFlightDisplay &&

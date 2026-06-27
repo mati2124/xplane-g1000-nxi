@@ -113,6 +113,14 @@ if(BUILD_XPLANE_SHELL OR BUILD_STANDALONE_SHELL)
   FetchContent_MakeAvailable(stb)
   target_include_directories(avionics-core PRIVATE ${stb_SOURCE_DIR})
   target_compile_definitions(avionics-core PRIVATE AVIONICS_HAS_STBIMAGE)
+
+  # JSON parser for the SimBrief OFP fetch and the Navigraph OAuth client,
+  # shared by both shells (the plugin subdir is configured before the standalone
+  # one, so declare it here rather than inside a single shell). Header-only.
+  FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+  FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
 # The NanoVG renderer is shared by both shells; build it whenever a shell that

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "avionics/Color.h"
+#include "avionics/Terrain.h"
 #include "avionics/WeatherRadar.h"
 #include "avionics/render/MapSymbols.h"
 #include "render/map/MapProjection.h"
@@ -82,19 +83,37 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
 
-  // NXi chart base: navy ocean on the main map; Direct-To inset uses black land
-  // so inland targets are not blank ocean when continental fill is sparse.
+  // NXi chart base. Default to black "land" and only paint the navy ocean base
+  // once real coastline/land data is available for the view: a map with no land
+  // data yet (the GSHHG store still loading, or a failed load) reads as land,
+  // not as a screen full of blank ocean. The DSF terrain raster, when present,
+  // paints accurate per-pixel land/water on top of either base. The Direct-To /
+  // FPL popup inset always uses the black land base.
   if (config.style.showLand && map.positionValid &&
       (config.style.showChrome || config.style.showLand)) {
-    const Color chartBase =
-        useInsetData ? mapview::kMapLandFill : mapview::kMapOceanFill;
+    const bool landDataLoaded =
+        !landLines.empty() ||
+        (map.terrain != nullptr && map.terrain->hasElevationTiles());
+    const Color chartBase = (config.useInsetMapData || !landDataLoaded)
+                                ? mapview::kMapLandFill
+                                : mapview::kMapOceanFill;
     r.fillRect(config.x, config.y, config.w, config.h, chartBase);
   }
 
   if (!map.positionValid) {
     if (config.style.showChrome) {
-      r.fillText(cx, cy, "NO GPS POSITION", labelSize, TextAlign::Center,
-                 colors::kLabelText);
+      // Amber "NO GPS POSITION" in a black chrome plate centered on the map
+      // (G1000 NXi position-lost annunciation), reusing the boxed map-chrome
+      // style used for the orientation / range / wind plates rather than plain
+      // gray text.
+      const char* kNoGpsText = "NO GPS POSITION";
+      const float gpsSize = labelSize * 1.1f;
+      const float padX = gpsSize * 0.55f;
+      const float boxW = r.measureTextWidth(kNoGpsText, gpsSize) + 2.0f * padX;
+      const float boxH = gpsSize * 1.5f;
+      mapview::drawChromeBox(r, cx - boxW * 0.5f, cy - boxH * 0.5f, boxW, boxH);
+      r.fillText(cx, cy + boxH * 0.02f, kNoGpsText, gpsSize, TextAlign::Center,
+                 colors::kBandYellow, mapview::kMapLabelFace);
     }
     r.restore();
     return;
@@ -118,12 +137,35 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   proj.maxY = config.y + config.h;
   proj.init();
 
-  // Chart land/ocean under the topo layer. Where the terrain raster is still
-  // loading (transparent pixels) or omits open ocean, the base chart shows
-  // through like the real NXi instead of procedural tan over the Gulf.
+  // When X-Plane DSF tiles are available, sample elevation for the black-land /
+  // navy-water chart base instead of GSHHG Mercator chord fills (which leave
+  // wedges and meridian seams). The topo TER softkey still switches to hillshade
+  // or REL coloring on top of the same DEM path.
+  // The DEM mask only pays off where the view spans a handful of DSF tiles;
+  // past kChartLandMaxRangeNm the tile count explodes, so fall back to the
+  // instant in-memory GSHHG vector coastline at continental scale.
+  // Popup inset maps (Direct-To, FPL entry) center on arbitrary targets and rely
+  // on the inset GSHHG query instead of DSF tiles prewarmed at ownship.
+  const bool useDsfLandMask =
+      !useInsetData && config.style.showLand &&
+      config.style.terrain == TerrainDisplay::Off &&
+      rangeNm <= map::kChartLandMaxRangeNm && map.terrain != nullptr &&
+      map.terrain->hasElevationTiles();
+
+  if (useDsfLandMask) {
+    map::drawTerrainRaster(
+        r, *map.terrain, map::TerrainRasterMode::ChartLand, 0.0f, viewCenterLat,
+        viewCenterLon, cx, cy, pixelsPerNm, rotation, rangeNm, scaleRangeNm,
+        viewHalfExtentNm, map::kChartLandMaxRangeNm);
+  }
+
+  // Lakes, borders, roads, and labels. GSHHG land-mass chord fills are skipped
+  // when the DSF mask is active; transparent raster pixels show the navy base
+  // until tiles finish loading.
   if (config.style.showLand && (!landLines.empty() || !cities.empty())) {
-    mapview::drawLandData(r, landLines, proj, rangeNm, false, viewHalfExtentNm,
-                          scaleRangeNm, config.style.showLandData);
+    mapview::drawLandData(r, landLines, proj, rangeNm, useDsfLandMask,
+                          viewHalfExtentNm, scaleRangeNm,
+                          config.style.showLandData);
     // City dots are man-made land data, decluttered at Detail 3; water stays.
     if (config.style.showLabels && config.style.showLandData) {
       mapview::drawCityDots(r, cities, proj, rangeNm, symSize);
@@ -219,6 +261,13 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
                          labelSize);
   }
 
+  // VOR compass rose(s): a cyan ~2.5 NM rose around each VOR station on the map,
+  // like the real NXi. Drawn here so the route line and feature symbols overlay
+  // it.
+  if (config.style.showFeatures) {
+    mapview::drawVorRoses(r, map, proj, config, rangeNm, labelSize);
+  }
+
   const bool procPreviewActive =
       config.procedurePreview != nullptr &&
       config.procedurePreview->size() >= 2;
@@ -258,19 +307,24 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     mapview::drawNavFeatures(r, map, proj, config, rangeNm, symSize);
   }
 
-  // Direct-To inset: the target is always drawn at the view center regardless
-  // of airport size-class range declutter (far-away targets zoom out past 100 NM).
+  // Direct-To / WPT inset: the pinned target is always drawn (and labeled)
+  // regardless of airport size-class range declutter (far-away targets zoom out
+  // past 100 NM). It draws at its true projected position; for the WPT/NRST
+  // insets that position is the view center, while the Direct-To leg frames the
+  // midpoint so the target sits off-center toward the ownship.
   if (useInsetData && config.centerFeature != nullptr &&
       config.style.showFeatures) {
     const MapFeature& f = *config.centerFeature;
-    drawMapFeatureSymbol(r, f, cx, cy, symSize);
+    float fx = cx, fy = cy;
+    proj.toPx(f.lat, f.lon, fx, fy);
+    drawMapFeatureSymbol(r, f, fx, fy, symSize);
     if (config.style.showLabels && !f.id.empty()) {
       const float textSize = labelSize * mapview::kMapIdentLabelScale;
       const float labelY =
-          (f.type == MapFeatureType::Airport ? cy - symSize * 1.25f
-                                             : cy - symSize * 1.12f) -
+          (f.type == MapFeatureType::Airport ? fy - symSize * 1.25f
+                                             : fy - symSize * 1.12f) -
           mapview::kMapLabelLiftPx;
-      r.fillText(cx, labelY, f.id, textSize, TextAlign::Center, colors::kWhite,
+      r.fillText(fx, labelY, f.id, textSize, TextAlign::Center, colors::kWhite,
                  mapview::kMapLabelFace);
     }
   }

@@ -103,6 +103,11 @@ struct MapHoldPattern {
   float legLengthNm = 0.0f;
   float legTimeMin = 0.0f;
   HoldTurnDirection turn = HoldTurnDirection::None;
+  // True for a hold-in-lieu-of-procedure-turn (HILPT, ARINC 424 "HF"): a
+  // single-circuit course reversal at an IAF. When an approach is loaded via
+  // this IAF the unit prompts "Fly Course Reversal at <fix>?" (vs. an HM missed-
+  // approach hold, which is flown without a prompt).
+  bool courseReversal = false;
 };
 
 // One vertex of the active flight plan (FMS/GPS route).
@@ -443,6 +448,9 @@ struct MapData {
   // any flight plan. `directTo.id` also names the active waypoint.
   bool directToActive = false;
   MapLeg directTo;
+  // When true, Direct-To flies over the hold fix and enters the published pattern
+  // instead of sequencing to the next leg.
+  bool directToHold = false;
   // Present position when Direct-To was activated; used for CDI cross-track on
   // the great-circle line to the destination (not the live ownship radial).
   bool directToOriginValid = false;

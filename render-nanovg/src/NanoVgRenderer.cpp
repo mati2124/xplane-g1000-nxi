@@ -1,6 +1,7 @@
 #include "avionics/render/NanoVgRenderer.h"
 
 #include <array>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,20 @@ std::string boldFontPath() {
 }
 
 NVGcolor toNvg(const Color& c) { return nvgRGBAf(c.r, c.g, c.b, c.a); }
+
+// Live sensor data can momentarily be NaN/Inf (an uninitialized or transitioning
+// X-Plane dataref). Feeding a non-finite coordinate to NanoVG produces NaN
+// vertices, which crash the GPU driver in its geometry/present stage (observed
+// as access violations inside nvoglv64!DrvPresentBuffers). These guards drop the
+// offending primitive (and skip poisoning the transform) so a bad frame renders
+// incompletely instead of taking down the process.
+inline bool finite1(float a) { return std::isfinite(a); }
+inline bool finite2(float a, float b) {
+  return std::isfinite(a) && std::isfinite(b);
+}
+inline bool finite4(float a, float b, float c, float d) {
+  return finite2(a, b) && finite2(c, d);
+}
 
 }  // namespace
 
@@ -160,24 +175,45 @@ void NanoVgRenderer::restore() {
 }
 
 void NanoVgRenderer::translate(float x, float y) {
-  if (vg_) nvgTranslate(vg_, x, y);
+  if (!vg_) return;
+  // Skip (don't poison the transform) when given non-finite offsets; a NaN here
+  // would make every subsequent draw produce NaN vertices and crash the driver.
+  if (!finite2(x, y)) {
+    ++stats_.nonFinite;
+    return;
+  }
+  nvgTranslate(vg_, x, y);
 }
 
 void NanoVgRenderer::rotateDegrees(float degrees) {
-  if (vg_) nvgRotate(vg_, nvgDegToRad(degrees));
+  if (!vg_) return;
+  if (!finite1(degrees)) {
+    ++stats_.nonFinite;
+    return;
+  }
+  nvgRotate(vg_, nvgDegToRad(degrees));
 }
 
 void NanoVgRenderer::clip(float x, float y, float w, float h) {
-  if (vg_) nvgScissor(vg_, x, y, w, h);
+  if (!vg_) return;
+  if (!finite4(x, y, w, h)) {
+    ++stats_.nonFinite;
+    return;
+  }
+  nvgScissor(vg_, x, y, w, h);
 }
 
 void NanoVgRenderer::globalAlpha(float alpha) {
-  if (vg_) nvgGlobalAlpha(vg_, alpha);
+  if (vg_) nvgGlobalAlpha(vg_, finite1(alpha) ? alpha : 1.0f);
 }
 
 void NanoVgRenderer::fillRect(float x, float y, float w, float h,
                               const Color& c) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.fills;
   nvgBeginPath(vg_);
   nvgRect(vg_, x, y, w, h);
@@ -191,6 +227,10 @@ void NanoVgRenderer::fillRectVerticalGradient(float x, float y, float w, float h
                                               const Color& topColor,
                                               const Color& bottomColor) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h) || !finite2(gradientTopY, gradientBottomY)) {
+    ++stats_.nonFinite;
+    return;
+  }
   // sx == ex makes the gradient purely vertical; NanoVG clamps to the end
   // colors outside [gradientTopY, gradientBottomY].
   ++stats_.fills;
@@ -205,6 +245,10 @@ void NanoVgRenderer::fillRectVerticalGradient(float x, float y, float w, float h
 void NanoVgRenderer::strokeLine(float x1, float y1, float x2, float y2,
                                 float widthPx, const Color& c) {
   if (!vg_) return;
+  if (!finite4(x1, y1, x2, y2) || !finite1(widthPx)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.strokes;
   nvgBeginPath(vg_);
   nvgMoveTo(vg_, x1, y1);
@@ -217,6 +261,10 @@ void NanoVgRenderer::strokeLine(float x1, float y1, float x2, float y2,
 void NanoVgRenderer::fillCircle(float cx, float cy, float radius,
                                 const Color& c) {
   if (!vg_) return;
+  if (!finite2(cx, cy) || !finite1(radius)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.fills;
   nvgBeginPath(vg_);
   nvgCircle(vg_, cx, cy, radius);
@@ -227,6 +275,10 @@ void NanoVgRenderer::fillCircle(float cx, float cy, float radius,
 void NanoVgRenderer::fillRoundedRect(float x, float y, float w, float h,
                                      float radius, const Color& c) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h) || !finite1(radius)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.fills;
   nvgBeginPath(vg_);
   nvgRoundedRect(vg_, x, y, w, h, radius);
@@ -238,6 +290,11 @@ void NanoVgRenderer::fillRoundedRectVerticalGradient(
     float x, float y, float w, float h, float radius, float gradientTopY,
     float gradientBottomY, const Color& topColor, const Color& bottomColor) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h) || !finite1(radius) ||
+      !finite2(gradientTopY, gradientBottomY)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.fills;
   NVGpaint paint = nvgLinearGradient(vg_, x, gradientTopY, x, gradientBottomY,
                                      toNvg(topColor), toNvg(bottomColor));
@@ -251,6 +308,10 @@ void NanoVgRenderer::strokeRoundedRect(float x, float y, float w, float h,
                                        float radius, float widthPx,
                                        const Color& c) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h) || !finite1(radius)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.strokes;
   nvgBeginPath(vg_);
   nvgRoundedRect(vg_, x, y, w, h, radius);
@@ -263,6 +324,10 @@ void NanoVgRenderer::fillTopRoundedRectVerticalGradient(
     float x, float y, float w, float h, float radius, const Color& topColor,
     const Color& bottomColor) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h) || !finite1(radius)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.fills;
   // Only the top corners are rounded (matches the real GDU softkey caps); the
   // gradient runs top (lighter) to bottom over the box height.
@@ -278,6 +343,10 @@ void NanoVgRenderer::strokeTopRoundedRect(float x, float y, float w, float h,
                                           float radius, float widthPx,
                                           const Color& c) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h) || !finite1(radius)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.strokes;
   nvgBeginPath(vg_);
   nvgRoundedRectVarying(vg_, x, y, w, h, radius, radius, 0.0f, 0.0f);
@@ -290,6 +359,10 @@ void NanoVgRenderer::fillRoundedRectVaryingVerticalGradient(
     float x, float y, float w, float h, float radTL, float radTR, float radBR,
     float radBL, const Color& topColor, const Color& bottomColor) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.fills;
   NVGpaint paint =
       nvgLinearGradient(vg_, x, y, x, y + h, toNvg(topColor), toNvg(bottomColor));
@@ -304,6 +377,10 @@ void NanoVgRenderer::strokeRoundedRectVarying(float x, float y, float w, float h
                                               float radBL, float widthPx,
                                               const Color& c) {
   if (!vg_) return;
+  if (!finite4(x, y, w, h)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.strokes;
   nvgBeginPath(vg_);
   nvgRoundedRectVarying(vg_, x, y, w, h, radTL, radTR, radBR, radBL);
@@ -315,6 +392,12 @@ void NanoVgRenderer::strokeRoundedRectVarying(float x, float y, float w, float h
 void NanoVgRenderer::fillPolygon(const Point* points, int count,
                                  const Color& c) {
   if (!vg_ || count < 3) return;
+  for (int i = 0; i < count; ++i) {
+    if (!finite2(points[i].x, points[i].y)) {
+      ++stats_.nonFinite;
+      return;
+    }
+  }
   ++stats_.fills;
   stats_.verts += count;
   nvgBeginPath(vg_);
@@ -328,6 +411,12 @@ void NanoVgRenderer::fillPolygon(const Point* points, int count,
 void NanoVgRenderer::strokePolyline(const Point* points, int count,
                                     float widthPx, const Color& c) {
   if (!vg_ || count < 2) return;
+  for (int i = 0; i < count; ++i) {
+    if (!finite2(points[i].x, points[i].y)) {
+      ++stats_.nonFinite;
+      return;
+    }
+  }
   ++stats_.strokes;
   stats_.verts += count;
   nvgBeginPath(vg_);
@@ -350,6 +439,12 @@ void NanoVgRenderer::strokeSegments(const Point* segPts, int segmentCount,
   for (int i = 0; i < segmentCount; ++i) {
     const Point& a = segPts[2 * i];
     const Point& b = segPts[2 * i + 1];
+    // Skip only the offending segment so one bad point can't drop the whole
+    // batch (or feed NaN vertices to the driver).
+    if (!finite4(a.x, a.y, b.x, b.y)) {
+      ++stats_.nonFinite;
+      continue;
+    }
     nvgMoveTo(vg_, a.x, a.y);
     nvgLineTo(vg_, b.x, b.y);
   }
@@ -377,6 +472,10 @@ void NanoVgRenderer::deleteImage(int imageId) {
 void NanoVgRenderer::drawImage(int imageId, float x, float y, float w, float h,
                                float alpha) {
   if (!vg_ || imageId < 0 || w <= 0.0f || h <= 0.0f) return;
+  if (!finite4(x, y, w, h) || !finite1(alpha)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.images;
   const NVGpaint paint = nvgImagePattern(vg_, x, y, w, h, 0.0f, imageId, alpha);
   nvgBeginPath(vg_);
@@ -389,6 +488,10 @@ void NanoVgRenderer::fillText(float x, float y, const std::string& text,
                               float sizePx, TextAlign align, const Color& c,
                               FontFace face) {
   if (!vg_ || fontId_ < 0) return;
+  if (!finite2(x, y) || !finite1(sizePx)) {
+    ++stats_.nonFinite;
+    return;
+  }
   ++stats_.texts;
 
   int hAlign = NVG_ALIGN_LEFT;

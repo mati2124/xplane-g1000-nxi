@@ -42,7 +42,8 @@ class NanoVgRenderer : public Renderer {
     int strokes = 0;
     int texts = 0;
     int images = 0;
-    int verts = 0;  // path vertices submitted (polygons/polylines/segments)
+    int verts = 0;        // path vertices submitted (polygons/polylines/segments)
+    int nonFinite = 0;    // primitives dropped for NaN/Inf coords (bad live data)
     int total() const { return fills + strokes + texts + images; }
   };
   const DrawStats& drawStats() const { return stats_; }

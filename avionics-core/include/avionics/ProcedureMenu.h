@@ -46,6 +46,7 @@ enum class ProcLoadingList { None, Approach, Transition };
 
 void procedureMenuBuild(ProcedureMenuHost& host);
 void procedureMenuOpenApproachSelect(ProcedureMenuHost& host);
+void procedureMenuOpenArrDepSelect(ProcedureMenuHost& host, ProcedureType type);
 void procedureMenuOpenApproachLoading(
     ProcedureMenuHost& host, const std::string& icao,
     const std::string& approachName, const std::string& transition,
@@ -67,14 +68,20 @@ std::string procedureMenuApproachDisplayName(const ProcedureMenuHost& host,
                                              int index);
 MapProcedure procedureMenuSelectedProcedure(const ProcedureMenuHost& host);
 std::string procedureMenuAirportCityLine(const ProcedureMenuHost& host);
+std::string procedureMenuAirportCityLineFor(const MapFeature& f);
 std::string procedureMenuAirportNameLine(const ProcedureMenuHost& host);
 std::string procedureMenuSelectedApproachDisplay(const ProcedureMenuHost& host);
 std::string procedureMenuSelectedTransitionDisplay(const ProcedureMenuHost& host);
+std::string procedureMenuSelectedRunwayDisplay(const ProcedureMenuHost& host);
 float procedureMenuPrimaryFreqMhz(const ProcedureMenuHost& host);
 bool procedureMenuPrimaryNavIsNdb(const ProcedureMenuHost& host);
 bool procedureMenuShowsPrimaryNavFreq(const ProcedureMenuHost& host);
 std::string procedureMenuPrimaryIdent(const ProcedureMenuHost& host);
 std::vector<MapLeg> procedureMenuPreviewLegs(const ProcedureMenuHost& host);
 bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key);
+
+// Answer the "Fly Course Reversal at <fix>?" prompt. flyIt = YES keeps the
+// HILPT (flown as the course reversal); NO removes it for a straight-in.
+void procedureMenuAnswerCourseReversal(ProcedureMenuHost& host, bool flyIt);
 
 }  // namespace avionics

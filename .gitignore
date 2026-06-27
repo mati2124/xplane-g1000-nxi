@@ -70,3 +70,8 @@ node_modules/
 # Local X-Plane navigation data (proprietary; do not commit).
 /local-xplane-navdata/
 /test-fixtures/xplane-navdata/
+
+# Navigraph OAuth client credentials (secret; do not commit). Loaded at runtime
+# by NavigraphClient from here or the per-user config dir.
+navigraph_credentials.txt
+**/navigraph_credentials.txt

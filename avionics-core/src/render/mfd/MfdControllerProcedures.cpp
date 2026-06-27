@@ -103,6 +103,12 @@ std::vector<AirportRunwayInfo> MfdController::airportRunways(
   return runways;
 }
 
+std::optional<StationWeather> MfdController::stationWeather(
+    const std::string& icao) const {
+  if (weatherSource_ == nullptr || icao.empty()) return std::nullopt;
+  return weatherSource_->weatherForStation(icao);
+}
+
 void MfdController::buildProcMenu() {
   ProcedureMenuHost host = procedureMenuHost();
   procedureMenuBuild(host);
@@ -167,6 +173,10 @@ std::string MfdController::procAirportCityLine() const {
   return procedureMenuAirportCityLine(procedureMenuHost());
 }
 
+std::string MfdController::procAirportEntryCityLine() const {
+  return procedureMenuAirportCityLineFor(procMenu_.airportEntry.match);
+}
+
 std::string MfdController::procAirportNameLine() const {
   return procedureMenuAirportNameLine(procedureMenuHost());
 }
@@ -177,6 +187,10 @@ std::string MfdController::procSelectedApproachDisplay() const {
 
 std::string MfdController::procSelectedTransitionDisplay() const {
   return procedureMenuSelectedTransitionDisplay(procedureMenuHost());
+}
+
+std::string MfdController::procSelectedRunwayDisplay() const {
+  return procedureMenuSelectedRunwayDisplay(procedureMenuHost());
 }
 
 float MfdController::procPrimaryFreqMhz() const {
@@ -202,8 +216,35 @@ std::vector<MapLeg> MfdController::procPreviewLegs() const {
 
 bool MfdController::procBezelKey(BezelKey key) {
   if (isMapRangePanBezelKey(key)) return false;
+  if (isPageNavigationBezelKey(key)) return false;
   ProcedureMenuHost host = procedureMenuHost();
   return procedureMenuBezelKey(host, key);
+}
+
+bool MfdController::courseReversalPromptBezelKey(BezelKey key) {
+  if (!procMenu_.courseReversalPromptActive) return false;
+  switch (key) {
+    case BezelKey::FmsOuterCw:
+    case BezelKey::FmsOuterCcw:
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      procMenu_.courseReversalYes = !procMenu_.courseReversalYes;
+      procMenu_.courseReversalYesDirty = true;
+      return true;
+    case BezelKey::Ent: {
+      ProcedureMenuHost host = procedureMenuHost();
+      procedureMenuAnswerCourseReversal(host, procMenu_.courseReversalYes);
+      return true;
+    }
+    case BezelKey::Clr:
+    case BezelKey::FmsPush: {
+      ProcedureMenuHost host = procedureMenuHost();
+      procedureMenuAnswerCourseReversal(host, false);
+      return true;
+    }
+    default:
+      return false;
+  }
 }
 
 }  // namespace avionics

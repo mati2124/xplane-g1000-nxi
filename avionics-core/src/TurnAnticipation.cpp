@@ -95,6 +95,14 @@ TurnAnticipation computeTurnAnticipation(const MapData& map,
   const MapLeg& active = plan[static_cast<std::size_t>(activeIdx)];
   const MapLeg& next = plan[static_cast<std::size_t>(activeIdx + 1)];
 
+  // A hold fix (HILPT course reversal or holding pattern) is flown OVER, not
+  // flown BY: the aircraft crosses the fix and reverses course through the hold
+  // entry, it does not lead the turn onto the next leg. Anticipating a turn here
+  // makes the autopilot swing toward the post-hold inbound course before the fix
+  // instead of entering the hold (e.g. KCMI RNAV 04 CMI->BOSTN HILPT swung the
+  // aircraft right toward 041 for a few seconds before the hold took over).
+  if (active.hold.active) return out;
+
   // After a fly-by sequences early onto the outbound leg, the active TO waypoint
   // is already the outbound fix while the aircraft is still rounding the prior
   // fix. Suppress the *next* leg's turn advisory until the prior fly-by is

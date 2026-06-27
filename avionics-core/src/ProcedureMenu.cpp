@@ -31,26 +31,44 @@ void procedureMenuMoveMenu(ProcedureMenuHost& host, int dir) {
   }
 }
 
+bool procedureMenuIsArrDep(const ProcedureMenuHost& host) {
+  return host.state.category == ProcedureType::Arrival ||
+         host.state.category == ProcedureType::Departure;
+}
+
 void procedureMenuApplyApproachDefaults(ProcedureMenuHost& host) {
   host.state.selectedName.clear();
   host.state.selectedTransition.clear();
+  host.state.selectedRunway.clear();
   const std::string icao = procedureMenuAirportIcao(host);
   if (icao.empty()) return;
 
-  const std::vector<std::string> names =
-      procedureMenuProcedureNames(host, ProcedureType::Approach);
+  const ProcedureType type = host.state.category;
+  const std::vector<std::string> names = procedureMenuProcedureNames(host, type);
   if (names.empty()) return;
   host.state.selectedName = names.front();
 
-  const std::vector<std::string> transitions = procedureMenuTransitions(
-      host, ProcedureType::Approach, host.state.selectedName);
+  if (procedureMenuIsArrDep(host)) {
+    const std::vector<std::string> enroute = procedureEnrouteTransitions(
+        host.nav, icao, type, host.state.selectedName);
+    host.state.selectedTransition =
+        enroute.empty() ? std::string() : defaultProcedureTransition(enroute);
+    const std::vector<std::string> runways =
+        procedureRunwayOptions(host.nav, icao, type, host.state.selectedName);
+    host.state.selectedRunway = runways.empty() ? std::string() : runways.front();
+    return;
+  }
+
+  const std::vector<std::string> transitions =
+      procedureMenuTransitions(host, type, host.state.selectedName);
   host.state.selectedTransition = defaultProcedureTransition(transitions);
 }
 
 void procedureMenuCloseSubList(ProcedureMenuHost& host) {
   host.state.subListOpen = false;
   if (host.state.step == ProcStep::TransitionList ||
-      host.state.step == ProcStep::AirportList) {
+      host.state.step == ProcStep::AirportList ||
+      host.state.step == ProcStep::RunwayList) {
     host.state.step = ProcStep::ProcedureList;
   }
 }
@@ -70,22 +88,39 @@ void procedureMenuFocusActivate(ProcedureMenuHost& host) {
 }
 
 bool procedureMenuApproachListLive(const ProcedureMenuHost& host) {
-  return host.state.mode == ProcMode::Select &&
-         host.state.category == ProcedureType::Approach &&
-         host.state.subListOpen &&
+  return host.state.mode == ProcMode::Select && host.state.subListOpen &&
          host.state.step == ProcStep::ProcedureList;
 }
 
 bool procedureMenuTransitionListLive(const ProcedureMenuHost& host) {
-  return host.state.mode == ProcMode::Select &&
-         host.state.category == ProcedureType::Approach &&
-         host.state.subListOpen &&
+  return host.state.mode == ProcMode::Select && host.state.subListOpen &&
          host.state.step == ProcStep::TransitionList;
 }
 
+bool procedureMenuRunwayListLive(const ProcedureMenuHost& host) {
+  return host.state.mode == ProcMode::Select && host.state.subListOpen &&
+         host.state.step == ProcStep::RunwayList;
+}
+
+// Enroute transitions for an Arrival/Departure (named entry/exit fixes), or the
+// full transition list for an Approach.
+std::vector<std::string> procedureMenuEnrouteTransitions(
+    const ProcedureMenuHost& host, const std::string& name) {
+  if (procedureMenuIsArrDep(host)) {
+    return procedureEnrouteTransitions(host.nav, procedureMenuAirportIcao(host),
+                                       host.state.category, name);
+  }
+  return procedureMenuTransitions(host, host.state.category, name);
+}
+
+std::vector<std::string> procedureMenuRunwayOptions(const ProcedureMenuHost& host,
+                                                    const std::string& name) {
+  return procedureRunwayOptions(host.nav, procedureMenuAirportIcao(host),
+                                host.state.category, name);
+}
+
 std::string procedureMenuActiveApproachName(const ProcedureMenuHost& host) {
-  if (host.state.mode != ProcMode::Select ||
-      host.state.category != ProcedureType::Approach) {
+  if (host.state.mode != ProcMode::Select) {
     return host.state.selectedName;
   }
   if (procedureMenuApproachListLive(host)) {
@@ -115,7 +150,7 @@ std::string procedureMenuActiveTransition(const ProcedureMenuHost& host,
   if (approachName.empty()) return {};
   if (procedureMenuTransitionListLive(host)) {
     const std::vector<std::string> transitions =
-        procedureMenuTransitions(host, host.state.category, approachName);
+        procedureMenuEnrouteTransitions(host, approachName);
     if (host.state.selected < 0 ||
         host.state.selected >= static_cast<int>(transitions.size())) {
       return {};
@@ -123,8 +158,67 @@ std::string procedureMenuActiveTransition(const ProcedureMenuHost& host,
     return transitions[static_cast<std::size_t>(host.state.selected)];
   }
   if (!host.state.selectedTransition.empty()) return host.state.selectedTransition;
+  if (procedureMenuIsArrDep(host)) {
+    const std::vector<std::string> enroute =
+        procedureMenuEnrouteTransitions(host, approachName);
+    return enroute.empty() ? std::string() : defaultProcedureTransition(enroute);
+  }
   return defaultProcedureTransition(
       procedureMenuTransitions(host, host.state.category, approachName));
+}
+
+// Runway transition label currently shown/active for an Arrival/Departure.
+std::string procedureMenuActiveRunway(const ProcedureMenuHost& host,
+                                      const std::string& name) {
+  if (name.empty() || !procedureMenuIsArrDep(host)) return {};
+  if (procedureMenuRunwayListLive(host)) {
+    const std::vector<std::string> runways =
+        procedureMenuRunwayOptions(host, name);
+    if (host.state.selected < 0 ||
+        host.state.selected >= static_cast<int>(runways.size())) {
+      return {};
+    }
+    return runways[static_cast<std::size_t>(host.state.selected)];
+  }
+  if (!host.state.selectedRunway.empty()) return host.state.selectedRunway;
+  const std::vector<std::string> runways = procedureMenuRunwayOptions(host, name);
+  return runways.empty() ? std::string() : runways.front();
+}
+
+// Raise the "Fly Course Reversal at <fix>?" prompt for the currently selected
+// approach + transition before the approach is committed to the flight plan.
+// The NXi shows this prompt on the approach-loading window the moment a HILPT
+// transition is chosen; the YES/NO answer is deferred and applied at
+// Load/Activate. courseReversalLegIndex stays -1 to mark the not-yet-loaded
+// (deferred) state. Any prior prompt/decision is reset so re-selecting a
+// different transition starts clean.
+void procedureMenuRaiseCourseReversalPrompt(ProcedureMenuHost& host) {
+  host.state.courseReversalPromptActive = false;
+  host.state.courseReversalFix.clear();
+  host.state.courseReversalLegIndex = -1;
+  host.state.courseReversalYes = false;
+  host.state.courseReversalYesDirty = false;
+  host.state.courseReversalAnswered = false;
+  host.state.courseReversalAnswerFlyIt = false;
+  host.state.courseReversalDecisionMade = false;
+  host.state.courseReversalDecisionFlyIt = false;
+  host.state.courseReversalDecisionFix.clear();
+  if (host.state.category != ProcedureType::Approach) return;
+  if (host.nav == nullptr || !host.nav->ready()) return;
+  const std::string& transition = host.state.selectedTransition;
+  if (transition.empty() || host.state.selectedName.empty()) return;
+  const std::string icao = procedureMenuAirportIcao(host);
+  if (icao.empty()) return;
+  const std::vector<MapLeg> legs = host.nav->expandProcedure(
+      icao, host.state.category, host.state.selectedName, transition);
+  for (const MapLeg& leg : legs) {
+    if (leg.id == transition && leg.hold.active && leg.hold.courseReversal) {
+      host.state.courseReversalPromptActive = true;
+      host.state.courseReversalFix = transition;
+      host.state.courseReversalLegIndex = -1;
+      break;
+    }
+  }
 }
 
 void procedureMenuPickApproach(ProcedureMenuHost& host, const std::string& name) {
@@ -145,6 +239,7 @@ void procedureMenuPickApproach(ProcedureMenuHost& host, const std::string& name)
     host.state.selectedTransition = trans.empty() ? std::string() : trans.front();
     procedureMenuCloseSubList(host);
     procedureMenuFocusLoad(host);
+    procedureMenuRaiseCourseReversalPrompt(host);
     return;
   }
   host.state.step = ProcStep::TransitionList;
@@ -266,6 +361,28 @@ void procedureMenuOpenAirportList(ProcedureMenuHost& host) {
   }
 }
 
+// Begin inline ICAO entry on the Airport field, seeded with the current airport
+// (whole ident highlighted, like the Direct-To default) so the first knob turn
+// starts a fresh identifier (Pilot's Guide "Select Approach", airport entry).
+void procedureMenuOpenAirportEntry(ProcedureMenuHost& host) {
+  host.state.airportEntry.allowAirways = false;
+  host.state.airportEntry.open(host.nav, host.map,
+                               procedureMenuAirportIcao(host));
+}
+
+// Apply the typed airport identifier: switch the listed approaches to the new
+// airport and refresh the default approach/transition.
+void procedureMenuCommitAirportEntry(ProcedureMenuHost& host) {
+  FmsWaypointEntry& entry = host.state.airportEntry;
+  const std::string icao = entry.hasMatch && !entry.match.id.empty()
+                               ? entry.match.id
+                               : entry.ident();
+  entry.reset();
+  if (icao.empty()) return;
+  host.state.selectedAirportIcao = icao;
+  procedureMenuApplyApproachDefaults(host);
+}
+
 void procedureMenuOpenApproachList(ProcedureMenuHost& host) {
   host.state.step = ProcStep::ProcedureList;
   host.state.subListOpen = true;
@@ -297,6 +414,128 @@ void procedureMenuOpenTransitionList(ProcedureMenuHost& host) {
   }
 }
 
+// Arrival pages walk Airport -> Arrival -> Transition -> Runway -> (Sequence) ->
+// Load?; Departure pages swap Transition/Runway to Airport -> Departure ->
+// Runway -> Transition -> (Sequence) -> Load?. The Sequence box is entered
+// between the last picker field and Load (handled by the cursor mover).
+std::vector<ProcApproachField> procedureMenuArrDepFieldOrder(
+    const ProcedureMenuHost& host) {
+  using Field = ProcApproachField;
+  if (host.state.category == ProcedureType::Departure) {
+    return {Field::Airport, Field::Apr, Field::Runway, Field::Trans,
+            Field::Load};
+  }
+  return {Field::Airport, Field::Apr, Field::Trans, Field::Runway, Field::Load};
+}
+
+int procedureMenuArrDepFieldIndex(const std::vector<ProcApproachField>& order,
+                                  ProcApproachField field) {
+  for (int i = 0; i < static_cast<int>(order.size()); ++i) {
+    if (order[static_cast<std::size_t>(i)] == field) return i;
+  }
+  return 0;
+}
+
+void procedureMenuMoveArrDepCursor(ProcedureMenuHost& host, int dir) {
+  const std::vector<ProcApproachField> order =
+      procedureMenuArrDepFieldOrder(host);
+  const int legCount =
+      static_cast<int>(procedureMenuPreviewLegs(host).size());
+  // The last picker field (just before Load) is the gateway into the Sequence.
+  const int lastPicker = static_cast<int>(order.size()) - 2;
+  if (host.state.sequenceFocused) {
+    const int next = host.state.sequenceSelected + dir;
+    if (next < 0) {
+      host.state.sequenceFocused = false;
+      host.state.sequenceSelected = 0;
+      host.state.approachField =
+          order[static_cast<std::size_t>(std::max(0, lastPicker))];
+      host.state.loadArmed = false;
+    } else if (next < legCount) {
+      host.state.sequenceSelected = next;
+    } else if (dir > 0) {
+      host.state.sequenceFocused = false;
+      host.state.sequenceSelected = 0;
+      host.state.approachField = ProcApproachField::Load;
+      host.state.loadArmed = true;
+    }
+    return;
+  }
+  if (dir > 0 && legCount > 0 && lastPicker >= 0 &&
+      host.state.approachField ==
+          order[static_cast<std::size_t>(lastPicker)]) {
+    host.state.sequenceFocused = true;
+    host.state.sequenceSelected = 0;
+    host.state.loadArmed = false;
+    return;
+  }
+  if (dir < 0 && legCount > 0 &&
+      host.state.approachField == ProcApproachField::Load) {
+    host.state.sequenceFocused = true;
+    host.state.sequenceSelected = legCount - 1;
+    host.state.loadArmed = false;
+    return;
+  }
+  const int idx =
+      procedureMenuArrDepFieldIndex(order, host.state.approachField);
+  const int next =
+      std::max(0, std::min(idx + dir, static_cast<int>(order.size()) - 1));
+  host.state.approachField = order[static_cast<std::size_t>(next)];
+  host.state.loadArmed = host.state.approachField == ProcApproachField::Load;
+  host.state.activateArmed = false;
+}
+
+void procedureMenuOpenEnrouteList(ProcedureMenuHost& host) {
+  const std::vector<std::string> trans =
+      procedureMenuEnrouteTransitions(host, host.state.selectedName);
+  if (trans.empty()) return;
+  host.state.step = ProcStep::TransitionList;
+  host.state.subListOpen = true;
+  host.state.selected = 0;
+  for (int i = 0; i < static_cast<int>(trans.size()); ++i) {
+    if (trans[static_cast<std::size_t>(i)] == host.state.selectedTransition) {
+      host.state.selected = i;
+      break;
+    }
+  }
+}
+
+void procedureMenuOpenRunwayList(ProcedureMenuHost& host) {
+  const std::vector<std::string> runways =
+      procedureMenuRunwayOptions(host, host.state.selectedName);
+  if (runways.empty()) return;
+  host.state.step = ProcStep::RunwayList;
+  host.state.subListOpen = true;
+  host.state.selected = 0;
+  for (int i = 0; i < static_cast<int>(runways.size()); ++i) {
+    if (runways[static_cast<std::size_t>(i)] == host.state.selectedRunway) {
+      host.state.selected = i;
+      break;
+    }
+  }
+}
+
+// Choose an Arrival/Departure procedure from the open list, refresh the default
+// enroute/runway transitions for it, and return the cursor to the procedure
+// field (the pilot then steps down to Transition/Runway/Load).
+void procedureMenuPickArrDepProcedure(ProcedureMenuHost& host,
+                                      const std::string& name) {
+  host.state.selectedName = name;
+  host.state.sequenceFocused = false;
+  host.state.sequenceSelected = 0;
+  const std::vector<std::string> enroute =
+      procedureMenuEnrouteTransitions(host, name);
+  host.state.selectedTransition =
+      enroute.empty() ? std::string() : defaultProcedureTransition(enroute);
+  const std::vector<std::string> runways =
+      procedureMenuRunwayOptions(host, name);
+  host.state.selectedRunway = runways.empty() ? std::string() : runways.front();
+  procedureMenuCloseSubList(host);
+  host.state.approachField = ProcApproachField::Apr;
+  host.state.loadArmed = false;
+  host.state.activateArmed = false;
+}
+
 void procedureMenuCycleMins(ProcedureMenuHost& host) {
   host.setMinimumsBaro(!host.minimumsBaroEnabled());
   if (!host.minimumsBaroEnabled() &&
@@ -316,7 +555,12 @@ void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
   if (host.nav == nullptr || !host.nav->ready()) return;
   const std::string icao = procedureMenuAirportIcao(host);
   std::vector<MapLeg> legs =
-      host.nav->expandProcedure(icao, host.state.category, name, transition);
+      procedureMenuIsArrDep(host)
+          ? expandArrivalDepartureProcedure(host.nav, icao, host.state.category,
+                                            name, transition,
+                                            host.state.selectedRunway)
+          : host.nav->expandProcedure(icao, host.state.category, name,
+                                      transition);
   if (legs.empty()) return;
   if (host.state.category == ProcedureType::Approach) {
     removeLoadedApproachLegs(host.fplLegs, host.approachLegStart,
@@ -346,11 +590,49 @@ void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
   host.publishFlightPlanEdit();
   host.state.loadTarget = host.loadedApproach;
   host.state.loadPending = true;
+
+  // When the approach is loaded via an IAF that has a HILPT course reversal,
+  // resolve whether to fly it. If the pilot already answered a transition-select
+  // prompt for this transition, apply that latched decision now; otherwise raise
+  // the prompt here (covers single-transition / list-flow loads that never went
+  // through the loading window). Only the selected transition's fix is used.
+  const bool hadDecision = host.state.courseReversalDecisionMade &&
+                           host.state.courseReversalDecisionFix == transition;
+  const bool decisionFlyIt = host.state.courseReversalDecisionFlyIt;
+  host.state.courseReversalPromptActive = false;
+  host.state.courseReversalFix.clear();
+  host.state.courseReversalLegIndex = -1;
+  host.state.courseReversalYes = false;
+  host.state.courseReversalDecisionMade = false;
+  host.state.courseReversalDecisionFlyIt = false;
+  host.state.courseReversalDecisionFix.clear();
+  if (host.state.category == ProcedureType::Approach && !transition.empty()) {
+    const int end = host.approachLegStart + host.approachLegCount;
+    for (int i = host.approachLegStart;
+         i >= 0 && i < end && i < static_cast<int>(host.fplLegs.size()); ++i) {
+      MapLeg& leg = host.fplLegs[static_cast<std::size_t>(i)];
+      if (leg.id == transition && leg.hold.active && leg.hold.courseReversal) {
+        if (hadDecision) {
+          if (!decisionFlyIt) {
+            leg.hold = MapHoldPattern{};
+            host.publishFlightPlanEdit();
+          }
+        } else {
+          host.state.courseReversalPromptActive = true;
+          host.state.courseReversalFix = leg.id;
+          host.state.courseReversalLegIndex = i;
+        }
+        break;
+      }
+    }
+  }
+
   host.closeProceduresMenu();
   host.state.mode = ProcMode::Menu;
   host.state.step = ProcStep::ProcedureList;
   host.state.selectedName.clear();
   host.state.selectedTransition.clear();
+  host.state.selectedRunway.clear();
   host.state.subListOpen = false;
   host.state.loadArmed = false;
   host.state.activateArmed = false;
@@ -368,6 +650,38 @@ void procedureMenuActivateSelected(ProcedureMenuHost& host,
 
 }  // namespace
 
+void procedureMenuAnswerCourseReversal(ProcedureMenuHost& host, bool flyIt) {
+  if (!host.state.courseReversalPromptActive) return;
+  host.state.courseReversalAnswerFlyIt = flyIt;
+  host.state.courseReversalAnswered = true;
+  host.state.courseReversalPromptActive = false;
+  host.state.courseReversalYesDirty = false;
+
+  // Pre-load prompt (raised at transition-select): there is nothing in the
+  // flight plan to edit yet, so latch the decision and apply it when the
+  // approach is loaded/activated (procedureMenuLoadSelected).
+  if (host.state.courseReversalLegIndex < 0) {
+    host.state.courseReversalDecisionMade = true;
+    host.state.courseReversalDecisionFlyIt = flyIt;
+    host.state.courseReversalDecisionFix = host.state.courseReversalFix;
+    return;
+  }
+
+  // courseReversalFix / courseReversalLegIndex stay set until the engine clears
+  // them after applying the choice on every GDU.
+  if (flyIt) return;
+
+  // Immediate local update so the answering display updates before peer sync.
+  const int idx = host.state.courseReversalLegIndex;
+  if (idx >= 0 && idx < static_cast<int>(host.fplLegs.size())) {
+    MapLeg& leg = host.fplLegs[static_cast<std::size_t>(idx)];
+    if (leg.hold.courseReversal) {
+      leg.hold = MapHoldPattern{};
+      host.publishFlightPlanEdit();
+    }
+  }
+}
+
 void procedureMenuOpenApproachSelect(ProcedureMenuHost& host) {
   host.state.mode = ProcMode::Select;
   host.state.step = ProcStep::ProcedureList;
@@ -375,6 +689,24 @@ void procedureMenuOpenApproachSelect(ProcedureMenuHost& host) {
   host.state.selectedAirportIcao.clear();
   host.state.subListOpen = false;
   host.state.approachField = ProcApproachField::Airport;
+  host.state.airportEntry.reset();
+  host.state.sequenceFocused = false;
+  host.state.sequenceSelected = 0;
+  host.state.loadArmed = false;
+  host.state.activateArmed = false;
+  procedureMenuApplyApproachDefaults(host);
+}
+
+void procedureMenuOpenArrDepSelect(ProcedureMenuHost& host,
+                                   ProcedureType type) {
+  host.state.category = type;
+  host.state.mode = ProcMode::Select;
+  host.state.step = ProcStep::ProcedureList;
+  host.state.selected = 0;
+  host.state.selectedAirportIcao.clear();
+  host.state.subListOpen = false;
+  host.state.approachField = ProcApproachField::Airport;
+  host.state.airportEntry.reset();
   host.state.sequenceFocused = false;
   host.state.sequenceSelected = 0;
   host.state.loadArmed = false;
@@ -396,6 +728,7 @@ void procedureMenuOpenApproachLoading(ProcedureMenuHost& host,
   host.state.selectedTransition = transition;
   host.state.subListOpen = false;
   host.state.approachField = ProcApproachField::Activate;
+  host.state.airportEntry.reset();
   host.state.sequenceFocused = false;
   host.state.sequenceSelected = 0;
   host.state.loadArmed = false;
@@ -433,6 +766,7 @@ void procedureMenuBuild(ProcedureMenuHost& host) {
   host.state.selectedAirportIcao.clear();
   host.state.subListOpen = false;
   host.state.approachField = ProcApproachField::Airport;
+  host.state.airportEntry.reset();
   host.state.sequenceFocused = false;
   host.state.sequenceSelected = 0;
   host.state.loadArmed = false;
@@ -511,7 +845,17 @@ std::vector<std::string> procedureMenuListItems(const ProcedureMenuHost& host) {
   if (host.state.step == ProcStep::AirportList) {
     return host.nearestAirportIds();
   }
+  if (host.state.step == ProcStep::RunwayList) {
+    return procedureRunwayOptions(host.nav, procedureMenuAirportIcao(host),
+                                  host.state.category, host.state.selectedName);
+  }
   if (host.state.step == ProcStep::TransitionList) {
+    if (procedureMenuIsArrDep(host)) {
+      return procedureEnrouteTransitions(host.nav,
+                                         procedureMenuAirportIcao(host),
+                                         host.state.category,
+                                         host.state.selectedName);
+    }
     return procedureMenuTransitionLabels(host, host.state.category,
                                          host.state.selectedName);
   }
@@ -521,9 +865,12 @@ std::vector<std::string> procedureMenuListItems(const ProcedureMenuHost& host) {
 std::string procedureMenuApproachDisplayName(const ProcedureMenuHost& host,
                                              int index) {
   const std::vector<std::string> names =
-      procedureMenuProcedureNames(host, ProcedureType::Approach);
+      procedureMenuProcedureNames(host, host.state.category);
   if (index < 0 || index >= static_cast<int>(names.size())) return {};
   const std::string& name = names[static_cast<std::size_t>(index)];
+  // Arrival/Departure procedures display their published name verbatim
+  // (e.g. "JOSFF5"); only approaches get the RNAV/ILS label formatting.
+  if (host.state.category != ProcedureType::Approach) return name;
   for (const MapProcedure& proc :
        proceduresForAirport(host, procedureMenuAirportIcao(host),
                             ProcedureType::Approach)) {
@@ -544,12 +891,15 @@ MapProcedure procedureMenuSelectedProcedure(const ProcedureMenuHost& host) {
                                 proceduresForAirport(host, icao, host.state.category));
 }
 
-std::string procedureMenuAirportCityLine(const ProcedureMenuHost& host) {
-  const MapFeature f = procedureMenuAirportFeature(host);
+std::string procedureMenuAirportCityLineFor(const MapFeature& f) {
   if (f.city.empty() && f.region.empty()) return {};
   if (f.city.empty()) return f.region;
   if (f.region.empty()) return f.city;
   return f.city + " " + f.region;
+}
+
+std::string procedureMenuAirportCityLine(const ProcedureMenuHost& host) {
+  return procedureMenuAirportCityLineFor(procedureMenuAirportFeature(host));
 }
 
 std::string procedureMenuAirportNameLine(const ProcedureMenuHost& host) {
@@ -559,6 +909,7 @@ std::string procedureMenuAirportNameLine(const ProcedureMenuHost& host) {
 std::string procedureMenuSelectedApproachDisplay(const ProcedureMenuHost& host) {
   const std::string name = procedureMenuActiveApproachName(host);
   if (name.empty()) return {};
+  if (host.state.category != ProcedureType::Approach) return name;
   const MapProcedure proc = procedureMenuSelectedProcedure(host);
   if (!proc.name.empty()) return formatApproachProcedureLabel(proc);
   return name;
@@ -568,6 +919,12 @@ std::string procedureMenuSelectedTransitionDisplay(const ProcedureMenuHost& host
   const std::string name = procedureMenuActiveApproachName(host);
   if (name.empty()) return {};
   return procedureMenuActiveTransition(host, name);
+}
+
+std::string procedureMenuSelectedRunwayDisplay(const ProcedureMenuHost& host) {
+  const std::string name = procedureMenuActiveApproachName(host);
+  if (name.empty()) return {};
+  return procedureMenuActiveRunway(host, name);
 }
 
 float procedureMenuPrimaryFreqMhz(const ProcedureMenuHost& host) {
@@ -638,8 +995,26 @@ std::vector<MapLeg> procedureMenuPreviewLegs(const ProcedureMenuHost& host) {
   const std::string name = procedureMenuActiveApproachName(host);
   if (name.empty()) return {};
   const std::string transition = procedureMenuActiveTransition(host, name);
+  if (procedureMenuIsArrDep(host)) {
+    return expandArrivalDepartureProcedure(host.nav, icao, host.state.category,
+                                           name, transition,
+                                           procedureMenuActiveRunway(host, name));
+  }
   if (transition.empty()) return {};
-  return host.nav->expandProcedure(icao, host.state.category, name, transition);
+  std::vector<MapLeg> legs =
+      host.nav->expandProcedure(icao, host.state.category, name, transition);
+  // Honor a deferred "NO" course-reversal decision so the Sequence preview drops
+  // the HOLD line immediately, matching the NXi loading window.
+  if (host.state.courseReversalDecisionMade &&
+      !host.state.courseReversalDecisionFlyIt &&
+      host.state.courseReversalDecisionFix == transition) {
+    for (MapLeg& leg : legs) {
+      if (leg.id == transition && leg.hold.courseReversal) {
+        leg.hold = MapHoldPattern{};
+      }
+    }
+  }
+  return legs;
 }
 
 bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
@@ -663,22 +1038,10 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
         if (!item.enabled) return true;
         switch (item.action) {
           case ProcMenuAction::SelectDeparture:
-            host.state.category = ProcedureType::Departure;
-            host.state.mode = ProcMode::Select;
-            host.state.step = ProcStep::ProcedureList;
-            host.state.selected = 0;
-            host.state.selectedName.clear();
-            host.state.selectedTransition.clear();
-            host.state.subListOpen = false;
+            procedureMenuOpenArrDepSelect(host, ProcedureType::Departure);
             return true;
           case ProcMenuAction::SelectArrival:
-            host.state.category = ProcedureType::Arrival;
-            host.state.mode = ProcMode::Select;
-            host.state.step = ProcStep::ProcedureList;
-            host.state.selected = 0;
-            host.state.selectedName.clear();
-            host.state.selectedTransition.clear();
-            host.state.subListOpen = false;
+            procedureMenuOpenArrDepSelect(host, ProcedureType::Arrival);
             return true;
           case ProcMenuAction::SelectApproach:
             host.state.category = ProcedureType::Approach;
@@ -707,12 +1070,41 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
     }
   }
 
+  const bool formDetail = host.state.mode == ProcMode::Select;
   const bool approachDetail =
-      host.state.category == ProcedureType::Approach &&
-      host.state.mode == ProcMode::Select;
+      formDetail && host.state.category == ProcedureType::Approach;
+  const bool arrDepDetail = formDetail && procedureMenuIsArrDep(host);
   const std::vector<std::string> items = procedureMenuListItems(host);
 
-  if (approachDetail && host.state.subListOpen) {
+  // Inline Airport-field ICAO entry: small knob spells the identifier, large
+  // knob moves the cursor, ENT commits, CLR / FMS-push cancels.
+  if (formDetail && host.state.airportEntry.active) {
+    switch (key) {
+      case BezelKey::FmsInnerCw:
+        host.state.airportEntry.turnChar(host.nav, host.map, +1);
+        return true;
+      case BezelKey::FmsInnerCcw:
+        host.state.airportEntry.turnChar(host.nav, host.map, -1);
+        return true;
+      case BezelKey::FmsOuterCw:
+        host.state.airportEntry.moveCursor(host.nav, host.map, +1);
+        return true;
+      case BezelKey::FmsOuterCcw:
+        host.state.airportEntry.moveCursor(host.nav, host.map, -1);
+        return true;
+      case BezelKey::Ent:
+        procedureMenuCommitAirportEntry(host);
+        return true;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        host.state.airportEntry.reset();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  if (formDetail && host.state.subListOpen) {
     switch (key) {
       case BezelKey::Ent:
         if (host.state.selected >= 0 &&
@@ -730,9 +1122,32 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
             const std::vector<std::string> names =
                 procedureMenuProcedureNames(host, host.state.category);
             if (host.state.selected < static_cast<int>(names.size())) {
-              procedureMenuPickApproach(
-                  host, names[static_cast<std::size_t>(host.state.selected)]);
+              const std::string& picked =
+                  names[static_cast<std::size_t>(host.state.selected)];
+              if (arrDepDetail) {
+                procedureMenuPickArrDepProcedure(host, picked);
+              } else {
+                procedureMenuPickApproach(host, picked);
+              }
             }
+          } else if (host.state.step == ProcStep::RunwayList) {
+            const std::vector<std::string> runways =
+                procedureMenuRunwayOptions(host, host.state.selectedName);
+            if (host.state.selected < static_cast<int>(runways.size())) {
+              host.state.selectedRunway =
+                  runways[static_cast<std::size_t>(host.state.selected)];
+            }
+            procedureMenuCloseSubList(host);
+            host.state.approachField = ProcApproachField::Runway;
+          } else if (arrDepDetail) {
+            const std::vector<std::string> ids =
+                procedureMenuEnrouteTransitions(host, host.state.selectedName);
+            if (host.state.selected < static_cast<int>(ids.size())) {
+              host.state.selectedTransition =
+                  ids[static_cast<std::size_t>(host.state.selected)];
+            }
+            procedureMenuCloseSubList(host);
+            host.state.approachField = ProcApproachField::Trans;
           } else {
             const std::vector<std::string> ids = procedureMenuTransitions(
                 host, host.state.category, host.state.selectedName);
@@ -742,16 +1157,17 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
             }
             procedureMenuCloseSubList(host);
             procedureMenuFocusLoad(host);
+            procedureMenuRaiseCourseReversalPrompt(host);
           }
         }
         return true;
       case BezelKey::Clr:
       case BezelKey::FmsPush:
-        if (host.state.step == ProcStep::TransitionList) {
+        if (!arrDepDetail && host.state.step == ProcStep::TransitionList) {
           procedureMenuBackToApproachList(host);
         } else {
           procedureMenuCloseSubList(host);
-          if (host.state.step == ProcStep::ProcedureList) {
+          if (!arrDepDetail && host.state.step == ProcStep::ProcedureList) {
             host.state.selectedName.clear();
             host.state.selectedTransition.clear();
           }
@@ -815,6 +1231,7 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
       case BezelKey::FmsPush:
         host.state.mode = ProcMode::Menu;
         host.state.subListOpen = false;
+        host.state.airportEntry.reset();
         host.state.sequenceFocused = false;
         host.state.sequenceSelected = 0;
         host.state.loadArmed = false;
@@ -840,7 +1257,8 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
             procedureMenuCycleMins(host);
           }
         } else if (host.state.approachField == ProcApproachField::Airport) {
-          procedureMenuOpenAirportList(host);
+          procedureMenuOpenAirportEntry(host);
+          host.state.airportEntry.turnChar(host.nav, host.map, +1);
         } else if (host.state.approachField == ProcApproachField::Apr) {
           procedureMenuOpenApproachList(host);
         } else if (host.state.approachField == ProcApproachField::Trans) {
@@ -861,7 +1279,8 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
         } else if (host.state.approachField == ProcApproachField::Mins) {
           procedureMenuCycleMins(host);
         } else if (host.state.approachField == ProcApproachField::Airport) {
-          procedureMenuOpenAirportList(host);
+          procedureMenuOpenAirportEntry(host);
+          host.state.airportEntry.turnChar(host.nav, host.map, -1);
         } else if (host.state.approachField == ProcApproachField::Apr) {
           procedureMenuOpenApproachList(host);
         } else if (host.state.approachField == ProcApproachField::Trans) {
@@ -870,6 +1289,92 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
                     host.state.approachField == ProcApproachField::Load) &&
                    !host.state.selectedName.empty()) {
           procedureMenuMoveApproachCursor(host, -1);
+        }
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Arrival / Departure loading form: Airport, procedure, enroute Transition and
+  // Runway pickers, then the Sequence list and the Load? button. The on-screen
+  // field order differs by category (handled by the cursor walk); the picker
+  // dropdowns reuse the approach sub-list popup.
+  if (arrDepDetail) {
+    switch (key) {
+      case BezelKey::Ent:
+        if (host.state.sequenceFocused) return true;
+        if (host.state.approachField == ProcApproachField::Load) {
+          if (host.state.loadArmed && !host.state.selectedName.empty()) {
+            const std::string transition =
+                host.state.selectedTransition.empty()
+                    ? defaultProcedureTransition(procedureMenuEnrouteTransitions(
+                          host, host.state.selectedName))
+                    : host.state.selectedTransition;
+            procedureMenuLoadSelected(host, host.state.selectedName, transition);
+          } else if (!host.state.selectedName.empty()) {
+            procedureMenuFocusLoad(host);
+          }
+          return true;
+        }
+        if (host.state.approachField == ProcApproachField::Apr) {
+          procedureMenuOpenApproachList(host);
+        } else if (host.state.approachField == ProcApproachField::Trans) {
+          procedureMenuOpenEnrouteList(host);
+        } else if (host.state.approachField == ProcApproachField::Runway) {
+          procedureMenuOpenRunwayList(host);
+        } else if (host.state.approachField == ProcApproachField::Airport) {
+          procedureMenuOpenAirportEntry(host);
+        }
+        return true;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        host.state.mode = ProcMode::Menu;
+        host.state.subListOpen = false;
+        host.state.airportEntry.reset();
+        host.state.sequenceFocused = false;
+        host.state.sequenceSelected = 0;
+        host.state.loadArmed = false;
+        host.state.activateArmed = false;
+        return true;
+      case BezelKey::FmsOuterCw:
+        procedureMenuMoveArrDepCursor(host, +1);
+        return true;
+      case BezelKey::FmsOuterCcw:
+        procedureMenuMoveArrDepCursor(host, -1);
+        return true;
+      case BezelKey::FmsInnerCw:
+        if (host.state.sequenceFocused) {
+          procedureMenuMoveArrDepCursor(host, +1);
+        } else if (host.state.approachField == ProcApproachField::Airport) {
+          procedureMenuOpenAirportEntry(host);
+          host.state.airportEntry.turnChar(host.nav, host.map, +1);
+        } else if (host.state.approachField == ProcApproachField::Apr) {
+          procedureMenuOpenApproachList(host);
+        } else if (host.state.approachField == ProcApproachField::Trans) {
+          procedureMenuOpenEnrouteList(host);
+        } else if (host.state.approachField == ProcApproachField::Runway) {
+          procedureMenuOpenRunwayList(host);
+        } else if (host.state.approachField == ProcApproachField::Load &&
+                   !host.state.selectedName.empty()) {
+          procedureMenuMoveArrDepCursor(host, +1);
+        }
+        return true;
+      case BezelKey::FmsInnerCcw:
+        if (host.state.sequenceFocused) {
+          procedureMenuMoveArrDepCursor(host, -1);
+        } else if (host.state.approachField == ProcApproachField::Airport) {
+          procedureMenuOpenAirportEntry(host);
+          host.state.airportEntry.turnChar(host.nav, host.map, -1);
+        } else if (host.state.approachField == ProcApproachField::Apr) {
+          procedureMenuOpenApproachList(host);
+        } else if (host.state.approachField == ProcApproachField::Trans) {
+          procedureMenuOpenEnrouteList(host);
+        } else if (host.state.approachField == ProcApproachField::Runway) {
+          procedureMenuOpenRunwayList(host);
+        } else if (host.state.approachField == ProcApproachField::Load &&
+                   !host.state.selectedName.empty()) {
+          procedureMenuMoveArrDepCursor(host, -1);
         }
         return true;
       default:

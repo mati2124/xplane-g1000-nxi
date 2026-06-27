@@ -3,6 +3,7 @@
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
 #include "avionics/SoftkeyController.h"
+#include "avionics/SimBriefOfpSupport.h"
 #include "avionics/NavMath.h"
 #include "avionics/render/BezelKeys.h"
 
@@ -12,6 +13,37 @@
 // destination are simply the first and last rows of the editable leg list),
 // minus the VNAV ALT column the PFD window does not show.
 namespace avionics {
+namespace {
+
+void applyTerminalProcedureMeta(const PersistedLoadedApproach& meta, int legStart,
+                                int legCount, MapProcedure& loaded,
+                                std::string& headerLabel, int& outStart,
+                                int& outCount) {
+  if (!meta.active || meta.name.empty()) {
+    loaded = {};
+    headerLabel.clear();
+    outStart = 0;
+    outCount = 0;
+    return;
+  }
+  outStart = legStart;
+  outCount = legCount;
+  loaded = mapProcedureFromPersisted(meta);
+  headerLabel = formatTerminalProcedureFplHeaderLabel(
+      loaded.runway, loaded.name, loaded.transition);
+}
+
+void clearTerminalProcedureState(MapProcedure& loaded, int& legStart,
+                                 int& legCount, std::string& headerLabel,
+                                 PersistedLoadedApproach& persisted) {
+  loaded = {};
+  legStart = 0;
+  legCount = 0;
+  headerLabel.clear();
+  persisted = {};
+}
+
+}  // namespace
 
 void SoftkeyController::syncFlightPlanLegs(const MapData& map, bool navDirectTo) {
   if (fplApproachRestorePending_ && navSource_ != nullptr &&
@@ -133,6 +165,15 @@ void SoftkeyController::flightPlanPublishEdit() {
   // Any pending edit (including a deliberate delete to empty) owns the plan
   // until it is consumed so sync cannot re-adopt a stale sim route first.
   fplLocalDraft_ = true;
+}
+
+void SoftkeyController::stripCourseReversalHoldAtFix(const std::string& fixId) {
+  if (fixId.empty()) return;
+  for (MapLeg& leg : fplLegs_) {
+    if (leg.id == fixId && leg.hold.courseReversal) {
+      leg.hold = MapHoldPattern{};
+    }
+  }
 }
 
 std::string SoftkeyController::flightPlanSelectedLegIdent() const {
@@ -433,6 +474,7 @@ bool SoftkeyController::consumeActivateMissedRequest() {
 FmsWaypointEntry* SoftkeyController::activeWaypointEntry() {
   if (dtoOpen_ && dtoEntry_.active && !dtoArmed_) return &dtoEntry_;
   if (fplEntry_.active) return &fplEntry_;
+  if (procMenu_.airportEntry.active) return &procMenu_.airportEntry;
   return nullptr;
 }
 
@@ -537,19 +579,73 @@ void SoftkeyController::applyFlightPlanApproachState(
   fplLoadedApproach_ = state.loaded;
 }
 
+FlightPlanTerminalProcedureState SoftkeyController::flightPlanDepartureState()
+    const {
+  FlightPlanTerminalProcedureState out;
+  out.legStart = fplDepartureLegStart_;
+  out.legCount = fplDepartureLegCount_;
+  out.loaded = fplLoadedDeparture_;
+  out.headerLabel = flightPlanDepartureHeaderLabel();
+  return out;
+}
+
+void SoftkeyController::applyFlightPlanDepartureState(
+    const FlightPlanTerminalProcedureState& state) {
+  if (!state.active()) {
+    clearTerminalProcedureState(fplLoadedDeparture_, fplDepartureLegStart_,
+                                fplDepartureLegCount_, fplDepartureHeaderLabel_,
+                                persistedDepartureRestore_);
+    return;
+  }
+  fplDepartureLegStart_ = state.legStart;
+  fplDepartureLegCount_ = state.legCount;
+  fplLoadedDeparture_ = state.loaded;
+  fplDepartureHeaderLabel_ = state.headerLabel;
+}
+
+FlightPlanTerminalProcedureState SoftkeyController::flightPlanArrivalState()
+    const {
+  FlightPlanTerminalProcedureState out;
+  out.legStart = fplArrivalLegStart_;
+  out.legCount = fplArrivalLegCount_;
+  out.loaded = fplLoadedArrival_;
+  out.headerLabel = flightPlanArrivalHeaderLabel();
+  return out;
+}
+
+void SoftkeyController::applyFlightPlanArrivalState(
+    const FlightPlanTerminalProcedureState& state) {
+  if (!state.active()) {
+    clearTerminalProcedureState(fplLoadedArrival_, fplArrivalLegStart_,
+                                fplArrivalLegCount_, fplArrivalHeaderLabel_,
+                                persistedArrivalRestore_);
+    return;
+  }
+  fplArrivalLegStart_ = state.legStart;
+  fplArrivalLegCount_ = state.legCount;
+  fplLoadedArrival_ = state.loaded;
+  fplArrivalHeaderLabel_ = state.headerLabel;
+}
+
 void SoftkeyController::adoptFlightPlanFromPeer(
     const std::vector<MapLeg>& legs, bool destinationFilled,
-    const FlightPlanApproachState& approach) {
+    const FlightPlanApproachState& approach,
+    const FlightPlanTerminalProcedureState& departure,
+    const FlightPlanTerminalProcedureState& arrival) {
   if (fplEntry_.active || fplConfirm_ != FplConfirm::None) return;
   if (flightPlanLegsEqual(fplLegs_, legs) &&
       fplDestinationFilled_ == destinationFilled &&
-      flightPlanApproachState() == approach) {
+      flightPlanApproachState() == approach &&
+      flightPlanDepartureState() == departure &&
+      flightPlanArrivalState() == arrival) {
     return;
   }
   fplLegs_ = legs;
   fplDestinationFilled_ = destinationFilled;
   fplLocalDraft_ = !fplLegs_.empty();
   applyFlightPlanApproachState(approach);
+  applyFlightPlanDepartureState(departure);
+  applyFlightPlanArrivalState(arrival);
   fplEntry_.active = false;
   fplEntry_.notFound = false;
   fplConfirm_ = FplConfirm::None;
@@ -579,6 +675,26 @@ PersistedFlightPlan SoftkeyController::persistedFlightPlanSnapshot() const {
       out.approachMeta = persistedApproachRestore_;
     }
   }
+  if (fplDepartureLegCount_ > 0 || persistedDepartureRestore_.active) {
+    out.departureLegStart = fplDepartureLegStart_;
+    out.departureLegCount = fplDepartureLegCount_;
+    if (!fplLoadedDeparture_.name.empty()) {
+      out.departureMeta = persistedFromMapProcedure(fplLoadedDeparture_,
+                                                    flightPlanDepartureAirportIcao());
+    } else if (persistedDepartureRestore_.active) {
+      out.departureMeta = persistedDepartureRestore_;
+    }
+  }
+  if (fplArrivalLegCount_ > 0 || persistedArrivalRestore_.active) {
+    out.arrivalLegStart = fplArrivalLegStart_;
+    out.arrivalLegCount = fplArrivalLegCount_;
+    if (!fplLoadedArrival_.name.empty()) {
+      out.arrivalMeta =
+          persistedFromMapProcedure(fplLoadedArrival_, flightPlanArrivalAirportIcao());
+    } else if (persistedArrivalRestore_.active) {
+      out.arrivalMeta = persistedArrivalRestore_;
+    }
+  }
   return out;
 }
 
@@ -597,6 +713,12 @@ void SoftkeyController::restorePersistedFlightPlan(
   fplApproachLegStart_ = 0;
   fplApproachLegCount_ = 0;
   fplLoadedApproach_ = {};
+  clearTerminalProcedureState(fplLoadedDeparture_, fplDepartureLegStart_,
+                              fplDepartureLegCount_, fplDepartureHeaderLabel_,
+                              persistedDepartureRestore_);
+  clearTerminalProcedureState(fplLoadedArrival_, fplArrivalLegStart_,
+                              fplArrivalLegCount_, fplArrivalHeaderLabel_,
+                              persistedArrivalRestore_);
   fplCursorRow_ = 0;
   fplLastPublished_ = saved.legs;
   fplLastMapPlan_ = saved.legs;
@@ -612,6 +734,20 @@ void SoftkeyController::restorePersistedFlightPlan(
     if (!fplDestinationFilled_ && fplApproachLegCount_ > 0) {
       fplDestinationFilled_ = true;
     }
+  }
+  if (saved.departureMeta.active) {
+    persistedDepartureRestore_ = saved.departureMeta;
+    applyTerminalProcedureMeta(saved.departureMeta, saved.departureLegStart,
+                               saved.departureLegCount, fplLoadedDeparture_,
+                               fplDepartureHeaderLabel_, fplDepartureLegStart_,
+                               fplDepartureLegCount_);
+  }
+  if (saved.arrivalMeta.active) {
+    persistedArrivalRestore_ = saved.arrivalMeta;
+    applyTerminalProcedureMeta(saved.arrivalMeta, saved.arrivalLegStart,
+                               saved.arrivalLegCount, fplLoadedArrival_,
+                               fplArrivalHeaderLabel_, fplArrivalLegStart_,
+                               fplArrivalLegCount_);
   }
   if (fplApproachLegCount_ <= 0) {
     reinferApproachFromProcedureLegs();

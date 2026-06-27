@@ -144,4 +144,47 @@ std::string sha256HexOfStream(std::istream& in) {
   return out;
 }
 
+std::string sha256Raw(const std::string& data) {
+  Sha256Ctx ctx;
+  ctx.totalBytes = data.size();
+
+  const unsigned char* p =
+      reinterpret_cast<const unsigned char*>(data.data());
+  std::size_t remaining = data.size();
+  while (remaining >= 64) {
+    ctx.transform(p);
+    p += 64;
+    remaining -= 64;
+  }
+
+  // Final partial block: copy the tail, then append the 0x80/zero/bit-length
+  // padding exactly as the streaming finalizer above does.
+  unsigned char block[64];
+  std::size_t blockFill = remaining;
+  std::memcpy(block, p, remaining);
+  block[blockFill++] = 0x80;
+  if (blockFill > 56) {
+    while (blockFill < 64) block[blockFill++] = 0;
+    ctx.transform(block);
+    blockFill = 0;
+  }
+  while (blockFill < 56) block[blockFill++] = 0;
+  const std::uint64_t bitLen = ctx.totalBytes * 8;
+  for (int i = 7; i >= 0; --i) {
+    block[blockFill++] =
+        static_cast<unsigned char>((bitLen >> (i * 8)) & 0xFF);
+  }
+  ctx.transform(block);
+
+  std::string out;
+  out.resize(32);
+  for (int wi = 0; wi < 8; ++wi) {
+    for (int i = 0; i < 4; ++i) {
+      out[static_cast<std::size_t>(wi * 4 + i)] = static_cast<char>(
+          (ctx.h[static_cast<std::size_t>(wi)] >> ((3 - i) * 8)) & 0xFF);
+    }
+  }
+  return out;
+}
+
 }  // namespace avionics

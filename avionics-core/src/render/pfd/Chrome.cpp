@@ -27,6 +27,9 @@ void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
   drawDirectToWindow(r, w, h, L, ui);
   // The Page Menu (MENU on an open popout) overlays the active window.
   drawPageMenuWindow(r, w, h, L, ui);
+  // The HILPT "Fly Course Reversal?" prompt overlays any page until answered.
+  drawCourseReversalPrompt(r, w, h, L, ui);
+  drawHoldActivatePrompt(r, w, h, L, ui);
   drawSoftkeyBar(r, w, h, L, ui);
 }
 

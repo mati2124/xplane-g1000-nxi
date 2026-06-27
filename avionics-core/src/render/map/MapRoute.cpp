@@ -501,6 +501,14 @@ bool directToCourseOrigin(const MapData& map, double& lat, double& lon) {
   return false;
 }
 
+bool mapHoldRacetrackActive(const MapData& map, const FlightData& flight,
+                            int planLegIndex, int activeTo) {
+  if (planLegIndex != activeTo) return false;
+  if (flight.fmaLegIsHold && !map.directToActive) return true;
+  if (map.directToHold && map.directToActive) return true;
+  return false;
+}
+
 }  // namespace
 
 void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
@@ -551,9 +559,8 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
     for (std::size_t i = 0; i < routeLegs.size(); ++i) {
       const MapLeg& leg = routeLegs[i];
       if (!leg.hold.active) continue;
-      const bool holdActive =
-          flight.fmaLegIsHold &&
-          static_cast<int>(i) + procOffset == activeTo;
+      const bool holdActive = mapHoldRacetrackActive(
+          map, flight, static_cast<int>(i) + procOffset, activeTo);
       const Color& holdColor = holdActive ? colors::kMagenta : colors::kWhite;
       drawHoldRacetrack(r, leg, proj, holdWidth, holdColor,
                         flight.groundSpeedKts);
@@ -595,8 +602,8 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
     const MapLeg& leg = routeLegs[i];
     if (!leg.hold.active) continue;
     const bool holdActive =
-        flight.fmaLegIsHold && !map.directToActive &&
-        static_cast<int>(i) + procOffset == activeTo;
+        mapHoldRacetrackActive(map, flight,
+                               static_cast<int>(i) + procOffset, activeTo);
     const Color& holdColor = holdActive ? colors::kMagenta : colors::kWhite;
     drawHoldRacetrack(r, leg, proj, holdWidth, holdColor,
                       flight.groundSpeedKts);

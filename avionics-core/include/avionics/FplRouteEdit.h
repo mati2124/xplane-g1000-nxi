@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "avionics/FlightPlanPersistence.h"
+#include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
 #include "avionics/FlightData.h"
 
@@ -15,6 +16,9 @@ inline bool navDirectToActive(const FlightData& d) {
 }
 
 class NavFeatureSource;
+// Used only by reference in resolveDirectToTargetLeg below; the full definition
+// lives in FmsWaypointEntry.h, which callers include alongside this header.
+class FmsWaypointEntry;
 
 // Layout geometry shared by PFD and MFD approach flight-plan lists.
 constexpr float kFplSectionIdentIndentPx = 10.0f;
@@ -51,8 +55,25 @@ bool flightPlanLegsEqual(const std::vector<MapLeg>& a,
 
 bool isAirportIdent(const std::string& id);
 
+// True when `id` is a 4-letter ICAO that resolves to an airport in the nav
+// database (not a VOR/fix that happens to use four letters). When the database
+// is not ready yet, accepts any well-formed ICAO ident so charts are not blocked
+// on startup.
+bool isKnownAirportIdent(const std::string& id, const MapData* map,
+                         const NavFeatureSource* navSource);
+
+// First/last airport in a plan, using isKnownAirportIdent (not bare format).
+std::string firstKnownAirportInPlan(const std::vector<MapLeg>& legs,
+                                    const MapData* map,
+                                    const NavFeatureSource* navSource);
+std::string lastKnownAirportInPlan(const std::vector<MapLeg>& legs,
+                                   const MapData* map,
+                                   const NavFeatureSource* navSource);
+
 std::string airportIcaoBeforeIndex(const std::vector<MapLeg>& legs, int before);
 
+// First / last 4-letter airport ident in the leg list (skips fixes, airways, etc.).
+std::string firstAirportInPlan(const std::vector<MapLeg>& legs);
 std::string lastAirportInPlan(const std::vector<MapLeg>& legs);
 
 std::string directToAirportIcao(const MapData* map);
@@ -77,6 +98,12 @@ std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
 int fplCursorLegIndex(const FplRouteEdit& edit,
                       const std::string& approachAirport,
                       FplCursorLayout layout);
+
+// True when the FPL list cursor sits on a published "HOLD" display row (not the
+// parent fix row above it).
+bool fplCursorOnHoldRow(const FplRouteEdit& edit,
+                        const std::string& approachAirport,
+                        FplCursorLayout layout);
 
 int fplCursorSelectableLast(const FplRouteEdit& edit,
                             const std::string& approachAirport,
@@ -123,5 +150,15 @@ bool fplCommitWaypointIdent(FplRouteEdit& edit, const NavFeatureSource* navSourc
 std::string fplIdentEntrySeedAtCursor(const FplRouteEdit& edit,
                                       const std::string& approachAirport,
                                       FplCursorLayout layout);
+
+// Leg-type suffix beside the ident on FPL / procedure sequence lists (iaf, faf,
+// hold, mahp, ...). HILPT and other published holds use "hold" when the CIFP
+// row did not already assign a procedure role.
+std::string fplLegDisplayRole(const MapLeg& leg);
+
+// Resolve the MapLeg (including hold metadata) for a Direct-To activation.
+MapLeg resolveDirectToTargetLeg(const FmsWaypointEntry& entry, bool preservePlan,
+                                  int preserveLegIndex,
+                                  const std::vector<MapLeg>& planLegs);
 
 }  // namespace avionics

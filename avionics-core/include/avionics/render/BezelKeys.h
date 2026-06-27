@@ -143,6 +143,21 @@ inline bool isPageNavigationBezelKey(BezelKey key) {
   }
 }
 
+// MFD page-group / page stepping (large + small FMS knob detents). Each GDU
+// keeps its own knob for this even when a PFD pop-up owns ENT/CLR on the GCU,
+// and it works without a live sim link (like map range).
+inline bool isMfdPageSelectionBezelKey(BezelKey key) {
+  switch (key) {
+    case BezelKey::FmsOuterCw:
+    case BezelKey::FmsOuterCcw:
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // The molded key caps drawn as a vertical column (everything above the RANGE
 // joystick widget).
 inline constexpr int kBezelButtonCount = static_cast<int>(BezelKey::RangeUp);

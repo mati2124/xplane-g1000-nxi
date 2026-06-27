@@ -36,8 +36,12 @@ int rasterSizeFor(bool coarseSample, float halfNm, float pixelsPerNm) {
       std::max(minSize, std::ceil(target))));
 }
 
-bool allowTerrainStagingSwap(float rangeNm, bool zoomSettled) {
-  return zoomSettled || rangeNm >= mapview::kContinentalPerfRangeNm;
+bool allowTerrainStagingSwap(float rangeNm, bool zoomSettled, bool chartLand) {
+  // ChartLand swaps even mid-zoom: a fast zoom-out otherwise keeps showing the
+  // old, smaller-footprint raster (its edges fall outside the new viewport and
+  // flash as the navy base) until the animation settles. The binary land/water
+  // texture has no hillshade to make a mid-zoom swap look jarring.
+  return zoomSettled || chartLand || rangeNm >= mapview::kContinentalPerfRangeNm;
 }
 
 // Raster half-width as a multiple of the map range. The viewport's rotated
@@ -170,6 +174,7 @@ struct ViewRaster {
   std::uint64_t lastUse = 0;
 
   int imageId = -1;
+  int texSizePx = 0;  // actual GL texture dimension backing imageId (authoritative)
   Snapshot front;
   bool frontValid = false;
 
@@ -193,11 +198,27 @@ struct ViewRaster {
 void applyStagingToFront(ViewRaster& v, Renderer& r) {
   if (!v.stagingValid || v.stagingRgba.empty()) return;
   const int size = v.stagingFront.rasterSize;
-  if (v.imageId < 0) {
+  // The GL upload (glTexImage2D / glTexSubImage2D) reads size*size*4 bytes from
+  // the staging buffer. If a build/upload size desync ever leaves the buffer
+  // smaller than its declared raster size, uploading would read past the end of
+  // the heap allocation and crash the GPU driver (seen as a page-aligned read
+  // fault in glTexSubImage2D). Drop such a frame rather than feed the driver a
+  // short buffer; the next completed build replaces it.
+  const std::size_t needBytes =
+      static_cast<std::size_t>(size) * static_cast<std::size_t>(size) * 4u;
+  if (size <= 0 || v.stagingRgba.size() < needBytes) {
+    v.stagingValid = false;
+    v.stagingRgba.clear();
+    return;
+  }
+  // Use the actual texture dimension (texSizePx), not front.rasterSize, to decide
+  // update-vs-recreate: an in-place update must match the existing texture size
+  // exactly, otherwise the driver uploads the old (larger) dimensions from the
+  // new (smaller) buffer.
+  if (v.imageId < 0 || v.texSizePx != size) {
+    if (v.imageId >= 0) r.deleteImage(v.imageId);
     v.imageId = r.createImageRGBA(size, size, v.stagingRgba.data());
-  } else if (v.front.rasterSize != size) {
-    r.deleteImage(v.imageId);
-    v.imageId = r.createImageRGBA(size, size, v.stagingRgba.data());
+    v.texSizePx = (v.imageId >= 0) ? size : 0;
   } else {
     r.updateImageRGBA(v.imageId, v.stagingRgba.data());
   }
@@ -251,13 +272,26 @@ ViewRaster& viewFor(Renderer& r, float cx, float cy) {
 // latitude is fixed and longitude steps uniformly, so the per-cell lon is
 // lonStart + lonStep*j; handing the whole row to elevationFtRow lets the DSF
 // store resolve (and lock) the tile once per row instead of once per pixel.
+// True while a background terrain worker is doing the sampling (standalone).
+// Defined below; forward-declared so prefetchTerrain can decide whether it is
+// safe to block waiting for tiles (only when off the render/sim thread).
+extern bool g_asyncBuilds;
+
 void prefetchTerrain(const TerrainSource& terrain, const Snapshot& s) {
   const double nmLon = nmPerDegLon(s.centerLat);
   const double minLat = s.centerLat - s.halfNm / kNmPerDegLat;
   const double maxLat = s.centerLat + s.halfNm / kNmPerDegLat;
   const double minLon = s.centerLon - s.halfNm / nmLon;
   const double maxLon = s.centerLon + s.halfNm / nmLon;
-  terrain.ensureCoverage(minLat, maxLat, minLon, maxLon);
+  // The ChartLand mask covers only a few tiles (capped at close range) and its
+  // first frame is useless when sampled before tiles load -- it builds an all-
+  // water raster that only self-corrects on the next geometry change (the pilot
+  // nudging the range knob). When the sampling runs on the async worker, block
+  // until the handful of coarse summaries are ready so the very first published
+  // raster already shows land. Never block the synchronous (plugin) path.
+  const bool waitForTiles =
+      s.mode == TerrainRasterMode::ChartLand && g_asyncBuilds;
+  terrain.ensureCoverage(minLat, maxLat, minLon, maxLon, waitForTiles);
 }
 
 void sampleRows(ViewRaster& v, const TerrainSource& terrain, int rows) {
@@ -372,6 +406,27 @@ void smoothElevationForHillshade(const std::vector<float>& src,
 void colorize(ViewRaster& v) {
   const Snapshot& s = v.target;
   const int rasterSize = s.rasterSize;
+
+  if (s.mode == TerrainRasterMode::ChartLand) {
+    for (int i = 0; i < rasterSize; ++i) {
+      const float* row =
+          v.elevFt.data() + static_cast<std::size_t>(i) * rasterSize;
+      unsigned char* px =
+          v.rgba.data() + static_cast<std::size_t>(i) * rasterSize * 4;
+      for (int j = 0; j < rasterSize; ++j, px += 4) {
+        const float e = row[j];
+        if (std::isnan(e)) {
+          writePixel(px, Color{0.0f, 0.0f, 0.0f, 0.0f});
+        } else if (e <= 0.0f) {
+          writePixel(px, mapview::kMapOceanFill);
+        } else {
+          writePixel(px, mapview::kMapLandFill);
+        }
+      }
+    }
+    return;
+  }
+
   const float cellFt = (2.0f * s.halfNm / rasterSize) * kFeetPerNm;
   // Light from the northwest, above (x = east, y = south, z = up).
   constexpr float kLx = -0.45f, kLy = -0.45f, kLz = 0.77f;
@@ -476,7 +531,8 @@ struct AsyncTerrainWorker {
   Renderer* renderer = nullptr;
   int keyX = 0;
   int keyY = 0;
-  Snapshot target;
+  Snapshot target;       // most recently requested build
+  Snapshot builtTarget;  // snapshot the published `rgba` was actually built for
   std::vector<float> elevFt;
   std::vector<unsigned char> rgba;
 
@@ -538,6 +594,11 @@ struct AsyncTerrainWorker {
         if (!cancel) {
           elevFt = std::move(scratch.elevFt);
           rgba = std::move(scratch.rgba);
+          // Record the snapshot this buffer was built for so the consumer pairs
+          // the RGBA with matching dimensions even if `target` was updated by a
+          // newer submit() mid-build (otherwise it could upload a larger raster
+          // size from this smaller buffer and overrun it).
+          builtTarget = snap;
           phase = Phase::Done;
         } else {
           phase = Phase::Idle;
@@ -581,7 +642,7 @@ struct AsyncTerrainWorker {
     if (phase != Phase::Done || renderer != &r || keyX != kx || keyY != ky) {
       return false;
     }
-    outSnap = target;
+    outSnap = builtTarget;
     outRgba = std::move(rgba);
     phase = Phase::Idle;
     return true;
@@ -603,8 +664,10 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
 
   ViewRaster& v = viewFor(r, cx, cy);
 
+  const bool chartLand = mode == TerrainRasterMode::ChartLand;
   const float zoomSettled = mapRangeZoomSettled(displayRangeNm, rangeNm);
-  const bool stagingSwapOk = allowTerrainStagingSwap(rangeNm, zoomSettled);
+  const bool stagingSwapOk =
+      allowTerrainStagingSwap(rangeNm, zoomSettled, chartLand);
   const float minDrawHalfNm = viewHalfExtentNm * 1.01f;
   const bool rangeStepChanged =
       v.frontValid && v.front.builtRangeNm > 0.5f &&
@@ -640,6 +703,11 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   desired.centerLon = viewCenterLon;
   const float viewHalfMargin =
       viewHalfAtLadder > 0.5f ? viewHalfAtLadder * kViewExtentMargin : 0.0f;
+  // Over-fetch beyond the viewport (kCoverageRangeFactor) so a pan or one zoom-
+  // out step stays inside the cached raster instead of exposing un-rastered
+  // edges that flash as the navy base until the next rebuild. ChartLand shares
+  // this: it is range-capped to 15 NM (a handful of tiles) and prewarmed, so the
+  // wider footprint is affordable.
   if (viewHalfMargin > 0.0f) {
     desired.halfNm =
         std::max(rangeNm * kCoverageRangeFactor, viewHalfMargin);
@@ -652,9 +720,30 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
       mode == TerrainRasterMode::Relative
           ? static_cast<int>(std::lround(ownAltFt / kRelAltBucketFt))
           : 0;
-  desired.coarseSample = rangeNm > kFullDetailTerrainMaxNm;
+  // ChartLand renders a crisp coastline from the full-resolution DEM tiles
+  // rather than the coarse 16x16-per-tile summary (whose ~3.75 NM cells look
+  // blocky). It is range-capped to a handful of tiles, and those tiles must be
+  // read in full to build a coarse summary anyway, so full detail costs no
+  // extra disk I/O -- only a per-pixel threshold, which is far cheaper than the
+  // topo hillshade it skips.
+  desired.coarseSample = !chartLand && rangeNm > kFullDetailTerrainMaxNm;
   desired.rasterSize =
       rasterSizeFor(desired.coarseSample, desired.halfNm, pixelsPerNm);
+  // Zoomed-in ChartLand: lift the raster cap so the texture keeps ~1 texel per
+  // screen pixel instead of stretching the 1152 cap across the large MFD map
+  // (which softens the coast). Only a single tile is in view here, so the
+  // bigger raster is affordable.
+  if (chartLand && rangeNm <= kChartLandHiResRangeNm) {
+    const float target =
+        kTerrainMinRasterCellsPerScreenPixel * 2.0f * desired.halfNm *
+        pixelsPerNm;
+    desired.rasterSize = static_cast<int>(
+        std::min(static_cast<float>(kChartLandHiResRasterSize),
+                 std::max(static_cast<float>(desired.rasterSize),
+                          std::ceil(target))));
+  }
+  // detailHalfNm drives which tiles the store upgrades to full DEM; cover the
+  // whole footprint at full detail unless on the wide coarse-sample tier.
   desired.detailHalfNm =
       desired.coarseSample ? rangeNm * 0.25f : desired.halfNm;
   desired.builtRangeNm = rangeNm;
@@ -689,6 +778,11 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
         v.frontValid && (v.front.mode != desired.mode ||
                          v.front.relAltBucket != desired.relAltBucket);
     needRebuild = modeChange || (!v.frontValid && !v.building);
+    // ChartLand must rebuild as soon as the footprint changes (even mid-zoom)
+    // so a fast zoom-out gets a raster that covers the new, larger viewport
+    // rather than scaling up the old one and exposing navy edges. Tiles are
+    // prewarmed, so the rebuild lands quickly.
+    if (chartLand) needRebuild = needRebuild || !geometryFresh;
   }
 
   const bool asyncBusy =

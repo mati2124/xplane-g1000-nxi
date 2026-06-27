@@ -177,7 +177,8 @@ HoldGuidance computeHoldGuidance(double lat, double lon, const MapLeg& leg,
 HoldPatternPhase advanceHoldPatternPhase(double lat, double lon,
                                          const MapLeg& leg,
                                          HoldPatternPhase phase,
-                                         float groundSpeedKts) {
+                                         float groundSpeedKts,
+                                         bool singleCircuit) {
   const MapHoldPattern& hold = leg.hold;
   if (!hold.active) return phase;
 
@@ -254,6 +255,9 @@ HoldPatternPhase advanceHoldPatternPhase(double lat, double lon,
                                ? (pos - start >= 0 ? pos - start : pos - start + 360.0f)
                                : (start - pos >= 0 ? start - pos : start - pos + 360.0f);
     if (traveled >= std::fabs(sweep) - 15.0f) {
+      if (singleCircuit) {
+        return HoldPatternPhase::CircuitComplete;
+      }
       return HoldPatternPhase::Outbound;
     }
     return phase;

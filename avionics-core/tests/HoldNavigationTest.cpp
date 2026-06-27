@@ -88,6 +88,21 @@ TEST(HoldNavigationTest, AdvancesInboundToOutboundAtFix) {
   EXPECT_EQ(next, HoldPatternPhase::InboundTurn);
 }
 
+TEST(HoldNavigationTest, CourseReversalCompletesInsteadOfLooping) {
+  MapLeg leg = makeNorthHoldFix();
+  leg.hold.courseReversal = true;
+  const HoldRacetrackGeom geom = buildHoldRacetrack(leg, 90.0f);
+  ASSERT_TRUE(geom.valid);
+  const HoldPatternPhase loop = advanceHoldPatternPhase(
+      geom.inboundParLat, geom.inboundParLon, leg,
+      HoldPatternPhase::InboundTurn, 90.0f, false);
+  EXPECT_EQ(loop, HoldPatternPhase::Outbound);
+  const HoldPatternPhase done = advanceHoldPatternPhase(
+      geom.inboundParLat, geom.inboundParLon, leg,
+      HoldPatternPhase::InboundTurn, 90.0f, true);
+  EXPECT_EQ(done, HoldPatternPhase::CircuitComplete);
+}
+
 TEST(HoldNavigationTest, ClassifyDirectEntryOnInbound) {
   EXPECT_EQ(classifyHoldEntry(0.0f, 0.0f), HoldEntryType::Direct);
   EXPECT_EQ(initialHoldPhase(HoldEntryType::Direct),

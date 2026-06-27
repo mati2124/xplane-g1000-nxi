@@ -498,6 +498,10 @@ void DatarefDataSource::ensureInstallDataLoaded() {
     aptDatLoaded_.store(true, std::memory_order_release);
   }
 
+  // X-Plane 12 downloads real-weather METARs to Output/real weather; the store
+  // indexes the newest file by ICAO for the WPT - Weather page.
+  metar_.start(root);
+
   std::string earthNavDir;
   for (const char* rel : kEarthNavDataRelPaths) {
     const std::string candidate = root + rel;
@@ -551,6 +555,7 @@ void DatarefDataSource::loadAptDatAsync() {
 
 void DatarefDataSource::update(double dtSeconds) {
   ensureInstallDataLoaded();
+  metar_.poll(dtSeconds);
   updateAircraftProfile();
   if (eisSource_ != nullptr) {
     eisSource_->refreshIfChanged();
@@ -888,9 +893,10 @@ void DatarefDataSource::clearRouteOverride() {
   routeOverrideSet_ = false;
 }
 
-void DatarefDataSource::setDirectTo(MapLeg target) {
+void DatarefDataSource::setDirectTo(MapLeg target, bool flyHold) {
   directTo_ = std::move(target);
   directToActive_ = !directTo_.id.empty();
+  directToHold_ = flyHold && directToActive_;
   if (directToActive_) {
     // Each Direct-To activation snapshots present position as the course origin.
     if (map_.positionValid) {
@@ -910,6 +916,7 @@ void DatarefDataSource::setDirectTo(MapLeg target) {
   } else {
     directToOriginPending_ = false;
     directToOriginValid_ = false;
+    directToHold_ = false;
     clearFlightPlanRouteSlice(map_);
     programFmsDirectTo(false, directTo_);
   }
@@ -917,10 +924,12 @@ void DatarefDataSource::setDirectTo(MapLeg target) {
 
 void DatarefDataSource::clearDirectTo() {
   directToActive_ = false;
+  directToHold_ = false;
   directTo_ = {};
   directToOriginPending_ = false;
   directToOriginValid_ = false;
   map_.directToActive = false;
+  map_.directToHold = false;
   map_.directTo = {};
   map_.directToOriginValid = false;
   programFmsDirectTo(false, directTo_);
@@ -1017,6 +1026,7 @@ void DatarefDataSource::updateMap(double dtSeconds) {
   map_.nexrad = &nexrad_;
 
   map_.directToActive = directToActive_;
+  map_.directToHold = directToHold_;
   map_.directTo = directTo_;
   map_.directToOriginValid = directToOriginValid_;
   map_.directToOriginLat = directToOriginLat_;

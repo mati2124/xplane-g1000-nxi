@@ -20,6 +20,7 @@ add_library(xplane-avionics MODULE
   src/UpdateNotify.cpp
   src/DatarefDataSource.cpp
   src/DatarefWeatherRadar.cpp
+  src/MetarFileStore.cpp
   src/FlightPlanBridge.cpp
   src/FmsRouteProgrammer.cpp
   src/FmsDebugOverlay.cpp
@@ -32,8 +33,15 @@ add_library(xplane-avionics MODULE
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/AptDatStore.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/ProcedureStore.cpp
   # Shared portable SHA-256 (also used by the standalone updater) verifies the
-  # downloaded plugin archive against the release's SHA256SUMS.
+  # downloaded plugin archive against the release's SHA256SUMS, and builds the
+  # PKCE code-challenge for the Navigraph sign-in below.
   ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/Sha256.cpp
+  # SimBrief OFP import via Navigraph (AUX - SIMBRIEF page), shared verbatim with
+  # the standalone shell.
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/SimBriefClient.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/NavigraphClient.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/NavigraphChartsClient.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../shell-standalone/src/NavigraphStore.cpp
 )
 
 target_include_directories(xplane-avionics PRIVATE
@@ -72,9 +80,10 @@ target_compile_definitions(xplane-avionics PRIVATE AVIONICS_HAS_CURL)
 
 # render-nanovg brings the shared NanoVG Renderer backend (and, transitively,
 # avionics-core, NanoVG, and the platform OpenGL framework) so the plugin can
-# draw the PFD/MFD into the sim's avionics device screens.
+# draw the PFD/MFD into the sim's avionics device screens. nlohmann_json parses
+# the SimBrief OFP + Navigraph token responses (fetched at the top level).
 target_link_libraries(xplane-avionics PRIVATE
-  render-nanovg Threads::Threads CURL::libcurl)
+  render-nanovg Threads::Threads CURL::libcurl nlohmann_json::nlohmann_json)
 
 # X-Plane loads plugins as <name>/<platform>/<name>.xpl with no lib prefix.
 set_target_properties(xplane-avionics PROPERTIES

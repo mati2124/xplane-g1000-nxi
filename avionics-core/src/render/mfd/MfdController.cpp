@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cmath>
 
+#include "avionics/FplRouteEdit.h"
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/render/BezelKeys.h"
 #include "render/map/MapViewInternal.h"
+#include "render/pfd/PfdFlightPlanSections.h"
 
 namespace avionics {
 namespace {
@@ -17,6 +20,18 @@ constexpr int kKeyMapOpt = 2;
 constexpr int kKeyDetail = 9;
 constexpr int kKeyCharts = 10;
 constexpr int kKeyChecklist = 11;
+
+// WPT - Airport Information page softkey bar (NXi trainer apt_054..058). The
+// page's sub-views are selected here: Info (Airport), DP, STAR, APR, and WX
+// (Weather). The Chart cell reuses the chart-view shortcut (selectChartsPage)
+// at its trainer position. Map Opt (kKeyMapOpt) is shown only on the Airport
+// and Weather views; the procedure views blank it, like the trainer.
+constexpr int kKeyWptChart = 3;
+constexpr int kKeyWptInfo = 4;
+constexpr int kKeyWptDp = 5;
+constexpr int kKeyWptStar = 6;
+constexpr int kKeyWptApr = 7;
+constexpr int kKeyWptWx = 8;
 
 // Engine submenu (Engine softkey, WT EngineMenu).
 constexpr int kKeyEngEngine = 0;
@@ -61,17 +76,50 @@ constexpr int kKeyNrstApr = 7;
 constexpr int kKeyNrstVor = 4;
 constexpr int kKeyNrstVorFreq = 5;
 
+// FPL - Flight Plan Catalog page softkeys (NXi trainer screenshot 060, in
+// on-unit order). Edit / Import / Export operate on the SD-card Stored Flight
+// Plan page, which this suite does not model, so they are shown greyed.
+constexpr int kKeyCatNew = 3;
+constexpr int kKeyCatActivate = 4;
+constexpr int kKeyCatInvert = 5;
+constexpr int kKeyCatEdit = 6;
+constexpr int kKeyCatCopy = 7;
+constexpr int kKeyCatDelete = 8;
+constexpr int kKeyCatImport = 9;
+constexpr int kKeyCatExport = 10;
+
 // AUX - System Setup page (WT MFDSystemSetupRootMenu).
 constexpr int kKeySetup1 = 5;
 constexpr int kKeySetup2 = 6;
 constexpr int kKeyDefaults = 9;
 
-// AUX - SIMBRIEF page extras on the root bar (free cells beside Checklist), and
-// the Pilot ID digit-entry bar (0-9 / BKSP / Back, XPDR-code style).
-constexpr int kKeySimbriefId = 8;
+// AUX - SIMBRIEF page extras on the root bar (free cells beside Checklist):
+// the Navigraph sign-in toggle and the OFP fetch trigger.
+constexpr int kKeyNavigraphLogin = 8;
 constexpr int kKeySimbriefFetch = 9;
-constexpr int kKeyEntryBksp = 10;
-constexpr int kKeyEntryBack = 11;
+
+// AUX - Charts page softkeys (Pilot's Guide §8.3 chart selection / CHRT Opt).
+constexpr int kKeyChartsChrtOpt = 3;
+constexpr int kKeyChartsChart = 4;
+constexpr int kKeyChartsInfo = 5;
+constexpr int kKeyChartsDp = 6;
+constexpr int kKeyChartsStar = 7;
+constexpr int kKeyChartsApr = 8;
+constexpr int kKeyChartsAux = 9;     // Full SCN (selection) / Fit WDTH (opt)
+constexpr int kKeyChartsGoBack = 10; // Go Back (selection) / Back (opt)
+
+// PROC - Approach/Arrival/Departure Loading page softkey bar (trainer
+// proc_048 / proc_050): category switches + Go Back, shown while a PROC
+// selection window is open. DP/STAR/APR sit at the trainer cell positions.
+constexpr int kKeyProcLoadDp = 3;
+constexpr int kKeyProcLoadStar = 4;
+constexpr int kKeyProcLoadApr = 5;
+constexpr int kKeyProcLoadGoBack = 10;
+
+// The root-bar "Charts" softkey label (kKeyCharts). Shared so the press handler
+// can tell the Charts shortcut apart from pages that reuse that cell (the
+// Weather Radar page's BRG key sits on the same index).
+constexpr const char* kChartsSoftkeyLabel = "Charts";
 
 // State-carrying softkey labels, verbatim from the NXi Pilot's Guide ("Select
 // the TER Softkey until 'Topo' is shown...", "AWY Off/On/LO/HI", "The Detail
@@ -108,7 +156,7 @@ void applyNavMapRootLabels(std::array<std::string, 12>& labels,
   labels[kKeyEngine] = "Engine";
   labels[kKeyMapOpt] = "Map Opt";
   labels[kKeyDetail] = mapDetailLabel(detail);
-  labels[kKeyCharts] = "Charts";
+  labels[kKeyCharts] = kChartsSoftkeyLabel;
   labels[kKeyChecklist] = "Checklist";
 }
 
@@ -126,10 +174,10 @@ constexpr int kGroupPageCount[] = {
     3,  // Map: Navigation Map / Traffic Map / Weather Radar
     4,  // Waypoint: Airport / Intersection / NDB / VOR Information
     6,  // Aux: Trip Planning / Utility / GPS Status / System Setup / System
-        //      Status / SimBrief
+        //      Status / SimBrief (charts live on WPT - Airport Information)
     6,  // Nearest: Airports / Intersections / NDB / VOR / Frequencies /
         //          Airspaces
-    1,  // FlightPlan: Active Flight Plan
+    2,  // FlightPlan: Active Flight Plan / Flight Plan Catalog
 };
 
 }  // namespace
@@ -203,12 +251,15 @@ void MfdController::rebuildLabels() {
   // The Map Settings window pushes an empty softkey menu on the real unit, so
   // the bar is blank while it is open.
   if (mapSettingsOpen_) return;
-  if (simbriefIdEntry_) {
-    // Pilot ID digit entry replaces the whole bar, like the XPDR Code menu on
-    // the PFD: 0-9 with BKSP and Back on the right.
-    for (int d = 0; d <= 9; ++d) labels_[d] = static_cast<char>('0' + d);
-    labels_[kKeyEntryBksp] = "BKSP";
-    labels_[kKeyEntryBack] = "Back";
+  // A PROC selection window (Approach / Arrival / Departure Loading) shows the
+  // category-switch bar with Go Back, regardless of the page underneath it.
+  if (procMenuOpen_ && procSelectMode()) {
+    labels_[kKeyEngine] = "Engine";
+    labels_[kKeyProcLoadDp] = "DP";
+    labels_[kKeyProcLoadStar] = "STAR";
+    labels_[kKeyProcLoadApr] = "APR";
+    labels_[kKeyProcLoadGoBack] = "Go Back";
+    if (checklistCount() > 0) labels_[kKeyChecklist] = "Checklist";
     return;
   }
   if (menu_ == Menu::Engine) {
@@ -282,14 +333,78 @@ void MfdController::rebuildLabels() {
     applyNavMapRootLabels(labels_, detail_);
     labels_[kKeyDetail].clear();
     labels_[kKeyCharts].clear();
-    labels_[kKeySimbriefId] = "ID";
+    // Sign-in is automatic (the page shows a QR + code when signed out), so the
+    // only manual control is Logout once a session exists.
+    labels_[kKeyNavigraphLogin] =
+        simbriefState_.loginPhase == NavigraphLoginPhase::LoggedIn ? "Logout"
+                                                                   : "";
     labels_[kKeySimbriefFetch] = "FETCH";
     return;
   }
+  if (chartViewActive_) {
+    applyNavMapRootLabels(labels_, detail_);
+    labels_[kKeyDetail].clear();
+    labels_[kKeyCharts].clear();
+    if (chartsMenu_ == ChartsMenu::ChartOpt) {
+      labels_[kKeyChartsChrtOpt] = "All";
+      labels_[kKeyChartsChart] = "Header";
+      labels_[kKeyChartsInfo] = "Plan";
+      labels_[kKeyChartsDp] = "Profile";
+      labels_[kKeyChartsStar] = "Minimums";
+      labels_[kKeyChartsApr] = "Fit WDTH";
+      labels_[kKeyChartsAux] = "Full SCN";
+      labels_[kKeyChartsGoBack] = "Back";
+    } else {
+      labels_[kKeyChartsChrtOpt] = "CHRT Opt";
+      labels_[kKeyChartsChart] = "Show Map";
+      labels_[kKeyChartsInfo] = "Info";
+      labels_[kKeyChartsDp] = "DP";
+      labels_[kKeyChartsStar] = "STAR";
+      labels_[kKeyChartsApr] = "APR";
+      labels_[kKeyChartsAux] = "Full SCN";
+      labels_[kKeyChartsGoBack] = "Go Back";
+    }
+    return;
+  }
+  if (pageGroup_ == MfdPageGroup::Waypoint &&
+      page() == MfdPage::AirportInformation) {
+    // WPT - Airport Information sub-view bar (trainer apt_054..058): Engine,
+    // Map Opt, Chart, Info, DP, STAR, APR, WX, Checklist. Map Opt is hidden on
+    // the procedure sub-views (Departure/Arrival/Approach), present on the
+    // Airport and Weather views.
+    labels_[kKeyEngine] = "Engine";
+    if (wptInfoView_ == WptInfoView::Airport ||
+        wptInfoView_ == WptInfoView::Weather) {
+      labels_[kKeyMapOpt] = "Map Opt";
+    }
+    labels_[kKeyWptChart] = "Chart";
+    labels_[kKeyWptInfo] = "Info";
+    labels_[kKeyWptDp] = "DP";
+    labels_[kKeyWptStar] = "STAR";
+    labels_[kKeyWptApr] = "APR";
+    labels_[kKeyWptWx] = "WX";
+    labels_[kKeyChecklist] = "Checklist";
+    return;
+  }
   if (pageGroup_ == MfdPageGroup::FlightPlan) {
+    if (page() == MfdPage::FlightPlanCatalog) {
+      // Flight Plan Catalog softkey bar (NXi trainer screenshot 060).
+      labels_[kKeyEngine] = "Engine";
+      labels_[kKeyMapOpt] = "Map Opt";
+      labels_[kKeyCatNew] = "New";
+      labels_[kKeyCatActivate] = "Activate";
+      labels_[kKeyCatInvert] = "Invert";
+      labels_[kKeyCatEdit] = "Edit";
+      labels_[kKeyCatCopy] = "Copy";
+      labels_[kKeyCatDelete] = "Delete";
+      labels_[kKeyCatImport] = "Import";
+      labels_[kKeyCatExport] = "Export";
+      labels_[kKeyChecklist] = "Checklist";
+      return;
+    }
     labels_[kKeyEngine] = "Engine";
     labels_[kKeyMapOpt] = "Map Opt";
-    labels_[kKeyCharts] = "Charts";
+    labels_[kKeyCharts] = kChartsSoftkeyLabel;
     labels_[kKeyChecklist] = "Checklist";
     return;
   }
@@ -378,6 +493,11 @@ int MfdController::pageIndex() const {
 }
 
 MfdPage MfdController::page() const {
+  // Checklist is its own page group (not in kGroupFirstPage); avoid indexing
+  // past the table and misrouting softkey/bezel handlers.
+  if (pageGroup_ == MfdPageGroup::Checklist) {
+    return MfdPage::NavigationMap;
+  }
   return static_cast<MfdPage>(
       static_cast<int>(kGroupFirstPage[static_cast<int>(pageGroup_)]) +
       pageIndex());
@@ -386,6 +506,10 @@ MfdPage MfdController::page() const {
 void MfdController::stepPage(int direction) {
   pageSelectSec_ = kPageSelectSeconds;
   menu_ = Menu::Root;  // close any page-specific submenu when the page changes
+  pageMenuOpen_ = false;
+  mapSettingsOpen_ = false;
+  chartViewActive_ = false;  // leaving the page closes its chart view
+  wptInfoView_ = WptInfoView::Airport;  // and its WPT sub-view selection
   if (pageGroup_ == MfdPageGroup::Checklist) {
     stepChecklist(direction);
     return;
@@ -411,6 +535,7 @@ void MfdController::selectGroup(MfdPageGroup group) {
     if (pageGroup_ == MfdPageGroup::Map) mapResetPointer();
     if (pageGroup_ == MfdPageGroup::Waypoint) wptResetInteraction();
     if (pageGroup_ == MfdPageGroup::Nearest) nrstResetInteraction();
+    chartViewActive_ = false;
     pageGroup_ = group;
     menu_ = Menu::Root;
     pageSelectSec_ = kPageSelectSeconds;
@@ -476,6 +601,11 @@ void MfdController::update(double dtSeconds, const FlightData& data) {
 
 bool MfdController::keyEnabled(int i) const {
   if (labels_[i].empty()) return false;
+  if (procMenuOpen_ && procSelectMode()) {
+    return i == kKeyEngine || i == kKeyProcLoadDp || i == kKeyProcLoadStar ||
+           i == kKeyProcLoadApr || i == kKeyProcLoadGoBack ||
+           (i == kKeyChecklist && checklistCount() > 0);
+  }
   if (menu_ == Menu::Engine) {
     return i == kKeyEngEngine || i == kKeyEngBack;
   }
@@ -485,11 +615,28 @@ bool MfdController::keyEnabled(int i) const {
   if (menu_ == Menu::RadarMode && i == kKeyRdrGround) {
     return false;
   }
-  if (simbriefIdEntry_) {
-    return true;
-  }
   if (menu_ == Menu::Root) {
-    if (i == kKeyCharts) return false;
+    if (chartViewActive_) {
+      if (chartsMenu_ == ChartsMenu::ChartOpt) {
+        // The view-slice keys and Fit WDTH need a chart shown (not the map).
+        if (chartsShowMap_) return i == kKeyChartsGoBack;
+        return true;
+      }
+      // DP and STAR stay selectable so the pilot can switch to those sections
+      // regardless of whether the current index has a chart of that type; the
+      // remaining category softkeys grey when no chart of that type exists
+      // (Pilot's Guide §8.3 "if available"). Show Map / CHRT Opt / Full SCN /
+      // Go Back are always available.
+      if (i == kKeyChartsInfo)
+        return chartsHasCategory(ChartsCategoryFilter::Airport);
+      if (i == kKeyChartsDp) return true;
+      if (i == kKeyChartsStar) return true;
+      if (i == kKeyChartsApr)
+        return chartsHasCategory(ChartsCategoryFilter::Approach);
+    }
+    // The Charts softkey is a shortcut to the chart view (it stays available
+    // so charts are reachable to sign in / browse).
+    if (i == kKeyCharts) return true;
     if (i == kKeyChecklist) return checklistCount() > 0;
     if (page() == MfdPage::TrafficMap) {
       return false;  // TAS / ADS-B controls not modeled yet.
@@ -501,8 +648,26 @@ bool MfdController::keyEnabled(int i) const {
     if (page() == MfdPage::NearestAirports && i == kKeyDetail) {
       return false;  // LD APR (replaces Detail on this page).
     }
+    if (page() == MfdPage::FlightPlanCatalog) {
+      // Edit / Import / Export operate on the SD-card Stored Flight Plan page,
+      // which this suite does not model (greyed, like the real unit's unused
+      // SD slot). The plan-specific actions need a stored plan to act on.
+      if (i == kKeyCatEdit || i == kKeyCatImport || i == kKeyCatExport) {
+        return false;
+      }
+      if (i == kKeyCatActivate || i == kKeyCatInvert || i == kKeyCatCopy ||
+          i == kKeyCatDelete) {
+        return !catalog_.empty();
+      }
+    }
+    if (page() == MfdPage::SimBrief && i == kKeyNavigraphLogin) {
+      // Only Logout is a manual action (sign-in is automatic via the QR code);
+      // it is local-only (clears the saved token) so it stays available offline.
+      return simbriefState_.loginPhase == NavigraphLoginPhase::LoggedIn;
+    }
     if (page() == MfdPage::SimBrief && i == kKeySimbriefFetch) {
-      return !simbriefPilotId_.empty() &&
+      return simbriefState_.commAllowed &&
+             simbriefState_.loginPhase == NavigraphLoginPhase::LoggedIn &&
              simbriefState_.status != SimBriefStatus::Fetching;
     }
   }
@@ -510,8 +675,18 @@ bool MfdController::keyEnabled(int i) const {
 }
 
 bool MfdController::keyActive(int i) const {
-  // Digit-entry cells are momentary; no radio/toggle highlight applies.
-  if (simbriefIdEntry_) return false;
+  if (procMenuOpen_ && procSelectMode()) {
+    switch (i) {
+      case kKeyProcLoadDp:
+        return procCategory() == ProcedureType::Departure;
+      case kKeyProcLoadStar:
+        return procCategory() == ProcedureType::Arrival;
+      case kKeyProcLoadApr:
+        return procCategory() == ProcedureType::Approach;
+      default:
+        return false;
+    }
+  }
   if (menu_ == Menu::Engine) {
     return i == kKeyEngEngine;
   }
@@ -560,6 +735,55 @@ bool MfdController::keyActive(int i) const {
   if (page() == MfdPage::TrafficMap && i == kKeyTfcAdsb) {
     return showTraffic_;
   }
+  if (chartViewActive_) {
+    if (chartsMenu_ == ChartsMenu::ChartOpt) {
+      switch (i) {
+        case kKeyChartsChrtOpt:
+          return chartsViewMode_ == ChartsViewMode::All;
+        case kKeyChartsChart:
+          return chartsViewMode_ == ChartsViewMode::Header;
+        case kKeyChartsInfo:
+          return chartsViewMode_ == ChartsViewMode::Plan;
+        case kKeyChartsDp:
+          return chartsViewMode_ == ChartsViewMode::Profile;
+        case kKeyChartsStar:
+          return chartsViewMode_ == ChartsViewMode::Minimums;
+        case kKeyChartsApr:
+          return chartsFitWidth_;
+        case kKeyChartsAux:
+          return chartsFullScreen_;
+        default:
+          return false;
+      }
+    }
+    if (i == kKeyChartsChart) return chartsShowMap_;
+    if (i == kKeyChartsAux) return chartsFullScreen_;
+    if (i == kKeyChartsInfo)
+      return chartsCategoryFilter_ == ChartsCategoryFilter::Airport;
+    if (i == kKeyChartsDp)
+      return chartsCategoryFilter_ == ChartsCategoryFilter::Departure;
+    if (i == kKeyChartsStar)
+      return chartsCategoryFilter_ == ChartsCategoryFilter::Arrival;
+    if (i == kKeyChartsApr)
+      return chartsCategoryFilter_ == ChartsCategoryFilter::Approach;
+  }
+  if (pageGroup_ == MfdPageGroup::Waypoint &&
+      page() == MfdPage::AirportInformation && !chartViewActive_) {
+    switch (i) {
+      case kKeyWptInfo:
+        return wptInfoView_ == WptInfoView::Airport;
+      case kKeyWptDp:
+        return wptInfoView_ == WptInfoView::Departure;
+      case kKeyWptStar:
+        return wptInfoView_ == WptInfoView::Arrival;
+      case kKeyWptApr:
+        return wptInfoView_ == WptInfoView::Approach;
+      case kKeyWptWx:
+        return wptInfoView_ == WptInfoView::Weather;
+      default:
+        break;
+    }
+  }
   switch (i) {
     case kKeyChecklist:
       return pageGroup_ == MfdPageGroup::Checklist;
@@ -578,29 +802,14 @@ void MfdController::pressBezelKey(BezelKey key) {
   if (i < 0 || i >= kBezelKeyCount) return;
   bezelPress_[i] = 1.0f;  // trigger the press-flash animation
 
-  // Pilot ID digit entry is modal, like a cursor field on the real unit: ENT
-  // commits the pending digits, CLR erases (cancelling once empty), and the
-  // page-navigation keys are inert until the entry is closed. Range still
-  // zooms the map underneath.
-  if (simbriefIdEntry_ && !isMapRangePanBezelKey(key)) {
-    switch (key) {
-      case BezelKey::Ent:
-        if (!simbriefPendingId_.empty()) {
-          simbriefPilotId_ = simbriefPendingId_;
-        }
-        simbriefPendingId_.clear();
-        simbriefIdEntry_ = false;
-        break;
-      case BezelKey::Clr:
-        if (simbriefPendingId_.empty()) {
-          simbriefIdEntry_ = false;
-        } else {
-          simbriefPendingId_.pop_back();
-        }
-        break;
-      default:
-        break;
-    }
+  // The "Fly Course Reversal?" prompt is modal: it owns the FMS knob / ENT / CLR
+  // until answered, overlaying whatever page is up.
+  if (courseReversalPromptBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+
+  if (holdActivatePromptBezelKey(key)) {
     rebuildLabels();
     return;
   }
@@ -675,7 +884,14 @@ void MfdController::pressBezelKey(BezelKey key) {
     rebuildLabels();
     return;
   }
-  if (pageGroup_ == MfdPageGroup::Waypoint && wptBezelKey(key)) {
+  // Chart view owns the FMS knob / RANGE joystick on the Airport Information
+  // page; it must take precedence over the normal waypoint-page handler.
+  if (chartViewActive_ && chartsBezelKey(key)) {
+    rebuildLabels();
+    return;
+  }
+  if (pageGroup_ == MfdPageGroup::Waypoint && !chartViewActive_ &&
+      wptBezelKey(key)) {
     rebuildLabels();
     return;
   }
@@ -706,6 +922,7 @@ void MfdController::pressBezelKey(BezelKey key) {
         pageGroup_ = MfdPageGroup::FlightPlan;
         fplPreviewRangeManual_ = false;
       }
+      chartViewActive_ = false;
       pageSelectSec_ = kPageSelectSeconds;
       break;
     case BezelKey::Proc:
@@ -770,6 +987,10 @@ void MfdController::stepPageGroup(int direction) {
   constexpr int kCycleCount = 4;
   pageSelectSec_ = kPageSelectSeconds;
   menu_ = Menu::Root;
+  pageMenuOpen_ = false;
+  mapSettingsOpen_ = false;
+  chartViewActive_ = false;
+  wptInfoView_ = WptInfoView::Airport;
   for (int i = 0; i < kCycleCount; ++i) {
     if (kCycle[i] == pageGroup_) {
       pageGroup_ = kCycle[((i + direction) % kCycleCount + kCycleCount) %
@@ -783,8 +1004,6 @@ void MfdController::stepPageGroup(int direction) {
 void MfdController::clrDefaultMap() {
   // Cancel whatever is in progress, exactly like backing all the way out, then
   // bring up the MAP - NAVIGATION MAP page.
-  simbriefPendingId_.clear();
-  simbriefIdEntry_ = false;
   fplResetInteraction();
   wptResetInteraction();
   nrstResetInteraction();
@@ -795,6 +1014,10 @@ void MfdController::clrDefaultMap() {
   menu_ = Menu::Root;
   pageMenuOpen_ = false;
   mapSettingsOpen_ = false;
+  procMenuOpen_ = false;
+  chartViewActive_ = false;
+  chartsAirportEntry_.reset();
+  chartsAirportOverride_.clear();
   pageGroup_ = MfdPageGroup::Map;
   pageIndex_[static_cast<int>(MfdPageGroup::Map)] = 0;
   rebuildLabels();
@@ -805,12 +1028,6 @@ bool MfdController::pressKey(int key) {
   if (!keyEnabled(key)) return false;
 
   press_[key] = 1.0f;  // trigger the press-flash animation
-
-  if (simbriefIdEntry_) {
-    simbriefEntryKey(key);
-    rebuildLabels();
-    return true;
-  }
 
   if (menu_ == Menu::Engine) {
     if (key == kKeyEngBack) menu_ = Menu::Root;
@@ -885,6 +1102,176 @@ bool MfdController::pressKey(int key) {
     rebuildLabels();
     return true;
   }
+  // PROC selection window: DP / STAR / APR switch the loaded category in place;
+  // Go Back returns to the Procedures menu (Pilot's Guide 5.8).
+  if (procMenuOpen_ && procSelectMode()) {
+    ProcedureMenuHost host = procedureMenuHost();
+    switch (key) {
+      case kKeyProcLoadDp:
+        procedureMenuOpenArrDepSelect(host, ProcedureType::Departure);
+        rebuildLabels();
+        return true;
+      case kKeyProcLoadStar:
+        procedureMenuOpenArrDepSelect(host, ProcedureType::Arrival);
+        rebuildLabels();
+        return true;
+      case kKeyProcLoadApr:
+        host.state.category = ProcedureType::Approach;
+        procedureMenuOpenApproachSelect(host);
+        rebuildLabels();
+        return true;
+      case kKeyProcLoadGoBack:
+        buildProcMenu();
+        rebuildLabels();
+        return true;
+      default:
+        break;
+    }
+  }
+  // WPT - Airport Information sub-view bar (trainer apt_054..058): Chart enters
+  // the chart view; Info / DP / STAR / APR / WX switch the information panel.
+  if (pageGroup_ == MfdPageGroup::Waypoint &&
+      page() == MfdPage::AirportInformation && !chartViewActive_) {
+    switch (key) {
+      case kKeyWptChart:
+        selectChartsPage();
+        rebuildLabels();
+        return true;
+      case kKeyWptInfo:
+        wptInfoView_ = WptInfoView::Airport;
+        rebuildLabels();
+        return true;
+      case kKeyWptDp:
+        wptInfoView_ = WptInfoView::Departure;
+        rebuildLabels();
+        return true;
+      case kKeyWptStar:
+        wptInfoView_ = WptInfoView::Arrival;
+        rebuildLabels();
+        return true;
+      case kKeyWptApr:
+        wptInfoView_ = WptInfoView::Approach;
+        rebuildLabels();
+        return true;
+      case kKeyWptWx:
+        wptInfoView_ = WptInfoView::Weather;
+        rebuildLabels();
+        return true;
+      default:
+        break;
+    }
+  }
+  // WPT - Airport Information chart view keys (Pilot's Guide §8.3).
+  if (chartViewActive_) {
+    if (chartsMenu_ == ChartsMenu::ChartOpt) {
+      switch (key) {
+        case kKeyChartsChrtOpt:
+          chartsViewMode_ = ChartsViewMode::All;
+          break;
+        case kKeyChartsChart:
+          chartsViewMode_ = ChartsViewMode::Header;
+          break;
+        case kKeyChartsInfo:
+          chartsViewMode_ = ChartsViewMode::Plan;
+          break;
+        case kKeyChartsDp:
+          chartsViewMode_ = ChartsViewMode::Profile;
+          break;
+        case kKeyChartsStar:
+          chartsViewMode_ = ChartsViewMode::Minimums;
+          break;
+        case kKeyChartsApr:  // Fit WDTH: base-fit to width, reset zoom/pan.
+          chartsFitWidth_ = !chartsFitWidth_;
+          chartsZoom_ = 1.0f;
+          chartsPanXFrac_ = 0.0f;
+          chartsPanYFrac_ = 0.0f;
+          break;
+        case kKeyChartsAux:
+          chartsFullScreen_ = !chartsFullScreen_;
+          break;
+        case kKeyChartsGoBack:
+          chartsMenu_ = ChartsMenu::Selection;
+          break;
+        default:
+          break;
+      }
+    } else {
+      switch (key) {
+        case kKeyChartsChrtOpt:
+          chartsMenu_ = ChartsMenu::ChartOpt;
+          break;
+        case kKeyChartsChart:  // "Show Map": chart image <-> nav map
+          chartsShowMap_ = !chartsShowMap_;
+          break;
+        case kKeyChartsInfo:  // airport diagram / airport-info chart
+          chartsSelectCategory(ChartsCategoryFilter::Airport);
+          break;
+        case kKeyChartsDp:
+          chartsSelectCategory(ChartsCategoryFilter::Departure);
+          break;
+        case kKeyChartsStar:
+          chartsSelectCategory(ChartsCategoryFilter::Arrival);
+          break;
+        case kKeyChartsApr:
+          chartsSelectCategory(ChartsCategoryFilter::Approach);
+          break;
+        case kKeyChartsAux:
+          chartsFullScreen_ = !chartsFullScreen_;
+          break;
+        case kKeyChartsGoBack:
+          // Leave the chart view and return to the page we came from (Pilot's
+          // Guide §8.3): clearing chart view restores the normal softkey bar.
+          chartViewActive_ = false;
+          pageGroup_ = groupBeforeCharts_;
+          break;
+        default:
+          break;
+      }
+    }
+    rebuildLabels();
+    return true;
+  }
+  // FPL - Flight Plan Catalog softkeys (New / Activate / Invert / Copy /
+  // Delete). The route-changing and destructive actions open the same
+  // confirmation window as the bezel ENT path; New and Copy act immediately.
+  if (pageGroup_ == MfdPageGroup::FlightPlan &&
+      page() == MfdPage::FlightPlanCatalog) {
+    switch (key) {
+      case kKeyCatNew:
+        catalogCreateNew();
+        rebuildLabels();
+        return true;
+      case kKeyCatActivate:
+        catalogConfirm_ = CatalogConfirm::Activate;
+        catalogConfirmOk_ = true;
+        rebuildLabels();
+        return true;
+      case kKeyCatInvert:
+        catalogConfirm_ = CatalogConfirm::InvertActivate;
+        catalogConfirmOk_ = true;
+        rebuildLabels();
+        return true;
+      case kKeyCatCopy:
+        catalogCopySelected();
+        rebuildLabels();
+        return true;
+      case kKeyCatDelete:
+        catalogConfirm_ = CatalogConfirm::Delete;
+        catalogConfirmOk_ = true;
+        rebuildLabels();
+        return true;
+      default:
+        break;
+    }
+  }
+  // Charts softkey: jump to the AUX - Charts page. Guarded on the label so it
+  // does not fire on pages that reuse this cell for another function (BRG on
+  // the Weather Radar page).
+  if (key == kKeyCharts && labels_[kKeyCharts] == kChartsSoftkeyLabel) {
+    selectChartsPage();
+    rebuildLabels();
+    return true;
+  }
   if (key == kKeyChecklist) {
     selectGroup(MfdPageGroup::Checklist);
     rebuildLabels();
@@ -895,14 +1282,17 @@ bool MfdController::pressKey(int key) {
     rebuildLabels();
     return true;
   }
-  if (key == kKeySimbriefId) {
-    simbriefPendingId_.clear();
-    simbriefIdEntry_ = true;
+  if (key == kKeyNavigraphLogin) {
+    // Sign-in is automatic (QR code); only Logout is a manual action here.
+    if (simbriefState_.loginPhase == NavigraphLoginPhase::LoggedIn) {
+      navigraphLogoutRequested_ = true;  // local-only; allowed offline
+    }
     rebuildLabels();
     return true;
   }
   if (key == kKeySimbriefFetch) {
-    if (!simbriefPilotId_.empty() &&
+    if (simbriefState_.commAllowed &&
+        simbriefState_.loginPhase == NavigraphLoginPhase::LoggedIn &&
         simbriefState_.status != SimBriefStatus::Fetching) {
       simbriefFetchRequested_ = true;
     }
@@ -943,19 +1333,39 @@ bool MfdController::pressKey(int key) {
   return false;
 }
 
-void MfdController::simbriefEntryKey(int key) {
-  if (key >= 0 && key <= 9) {
-    if (static_cast<int>(simbriefPendingId_.size()) <
-        kSimBriefPilotIdMaxDigits) {
-      simbriefPendingId_ += static_cast<char>('0' + key);
-    }
-  } else if (key == kKeyEntryBksp) {
-    if (!simbriefPendingId_.empty()) simbriefPendingId_.pop_back();
-  } else if (key == kKeyEntryBack) {
-    // Abandon the in-progress entry; the committed ID is untouched.
-    simbriefPendingId_.clear();
-    simbriefIdEntry_ = false;
+void MfdController::updateNavigraphAutoLogin() {
+  // The pilot dislikes pressing Login: when the SimBrief page is open and we
+  // aren't signed in, kick off the Navigraph device-authorization flow
+  // automatically so the page can show the QR + code to scan. Only when the sim
+  // session permits Navigraph traffic (commAllowed). Treat Error the same as
+  // signed-out so an expired code is refreshed on its own.
+  const bool needsCode =
+      simbriefState_.loginPhase == NavigraphLoginPhase::LoggedOut ||
+      simbriefState_.loginPhase == NavigraphLoginPhase::Error;
+  const bool wantAuto =
+      page() == MfdPage::SimBrief && simbriefState_.commAllowed && needsCode;
+  if (!wantAuto) {
+    // Disarm whenever the condition clears (signed in, awaiting user, off page,
+    // or offline) so the next signed-out visit issues a fresh code.
+    navigraphAutoLoginArmed_ = false;
+    return;
   }
+  if (!navigraphAutoLoginArmed_) {
+    navigraphAutoLoginArmed_ = true;
+    navigraphLoginRequested_ = true;  // drained by the shell -> requestLogin()
+  }
+}
+
+bool MfdController::consumeNavigraphLoginRequest() {
+  const bool requested = navigraphLoginRequested_;
+  navigraphLoginRequested_ = false;
+  return requested;
+}
+
+bool MfdController::consumeNavigraphLogoutRequest() {
+  const bool requested = navigraphLogoutRequested_;
+  navigraphLogoutRequested_ = false;
+  return requested;
 }
 
 bool MfdController::consumeSimbriefFetchRequest() {
@@ -964,13 +1374,363 @@ bool MfdController::consumeSimbriefFetchRequest() {
   return requested;
 }
 
+namespace {
+
+bool chartMatchesFilter(const ChartListItem& chart,
+                        ChartsCategoryFilter filter) {
+  switch (filter) {
+    case ChartsCategoryFilter::All:
+      return true;
+    case ChartsCategoryFilter::Departure:
+      return chart.category == ChartCategory::Departure;
+    case ChartsCategoryFilter::Arrival:
+      return chart.category == ChartCategory::Arrival;
+    case ChartsCategoryFilter::Approach:
+      return chart.category == ChartCategory::Approach;
+    case ChartsCategoryFilter::Airport:
+      return chart.category == ChartCategory::Airport;
+  }
+  return true;
+}
+
+// Index of the first chart matching `filter`, or -1 when none match.
+int firstChartInCategory(const std::vector<ChartListItem>& charts,
+                         ChartsCategoryFilter filter) {
+  for (int i = 0; i < static_cast<int>(charts.size()); ++i) {
+    if (chartMatchesFilter(charts[static_cast<std::size_t>(i)], filter)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+}  // namespace
+
+void MfdController::setChartsState(const ChartsState& state) {
+  // Reset the list cursor when the airport (and therefore the chart list)
+  // changes; otherwise keep it, clamped to the new list length.
+  const bool airportChanged = state.airportIcao != chartsState_.airportIcao;
+  chartsState_ = state;
+  const int count = static_cast<int>(chartsState_.charts.size());
+  if (airportChanged) {
+    // Open on the airport diagram (Info / Navigraph "APT") with the selection
+    // list filtered to that category, matching the real NXi default, rather
+    // than the unfiltered "All" mix. -1 leaves nothing selected when the
+    // airport has no airport chart (the pilot can pick DP/STAR/APR instead).
+    chartsCategoryFilter_ = ChartsCategoryFilter::Airport;
+    chartsSelected_ =
+        firstChartInCategory(chartsState_.charts, chartsCategoryFilter_);
+    chartsResetView();
+  } else {
+    if (chartsSelected_ < 0) chartsSelected_ = 0;
+    if (count > 0 && chartsSelected_ >= count) chartsSelected_ = count - 1;
+  }
+  // Keep the popup highlight valid and, when not actively browsing, parked on
+  // the committed chart.
+  if (airportChanged) chartsPending_ = chartsSelected_;
+  if (chartsPending_ < 0) chartsPending_ = 0;
+  if (count > 0 && chartsPending_ >= count) chartsPending_ = count - 1;
+}
+
+std::string MfdController::chartsDestinationAirport() const {
+  int approachStart = fplApproachLegStart_;
+  int approachCount = fplApproachLegCount_;
+  if (!fplHasLoadedApproach() || approachCount <= 0) {
+    const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+    if (block.valid()) {
+      approachStart = block.start;
+      approachCount = block.count;
+    }
+  }
+  const bool approachLoaded = approachCount > 0;
+  std::string approachAirport;
+  if (approachLoaded) {
+    approachAirport = fplApproachAirportIcao();
+    if (!isKnownAirportIdent(approachAirport, mapData_, navSource_) &&
+        approachStart > 0 &&
+        approachStart <= static_cast<int>(fplLegs_.size())) {
+      const std::string candidate =
+          fplLegs_[static_cast<std::size_t>(approachStart - 1)].id;
+      if (isKnownAirportIdent(candidate, mapData_, navSource_)) {
+        approachAirport = candidate;
+      } else {
+        approachAirport.clear();
+      }
+    }
+  }
+  std::string icao = pfd::fplHeaderDestinationIdent(
+      fplLegs_, fplDestinationFilled_, approachStart, approachLoaded,
+      approachAirport);
+  if (!isKnownAirportIdent(icao, mapData_, navSource_)) {
+    icao = lastKnownAirportInPlan(fplLegs_, mapData_, navSource_);
+  }
+  if (icao.empty() && mapData_ != nullptr) {
+    icao = lastKnownAirportInPlan(mapData_->flightPlan, mapData_, navSource_);
+  }
+  if (icao.empty() &&
+      isKnownAirportIdent(simbriefState_.destinationIcao, mapData_,
+                          navSource_)) {
+    icao = simbriefState_.destinationIcao;
+  }
+  return icao;
+}
+
+std::string MfdController::chartsOriginAirport() const {
+  std::string icao = firstKnownAirportInPlan(fplLegs_, mapData_, navSource_);
+  if (icao.empty() && mapData_ != nullptr) {
+    icao = firstKnownAirportInPlan(mapData_->flightPlan, mapData_, navSource_);
+  }
+  if (icao.empty() &&
+      isKnownAirportIdent(simbriefState_.originIcao, mapData_, navSource_)) {
+    icao = simbriefState_.originIcao;
+  }
+  return icao;
+}
+
+std::string MfdController::chartsDesiredAirport() const {
+  // An explicitly entered airport (Airport-box ICAO entry) wins, so charts for
+  // any field can be pulled up, not just the flight-plan ends.
+  if (!chartsAirportOverride_.empty()) return chartsAirportOverride_;
+  // Charts are per-airport: resolve a 4-letter ICAO airport ident (fixes like
+  // BOSTN are not valid). Honor the Airport-box origin/dest choice, but fall
+  // back to the other end when the selected one has no airport.
+  const std::string preferred =
+      chartsUseDestination_ ? chartsDestinationAirport() : chartsOriginAirport();
+  if (!preferred.empty()) return preferred;
+  return chartsUseDestination_ ? chartsOriginAirport() : chartsDestinationAirport();
+}
+
+bool MfdController::chartsHasCategory(ChartsCategoryFilter filter) const {
+  for (const ChartListItem& c : chartsState_.charts) {
+    if (chartMatchesFilter(c, filter)) return true;
+  }
+  return false;
+}
+
+void MfdController::chartsSelectCategory(ChartsCategoryFilter filter) {
+  // A category softkey (DP / STAR / APR / Info) shows that chart immediately
+  // (Pilot's Guide §8.3), so it commits the selection rather than opening the
+  // browse popup.
+  chartsCategoryFilter_ = filter;
+  const int n = static_cast<int>(chartsState_.charts.size());
+  for (int i = 0; i < n; ++i) {
+    if (chartMatchesFilter(chartsState_.charts[static_cast<std::size_t>(i)],
+                           filter)) {
+      if (i != chartsSelected_) chartsResetView();
+      chartsSelected_ = i;
+      chartsPending_ = i;
+      return;
+    }
+  }
+}
+
+void MfdController::chartsCommitSelection() {
+  // ENT applies the highlighted popup row as the shown chart (Fig 8-20 step 9).
+  if (chartsPending_ == chartsSelected_) return;
+  chartsSelected_ = chartsPending_;
+  chartsResetView();
+}
+
+void MfdController::chartsCommitAirportEntry() {
+  // ENT applies the typed Airport-box ident as the charts airport. Prefer a
+  // resolved airport match; otherwise take the typed ident verbatim (the shell
+  // validates the 4-letter ICAO and reports NO CHARTS if it has none).
+  FmsWaypointEntry& e = chartsAirportEntry_;
+  std::string icao =
+      (e.hasMatch && e.match.type == MapFeatureType::Airport && !e.match.id.empty())
+          ? e.match.id
+          : e.ident();
+  e.reset();
+  chartsField_ = ChartsField::Airport;
+  if (icao.empty()) return;
+  chartsAirportOverride_ = icao;
+}
+
+void MfdController::chartsStepSelection(int delta) {
+  // Scrolling the open popup moves the highlight only; the displayed chart does
+  // not change until ENT commits it (chartsCommitSelection).
+  const int n = static_cast<int>(chartsState_.charts.size());
+  if (n == 0) return;
+  int i = chartsPending_;
+  for (int step = 0; step < n; ++step) {
+    i = (i + delta + n) % n;
+    if (chartMatchesFilter(chartsState_.charts[static_cast<std::size_t>(i)],
+                           chartsCategoryFilter_)) {
+      chartsPending_ = i;
+      return;
+    }
+  }
+}
+
+bool MfdController::chartsAnyAirportAvailable() const {
+  return !chartsOriginAirport().empty() || !chartsDestinationAirport().empty();
+}
+
+std::string MfdController::chartsSelectedChartId() const {
+  if (chartsSelected_ < 0 ||
+      chartsSelected_ >= static_cast<int>(chartsState_.charts.size())) {
+    return {};
+  }
+  return chartsState_.charts[chartsSelected_].id;
+}
+
+void MfdController::chartsResetView() {
+  chartsZoom_ = 1.0f;
+  chartsPanXFrac_ = 0.0f;
+  chartsPanYFrac_ = 0.0f;
+  chartsFitWidth_ = false;
+}
+
+bool MfdController::chartsBezelKey(BezelKey key) {
+  if (!chartViewActive_) return false;
+
+  // Free ICAO entry on the Airport box: the FMS knob spells an airport ident and
+  // ENT applies it (Pilot's Guide, WPT - Airport Information ident search). This
+  // runs before the cursor-off / field-toggle actions so it owns the knob while
+  // editing.
+  if (chartsAirportEntry_.active) {
+    switch (key) {
+      case BezelKey::Ent:
+        chartsCommitAirportEntry();
+        return true;
+      case BezelKey::Clr:
+      case BezelKey::FmsPush:
+        chartsAirportEntry_.reset();
+        return true;
+      case BezelKey::FmsInnerCw:
+        chartsAirportEntry_.turnChar(navSource_, mapData_, +1);
+        return true;
+      case BezelKey::FmsInnerCcw:
+        chartsAirportEntry_.turnChar(navSource_, mapData_, -1);
+        return true;
+      case BezelKey::FmsOuterCw:
+        chartsAirportEntry_.moveCursor(navSource_, mapData_, +1);
+        return true;
+      case BezelKey::FmsOuterCcw:
+        chartsAirportEntry_.moveCursor(navSource_, mapData_, -1);
+        return true;
+      default:
+        return true;  // swallow other keys while editing the ident
+    }
+  }
+
+  // FMS knob push leaves chart view and returns to the airport-info display
+  // (the cursor-off action on the real unit's Airport Information page).
+  if (key == BezelKey::FmsPush) {
+    chartViewActive_ = false;
+    return true;
+  }
+
+  // RANGE joystick: zoom and pan the chart image. When the Chart softkey is
+  // showing the nav map instead, fall through so RANGE drives the map range.
+  if (!chartsShowMap_ && isMapRangePanBezelKey(key)) {
+    constexpr float kZoomStep = 1.25f;
+    constexpr float kMaxZoom = 8.0f;
+    constexpr float kPanStep = 0.08f;
+    constexpr float kPanLimit = 0.5f;
+    auto clampPan = [kPanLimit](float v) {
+      return std::max(-kPanLimit, std::min(kPanLimit, v));
+    };
+    switch (key) {
+      case BezelKey::RangeDown:  // joystick CCW: zoom in
+        chartsZoom_ = std::min(kMaxZoom, chartsZoom_ * kZoomStep);
+        return true;
+      case BezelKey::RangeUp:  // joystick CW: zoom out
+        chartsZoom_ = std::max(1.0f, chartsZoom_ / kZoomStep);
+        if (chartsZoom_ <= 1.001f) {
+          chartsPanXFrac_ = 0.0f;
+          chartsPanYFrac_ = 0.0f;
+        }
+        return true;
+      case BezelKey::PanUp:
+        chartsPanYFrac_ = clampPan(chartsPanYFrac_ + kPanStep);
+        return true;
+      case BezelKey::PanDown:
+        chartsPanYFrac_ = clampPan(chartsPanYFrac_ - kPanStep);
+        return true;
+      case BezelKey::PanLeft:
+        chartsPanXFrac_ = clampPan(chartsPanXFrac_ + kPanStep);
+        return true;
+      case BezelKey::PanRight:
+        chartsPanXFrac_ = clampPan(chartsPanXFrac_ - kPanStep);
+        return true;
+      case BezelKey::PanPush:  // press recenters (Pilot's Guide: centers chart)
+        chartsResetView();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  switch (key) {
+    case BezelKey::FmsOuterCw:
+    case BezelKey::FmsOuterCcw:
+      chartsField_ = chartsField_ == ChartsField::Airport ? ChartsField::Approach
+                                                        : ChartsField::Airport;
+      // Moving the field cursor discards any uncommitted browse: the popup
+      // highlight returns to the chart currently shown.
+      chartsPending_ = chartsSelected_;
+      return true;
+    case BezelKey::Ent:
+      // ENT commits the highlighted popup row as the shown chart and closes the
+      // browse popup (the dropdown is only drawn while the chart field is the
+      // active cursor field, so move the cursor off it).
+      chartsCommitSelection();
+      chartsField_ = ChartsField::Airport;
+      return true;
+    case BezelKey::FmsInnerCw:
+      if (chartsField_ == ChartsField::Airport) {
+        // Start free ICAO entry, seeded with the airport currently shown so the
+        // flight-plan origin/dest is the starting point.
+        chartsAirportEntry_.allowAirways = false;
+        chartsAirportEntry_.open(navSource_, mapData_, chartsDesiredAirport());
+      } else {
+        chartsStepSelection(1);
+      }
+      return true;
+    case BezelKey::FmsInnerCcw:
+      if (chartsField_ == ChartsField::Airport) {
+        chartsAirportEntry_.allowAirways = false;
+        chartsAirportEntry_.open(navSource_, mapData_, chartsDesiredAirport());
+      } else {
+        chartsStepSelection(-1);
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+void MfdController::selectChartsPage() {
+  // Charts live on the WPT - Airport Information page (Pilot's Guide §8.3): jump
+  // there and turn on chart view. Remember where we came from for "Go Back".
+  if (pageGroup_ == MfdPageGroup::Map) mapResetPointer();
+  if (pageGroup_ == MfdPageGroup::Nearest) nrstResetInteraction();
+  if (!chartViewActive_) groupBeforeCharts_ = pageGroup_;
+  pageGroup_ = MfdPageGroup::Waypoint;
+  pageIndex_[static_cast<int>(MfdPageGroup::Waypoint)] =
+      static_cast<int>(MfdPage::AirportInformation) -
+      static_cast<int>(kGroupFirstPage[static_cast<int>(MfdPageGroup::Waypoint)]);
+  chartsMenu_ = ChartsMenu::Selection;
+  chartViewActive_ = true;
+  // Start on the Airport field with the chart-selection popup closed and no
+  // ident edit in progress; the popup only opens once the cursor is moved onto
+  // the chart field.
+  chartsField_ = ChartsField::Airport;
+  chartsAirportEntry_.reset();
+  menu_ = Menu::Root;
+  // No page-select popup: the Charts softkey jumps straight to the chart on the
+  // WPT - Airport Information page (Pilot's Guide §8.3), unlike an FMS-knob page
+  // change which flashes the page-group navigation overlay.
+  pageSelectSec_ = 0.0f;
+}
+
 bool MfdController::blocksRadioBezel() const {
   // Map panning is driven by the RANGE joystick, not the FMS knob, so the
   // active Map Pointer does not claim the knob here.
   return dtoOpen_ || dtoEntry_.active || fplEntry_.active ||
          fplAltEntry_.active || fplConfirm_ != FplConfirm::None ||
-         wptEntry_.active || simbriefIdEntry_ || procMenuOpen_ ||
-         mapSettingsOpen_;
+         wptEntry_.active || procMenuOpen_ || mapSettingsOpen_;
 }
 
 }  // namespace avionics

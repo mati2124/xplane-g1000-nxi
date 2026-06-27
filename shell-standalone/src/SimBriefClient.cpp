@@ -2,6 +2,9 @@
 
 #include <curl/curl.h>
 
+#include "NavigraphClient.h"
+#include "avionics/SimBriefOfpSupport.h"
+
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -13,11 +16,14 @@ namespace {
 
 using nlohmann::json;
 
-// SimBrief's public OFP fetcher (Navigraph developer docs). The Pilot ID
-// selects the account; json=v2 is the stable JSON layout recommended for new
+// SimBrief's public OFP fetcher (Navigraph developer docs). The account is
+// selected either by numeric Pilot ID (userid) or by SimBrief username (the
+// Navigraph Alias); json=v2 is the stable JSON layout recommended for new
 // integrations.
-constexpr const char* kFetchUrlBase =
+constexpr const char* kFetchUrlByUserId =
     "https://www.simbrief.com/api/xml.fetcher.php?userid=";
+constexpr const char* kFetchUrlByUsername =
+    "https://www.simbrief.com/api/xml.fetcher.php?username=";
 constexpr const char* kFetchUrlJsonSuffix = "&json=v2";
 constexpr long kHttpTimeoutSeconds = 20;
 
@@ -121,6 +127,8 @@ SimBriefFetchResult parseOfp(const std::string& body, long httpStatus) {
   }
 
   result.legs.push_back(origin);
+  std::vector<std::string> legViaAirways;
+  legViaAirways.push_back({});
   if (fixes != nullptr) {
     for (const json& fix : *fixes) {
       MapLeg leg;
@@ -133,13 +141,17 @@ SimBriefFetchResult parseOfp(const std::string& body, long httpStatus) {
           !asDouble(fix.value("pos_long", json()), leg.lon)) {
         continue;
       }
+      legViaAirways.push_back(asString(fix.value("via_airway", json())));
       result.legs.push_back(std::move(leg));
     }
   }
   // The navlog normally ends with the destination airport; append it when an
   // OFP variant leaves it out so the drawn route always reaches the field.
   if (result.legs.back().id != destination.id) {
+    legViaAirways.push_back({});
     result.legs.push_back(destination);
+  } else {
+    legViaAirways.back() = {};
   }
   if (result.legs.size() < 2) {
     result.error = "OFP HAS NO ROUTE";
@@ -152,22 +164,39 @@ SimBriefFetchResult parseOfp(const std::string& body, long httpStatus) {
   result.route = asString(j["general"]["route"]);
   result.generatedUtc =
       formatGeneratedTime(asString(j["params"]["time_generated"]));
+
+  const json& general = j["general"];
+  result.sidIdent = asString(general.value("sid_ident", json()));
+  result.sidTrans = asString(general.value("sid_trans", json()));
+  result.starIdent = asString(general.value("star_ident", json()));
+  result.starTrans = asString(general.value("star_trans", json()));
+  result.originRunway = asString(j["origin"].value("plan_rwy", json()));
+  result.destRunway = asString(j["destination"].value("plan_rwy", json()));
+
+  const SimBriefProcedureBlocks blocks = inferSimBriefProcedureBlocks(
+      static_cast<int>(result.legs.size()), legViaAirways, result.sidIdent,
+      result.starIdent);
+  result.departureLegStart = blocks.departureLegStart;
+  result.departureLegCount = blocks.departureLegCount;
+  result.arrivalLegStart = blocks.arrivalLegStart;
+  result.arrivalLegCount = blocks.arrivalLegCount;
+
   result.ok = true;
   return result;
 }
 
-}  // namespace
-
-SimBriefFetchResult FetchSimBriefOfp(const std::string& pilotId) {
+// Shared fetch: GET the given fetcher URL and parse the OFP. The selector
+// (Pilot ID or username) is already encoded into the URL by the callers.
+SimBriefFetchResult fetchOfp(const std::string& url) {
   SimBriefFetchResult result;
 
+  EnsureCurlGlobalInit();
   CURL* curl = curl_easy_init();
   if (curl == nullptr) {
     result.error = "HTTP CLIENT UNAVAILABLE";
     return result;
   }
 
-  const std::string url = kFetchUrlBase + pilotId + kFetchUrlJsonSuffix;
   std::string body;
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
@@ -179,14 +208,39 @@ SimBriefFetchResult FetchSimBriefOfp(const std::string& pilotId) {
   const CURLcode rc = curl_easy_perform(curl);
   long httpStatus = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpStatus);
-  curl_easy_cleanup(curl);
 
   if (rc != CURLE_OK) {
+    curl_easy_cleanup(curl);
     // e.g. no network, DNS failure, timeout.
     result.error = "NO CONNECTION";
     return result;
   }
+  curl_easy_cleanup(curl);
   return parseOfp(body, httpStatus);
+}
+
+// Percent-encodes a fetcher query value (usernames may contain @ . etc.).
+std::string urlEncode(const std::string& value) {
+  EnsureCurlGlobalInit();
+  CURL* curl = curl_easy_init();
+  if (curl == nullptr) return value;
+  char* escaped =
+      curl_easy_escape(curl, value.c_str(), static_cast<int>(value.size()));
+  std::string out = escaped != nullptr ? escaped : value;
+  if (escaped != nullptr) curl_free(escaped);
+  curl_easy_cleanup(curl);
+  return out;
+}
+
+}  // namespace
+
+SimBriefFetchResult FetchSimBriefOfp(const std::string& pilotId) {
+  return fetchOfp(kFetchUrlByUserId + urlEncode(pilotId) + kFetchUrlJsonSuffix);
+}
+
+SimBriefFetchResult FetchSimBriefOfpByUsername(const std::string& username) {
+  return fetchOfp(kFetchUrlByUsername + urlEncode(username) +
+                  kFetchUrlJsonSuffix);
 }
 
 }  // namespace avionics

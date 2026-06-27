@@ -429,6 +429,91 @@ std::vector<std::string> procedureTransitionLabels(
   return procedureTransitionIds(nav, icao, type, name);
 }
 
+namespace {
+
+bool isRunwayTransitionId(const std::string& transition) {
+  return transition.size() >= 3 && (transition[0] == 'R' || transition[0] == 'r') &&
+         (transition[1] == 'W' || transition[1] == 'w');
+}
+
+}  // namespace
+
+std::vector<std::string> procedureEnrouteTransitions(
+    const NavFeatureSource* nav, const std::string& icao, ProcedureType type,
+    const std::string& name) {
+  std::vector<std::string> enroute;
+  for (const std::string& t : procedureTransitionIds(nav, icao, type, name)) {
+    if (t.empty() || isRunwayTransitionId(t)) continue;
+    enroute.push_back(t);
+  }
+  return enroute;
+}
+
+std::vector<std::string> procedureRunwayOptions(const NavFeatureSource* nav,
+                                                const std::string& icao,
+                                                ProcedureType type,
+                                                const std::string& name) {
+  std::vector<std::string> runways;
+  for (const std::string& t : procedureTransitionIds(nav, icao, type, name)) {
+    if (!isRunwayTransitionId(t)) continue;
+    if (std::find(runways.begin(), runways.end(), t) == runways.end()) {
+      runways.push_back(t);
+    }
+  }
+  if (runways.empty()) runways.push_back(kProcRunwayAll);
+  return runways;
+}
+
+std::vector<MapLeg> expandArrivalDepartureProcedure(
+    const NavFeatureSource* nav, const std::string& icao, ProcedureType type,
+    const std::string& name, const std::string& enrouteTransition,
+    const std::string& runwayLabel) {
+  if (nav == nullptr || !nav->ready() || name.empty()) return {};
+
+  const bool hasRunway =
+      !runwayLabel.empty() && runwayLabel != kProcRunwayAll;
+  const std::string runwayTransition = hasRunway ? runwayLabel : std::string();
+  const std::string& enroute = enrouteTransition;
+
+  // Arrival sequences enroute -> body -> runway; Departure runway -> body ->
+  // enroute. The leg common to both expansions (the procedure body, route type
+  // 5) is de-duplicated by fix ident when merging the two segments.
+  const std::string primary =
+      type == ProcedureType::Departure ? runwayTransition : enroute;
+  const std::string secondary =
+      type == ProcedureType::Departure ? enroute : runwayTransition;
+
+  auto expand = [&](const std::string& transition) {
+    if (transition.empty()) return std::vector<MapLeg>{};
+    return nav->expandProcedure(icao, type, name, transition);
+  };
+
+  std::vector<MapLeg> legs = expand(primary);
+  if (legs.empty()) legs = expand(secondary);
+  if (legs.empty()) {
+    // Neither axis selected: fall back to whatever single transition exists.
+    const std::vector<std::string> all =
+        procedureTransitionIds(nav, icao, type, name);
+    if (!all.empty()) legs = expand(all.front());
+    return legs;
+  }
+
+  const std::vector<MapLeg> rest =
+      (primary == secondary || secondary.empty()) ? std::vector<MapLeg>{}
+                                                  : expand(secondary);
+  for (const MapLeg& leg : rest) {
+    bool present = false;
+    for (const MapLeg& have : legs) {
+      if (have.id == leg.id) {
+        present = true;
+        break;
+      }
+    }
+    if (!present) legs.push_back(leg);
+  }
+  return legs;
+}
+
 std::vector<std::string> uniqueProcedureNames(
     const std::vector<MapProcedure>& catalog) {
   std::vector<std::string> names;

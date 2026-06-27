@@ -5,6 +5,7 @@
 
 #include "avionics/FlightData.h"
 #include "avionics/MapData.h"
+#include "avionics/MapRange.h"
 #include "avionics/Renderer.h"
 #include "avionics/render/MapView.h"
 #include "render/mfd/MfdStyle.h"
@@ -88,20 +89,55 @@ struct PanelStack {
   }
 };
 
+// Sentinel for drawPageMap's optional explicit view center: when left at this
+// value the view centers on `center` (or the ownship if `center` is null).
+inline constexpr double kNoViewCenter = 1.0e9;
+
 void drawPageMap(Renderer& r, const FlightData& d, const MapData& map,
                  const Rect& area, float rangeNm, const MapFeature* center,
                  float displayH, bool showFixes = false,
                  const std::vector<MapLeg>* procedurePreview = nullptr,
                  float displayRangeNm = 0.0f,
                  TerrainDisplay terrain = TerrainDisplay::Topo,
-                 bool useInsetMapData = false);
+                 bool useInsetMapData = false,
+                 AirwayDisplay airways = AirwayDisplay::Off,
+                 bool showWeather = false,
+                 double viewCenterLat = kNoViewCenter,
+                 double viewCenterLon = kNoViewCenter);
+
+// Direct-To inset map framing: the view centers on the Direct-To target and
+// zooms in tight (kDirectToInsetRangeNm) so the destination and its immediate
+// surroundings fill the panel, like the WPT Information insets. The ownship may
+// sit off-screen for distant targets; the destination detail is what matters.
+struct DirectToInsetView {
+  double centerLat = 0.0;
+  double centerLon = 0.0;
+  float rangeNm = kDirectToInsetRangeNm;
+  bool centeredOnWaypoint = true;
+};
+bool mapFeatureHasGeo(const MapFeature& feature);
+MapFeature resolveWaypointGeo(const MapData& map, const MapFeature& wpt);
+
+DirectToInsetView directToInsetView(const MapData& map, const MapFeature& wpt);
 
 float directToInsetRangeNm(const MapData& map, const MapFeature& wpt);
-float directToInsetViewHalfExtentNm(float rangeNm);
+float directToInsetViewHalfExtentNm(float rangeNm, float viewportWPx = 0.0f,
+                                    float viewportHPx = 0.0f);
 
 void drawWaypointIcon(Renderer& r, float cx, float cy, float size,
                       const MapFeature* feature, MapFeatureType type);
 void drawSelectArrow(Renderer& r, float x, float cy, float size);
+
+// Draws the FMS identifier entry cells starting at startX, baseline cy: the
+// cursor cell as a pulsing highlight-select plate, the spell-ahead fill in
+// cyan, and the typed characters in white. Shared by the FPL insert / Direct-To
+// windows, the PROC airport field, and the Charts airport field so the ident
+// entry looks and behaves identically everywhere. Returns the x just past the
+// last cell (for placing the waypoint symbol).
+float drawIdentEntryCells(Renderer& r, float startX, float cy,
+                          const std::string& ident, int cursor, int typedCount,
+                          bool selectAll, bool blinkOn, float displayH,
+                          float fontSpec = kWtIdentLarge);
 
 float drawFacilityHeader(Renderer& r, const Rect& area, const MapFeature* f,
                          MapFeatureType type, float displayH);
@@ -122,6 +158,14 @@ void drawApproachesGroup(Renderer& r, const Rect& area, float displayH,
 void drawNearestRows(Renderer& r, const Rect& area,
                      const std::vector<NearRow>& rows, int selected,
                      MapFeatureType type, float displayH);
+
+// Word-wrap `text` left-aligned inside `area`, breaking on spaces, at `rowSize`
+// text with `lineH` row spacing, starting at baseline `startY`. Stops at the
+// bottom of `area`. Returns the baseline y below the last drawn line. Shared by
+// the OFP route box and the WPT - Weather Information METAR/TAF boxes.
+float drawWrappedText(Renderer& r, const Rect& area, float startY,
+                      const std::string& text, float rowSize, float lineH,
+                      const Color& color);
 
 const char* airspaceClassName(AirspaceClass c);
 bool insideBoundary(const std::vector<GeoPoint>& ring, double lat, double lon);

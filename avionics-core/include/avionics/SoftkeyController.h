@@ -8,6 +8,7 @@
 
 #include "avionics/FlightData.h"
 #include "avionics/FlightPlanPersistence.h"
+#include "avionics/FplRouteEdit.h"
 #include "avionics/FmsWaypointEntry.h"
 #include "avionics/MapData.h"
 #include "avionics/ProcedureMenuTypes.h"
@@ -347,6 +348,9 @@ class SoftkeyController {
   bool mapDirectToActive() const {
     return mapData_ != nullptr && mapData_->directToActive;
   }
+  bool mapDirectToHold() const {
+    return mapData_ != nullptr && mapData_->directToHold;
+  }
   // FMS cursor row (also the scroll anchor). Equals flightPlanLegs().size() when
   // it sits on the blank append slot below the last waypoint.
   int flightPlanCursor() const { return fplCursorRow_; }
@@ -377,6 +381,9 @@ class SoftkeyController {
   // Latch for the shell: true once after an edit, copying out the edited legs so
   // the shell programs them into the FMS (mirrors consumeDirectToRequest).
   bool consumeFlightPlanEdit(std::vector<MapLeg>& out);
+  void flightPlanPublishEdit();
+  // Remove a HILPT course-reversal hold at `fixId` from the working flight plan.
+  void stripCourseReversalHoldAtFix(const std::string& fixId);
   // Re-sync after the data-source pump when the map snapshot was stale earlier
   // in the frame (route override from consumeFlightPlanEdit).
   void syncFlightPlanFromMap(const MapData& map, bool navDirectTo = false) {
@@ -388,11 +395,17 @@ class SoftkeyController {
   PersistedLoadedApproach persistedLoadedApproachSnapshot() const;
   FlightPlanApproachState flightPlanApproachState() const;
   void applyFlightPlanApproachState(const FlightPlanApproachState& state);
+  FlightPlanTerminalProcedureState flightPlanDepartureState() const;
+  void applyFlightPlanDepartureState(const FlightPlanTerminalProcedureState& state);
+  FlightPlanTerminalProcedureState flightPlanArrivalState() const;
+  void applyFlightPlanArrivalState(const FlightPlanTerminalProcedureState& state);
   // Copy the peer GDU's displayed plan so the PFD FPL window and MFD FPL page
   // always show the same route (called from AvionicsEngine::syncFlightPlanPeer).
-  void adoptFlightPlanFromPeer(const std::vector<MapLeg>& legs,
-                               bool destinationFilled,
-                               const FlightPlanApproachState& approach);
+  void adoptFlightPlanFromPeer(
+      const std::vector<MapLeg>& legs, bool destinationFilled,
+      const FlightPlanApproachState& approach,
+      const FlightPlanTerminalProcedureState& departure = {},
+      const FlightPlanTerminalProcedureState& arrival = {});
 
   // ---- Procedures window (PROC bezel key) ----
   using ProcStep = avionics::ProcStep;
@@ -400,6 +413,19 @@ class SoftkeyController {
   using ProcApproachField = avionics::ProcApproachField;
   // True while the selection sub-window is shown rather than the top-level menu.
   bool procSelectMode() const { return procMenu_.mode == ProcMode::Select; }
+  // "Fly Course Reversal at <fix>?" prompt shown after loading an approach via
+  // an IAF that has a HILPT course reversal (overlays any page until answered).
+  bool courseReversalPromptActive() const {
+    return procMenu_.courseReversalPromptActive;
+  }
+  const std::string& courseReversalPromptFix() const {
+    return procMenu_.courseReversalFix;
+  }
+  bool courseReversalPromptYes() const { return procMenu_.courseReversalYes; }
+  // Mutable procedure-menu state, used by the engine to mirror the course-
+  // reversal prompt onto the peer GDU.
+  ProcedureMenuState& procedureMenuStateRef() { return procMenu_; }
+
   // Window title: "Procedures" for the menu, "Select Approach/Arrival/Departure"
   // for the selection sub-window.
   const char* procWindowTitle() const;
@@ -421,12 +447,23 @@ class SoftkeyController {
   int procListSelected() const { return procMenu_.selected; }
   bool procSubListOpen() const { return procMenu_.subListOpen; }
   ProcApproachField procApproachField() const { return procMenu_.approachField; }
+  bool procAirportEntryActive() const { return procMenu_.airportEntry.active; }
+  std::string procAirportEntryIdent() const { return procMenu_.airportEntry.ident(); }
+  int procAirportEntryCursor() const { return procMenu_.airportEntry.pos; }
+  int procAirportEntryTypedCount() const {
+    return procMenu_.airportEntry.typedCount();
+  }
+  bool procAirportEntrySelectAll() const { return procMenu_.airportEntry.selectAll; }
+  bool procAirportEntryHasMatch() const { return procMenu_.airportEntry.hasMatch; }
+  MapFeature procAirportEntryMatch() const { return procMenu_.airportEntry.match; }
+  std::string procAirportEntryCityLine() const;
   std::string procAirportCityLine() const;
   std::string procAirportNameLine() const;
   MapFeature procAirportFeature() const;
   std::string procApproachDisplayName(int index) const;
   std::string procSelectedApproachDisplay() const;
   std::string procSelectedTransitionDisplay() const;
+  std::string procSelectedRunwayDisplay() const;
   float procPrimaryFreqMhz() const;
   bool procPrimaryNavIsNdb() const;
   bool procShowsPrimaryNavFreq() const;
@@ -435,6 +472,20 @@ class SoftkeyController {
   bool procActivateArmed() const { return procMenu_.activateArmed; }
   // Loaded approach shown in the PFD Flight Plan body (PROC Load?).
   bool flightPlanHasLoadedApproach() const { return fplApproachLegCount_ > 0; }
+  bool flightPlanHasLoadedDeparture() const {
+    return !fplLoadedDeparture_.name.empty() || fplDepartureLegCount_ > 0;
+  }
+  bool flightPlanHasLoadedArrival() const {
+    return !fplLoadedArrival_.name.empty() || fplArrivalLegCount_ > 0;
+  }
+  int flightPlanDepartureLegStart() const { return fplDepartureLegStart_; }
+  int flightPlanDepartureLegCount() const { return fplDepartureLegCount_; }
+  int flightPlanArrivalLegStart() const { return fplArrivalLegStart_; }
+  int flightPlanArrivalLegCount() const { return fplArrivalLegCount_; }
+  std::string flightPlanDepartureAirportIcao() const;
+  std::string flightPlanDepartureHeaderLabel() const;
+  std::string flightPlanArrivalAirportIcao() const;
+  std::string flightPlanArrivalHeaderLabel() const;
   int flightPlanApproachLegStart() const { return fplApproachLegStart_; }
   int flightPlanApproachLegCount() const { return fplApproachLegCount_; }
   std::string flightPlanApproachAirportIcao() const;
@@ -474,9 +525,16 @@ class SoftkeyController {
   float directToDistanceNm() const;
   // True once the waypoint is confirmed and the Activate? prompt is armed.
   bool directToArmed() const { return dtoArmed_; }
-  // Activation latch for the shell: true once after ENT on Activate?, copying
+  // Activation latch for the shell: true once after ENT on ACTIVATE?, copying
   // out the target waypoint so the shell engages the direct course.
-  bool consumeDirectToRequest(MapLeg& out);
+  bool consumeDirectToRequest(MapLeg& out, bool* flyHold = nullptr);
+  // "4.0NM hold-icon BOSTN" Activate/Cancel prompt when Direct-To is pressed
+  // on a published HOLD row in the flight plan (trainer FPL Direct-To hold).
+  bool holdActivatePromptActive() const { return holdActivatePromptActive_; }
+  bool holdActivatePromptActivateSelected() const {
+    return holdActivatePromptActivate_;
+  }
+  const MapLeg& holdActivatePromptLeg() const { return holdActivatePromptLeg_; }
   // FPL Activate Leg: ENT on a highlighted waypoint row (Pilot's Guide 5.6).
   bool consumeActivateLegRequest(int& toLegIndex);
   // PROC Activate Missed Approach: queues activation on the FMS navigator.
@@ -723,7 +781,6 @@ class SoftkeyController {
   // publishes pilot edits to the shell.
   bool flightPlanBezelKey(BezelKey key);
   void flightPlanCommitEntry();
-  void flightPlanPublishEdit();
   void requestActivateFlightPlanLeg(int toLegIndex);
   // Direct-To a plan leg while keeping the route (FPL ENT / approach activate).
   void requestDirectToFlightPlanLeg(int legIndex);
@@ -742,6 +799,12 @@ class SoftkeyController {
   // disabled rows), and load the selected procedure's legs into the plan.
   void buildProcMenu();
   bool procBezelKey(BezelKey key);
+  // Modal "Fly Course Reversal?" prompt: owns the FMS knob / ENT / CLR while up.
+  bool courseReversalPromptBezelKey(BezelKey key);
+  // Modal hold Direct-To confirmation (Activate/Cancel) on a selected HOLD row.
+  bool holdActivatePromptBezelKey(BezelKey key);
+  void openHoldActivatePrompt(int legIndex);
+  void closeHoldActivatePrompt();
   std::vector<std::string> procProcedureNames(ProcedureType type) const;
   std::vector<std::string> procTransitions(ProcedureType type,
                                            const std::string& name) const;
@@ -894,10 +957,14 @@ class SoftkeyController {
   std::string activeWaypoint_;
   bool dtoOpen_ = false;
   float dtoAnim_ = 0.0f;   // 0..1 open progress, eased by update()
-  bool dtoArmed_ = false;  // waypoint confirmed, Activate? highlighted
+  bool dtoArmed_ = false;  // waypoint confirmed, ACTIVATE? selectable
   FmsWaypointEntry dtoEntry_;
   bool dtoRequestPending_ = false;
+  bool dtoRequestHold_ = false;
   MapLeg dtoRequestTarget_;
+  bool holdActivatePromptActive_ = false;
+  bool holdActivatePromptActivate_ = true;
+  MapLeg holdActivatePromptLeg_;
   bool fplActivateLegPending_ = false;
   int fplActivateLegIndex_ = -1;
   bool missedActivatePending_ = false;

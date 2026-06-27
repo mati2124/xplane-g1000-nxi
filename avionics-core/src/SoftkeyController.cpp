@@ -468,6 +468,13 @@ void SoftkeyController::pressBezelKey(BezelKey key) {
   if (i < 0 || i >= kBezelKeyCount) return;
   bezelPress_[i] = 1.0f;  // trigger the press-flash animation
 
+  // The "Fly Course Reversal?" prompt is modal: it owns the FMS knob / ENT / CLR
+  // until answered, overlaying whatever page is up.
+  if (courseReversalPromptBezelKey(key)) return;
+
+  // Hold Direct-To confirmation on a selected HOLD row is likewise modal.
+  if (holdActivatePromptBezelKey(key)) return;
+
   // The Direct-To window owns the FMS knob / ENT / CLR while it is open; FPL,
   // PROC, and MENU dismiss it and navigate like the real unit.
   if (directToBezelKey(key)) return;

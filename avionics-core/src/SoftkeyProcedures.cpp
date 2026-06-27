@@ -2,6 +2,7 @@
 #include "avionics/ProcedureMenu.h"
 #include "avionics/ProcedureSupport.h"
 #include "avionics/SoftkeyController.h"
+#include "avionics/SimBriefOfpSupport.h"
 #include "avionics/render/BezelKeys.h"
 
 // PFD Procedures window (PROC bezel key, Pilot's Guide 5.8). Bezel routing and
@@ -118,6 +119,10 @@ std::string SoftkeyController::procAirportCityLine() const {
   return procedureMenuAirportCityLine(procedureMenuHost());
 }
 
+std::string SoftkeyController::procAirportEntryCityLine() const {
+  return procedureMenuAirportCityLineFor(procMenu_.airportEntry.match);
+}
+
 std::string SoftkeyController::procAirportNameLine() const {
   return procedureMenuAirportNameLine(procedureMenuHost());
 }
@@ -128,6 +133,10 @@ std::string SoftkeyController::procSelectedApproachDisplay() const {
 
 std::string SoftkeyController::procSelectedTransitionDisplay() const {
   return procedureMenuSelectedTransitionDisplay(procedureMenuHost());
+}
+
+std::string SoftkeyController::procSelectedRunwayDisplay() const {
+  return procedureMenuSelectedRunwayDisplay(procedureMenuHost());
 }
 
 float SoftkeyController::procPrimaryFreqMhz() const {
@@ -178,6 +187,57 @@ std::string SoftkeyController::flightPlanApproachHeaderLabel() const {
   return {};
 }
 
+std::string SoftkeyController::flightPlanDepartureAirportIcao() const {
+  if (!persistedDepartureRestore_.airportIcao.empty()) {
+    return persistedDepartureRestore_.airportIcao;
+  }
+  return fplLoadedDeparture_.name.empty() || fplLegs_.empty()
+             ? std::string()
+             : fplLegs_.front().id;
+}
+
+std::string SoftkeyController::flightPlanDepartureHeaderLabel() const {
+  if (!fplDepartureHeaderLabel_.empty()) return fplDepartureHeaderLabel_;
+  if (!fplLoadedDeparture_.name.empty()) {
+    return formatTerminalProcedureFplHeaderLabel(
+        fplLoadedDeparture_.runway, fplLoadedDeparture_.name,
+        fplLoadedDeparture_.transition);
+  }
+  if (persistedDepartureRestore_.active &&
+      !persistedDepartureRestore_.name.empty()) {
+    const MapProcedure proc =
+        mapProcedureFromPersisted(persistedDepartureRestore_);
+    return formatTerminalProcedureFplHeaderLabel(
+        proc.runway, proc.name, proc.transition);
+  }
+  return {};
+}
+
+std::string SoftkeyController::flightPlanArrivalAirportIcao() const {
+  if (!persistedArrivalRestore_.airportIcao.empty()) {
+    return persistedArrivalRestore_.airportIcao;
+  }
+  return fplLoadedArrival_.name.empty() || fplLegs_.empty()
+             ? std::string()
+             : fplLegs_.back().id;
+}
+
+std::string SoftkeyController::flightPlanArrivalHeaderLabel() const {
+  if (!fplArrivalHeaderLabel_.empty()) return fplArrivalHeaderLabel_;
+  if (!fplLoadedArrival_.name.empty()) {
+    return formatTerminalProcedureFplHeaderLabel(
+        fplLoadedArrival_.runway, fplLoadedArrival_.name,
+        fplLoadedArrival_.transition);
+  }
+  if (persistedArrivalRestore_.active &&
+      !persistedArrivalRestore_.name.empty()) {
+    const MapProcedure proc = mapProcedureFromPersisted(persistedArrivalRestore_);
+    return formatTerminalProcedureFplHeaderLabel(
+        proc.runway, proc.name, proc.transition);
+  }
+  return {};
+}
+
 bool SoftkeyController::procBezelKey(BezelKey key) {
   if (isPageNavigationBezelKey(key)) {
     pageMenuOpen_ = false;
@@ -185,6 +245,32 @@ bool SoftkeyController::procBezelKey(BezelKey key) {
   }
   ProcedureMenuHost host = procedureMenuHost();
   return procedureMenuBezelKey(host, key);
+}
+
+bool SoftkeyController::courseReversalPromptBezelKey(BezelKey key) {
+  if (!procMenu_.courseReversalPromptActive) return false;
+  switch (key) {
+    case BezelKey::FmsOuterCw:
+    case BezelKey::FmsOuterCcw:
+    case BezelKey::FmsInnerCw:
+    case BezelKey::FmsInnerCcw:
+      procMenu_.courseReversalYes = !procMenu_.courseReversalYes;
+      procMenu_.courseReversalYesDirty = true;
+      return true;
+    case BezelKey::Ent: {
+      ProcedureMenuHost host = procedureMenuHost();
+      procedureMenuAnswerCourseReversal(host, procMenu_.courseReversalYes);
+      return true;
+    }
+    case BezelKey::Clr:
+    case BezelKey::FmsPush: {
+      ProcedureMenuHost host = procedureMenuHost();
+      procedureMenuAnswerCourseReversal(host, false);
+      return true;
+    }
+    default:
+      return false;
+  }
 }
 
 }  // namespace avionics

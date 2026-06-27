@@ -1100,4 +1100,21 @@ void MockDataSource::setSelectedCourse(float deg) { data_.courseDeg = deg; }
 
 void MockDataSource::setBaroInHg(float inHg) { data_.baroSettingInHg = inHg; }
 
+std::optional<StationWeather> MockDataSource::weatherForStation(
+    const std::string& icao) const {
+  // The mock's only modeled field is KFMY (also its ground-mode home). Use the
+  // exact strings shown on the Garmin trainer's WPT - Weather page so the
+  // headless screenshot regression matches the reference.
+  if (icao != "KFMY") return std::nullopt;
+  StationWeather wx;
+  wx.icao = "KFMY";
+  wx.rawMetar =
+      "SA KFMY 161453Z 08005KT 10SM FEW014 24/21 A3009 RMK AO2 SLP189 "
+      "T02440206 51015";
+  wx.rawTaf =
+      "FT KFMY 111122Z 111212 12012KT P6SM SCT025 SCT050 OVC250 "
+      "TEMPO 1216 BKN025 BKN050";
+  return wx;
+}
+
 }  // namespace avionics

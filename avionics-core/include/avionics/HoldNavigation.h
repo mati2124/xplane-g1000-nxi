@@ -15,6 +15,9 @@ enum class HoldPatternPhase {
   OutboundTurn,
   InboundParallel,
   InboundTurn,
+  // Returned by advanceHoldPatternPhase when a single-circuit HILPT course
+  // reversal has rolled out on the inbound course (vs. looping for a hold).
+  CircuitComplete,
 };
 
 // Lateral guidance for one racetrack-hold segment.
@@ -42,9 +45,12 @@ HoldGuidance computeHoldGuidance(double lat, double lon, const MapLeg& leg,
                                  HoldPatternPhase phase, float groundSpeedKts);
 
 // Advance the racetrack phase (outbound, turn arcs, inbound, fix capture).
+// When singleCircuit is true (HILPT course reversal), the pattern completes
+// after one inbound turn instead of looping back to Outbound.
 HoldPatternPhase advanceHoldPatternPhase(double lat, double lon,
                                          const MapLeg& leg,
                                          HoldPatternPhase phase,
-                                         float groundSpeedKts);
+                                         float groundSpeedKts,
+                                         bool singleCircuit = false);
 
 }  // namespace avionics

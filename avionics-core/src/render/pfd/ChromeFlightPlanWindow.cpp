@@ -145,7 +145,10 @@ void drawFplValueWithDeg(Renderer& r, float rightX, float rowCy,
 }
 
 std::string fplApproachLegRole(const MapLeg& leg, const std::string& transition) {
-  if (!leg.procedureRole.empty()) return leg.procedureRole;
+  // The fix row shows its genuine procedure role; a published hold is rendered
+  // on its own dedicated "HOLD" row, so do not also tag the fix with "hold".
+  const std::string fromLeg = leg.procedureRole;
+  if (!fromLeg.empty()) return fromLeg;
   if (transition.size() >= 2 && transition[0] == 'R' && transition[1] == 'W') {
     return {};
   }
@@ -544,6 +547,18 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
         approachStart, approachCount, static_cast<int>(legs.size()));
   }
   const bool approachLoaded = approachCount > 0;
+  const int depStart = ui.flightPlanDepartureLegStart();
+  const int depCount = ui.flightPlanDepartureLegCount();
+  const std::string depHeader = ui.flightPlanDepartureHeaderLabel();
+  const std::string depAirport = ui.flightPlanDepartureAirportIcao();
+  const int arrStart = ui.flightPlanArrivalLegStart();
+  const int arrCount = ui.flightPlanArrivalLegCount();
+  const std::string arrHeader = ui.flightPlanArrivalHeaderLabel();
+  const std::string arrAirport = ui.flightPlanArrivalAirportIcao();
+  const bool destFilled =
+      ui.flightPlanDestinationFilled() || approachStart >= 2;
+  const bool procedureDisplay = fplUsesProcedureDisplayRows(
+      depHeader, depCount, arrHeader, arrCount, approachCount);
   std::string approachAirport;
   if (approachLoaded) {
     approachAirport = ui.flightPlanApproachAirportIcao();
@@ -602,33 +617,35 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const bool destOnlyPlan =
       ui.flightPlanDestinationFilled() && legs.size() == 1;
   const bool blankOriginSection =
-      directToFplView || destOnlyPlan ||
+      directToFplView || destOnlyPlan || ui.flightPlanHasLoadedDeparture() ||
       (approachLoaded && approachStart <= 1 && !legs.empty() &&
        !approachAirport.empty() && legs.front().id == approachAirport);
   const int bodyLegCount =
-      directToFplView && !approachLoaded ? 0
-                                         : static_cast<int>(legs.size());
+      directToFplView && !procedureDisplay ? 0
+                                           : static_cast<int>(legs.size());
   const bool directToPlanBody = directToFplView;
   // Filled waypoint idents (origin, enroute, destination) indent under their
   // section labels; blank "Origin - ____" rows stay at identX.
   const float filledIdentX = sectionIdentX;
-  const std::vector<FplDisplayRow> approachDisplayRows =
-      approachLoaded
-          ? buildFplApproachDisplayRows(
-                legs, approachStart, approachCount, blankOriginSection,
-                ui.flightPlanDestinationFilled() || approachStart >= 2)
+  const std::vector<FplDisplayRow> procedureDisplayRows =
+      procedureDisplay
+          ? buildFplProcedureDisplayRows(
+                legs, depStart, depCount, depHeader, arrStart, arrCount,
+                arrHeader, approachStart, approachCount, blankOriginSection,
+                destFilled)
           : std::vector<FplDisplayRow>{};
   const std::vector<FplSectionRow> sectionRows =
-      approachLoaded ? std::vector<FplSectionRow>{}
-                     : fplFilterDuplicateLegSectionRows(
-                           buildFplSectionRows(bodyLegCount,
-                                               ui.flightPlanDestinationFilled(),
-                                               directToPlanBody),
-                           legs);
+      procedureDisplay ? std::vector<FplSectionRow>{}
+                       : fplFilterDuplicateLegSectionRows(
+                             buildFplSectionRows(bodyLegCount,
+                                                 ui.flightPlanDestinationFilled(),
+                                                 directToPlanBody),
+                             legs);
   const int sectionCursor = ui.flightPlanCursor();
 
   const bool dtoNavActive =
       navDirectToActive(d) || ui.mapDirectToActive();
+  const bool directToHoldNav = ui.mapDirectToHold();
   int activeLegIdx = fplDirectToTargetLegIndex(
       legs, d, ui.activeWaypointId(), dtoNavActive);
   if (activeLegIdx < 0) {
@@ -643,23 +660,37 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
           ? (ui.flightPlanDestinationFilled() || approachStart >= 2)
           : ui.flightPlanDestinationFilled();
   const int listCursorRow = sectionCursor;
-  const int activeSelectableRow =
-      approachLoaded
-          ? fplApproachSelectableRowForLegIndex(
-                activeLegIdx, legs, approachStart, approachCount,
-                blankOriginSection, fplActiveLayoutDestFilled)
+  int activeSelectableRow =
+      procedureDisplay
+          ? fplProcedureSelectableRowForLegIndex(
+                activeLegIdx, legs, depStart, depCount, depHeader, arrStart,
+                arrCount, arrHeader, approachStart, approachCount,
+                blankOriginSection, destFilled)
           : fplSectionSelectableRowForLegIndex(
                 activeLegIdx, sectionRows, bodyLegCount,
                 ui.flightPlanDestinationFilled(), directToPlanBody);
+  if (procedureDisplay && activeLegIdx >= 0 &&
+      activeLegIdx < static_cast<int>(legs.size())) {
+    const MapLeg& activeLeg =
+        legs[static_cast<std::size_t>(activeLegIdx)];
+    if (fplHoldNavActiveOnLeg(d, directToHoldNav, ui.mapDirectToActive(),
+                              dtoNavActive, activeLegIdx, activeLegIdx,
+                              activeLeg)) {
+      const int holdRow = fplApproachSelectableRowForHoldLegIndex(
+          activeLegIdx, legs, approachStart, approachCount, blankOriginSection,
+          destFilled);
+      if (holdRow >= 0) activeSelectableRow = holdRow;
+    }
+  }
   const bool pinActiveApproachLeg = fplPinActiveApproachLeg(
       approachLoaded, activeLegIdx, approachStart, approachCount,
       ui.flightPlanLocalDraft(),
       directToFplView || ui.mapDirectToActive());
   int cursorLegIdx = -1;
-  if (approachLoaded) {
-    cursorLegIdx = fplApproachLegIndexForSelectable(
-        listCursorRow, legs, approachStart, approachCount, blankOriginSection,
-        fplActiveLayoutDestFilled);
+  if (procedureDisplay) {
+    cursorLegIdx = fplProcedureLegIndexForSelectable(
+        listCursorRow, legs, depStart, depCount, depHeader, arrStart, arrCount,
+        arrHeader, approachStart, approachCount, blankOriginSection, destFilled);
   } else {
     cursorLegIdx = fplLegIndexForSectionRow(
         listCursorRow, bodyLegCount, ui.flightPlanDestinationFilled(),
@@ -672,8 +703,8 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const std::string& navToIdent = d.fmaToWpt;
 
   const int displayRowCount =
-      approachLoaded ? static_cast<int>(approachDisplayRows.size())
-                     : static_cast<int>(sectionRows.size());
+      procedureDisplay ? static_cast<int>(procedureDisplayRows.size())
+                       : static_cast<int>(sectionRows.size());
   const float bodyBottom = f.top + f.h - fontPx(4.0f, h);
   const float bodyH = std::max(1.0f, bodyBottom - bodyTop);
   const float rowH = fontPx(kFplBodyRowPx, h);
@@ -685,10 +716,11 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   int first = 0;
   if (scrolling && displayRowCount > visible) {
     int cursorDisplayRow = 0;
-    if (approachLoaded) {
-      cursorDisplayRow = fplApproachDisplayRowIndexForSelectable(
-          sectionCursor, legs, approachStart, approachCount, blankOriginSection,
-          ui.flightPlanDestinationFilled() || approachStart >= 2);
+    if (procedureDisplay) {
+      cursorDisplayRow = fplProcedureDisplayRowIndexForSelectable(
+          sectionCursor, legs, depStart, depCount, depHeader, arrStart,
+          arrCount, arrHeader, approachStart, approachCount, blankOriginSection,
+          destFilled);
     } else {
       int selectableBefore = 0;
       for (int i = 0; i < displayRowCount; ++i) {
@@ -705,10 +737,21 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
       }
     }
     int pinnedRow = -1;
-    if (pinActiveApproachLeg && approachLoaded) {
-      pinnedRow = fplApproachDisplayRowIndexForLegIndex(
-          activeLegIdx, legs, approachStart, approachCount, blankOriginSection,
-          fplActiveLayoutDestFilled);
+    if (pinActiveApproachLeg && procedureDisplay) {
+      if (activeLegIdx >= 0 &&
+          activeLegIdx < static_cast<int>(legs.size()) &&
+          fplHoldNavActiveOnLeg(
+              d, directToHoldNav, ui.mapDirectToActive(), dtoNavActive,
+              activeLegIdx, activeLegIdx,
+              legs[static_cast<std::size_t>(activeLegIdx)])) {
+        pinnedRow = fplApproachDisplayRowIndexForHoldLegIndex(
+            activeLegIdx, legs, approachStart, approachCount, blankOriginSection,
+            destFilled);
+      } else {
+        pinnedRow = fplApproachDisplayRowIndexForLegIndex(
+            activeLegIdx, legs, approachStart, approachCount, blankOriginSection,
+            destFilled);
+      }
     }
     first = fplListScrollFirst(cursorDisplayRow, pinnedRow, displayRowCount,
                                visible);
@@ -720,7 +763,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const bool originFilled = bodyLegCount > 0 && !legs.empty();
   const bool useConnector =
       activeHighlight && originFilled && activeLegIdx > 0 && !blankOriginSection &&
-      (!approachLoaded ||
+      (!procedureDisplay ||
        (activeLegIdx >= 0 && activeLegIdx < approachStart));
   bool connectorOriginValid = false;
   bool connectorTargetValid = false;
@@ -729,10 +772,10 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
 
   int selectableIdx = 0;
   if (first > 0) {
-    if (approachLoaded) {
+    if (procedureDisplay) {
       for (int i = 0; i < first; ++i) {
-        if (fplApproachDisplayRowSelectable(
-                approachDisplayRows[static_cast<std::size_t>(i)].kind)) {
+        if (fplProcedureDisplayRowSelectable(
+                procedureDisplayRows[static_cast<std::size_t>(i)].kind)) {
           ++selectableIdx;
         }
       }
@@ -753,9 +796,9 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
     for (int idx = 0; idx < displayRowCount; ++idx) {
       const float rowCy =
           bodyTop + rowH * (static_cast<float>(idx - first) + 0.5f);
-      if (approachLoaded) {
+      if (procedureDisplay) {
         const FplDisplayRow& dr =
-            approachDisplayRows[static_cast<std::size_t>(idx)];
+            procedureDisplayRows[static_cast<std::size_t>(idx)];
         switch (dr.kind) {
           case FplDisplayRowKind::Origin:
             if (dr.legIndex >= 0) {
@@ -817,10 +860,18 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   for (int idx = first; idx < end; ++idx) {
     const float rowCy =
         bodyTop + rowH * (static_cast<float>(idx - first) + 0.5f);
-    if (approachLoaded) {
+    if (procedureDisplay) {
       const FplDisplayRow& dr =
-          approachDisplayRows[static_cast<std::size_t>(idx)];
+          procedureDisplayRows[static_cast<std::size_t>(idx)];
       switch (dr.kind) {
+        case FplDisplayRowKind::DepartureHeader:
+          drawFplApproachHeader(r, identX, rowCy, depAirport, depHeader, size,
+                                colors::kPopoutCyan, a);
+          continue;
+        case FplDisplayRowKind::ArrivalHeader:
+          drawFplApproachHeader(r, identX, rowCy, arrAirport, arrHeader, size,
+                                colors::kPopoutCyan, a);
+          continue;
         case FplDisplayRowKind::SepDash: {
           const bool showSelection = fplShowListRowSelection(
               selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
@@ -835,14 +886,71 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                                 ui.flightPlanApproachHeaderLabel(), size,
                                 colors::kPopoutCyan, a);
           continue;
+        case FplDisplayRowKind::Hold: {
+          if (dr.legIndex < 0 ||
+              dr.legIndex >= static_cast<int>(legs.size())) {
+            continue;
+          }
+          const MapLeg& leg = legs[static_cast<std::size_t>(dr.legIndex)];
+          const MapHoldPattern& hold = leg.hold;
+          if (!hold.active) continue;
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          const bool showActive = fplHoldNavActiveOnLeg(
+              d, directToHoldNav, ui.mapDirectToActive(), dtoNavActive,
+              dr.legIndex, activeLegIdx, leg);
+          const bool activeNavBlink =
+              showActive &&
+              fplActiveNavRowBlink(dr.legIndex, activeLegIdx, cursorLegIdx,
+                                   cursorOn, listCursorRow, activeSelectableRow);
+          if (showActive && !useConnector) {
+            drawFplActiveLegArrow(r, listLeft, rowCy, size,
+                                  withAlpha(colors::kMagenta, a));
+          }
+          if (showSelection) {
+            render::drawCursorSelect(r, sectionIdentX, rowCy, "HOLD", size,
+                                     TextAlign::Left, blinkOn, a);
+          } else if (showActive) {
+            const Color holdColor =
+                activeNavBlink && blinkOn
+                    ? withAlpha(colors::kMagenta, a)
+                    : withAlpha(colors::kMagenta, a);
+            r.fillText(sectionIdentX, rowCy, "HOLD", size, TextAlign::Left,
+                       holdColor);
+          } else {
+            r.fillText(sectionIdentX, rowCy, "HOLD", size, TextAlign::Left,
+                       withAlpha(colors::kWhite, a));
+          }
+          if (showActive) {
+            drawFplActiveRowValues(r, dtkRight, disColumnRight, rowCy, size,
+                                   smallSize, d.fmaLegBearingDeg,
+                                   d.fmaLegDistanceNm, a);
+          } else {
+            drawFplDtkValue(r, dtkRight, rowCy,
+                            static_cast<double>(hold.inboundCourseDeg), size,
+                            smallSize, withAlpha(colors::kWhitesmoke, a));
+            if (hold.legLengthNm > 0.0f) {
+              drawFplDisValue(r, disColumnRight, rowCy,
+                              static_cast<double>(hold.legLengthNm), size,
+                              smallSize, withAlpha(colors::kWhitesmoke, a));
+            }
+          }
+          continue;
+        }
         case FplDisplayRowKind::ApproachLeg: {
           const int legIdx = dr.legIndex;
           const MapLeg& leg = legs[static_cast<std::size_t>(legIdx)];
           const bool showSelection = fplShowListRowSelection(
               selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
           ++selectableIdx;
-          const bool showActive = fplShowActiveNavRow(
-              activeHighlight, legIdx, activeLegIdx, leg, navToIdent);
+          const bool holdNavOnLeg = fplHoldNavActiveOnLeg(
+              d, directToHoldNav, ui.mapDirectToActive(), dtoNavActive, legIdx,
+              activeLegIdx, leg);
+          const bool showActive =
+              !holdNavOnLeg &&
+              fplShowActiveNavRow(activeHighlight, legIdx, activeLegIdx, leg,
+                                  navToIdent);
           const std::string approachTransition =
               ui.flightPlanApproachTransition();
           if (showActive && !useConnector) {
@@ -987,7 +1095,9 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                          withAlpha(colors::kPopoutCyan, a), showSelection, blinkOn, a);
           continue;
         }
-        case FplDisplayRowKind::EnrouteLeg: {
+        case FplDisplayRowKind::EnrouteLeg:
+        case FplDisplayRowKind::DepartureLeg:
+        case FplDisplayRowKind::ArrivalLeg: {
           const bool showSelection = fplShowListRowSelection(
               selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
           ++selectableIdx;

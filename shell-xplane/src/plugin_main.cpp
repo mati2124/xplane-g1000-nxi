@@ -52,8 +52,10 @@
 #include "FlightPlanBridge.h"
 #include "FmsDebugOverlay.h"
 #include "FmsRouteProgrammer.h"
+#include "NavigraphStore.h"
 #include "UpdateNotify.h"
 #include "avionics/AssetPaths.h"
+#include "avionics/Charts.h"
 #include "avionics/ChecklistStore.h"
 #include "avionics/EisStore.h"
 #include "XPLMDisplay.h"
@@ -106,6 +108,16 @@ std::uint32_t g_mapGeometryEpoch = 0;
 // (the standalone shell cannot read the FMS itself; see FlightPlanBridge.h).
 std::unique_ptr<avionics::FlightPlanBridge> g_flightPlanBridge;
 std::unique_ptr<avionics::CommandBridge> g_commandBridge;
+
+// SimBrief OFP import via Navigraph (AUX - SIMBRIEF page). Owns the OAuth
+// device-flow sign-in + OFP fetch on a background thread; the page's
+// Login/Logout/FETCH softkeys drive it. The refresh token persists to the
+// per-user config dir so the session restores on the next sim launch.
+std::unique_ptr<avionics::NavigraphStore> g_navigraph;
+avionics::SimBriefState g_simbriefState;
+std::string g_navigraphRefreshToken;
+avionics::ChartsState g_chartsState;
+unsigned g_chartImageGeneration = 0;
 
 // Redraw divisors. The heavy work (NanoVG re-tessellates the whole vector scene
 // on every draw, on the CPU in the GL2 backend) runs only every Nth time our
@@ -480,6 +492,12 @@ void WireNavMapData(avionics::AvionicsEngine& engine) {
   if (!g_navMapData) return;
   engine.softkeyController().setNavFeatureSource(g_navMapData.get());
   engine.mfdController().setNavFeatureSource(g_navMapData.get());
+  // WPT - Weather Information reads X-Plane's downloaded METAR files via the
+  // data source's station-weather store.
+  if (g_dataSource) {
+    engine.mfdController().setStationWeatherSource(
+        &g_dataSource->stationWeatherSource());
+  }
 }
 
 void WireSoftkeyPeers() {
@@ -1001,8 +1019,10 @@ void ApplyQueuedFlightPlanEdits() {
                 g_pfd.engine->softkeyController().flightPlanDestinationFilled());
     }
     avionics::MapLeg pfdDto;
-    if (g_pfd.engine->softkeyController().consumeDirectToRequest(pfdDto)) {
-      g_dataSource->setDirectTo(pfdDto);
+    bool pfdDtoHold = false;
+    if (g_pfd.engine->softkeyController().consumeDirectToRequest(pfdDto,
+                                                               &pfdDtoHold)) {
+      g_dataSource->setDirectTo(pfdDto, pfdDtoHold);
     }
     avionics::MapProcedure pfdProc;
     if (g_pfd.engine->softkeyController().consumeProcLoadRequest(pfdProc) &&
@@ -1019,8 +1039,10 @@ void ApplyQueuedFlightPlanEdits() {
                 g_mfd.engine->mfdController().fplDestinationFilled());
     }
     avionics::MapLeg dtoTarget;
-    if (g_mfd.engine->mfdController().consumeDirectToRequest(dtoTarget)) {
-      g_dataSource->setDirectTo(dtoTarget);
+    bool dtoHold = false;
+    if (g_mfd.engine->mfdController().consumeDirectToRequest(dtoTarget,
+                                                            &dtoHold)) {
+      g_dataSource->setDirectTo(dtoTarget, dtoHold);
     }
     avionics::MapProcedure proc;
     if (g_mfd.engine->mfdController().consumeProcLoadRequest(proc) &&
@@ -1028,6 +1050,171 @@ void ApplyQueuedFlightPlanEdits() {
       g_dataSource->tuneRadioStandby(avionics::RadioUnit::Nav1,
                                     proc.frequencyMhz);
     }
+  }
+}
+
+// Drives the Navigraph sign-in + SimBrief OFP import each frame: reacts to the
+// AUX - SIMBRIEF softkeys, persists the rotating refresh token, lands completed
+// fetches into the displayed/active flight plan, and publishes status for the
+// page renderer. Mirrors the standalone shell's pump.
+void PumpNavigraph() {
+  if (!g_navigraph) return;
+
+  if (g_mfd.engine) {
+    avionics::MfdController& ui = g_mfd.engine->mfdController();
+    if (ui.consumeNavigraphLoginRequest()) g_navigraph->requestLogin();
+    if (ui.consumeNavigraphLogoutRequest()) {
+      g_navigraph->requestLogout();
+      g_simbriefState.status = avionics::SimBriefStatus::NotConfigured;
+    }
+    if (ui.consumeSimbriefFetchRequest() && !g_navigraph->fetching()) {
+      g_navigraph->requestFetch();
+    }
+  }
+
+  std::string newToken;
+  if (g_navigraph->consumeRefreshToken(newToken) &&
+      newToken != g_navigraphRefreshToken) {
+    g_navigraphRefreshToken = newToken;
+    avionics::SaveNavigraphRefreshToken(newToken);
+  }
+
+  const avionics::NavigraphAuthSnapshot snap = g_navigraph->snapshot();
+  avionics::NavigraphLoginPhase phase = avionics::NavigraphLoginPhase::LoggedOut;
+  switch (snap.phase) {
+    case avionics::NavigraphAuthPhase::LoggedOut:
+      phase = avionics::NavigraphLoginPhase::LoggedOut;
+      break;
+    case avionics::NavigraphAuthPhase::AwaitingUser:
+      phase = avionics::NavigraphLoginPhase::AwaitingUser;
+      break;
+    case avionics::NavigraphAuthPhase::LoggedIn:
+      phase = avionics::NavigraphLoginPhase::LoggedIn;
+      break;
+    case avionics::NavigraphAuthPhase::Error:
+      phase = avionics::NavigraphLoginPhase::Error;
+      break;
+  }
+  g_simbriefState.loginPhase = phase;
+  g_simbriefState.username = snap.username;
+  g_simbriefState.userCode = snap.userCode;
+  g_simbriefState.verificationUri = snap.verificationUri;
+  g_simbriefState.verificationUriComplete = snap.verificationUriComplete;
+  g_simbriefState.loginError = snap.error;
+  if (g_navigraph->fetching()) {
+    g_simbriefState.status = avionics::SimBriefStatus::Fetching;
+  } else if (phase != avionics::NavigraphLoginPhase::LoggedIn &&
+             g_simbriefState.status != avionics::SimBriefStatus::Ok &&
+             g_simbriefState.status != avionics::SimBriefStatus::Error) {
+    g_simbriefState.status = avionics::SimBriefStatus::NotConfigured;
+  } else if (phase == avionics::NavigraphLoginPhase::LoggedIn &&
+             g_simbriefState.status ==
+                 avionics::SimBriefStatus::NotConfigured) {
+    g_simbriefState.status = avionics::SimBriefStatus::Idle;
+  }
+
+  avionics::SimBriefFetchResult result;
+  if (g_navigraph->consumeResult(result)) {
+    if (result.ok) {
+      g_simbriefState.status = avionics::SimBriefStatus::Ok;
+      g_simbriefState.error.clear();
+      g_simbriefState.originIcao = result.originIcao;
+      g_simbriefState.destinationIcao = result.destinationIcao;
+      g_simbriefState.route = result.route;
+      g_simbriefState.generatedUtc = result.generatedUtc;
+      g_simbriefState.waypointCount = static_cast<int>(result.legs.size());
+      if (g_dataSource) g_dataSource->setRouteOverride(result.legs);
+      if (g_pfd.engine) {
+        g_pfd.engine->softkeyController().replaceFlightPlanFromExternal(
+            result.legs);
+      }
+      if (g_mfd.engine) {
+        g_mfd.engine->mfdController().replaceFlightPlanFromExternal(
+            result.legs);
+      }
+    } else {
+      g_simbriefState.status = avionics::SimBriefStatus::Error;
+      g_simbriefState.error = result.error;
+    }
+  }
+
+  if (g_mfd.engine) {
+    g_mfd.engine->mfdController().setSimbriefState(g_simbriefState);
+  }
+
+  // Navigraph charts (WPT - Airport Information chart view): in-sim plugin
+  // always has a live link.
+  if (g_mfd.engine && g_navigraph) {
+    avionics::MfdController& mfdUi = g_mfd.engine->mfdController();
+    const bool chartsActive =
+        mfdUi.chartViewActive() &&
+        g_simbriefState.loginPhase == avionics::NavigraphLoginPhase::LoggedIn;
+
+    g_chartsState.commAllowed = true;
+    g_chartsState.loginPhase = g_simbriefState.loginPhase;
+
+    if (chartsActive) {
+      const std::string apt = mfdUi.chartsDesiredAirport();
+      g_navigraph->setChartAirport(apt);
+      g_chartsState.airportIcao = apt;
+
+      const avionics::ChartIndexSnapshot idx = g_navigraph->chartIndexSnapshot();
+      const std::string chartId = mfdUi.chartsSelectedChartId();
+      if (!chartId.empty()) {
+        for (const avionics::NavigraphChartMeta& meta : idx.charts) {
+          if (meta.id == chartId) {
+            const std::string url = mfdUi.chartsNight() ? meta.imageNightUrl
+                                                        : meta.imageDayUrl;
+            g_navigraph->setChartSelection(chartId, mfdUi.chartsNight(), url);
+            break;
+          }
+        }
+      }
+
+      switch (idx.status) {
+        case avionics::ChartIndexStatus::Idle:
+          g_chartsState.status = avionics::ChartsStatus::Idle;
+          break;
+        case avionics::ChartIndexStatus::Loading:
+          g_chartsState.status = avionics::ChartsStatus::Loading;
+          break;
+        case avionics::ChartIndexStatus::Ready:
+          g_chartsState.status = avionics::ChartsStatus::Ready;
+          break;
+        case avionics::ChartIndexStatus::Empty:
+          g_chartsState.status = avionics::ChartsStatus::Empty;
+          break;
+        case avionics::ChartIndexStatus::Error:
+          g_chartsState.status = avionics::ChartsStatus::Error;
+          break;
+      }
+      g_chartsState.error = idx.error;
+      g_chartsState.charts.clear();
+      for (const avionics::NavigraphChartMeta& meta : idx.charts) {
+        g_chartsState.charts.push_back(avionics::NavigraphChartToListItem(meta));
+      }
+    } else {
+      g_navigraph->setChartAirport("");
+      g_chartsState.airportIcao.clear();
+      g_chartsState.status = avionics::ChartsStatus::Idle;
+      g_chartsState.error.clear();
+      g_chartsState.charts.clear();
+    }
+
+    avionics::ChartImageResult imgResult;
+    if (g_navigraph->consumeChartImage(imgResult)) {
+      ++g_chartImageGeneration;
+      g_chartsState.image.generation = g_chartImageGeneration;
+      if (imgResult.ok && !imgResult.pngBytes.empty()) {
+        g_chartsState.image.pngBytes =
+            std::make_shared<const std::vector<unsigned char>>(
+                std::move(imgResult.pngBytes));
+      } else {
+        g_chartsState.image.pngBytes.reset();
+      }
+    }
+
+    mfdUi.setChartsState(g_chartsState);
   }
 }
 
@@ -1315,16 +1502,20 @@ bool PfdClaimsGcuFms() {
   return g_pfd.engine->softkeyController().pfdClaimsFmsInput();
 }
 
-// MFD GDU FMS keys are inert while a PFD pop-up owns FMS input (the GCU and
-// PFD GDU route there; suppress duplicate MFD GDU commands from the same press).
-// ENT on the MFD still acknowledges the power-up page even when a PFD pop-up
-// is open.
+// MFD GDU ENT/CLR/FMS-push are inert while a PFD pop-up owns FMS input. The
+// MFD's own FMS knob detents still step page groups/pages. ENT on the MFD still
+// acknowledges the power-up page even when a PFD pop-up is open.
 bool GduFmsKeyBlockedByPfd(const CommandBinding& b) {
   if (b.isSoftkey) return false;
   if (b.dev == &g_pfd) return false;
   const auto key = static_cast<avionics::BezelKey>(b.value);
   if (key == avionics::BezelKey::Ent && g_mfd.engine != nullptr &&
       g_mfd.engine->awaitingPowerUpAck()) {
+    return false;
+  }
+  if (avionics::isMfdPageSelectionBezelKey(key)) return false;
+  if (g_mfd.engine != nullptr &&
+      g_mfd.engine->mfdController().ownsLocalFmsInput()) {
     return false;
   }
   if (!PfdClaimsGcuFms()) return false;
@@ -1958,6 +2149,7 @@ int OnToggleFmsDebugCommand(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
 float UpdatePumpFlightLoop(float /*sinceLast*/, float /*sinceLoop*/,
                            int /*counter*/, void* /*ref*/) {
   avionics::pumpPluginSelfUpdate();
+  PumpNavigraph();
   if (!g_installUpdateMenuShown && avionics::updateAvailable() &&
       g_rateMenu != nullptr && g_installUpdateMenuIndex >= 0) {
     const std::string label =
@@ -2062,6 +2254,11 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   std::strcpy(outSig, "com.andrewmiller.xplaneavionics");
   std::strcpy(outDesc, "Shared-core glass cockpit (PFD/MFD) for X-Plane.");
 
+  // Initialize libcurl once on X-Plane's main thread before the NavigraphStore
+  // worker thread can issue a request. libcurl's implicit init is not
+  // thread-safe and would otherwise race other curl users inside the sim.
+  avionics::EnsureCurlGlobalInit();
+
   // Opt into POSIX paths. Without this the SDK returns legacy HFS-style paths
   // (e.g. "Macintosh HD:Users:...") from XPLMGetSystemPath/XPLMGetPrefsPath/the
   // plugin path, which our std::ifstream/stat file probes can't open. Must run
@@ -2103,6 +2300,16 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   g_flightPlanBridge = std::make_unique<avionics::FlightPlanBridge>(
       avionics::fpbridge::kDefaultPort);
   g_commandBridge = std::make_unique<avionics::CommandBridge>();
+
+  // SimBrief OFP import via Navigraph. Credentials load from the per-user config
+  // dir / env vars; a saved refresh token silently restores the prior session
+  // (and auto-fetches the latest OFP) without a fresh sign-in.
+  g_navigraph = std::make_unique<avionics::NavigraphStore>();
+  g_navigraph->setCredentials(avionics::LoadNavigraphCredentials());
+  g_navigraphRefreshToken = avionics::LoadNavigraphRefreshToken();
+  if (g_navigraph->hasCredentials() && !g_navigraphRefreshToken.empty()) {
+    g_navigraph->restoreSession(g_navigraphRefreshToken);
+  }
 
   // Start the UDP bridges and intercept GDU commands as soon as the plugin
   // loads. X-Plane does not always call XPluginEnable after a plugin reload
@@ -2151,6 +2358,9 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
 
 PLUGIN_API void XPluginStop(void) {
   XPLMUnregisterFlightLoopCallback(&UpdatePumpFlightLoop, nullptr);
+  // Joins the Navigraph worker thread; do it before tearing down engines since
+  // the pump callback (now unregistered) is the only other thread that uses it.
+  g_navigraph.reset();
   if (g_installUpdateCmd != nullptr) {
     XPLMUnregisterCommandHandler(g_installUpdateCmd, &OnInstallUpdateCommand,
                                  /*before=*/1, nullptr);

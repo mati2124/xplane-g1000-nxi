@@ -35,7 +35,8 @@ void syncNavigatorFlightPlan(FmsNavigator& nav, const MapData& map) {
   nav.setFlightPlan(plan);
   if (preserveDirectTo) {
     nav.activateDirectTo(map.directTo, map.directToOriginLat,
-                         map.directToOriginLon, map.directToOriginValid);
+                         map.directToOriginLon, map.directToOriginValid,
+                         map.directToHold);
   } else if (prevIdx >= 0 && prevIdx < static_cast<int>(plan.size())) {
     nav.setActiveLegIndex(prevIdx);
   }
@@ -57,9 +58,11 @@ void syncNavigatorDirectTo(FmsNavigator& nav, const MapData& map) {
          navDistanceNm(map.directToOriginLat, map.directToOriginLon,
                        nav.directToOriginLat(), nav.directToOriginLon()) >
              0.001);
-    if (targetChanged || originChanged) {
+    const bool holdChanged = map.directToHold != nav.directToHold();
+    if (targetChanged || originChanged || holdChanged) {
       nav.activateDirectTo(map.directTo, map.directToOriginLat,
-                           map.directToOriginLon, map.directToOriginValid);
+                           map.directToOriginLon, map.directToOriginValid,
+                           map.directToHold);
     }
     return;
   }

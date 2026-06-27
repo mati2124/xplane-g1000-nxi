@@ -11,6 +11,7 @@
 #include "avionics/NavFeatureSource.h"
 #include "avionics/NexradWeatherRadar.h"
 #include "avionics/Radio.h"
+#include "avionics/StationWeather.h"
 #include "avionics/Terrain.h"
 #include "avionics/WeatherRadar.h"
 
@@ -27,7 +28,7 @@ namespace avionics {
 // near the aircraft, and setRoute() flies an actual flight plan (e.g. parsed
 // from an .fms file). The hand-placed demo nav data is a fallback used only
 // when no source is wired in (e.g. a bare unit test).
-class MockDataSource : public DataSource {
+class MockDataSource : public DataSource, public StationWeatherSource {
  public:
   void update(double dtSeconds) override;
   const FlightData& snapshot() const override { return data_; }
@@ -92,6 +93,13 @@ class MockDataSource : public DataSource {
 
   void applyGpsNavigation(FmsNavigator& navigator, bool obsMode,
                           CdiSource cdiSource, float nmPerDot) override;
+
+  // Canned datalink weather for the WPT - Weather Information page (screenshots
+  // / offline demo). Returns the trainer's verbatim KFMY METAR + TAF strings
+  // for "KFMY"; nullopt for any other station, since the mock models a single
+  // home field. The page decodes the METAR for its field list.
+  std::optional<StationWeather> weatherForStation(
+      const std::string& icao) const override;
 
   // Source of real nearby navigation data (features, airspaces, airways,
   // runways, land vectors, obstacles). When set it replaces the hand-placed

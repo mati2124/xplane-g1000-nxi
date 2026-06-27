@@ -27,6 +27,32 @@ std::vector<MfdController::PageMenuItem> MfdController::buildPageMenu() const {
   // The Navigation Map and the Active Flight Plan page each define a Page Menu
   // in this suite (Pilot's Guide Fig. 5-6). Other pages return an empty list,
   // so MENU is inert there, matching the real unit's pages with no page menu.
+  if (pageGroup_ == MfdPageGroup::FlightPlan &&
+      page() == MfdPage::FlightPlanCatalog) {
+    // Flight Plan Catalog page menu (Pilot's Guide, Flight Plan Storage). The
+    // plan-specific rows grey out when the catalog is empty (nothing to act on),
+    // matching the real unit. Delete All is menu-only.
+    const bool hasPlans = !catalog_.empty();
+    const PageMenuAction actState = hasPlans ? PageMenuAction::CatalogActivate
+                                             : PageMenuAction::Disabled;
+    const PageMenuAction invState =
+        hasPlans ? PageMenuAction::CatalogInvertActivate
+                 : PageMenuAction::Disabled;
+    const PageMenuAction copyState =
+        hasPlans ? PageMenuAction::CatalogCopy : PageMenuAction::Disabled;
+    const PageMenuAction delState =
+        hasPlans ? PageMenuAction::CatalogDelete : PageMenuAction::Disabled;
+    const PageMenuAction delAllState =
+        hasPlans ? PageMenuAction::CatalogDeleteAll : PageMenuAction::Disabled;
+    return {
+        {"Create New Flight Plan", PageMenuAction::CatalogCreateNew},
+        {"Activate Flight Plan", actState},
+        {"Invert & Activate FPL?", invState},
+        {"Copy Flight Plan", copyState},
+        {"Delete Flight Plan", delState},
+        {"Delete All", delAllState},
+    };
+  }
   if (pageGroup_ == MfdPageGroup::FlightPlan) {
     // The Active Flight Plan page menu, verbatim from the trainer in on-unit
     // order and enable state. Delete Flight Plan opens the confirmation; every
@@ -48,6 +74,22 @@ std::vector<MfdController::PageMenuItem> MfdController::buildPageMenu() const {
         {"Remove Departure", PageMenuAction::Disabled},
         {"Remove Arrival", PageMenuAction::Disabled},
         {"Remove Approach", PageMenuAction::DisplayOnly},
+    };
+  }
+  if (chartViewActive_) {
+    // Chart Setup menu (Pilot's Guide §8.3, Figs 8-24..8-27): Full Screen and
+    // Color Scheme are modeled; Preferred Charts Source is Navigraph-only here,
+    // so it is shown but inert.
+    std::string fullScreen = "Full Screen (";
+    fullScreen += chartsFullScreen_ ? "On" : "Off";
+    fullScreen += ")";
+    std::string colorScheme = "Color Scheme (";
+    colorScheme += chartsNight_ ? "Night" : "Day";
+    colorScheme += ")";
+    return {
+        {fullScreen, PageMenuAction::ChartsFullScreen},
+        {colorScheme, PageMenuAction::ChartsColorScheme},
+        {"Preferred Charts Source (Navigraph)", PageMenuAction::DisplayOnly},
     };
   }
   if (pageGroup_ != MfdPageGroup::Map || page() != MfdPage::NavigationMap) {
@@ -133,6 +175,42 @@ void MfdController::pageMenuActivate() {
       pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
       fplConfirm_ = FplConfirm::DeleteFlightPlan;
       fplConfirmOk_ = true;
+      break;
+    case PageMenuAction::ChartsFullScreen:
+      chartsFullScreen_ = !chartsFullScreen_;
+      pageMenuItems_ = buildPageMenu();  // refresh the On/Off label, stay open
+      break;
+    case PageMenuAction::ChartsColorScheme:
+      chartsNight_ = !chartsNight_;
+      pageMenuItems_ = buildPageMenu();  // refresh the Day/Night label, stay open
+      break;
+    case PageMenuAction::CatalogCreateNew:
+      pageMenuOpen_ = false;
+      catalogCreateNew();
+      break;
+    case PageMenuAction::CatalogActivate:
+      pageMenuOpen_ = false;  // the menu closes as the confirmation opens
+      catalogConfirm_ = CatalogConfirm::Activate;
+      catalogConfirmOk_ = true;
+      break;
+    case PageMenuAction::CatalogInvertActivate:
+      pageMenuOpen_ = false;
+      catalogConfirm_ = CatalogConfirm::InvertActivate;
+      catalogConfirmOk_ = true;
+      break;
+    case PageMenuAction::CatalogCopy:
+      pageMenuOpen_ = false;
+      catalogCopySelected();
+      break;
+    case PageMenuAction::CatalogDelete:
+      pageMenuOpen_ = false;
+      catalogConfirm_ = CatalogConfirm::Delete;
+      catalogConfirmOk_ = true;
+      break;
+    case PageMenuAction::CatalogDeleteAll:
+      pageMenuOpen_ = false;
+      catalogConfirm_ = CatalogConfirm::DeleteAll;
+      catalogConfirmOk_ = true;
       break;
     case PageMenuAction::DisplayOnly:
     case PageMenuAction::Disabled:

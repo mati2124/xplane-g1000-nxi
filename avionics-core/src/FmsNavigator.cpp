@@ -169,8 +169,10 @@ void FmsNavigator::tryEnterHold(double lat, double lon) {
 }
 
 void FmsNavigator::activateDirectTo(MapLeg target, double originLat,
-                                    double originLon, bool originValid) {
+                                    double originLon, bool originValid,
+                                    bool flyHold) {
   directToActive_ = true;
+  directToHold_ = flyHold;
   directTo_ = std::move(target);
   directToOriginLat_ = originLat;
   directToOriginLon_ = originLon;
@@ -185,6 +187,7 @@ void FmsNavigator::activateDirectTo(MapLeg target, double originLat,
 
 void FmsNavigator::clearDirectTo() {
   directToActive_ = false;
+  directToHold_ = false;
   directTo_ = {};
   directToOriginValid_ = false;
 }
@@ -484,19 +487,27 @@ NavigationSolution FmsNavigator::update(double lat, double lon,
 
   if (directToActive_ && !directTo_.id.empty()) {
     const int dtoIdx = legIndexInPlan(plan_, directTo_);
-    if (dtoIdx >= 0 && dtoIdx + 1 < static_cast<int>(plan_.size()) &&
+    if (!directToHold_ && dtoIdx >= 0 &&
+        dtoIdx + 1 < static_cast<int>(plan_.size()) &&
         shouldSequenceDirectToOnPlan(lat, lon, groundSpeedKts)) {
       activeLegIndex_ = dtoIdx + 1;
       exitHold();
       syncMissedApproachStateFromLeg();
       clearDirectTo();
     } else if (captureWaypoint(lat, lon, directTo_)) {
-      if (dtoIdx >= 0 && dtoIdx + 1 < static_cast<int>(plan_.size())) {
-        activeLegIndex_ = dtoIdx + 1;
+      if (directToHold_ && dtoIdx >= 0) {
+        activeLegIndex_ = dtoIdx;
+        tryEnterHold(lat, lon);
+        syncMissedApproachStateFromLeg();
+        clearDirectTo();
+      } else {
+        if (dtoIdx >= 0 && dtoIdx + 1 < static_cast<int>(plan_.size())) {
+          activeLegIndex_ = dtoIdx + 1;
+        }
+        exitHold();
+        syncMissedApproachStateFromLeg();
+        clearDirectTo();
       }
-      exitHold();
-      syncMissedApproachStateFromLeg();
-      clearDirectTo();
     }
     if (directToActive_) {
       NavigationSolution sol = computeDirectToSolution(lat, lon);
@@ -516,7 +527,19 @@ NavigationSolution FmsNavigator::update(double lat, double lon,
     const MapLeg& holdLeg =
         plan_[static_cast<std::size_t>(holdLegIndex_)];
     holdPhase_ = advanceHoldPatternPhase(lat, lon, holdLeg, holdPhase_,
-                                         groundSpeedKts);
+                                         groundSpeedKts,
+                                         holdLeg.hold.courseReversal);
+    if (holdPhase_ == HoldPatternPhase::CircuitComplete) {
+      const int nextIdx = holdLegIndex_ + 1;
+      exitHold();
+      if (nextIdx < static_cast<int>(plan_.size())) {
+        activeLegIndex_ = nextIdx;
+      }
+      syncMissedApproachStateFromLeg();
+      sol = computeLegSolution(lat, lon, activeLegIndex_);
+      sol.missedApproachActive = missedActive_;
+      return sol;
+    }
     sol = computeHoldSolution(lat, lon, groundSpeedKts);
     sol.sequencingSuspended = true;
     sol.missedApproachActive = missedActive_;

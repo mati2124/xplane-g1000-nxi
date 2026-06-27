@@ -22,12 +22,8 @@ if(UNIX AND NOT APPLE)
 endif()
 FetchContent_MakeAvailable(glfw)
 
-# JSON parser for the SimBrief OFP fetch (header-only, fetched like GLFW).
-FetchContent_Declare(
-  nlohmann_json
-  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-)
-FetchContent_MakeAvailable(nlohmann_json)
+# nlohmann/json (used by the SimBrief OFP fetch + Navigraph client) is fetched
+# once at the top level so both shells share it; see the root CMakeLists.
 
 set(STANDALONE_SOURCES
   src/main.cpp
@@ -47,9 +43,12 @@ set(STANDALONE_SOURCES
   src/XPlaneInstall.cpp
   src/DsfTerrainStore.cpp
   src/SimBriefClient.cpp
-  src/SimBriefStore.cpp
+  src/NavigraphClient.cpp
+  src/NavigraphChartsClient.cpp
+  src/NavigraphStore.cpp
   src/UpdateNotify.cpp
   src/Sha256.cpp
+  src/CrashHandler.cpp
 )
 
 # The Web API client polls X-Plane on a background thread.
@@ -104,7 +103,16 @@ endif()
 # X-Plane UDP connection needs Winsock on Windows. (The in-app updater hashes
 # downloads with the portable Sha256.cpp, so no platform crypto lib is needed.)
 if(WIN32)
-  target_link_libraries(avionics-standalone PRIVATE ws2_32 shell32)
+  # dbghelp powers the last-chance crash handler's symbolized stack walk.
+  target_link_libraries(avionics-standalone PRIVATE ws2_32 shell32 dbghelp)
+  # Emit a PDB even for optimized Release builds so the crash handler (and any
+  # post-mortem dump) resolves our frames to file:line. Keeps Release codegen.
+  if(MSVC)
+    target_compile_options(avionics-standalone PRIVATE
+      $<$<CONFIG:Release>:/Zi>)
+    target_link_options(avionics-standalone PRIVATE
+      $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+  endif()
   # Build as a GUI app so launching the standalone (or its shortcut) does not
   # pop up a console window; it owns its own PFD/MFD windows. Keep the standard
   # main() entry point under the Windows subsystem.

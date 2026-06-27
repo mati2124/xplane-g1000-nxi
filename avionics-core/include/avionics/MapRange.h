@@ -94,6 +94,24 @@ inline constexpr float kAirportDiagramMaxRangeNm = 1.5f;
 // Embedded WPT Airport Information map uses the same tight zoom.
 inline constexpr float kAirportDiagramRangeNm = kAirportDiagramMaxRangeNm;
 
+// WPT Information inset maps center on the selected facility and zoom in close
+// so the facility (and its immediate surroundings) fill the panel, like the
+// airport diagram does. VORs use a slightly wider step so the compass rose and
+// nearby airways read; NDBs and intersections sit on a tight close-range step.
+inline constexpr float kWptVorInfoRangeNm = 5.0f;
+inline constexpr float kWptNavInfoRangeNm = 2.5f;
+
+// Direct-To popup inset map: like the WPT Information insets, it centers on the
+// Direct-To target and zooms in tight so the destination (airport plus its
+// immediate fixes/runways) is clearly readable, rather than framing the whole
+// ownship->target leg. Slightly wider than the airport diagram so nearby fixes
+// around the field stay visible regardless of how far the target is.
+inline constexpr float kDirectToInsetRangeNm = 10.0f;
+// Nominal Direct-To / FPL-entry inset map viewport (1024×768 MFD layout) used
+// to size the inset land-data query bbox before the popup is laid out.
+inline constexpr float kDirectToInsetMapWidthPx = 180.0f;
+inline constexpr float kDirectToInsetMapHeightPx = 220.0f;
+
 // Clamp a ladder index into range and return the corresponding NM value.
 inline float mapRangeNmAt(int index) {
   index = std::max(0, std::min(kMapRangeLadderCount - 1, index));
