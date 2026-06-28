@@ -21,6 +21,7 @@ add_executable(avionics-core-tests
   FmsNavigatorTest.cpp
   HoldNavigationTest.cpp
   GlidepathGuidanceTest.cpp
+  VnavGuidanceTest.cpp
   MissedApproachGuidanceTest.cpp
   CifpParserTest.cpp
   MetarParserTest.cpp
@@ -30,6 +31,10 @@ add_executable(avionics-core-tests
   FlightPlanBridgeProtocolTest.cpp
   FplHoldRowTest.cpp
   FplCursorLegIndexTest.cpp
+  AirwayLoadTest.cpp
+  DepartureLoadTest.cpp
+  ArrivalLoadTest.cpp
+  StarApproachParentTest.cpp
   DirectToFplSelectionTest.cpp
   ChecklistPageTest.cpp
   WptAirportInfoPageTest.cpp

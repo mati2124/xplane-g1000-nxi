@@ -187,7 +187,25 @@ void insertProcedureLegs(ProcedureType type, std::vector<MapLeg>& fplLegs,
   int row = 0;
   if (type == ProcedureType::Departure) {
     row = fplLegs.empty() ? 0 : 1;
-  } else if (type == ProcedureType::Arrival) {
+    fplLegs.insert(fplLegs.begin() + row, legs.begin(), legs.end());
+    // Loading a SID can duplicate the leading enroute fixes the route already
+    // lists (e.g. an imported plan that already names the SID's transition
+    // fixes, then the matching SID loaded). Drop those downstream duplicates so
+    // each fix appears once under the Departure header, rather than the
+    // departure-block copy being hidden in favor of the later enroute copy.
+    const int blockEnd = row + static_cast<int>(legs.size());
+    for (int i = static_cast<int>(fplLegs.size()) - 1; i >= blockEnd; --i) {
+      for (const MapLeg& sidLeg : legs) {
+        if (!sidLeg.id.empty() &&
+            fplLegIdentsEqual(sidLeg.id, fplLegs[static_cast<std::size_t>(i)].id)) {
+          fplLegs.erase(fplLegs.begin() + i);
+          break;
+        }
+      }
+    }
+    return;
+  }
+  if (type == ProcedureType::Arrival) {
     row = std::max(0, static_cast<int>(fplLegs.size()) - 1);
   } else {
     row = static_cast<int>(fplLegs.size());
@@ -429,14 +447,10 @@ std::vector<std::string> procedureTransitionLabels(
   return procedureTransitionIds(nav, icao, type, name);
 }
 
-namespace {
-
 bool isRunwayTransitionId(const std::string& transition) {
   return transition.size() >= 3 && (transition[0] == 'R' || transition[0] == 'r') &&
          (transition[1] == 'W' || transition[1] == 'w');
 }
-
-}  // namespace
 
 std::vector<std::string> procedureEnrouteTransitions(
     const NavFeatureSource* nav, const std::string& icao, ProcedureType type,
@@ -524,6 +538,36 @@ std::vector<std::string> uniqueProcedureNames(
   }
   std::sort(names.begin(), names.end());
   return names;
+}
+
+bool isRunwayDepartureLegId(const std::string& id) {
+  if (id.size() < 3) return false;
+  return (id[0] == 'R' || id[0] == 'r') && (id[1] == 'W' || id[1] == 'w');
+}
+
+bool isHeadingDepartureLeg(const MapLeg& leg) {
+  if (leg.id == "MANSEQ") return true;
+  if (leg.pathTerminator == "CA" || leg.pathTerminator == "VA" ||
+      leg.pathTerminator == "VM" || leg.pathTerminator == "FM" ||
+      leg.pathTerminator == "VI") {
+    return true;
+  }
+  if (leg.id.size() > 2 && leg.id.compare(leg.id.size() - 2, 2, "FT") == 0) {
+    return true;
+  }
+  return false;
+}
+
+bool isNonFixDepartureLeg(const MapLeg& leg) {
+  return isRunwayDepartureLegId(leg.id) || isHeadingDepartureLeg(leg);
+}
+
+int nextNavigableFixLegIndex(const std::vector<MapLeg>& legs, int legIndex) {
+  if (legIndex < 0) return -1;
+  for (int i = legIndex; i < static_cast<int>(legs.size()); ++i) {
+    if (!isNonFixDepartureLeg(legs[static_cast<std::size_t>(i)])) return i;
+  }
+  return -1;
 }
 
 }  // namespace avionics

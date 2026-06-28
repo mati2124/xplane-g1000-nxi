@@ -126,6 +126,12 @@ struct MapLeg {
   // Loaded procedure role suffix (e.g. "iaf", "faf") for the FPL ident column.
   std::string procedureRole;
 
+  // Name of the published airway this leg was loaded as part of (e.g. "Q118"),
+  // set on every leg in the loaded segment including the exit fix. Empty for a
+  // plain enroute fix. Drives the FPL "Airway - <name>.<exit>" group header and
+  // the collapse/expand display (Pilot's Guide, Flight Planning - Load Airway).
+  std::string viaAirway;
+
   // Published glidepath angle from CIFP (degrees, positive descent angle).
   // Non-zero on LPV final-segment legs; drives the PFD magenta glidepath diamond.
   float glidePathAngleDeg = 0.0f;

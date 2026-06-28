@@ -759,6 +759,12 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
     }
   }
 
+  // The Select Airway window retitles the page bar (trainer "FPL – Select
+  // Airway"), like the PROC loading windows above.
+  if (ui.loadAirwayWindowOpen()) {
+    title = "FPL \xE2\x80\x93 Select Airway";
+  }
+
   mfd::drawEisStrip(r, d, eisLayout, mfd::Rect{0.0f, bodyY, eisW, bodyH}, h);
   if (ui.procMenuOpen()) {
     mfd::drawProcWindow(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
@@ -776,6 +782,16 @@ void MultiFunctionDisplay::render(Renderer& r, const FlightData& d,
     r.globalAlpha(mfd::mfdSmoothstep(dtoAnim));
     r.translate(0.0f, mfd::mfdWindowSlide(dtoAnim, h));
     mfd::drawDirectToWindow(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
+    r.restore();
+  }
+  // The Select Airway window (FPL MENU -> Load Airway) overlays the Active
+  // Flight Plan page, animating in like the Direct-To window.
+  const float loadAirwayAnim = ui.loadAirwayWindowAnim();
+  if (loadAirwayAnim > 0.0f) {
+    r.save();
+    r.globalAlpha(mfd::mfdSmoothstep(loadAirwayAnim));
+    r.translate(0.0f, mfd::mfdWindowSlide(loadAirwayAnim, h));
+    mfd::drawLoadAirwayWindow(r, d, map, ui, bodyX, bodyY, bodyW, bodyH, h);
     r.restore();
   }
   // The Page Menu (MENU key) overlays the base page, like the Direct-To window.

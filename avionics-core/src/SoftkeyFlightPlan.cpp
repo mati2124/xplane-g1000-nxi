@@ -2,6 +2,7 @@
 
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
+#include "avionics/ProcedureSupport.h"
 #include "avionics/SoftkeyController.h"
 #include "avionics/SimBriefOfpSupport.h"
 #include "avionics/NavMath.h"
@@ -178,6 +179,11 @@ FplRouteEdit SoftkeyController::flightPlanRouteEditState() const {
                     nullptr};
   edit.directToActive = mapDirectToActive();
   edit.localDraft = fplLocalDraft_;
+  // The PFD FPL window groups loaded-airway legs under "Airway -" headers and
+  // honors the collapse/expand toggle, so the cursor math runs the airway-aware
+  // path (mirrors the MFD FPL page).
+  edit.groupAirways = true;
+  edit.airwaysCollapsed = fplAirwaysCollapsed_;
   fplRouteEditWireTerminalProcedures(
       edit, self->fplDepartureLegStart_, self->fplDepartureLegCount_,
       self->fplDepartureHeaderLabel_, self->fplArrivalLegStart_,
@@ -187,9 +193,7 @@ FplRouteEdit SoftkeyController::flightPlanRouteEditState() const {
 }
 
 std::string SoftkeyController::flightPlanCursorLegIdent() const {
-  const FplRouteEdit edit = flightPlanRouteEditState();
-  const int legIndex = fplCursorLegIndex(edit, flightPlanApproachAirportIcao(),
-                                         FplCursorLayout::SectionRows);
+  const int legIndex = flightPlanSelectedLegIndex();
   if (legIndex < 0 || legIndex >= static_cast<int>(fplLegs_.size())) return {};
   return fplLegs_[static_cast<std::size_t>(legIndex)].id;
 }
@@ -202,8 +206,11 @@ std::string SoftkeyController::flightPlanSelectedLegIdent() const {
 int SoftkeyController::flightPlanSelectedLegIndex() const {
   if (window_ != PfdWindow::FlightPlan) return -1;
   const FplRouteEdit edit = flightPlanRouteEditState();
-  return fplCursorLegIndex(edit, flightPlanApproachAirportIcao(),
-                           FplCursorLayout::SectionRows);
+  const int legIndex = fplCursorLegIndex(edit, flightPlanApproachAirportIcao(),
+                                         FplCursorLayout::SectionRows);
+  // Direct-To cannot target a synthetic departure row (RWxx/<alt>FT/MANSEQ);
+  // resolve to the next real fix in the plan so the field pre-fills with it.
+  return nextNavigableFixLegIndex(fplLegs_, legIndex);
 }
 
 void SoftkeyController::flightPlanApplyDirectTo(const MapLeg& target) {
@@ -262,6 +269,13 @@ float SoftkeyController::flightPlanEntryDistanceNm() const {
 }
 
 bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
+  // The Select Airway window (page menu -> Load Airway) is a modal sub-mode of
+  // the FPL window: it owns the FMS knob / ENT / CLR while open.
+  if (fplLoadAirway_.open) return loadAirwayBezelKey(key);
+  // While the FPL window's page menu is up, let the shared page-menu handler
+  // run instead of editing the list underneath it.
+  if (pageMenuOpen_) return false;
+
   const int legCount = static_cast<int>(fplLegs_.size());
   FplRouteEdit edit = flightPlanRouteEditState();
   const std::string approachAirport = flightPlanApproachAirportIcao();
@@ -336,15 +350,9 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
     }
   }
 
-  // MENU deletes the whole plan (single-option page menu collapsed into a
-  // confirmation), matching the MFD's Delete Flight Plan.
-  if (key == BezelKey::Menu) {
-    if (legCount > 0) {
-      fplConfirm_ = FplConfirm::DeleteFlightPlan;
-      fplConfirmOk_ = true;
-    }
-    return true;
-  }
+  // MENU opens the FPL window's page menu (Activate Leg / Load Airway /
+  // Collapse Airways / Delete Flight Plan); handled by the global MENU path so
+  // it falls through here.
 
   // Pushing the knob turns the selection cursor on / off.
   if (key == BezelKey::FmsPush) {
@@ -552,7 +560,13 @@ void SoftkeyController::tryRestorePersistedApproach() {
 }
 
 void SoftkeyController::reinferApproachFromProcedureLegs() {
-  const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  // Never infer an approach that starts at or before the destination airport, so
+  // a STAR's role-tagged fixes are not swallowed when the arrival is untracked.
+  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
+  const InferredProcedureBlock block =
+      inferProcedureBlockInPlan(fplLegs_, arrivalFloor);
   if (!block.valid()) return;
   int start = block.start;
   std::string transition = fplLoadedApproach_.transition;
@@ -560,6 +574,7 @@ void SoftkeyController::reinferApproachFromProcedureLegs() {
     transition = persistedApproachRestore_.transition;
   }
   start = approachBlockStartFromTransition(fplLegs_, transition, start);
+  if (start < arrivalFloor) return;
   fplApproachLegStart_ = start;
   fplApproachLegCount_ = static_cast<int>(fplLegs_.size()) - start;
   if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
@@ -684,7 +699,13 @@ PersistedFlightPlan SoftkeyController::persistedFlightPlanSnapshot() const {
   out.active = true;
   out.destinationFilled = fplDestinationFilled_;
   out.legs = fplLegs_;
-  if (fplApproachLegCount_ > 0) {
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  // Never persist an approach block that overlaps the arrival/STAR block or
+  // starts before the destination airport: those leading legs are STAR legs, not
+  // an approach (avoids resurrecting a phantom approach that swallows the STAR).
+  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
+  if (fplApproachLegCount_ > 0 && fplApproachLegStart_ >= arrivalFloor) {
     out.approachLegStart = fplApproachLegStart_;
     out.approachLegCount = fplApproachLegCount_;
     out.approachAirportIcao = flightPlanApproachAirportIcao();

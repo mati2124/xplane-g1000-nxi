@@ -29,6 +29,10 @@ struct AircraftProfile {
   std::string bootHeroAsset;
   // Marketing / type string on the MFD power-up database row (e.g. "Cessna 172S").
   std::string bootAirframeName;
+  // Assumed fly-by bank angle (degrees) for turn-anticipation lead distance and
+  // leg sequencing. Matched to the native X-Plane lateral autopilot for each
+  // airframe so NAV coupling starts outbound steering when the sim AP would.
+  double flyByBankDeg = 15.0;
 };
 
 // Relative asset paths for the built-in profiles, also used as the dev-tree
@@ -72,5 +76,10 @@ std::string resolveBootHeroAsset(const std::string& icaoType,
 // be supplied on its own.
 AircraftProfile resolveAircraftProfile(const std::string& icaoType,
                                        const std::string& acfRelativePath);
+
+// Fly-by bank used by turnLeadDistanceNm / FmsNavigator sequencing for the
+// loaded aircraft (see AircraftProfile::flyByBankDeg).
+double resolveTurnLeadBankDeg(const std::string& icaoType,
+                              const std::string& acfRelativePath);
 
 }  // namespace avionics

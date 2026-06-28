@@ -2,7 +2,9 @@
 
 #include <algorithm>
 
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/ProcedureSupport.h"
+#include "avionics/SimBriefOfpSupport.h"
 
 namespace avionics {
 namespace {
@@ -550,6 +552,8 @@ void procedureMenuAdjustMinsAlt(ProcedureMenuHost& host, int step) {
   host.setMinimumsAltitudeFt(next);
 }
 
+}  // namespace
+
 void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
                                  const std::string& transition) {
   if (host.nav == nullptr || !host.nav->ready()) return;
@@ -566,12 +570,33 @@ void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
     removeLoadedApproachLegs(host.fplLegs, host.approachLegStart,
                              host.approachLegCount);
     host.approachLegCount = static_cast<int>(legs.size());
+  } else if (host.state.category == ProcedureType::Departure) {
+    if (host.departureLegStart != nullptr && host.departureLegCount != nullptr) {
+      removeLoadedApproachLegs(host.fplLegs, *host.departureLegStart,
+                               *host.departureLegCount);
+    }
+    host.approachLegStart = 0;
+    host.approachLegCount = 0;
+    host.loadedApproach = {};
+    if (host.approachHeaderLabel != nullptr) host.approachHeaderLabel->clear();
+  } else if (host.state.category == ProcedureType::Arrival) {
+    // Reloading a STAR replaces the prior arrival block before splicing the new
+    // legs in front of the destination airport.
+    if (host.arrivalLegStart != nullptr && host.arrivalLegCount != nullptr) {
+      removeLoadedApproachLegs(host.fplLegs, *host.arrivalLegStart,
+                               *host.arrivalLegCount);
+    }
+    host.approachLegStart = 0;
+    host.approachLegCount = 0;
+    host.loadedApproach = {};
+    if (host.approachHeaderLabel != nullptr) host.approachHeaderLabel->clear();
   } else {
     host.approachLegStart = 0;
     host.approachLegCount = 0;
     host.loadedApproach = {};
     if (host.approachHeaderLabel != nullptr) host.approachHeaderLabel->clear();
   }
+  const int preInsertSize = static_cast<int>(host.fplLegs.size());
   insertProcedureLegs(host.state.category, host.fplLegs, legs);
   if (host.state.category == ProcedureType::Approach) {
     host.approachLegStart =
@@ -586,9 +611,81 @@ void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
       *host.approachHeaderLabel =
           formatApproachFplHeaderLabel(host.loadedApproach);
     }
+  } else if (host.state.category == ProcedureType::Departure &&
+             host.departureLegStart != nullptr &&
+             host.departureLegCount != nullptr &&
+             host.loadedDeparture != nullptr) {
+    *host.departureLegCount = static_cast<int>(legs.size());
+    // insertProcedureLegs splices departure legs in right after the origin
+    // airport (index 1), or at index 0 when the plan was empty - not at the
+    // tail like an approach.
+    *host.departureLegStart = preInsertSize == 0 ? 0 : 1;
+    host.cursorRow = 0;
+    *host.loadedDeparture =
+        findProcedureInCatalog(host.state.category, name, transition,
+                               proceduresForAirport(host, icao, host.state.category));
+    if (!host.state.selectedRunway.empty() &&
+        host.state.selectedRunway != kProcRunwayAll) {
+      if (isRunwayTransitionId(host.state.selectedRunway)) {
+        host.loadedDeparture->runway =
+            host.state.selectedRunway.substr(2);
+      } else {
+        host.loadedDeparture->runway = host.state.selectedRunway;
+      }
+    }
+    host.loadedDeparture->type = ProcedureType::Departure;
+    host.loadedDeparture->name = name;
+    host.loadedDeparture->transition = transition;
+    if (host.persistedDepartureRestore != nullptr) {
+      *host.persistedDepartureRestore =
+          persistedFromMapProcedure(*host.loadedDeparture, icao);
+    }
+    if (host.departureHeaderLabel != nullptr) {
+      *host.departureHeaderLabel = formatTerminalProcedureFplHeaderLabel(
+          host.loadedDeparture->runway, host.loadedDeparture->name,
+          host.loadedDeparture->transition);
+    }
+  } else if (host.state.category == ProcedureType::Arrival &&
+             host.arrivalLegStart != nullptr &&
+             host.arrivalLegCount != nullptr &&
+             host.loadedArrival != nullptr) {
+    *host.arrivalLegCount = static_cast<int>(legs.size());
+    // insertProcedureLegs splices arrival legs in right before the destination
+    // airport (the last leg), or at index 0 when the plan was otherwise empty -
+    // not at the tail like an approach.
+    *host.arrivalLegStart = std::max(0, preInsertSize - 1);
+    host.cursorRow = 0;
+    *host.loadedArrival =
+        findProcedureInCatalog(host.state.category, name, transition,
+                               proceduresForAirport(host, icao, host.state.category));
+    if (!host.state.selectedRunway.empty() &&
+        host.state.selectedRunway != kProcRunwayAll) {
+      if (isRunwayTransitionId(host.state.selectedRunway)) {
+        host.loadedArrival->runway = host.state.selectedRunway.substr(2);
+      } else {
+        host.loadedArrival->runway = host.state.selectedRunway;
+      }
+    }
+    host.loadedArrival->type = ProcedureType::Arrival;
+    host.loadedArrival->name = name;
+    host.loadedArrival->transition = transition;
+    if (host.persistedArrivalRestore != nullptr) {
+      *host.persistedArrivalRestore =
+          persistedFromMapProcedure(*host.loadedArrival, icao);
+    }
+    if (host.arrivalHeaderLabel != nullptr) {
+      *host.arrivalHeaderLabel = formatTerminalProcedureFplHeaderLabel(
+          host.loadedArrival->runway, host.loadedArrival->name,
+          host.loadedArrival->transition);
+    }
   }
   host.publishFlightPlanEdit();
-  host.state.loadTarget = host.loadedApproach;
+  if (host.state.category == ProcedureType::Departure &&
+      host.loadedDeparture != nullptr) {
+    host.state.loadTarget = *host.loadedDeparture;
+  } else {
+    host.state.loadTarget = host.loadedApproach;
+  }
   host.state.loadPending = true;
 
   // When the approach is loaded via an IAF that has a HILPT course reversal,
@@ -647,8 +744,6 @@ void procedureMenuActivateSelected(ProcedureMenuHost& host,
     host.requestActivateLeg(host.approachLegStart);
   }
 }
-
-}  // namespace
 
 void procedureMenuAnswerCourseReversal(ProcedureMenuHost& host, bool flyIt) {
   if (!host.state.courseReversalPromptActive) return;

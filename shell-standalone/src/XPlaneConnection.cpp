@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "avionics/AircraftProfile.h"
 #include "avionics/Datarefs.h"
 #include "avionics/GlidepathGuidance.h"
 #include "avionics/VnavGuidance.h"
@@ -881,6 +882,8 @@ void XPlaneConnection::updateAircraftProfile() {
   if (icao == lastAircraftIcao_ && acfPath == lastAircraftAcfPath_) return;
   lastAircraftIcao_ = icao;
   lastAircraftAcfPath_ = acfPath;
+  data_.turnLeadBankDeg = static_cast<float>(
+      resolveTurnLeadBankDeg(icao, acfPath));
 
   if (eisSource_ != nullptr) {
     eisSource_->setAircraftIdentity(icao, acfPath);

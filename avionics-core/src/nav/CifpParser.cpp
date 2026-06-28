@@ -209,6 +209,20 @@ bool isCourseLegWithoutFix(const CifpLeg& leg) {
          leg.pathTerminator == "VA";
 }
 
+bool isRunwayTransitionId(const std::string& transition) {
+  return transition.size() >= 3 &&
+         (transition[0] == 'R' || transition[0] == 'r') &&
+         (transition[1] == 'W' || transition[1] == 'w');
+}
+
+bool isDepartureClimbTerminator(const std::string& term) {
+  return term == "CA" || term == "VA";
+}
+
+bool isDepartureVectorsTerminator(const std::string& term) {
+  return term == "VM" || term == "FM" || term == "VI";
+}
+
 void applyPathTerminatorFields(const CifpLeg& leg, MapLeg& ml) {
   ml.pathTerminator = leg.pathTerminator;
   if (leg.magneticCourseDeg > 0.0f) {
@@ -372,6 +386,89 @@ std::string runwayFromTransition(const std::string& transition) {
   if (transition.size() < 3) return {};
   if (transition[0] != 'R' || transition[1] != 'W') return {};
   return transition.substr(2);
+}
+
+// Reciprocal runway key ("RW13" -> "RW31"), used for departure centerline course.
+std::string oppositeRunwayKey(const std::string& runwayKey) {
+  const std::string rw = upperCopy(runwayKey);
+  std::size_t digits = 2;
+  if (rw.size() <= 2) return {};
+  while (digits < rw.size() && rw[digits] >= '0' && rw[digits] <= '9') {
+    ++digits;
+  }
+  if (digits <= 2) return {};
+  const int num = std::stoi(rw.substr(2, digits - 2));
+  const int opp = ((num + 18 - 1) % 36) + 1;
+  std::string suffix = rw.substr(digits);
+  if (suffix == "L") suffix = "R";
+  else if (suffix == "R") suffix = "L";
+  char numbuf[8];
+  std::snprintf(numbuf, sizeof(numbuf), "%02d", opp);
+  return "RW" + std::string(numbuf) + suffix;
+}
+
+float runwayDepartureCourseDeg(const CifpAirportProcedures& data,
+                               const std::string& rwKey) {
+  const auto thrIt = data.runways.find(upperCopy(rwKey));
+  if (thrIt == data.runways.end()) return 0.0f;
+  const auto oppIt = data.runways.find(oppositeRunwayKey(rwKey));
+  if (oppIt != data.runways.end()) {
+    return static_cast<float>(navBearingDeg(
+        thrIt->second.first, thrIt->second.second, oppIt->second.first,
+        oppIt->second.second));
+  }
+  const std::string rw = runwayFromTransition(rwKey);
+  int num = 0;
+  for (char ch : rw) {
+    if (ch < '0' || ch > '9') break;
+    num = num * 10 + (ch - '0');
+  }
+  return num > 0 ? static_cast<float>(num) * 10.0f : 0.0f;
+}
+
+MapLeg makeRunwayDepartureLeg(const std::string& rwTransition, double lat,
+                              double lon) {
+  MapLeg ml;
+  ml.id = upperCopy(rwTransition);
+  ml.lat = lat;
+  ml.lon = lon;
+  return ml;
+}
+
+MapLeg makeDepartureManeuverLeg(const CifpLeg& leg, double anchorLat,
+                                double anchorLon, float defaultCourse) {
+  MapLeg ml;
+  const std::string& term = leg.pathTerminator;
+  if (!isDepartureClimbTerminator(term) &&
+      !isDepartureVectorsTerminator(term)) {
+    return ml;
+  }
+  ml.pathTerminator = term;
+  if (leg.magneticCourseDeg > 0.0f) {
+    ml.legCourseDeg = normalizeHeadingDeg(leg.magneticCourseDeg);
+  } else if (defaultCourse > 0.0f) {
+    ml.legCourseDeg = defaultCourse;
+  }
+  if (isDepartureClimbTerminator(term)) {
+    applyArincAltitudeConstraint(leg, ml);
+    const int altFt =
+        leg.altitude1Ft > 0 ? leg.altitude1Ft : ml.altitudeConstraintFt;
+    if (altFt <= 0) return MapLeg{};
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%dFT", altFt);
+    ml.id = buf;
+  } else {
+    ml.id = "MANSEQ";
+  }
+  const float course =
+      ml.legCourseDeg > 0.0f ? ml.legCourseDeg : defaultCourse;
+  if (course > 0.0f) {
+    navOffsetPoint(anchorLat, anchorLon, course, 0.05, ml.lat, ml.lon);
+  } else {
+    ml.lat = anchorLat;
+    ml.lon = anchorLon;
+  }
+  return ml;
 }
 
 bool isRunwayToken(const std::string& s) {
@@ -799,6 +896,23 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
               return a.sequence < b.sequence;
             });
 
+  double anchorLat = 0.0;
+  double anchorLon = 0.0;
+  float defaultCourse = 0.0f;
+  bool haveAnchor = false;
+  if (type == ProcedureType::Departure && isRunwayTransitionId(transition)) {
+    const std::string rwKey = upperCopy(transition);
+    double rwLat = 0.0;
+    double rwLon = 0.0;
+    if (lookup(rwKey, rwLat, rwLon, ctx)) {
+      defaultCourse = runwayDepartureCourseDeg(data, rwKey);
+      result.push_back(makeRunwayDepartureLeg(rwKey, rwLat, rwLon));
+      anchorLat = rwLat;
+      anchorLon = rwLon;
+      haveAnchor = true;
+    }
+  }
+
   std::unordered_set<std::string> added;
   std::string lastRouteType;
   for (const CifpLeg& leg : selected) {
@@ -811,8 +925,30 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
       lastRouteType = leg.routeType;
     }
     if (!navigableTerminator(leg.pathTerminator)) continue;
-    if (isCourseLegWithoutFix(leg) && !result.empty()) {
-      applyMissedInitialFromCifpLeg(leg, result.back());
+    if (isCourseLegWithoutFix(leg)) {
+      if (type == ProcedureType::Departure) {
+        if (!haveAnchor && !result.empty()) {
+          anchorLat = result.back().lat;
+          anchorLon = result.back().lon;
+          haveAnchor = true;
+          if (result.back().legCourseDeg > 0.0f) {
+            defaultCourse = result.back().legCourseDeg;
+          }
+        }
+        if (!haveAnchor) continue;
+        MapLeg ml = makeDepartureManeuverLeg(leg, anchorLat, anchorLon,
+                                             defaultCourse);
+        if (ml.id.empty()) continue;
+        anchorLat = ml.lat;
+        anchorLon = ml.lon;
+        haveAnchor = true;
+        if (ml.legCourseDeg > 0.0f) defaultCourse = ml.legCourseDeg;
+        result.push_back(std::move(ml));
+        continue;
+      }
+      if (!result.empty()) {
+        applyMissedInitialFromCifpLeg(leg, result.back());
+      }
       continue;
     }
     if (!looksLikeFix(leg.fixIdent)) continue;
@@ -835,11 +971,10 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
         for (MapLeg& existing : result) {
           if (existing.id != leg.fixIdent) continue;
           existing.procedureRole = role;
-          if (leg.kind == ProcedureType::Approach) {
-            applyArincAltitudeConstraint(leg, existing);
-            if (leg.verticalAngleDeg > 0.0f) {
-              existing.glidePathAngleDeg = leg.verticalAngleDeg;
-            }
+          applyArincAltitudeConstraint(leg, existing);
+          if (leg.kind == ProcedureType::Approach &&
+              leg.verticalAngleDeg > 0.0f) {
+            existing.glidePathAngleDeg = leg.verticalAngleDeg;
           }
           break;
         }
@@ -858,11 +993,11 @@ std::vector<MapLeg> expandCifpProcedure(const CifpAirportProcedures& data,
     ml.procedureRole = role;
     applyPathTerminatorFields(leg, ml);
     applyProcedureArcFromCifpLeg(leg, ml, lookup, ctx);
-    if (leg.kind == ProcedureType::Approach) {
-      applyArincAltitudeConstraint(leg, ml);
-      if (leg.verticalAngleDeg > 0.0f) {
-        ml.glidePathAngleDeg = leg.verticalAngleDeg;
-      }
+    // Published altitude restrictions apply to SID/STAR/approach legs alike; the
+    // FPL ALT column reads altitudeConstraintFt from each MapLeg.
+    applyArincAltitudeConstraint(leg, ml);
+    if (leg.kind == ProcedureType::Approach && leg.verticalAngleDeg > 0.0f) {
+      ml.glidePathAngleDeg = leg.verticalAngleDeg;
     }
     if (holdLeg) {
       applyHoldFromCifpLeg(leg, ml);

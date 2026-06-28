@@ -863,12 +863,19 @@ void DsfTerrainStore::queueTileLocked(
     return;
   }
 
-  if (!force && !bulkSample_) {
+  // A tile with a coarse summary but no resident full DEM is an "upgrade"
+  // request (replace the blocky summary with the full tile), as opposed to a
+  // first-time fill of an untouched tile.
+  const bool haveSummary = findSummaryLocked(southLat, lonIndex) != nullptr;
+  if (!force && (!bulkSample_ || haveSummary)) {
     // With the cache full of tiles that were all hit within the last frame or
     // two, the visible footprint is bigger than the cache. Evicting would just
     // thrash (reload the same tiles every frame), so leave the working set
     // resident and let out-of-cache areas read as sea level until their tile
-    // arrives (see tileAbsentElevationFt).
+    // arrives (see tileAbsentElevationFt). The bulk first-fill is exempt so a
+    // wide view still streams every tile in, but full-detail *upgrades* honor
+    // this guard even during bulk sampling: a footprint larger than the cache
+    // would otherwise reload-and-evict the same tiles every frame.
     const bool cacheSaturated =
         cache_.size() >= maxCacheTilesLocked() &&
         now - cache_.back()->lastHit < std::chrono::milliseconds(250);
@@ -880,9 +887,12 @@ void DsfTerrainStore::queueTileLocked(
   }
   if (!force) {
     if (findResidentTileLocked(southLat, lonIndex, now) != nullptr) return;
-    if (findSummaryLocked(southLat, lonIndex) != nullptr) {
+    if (haveSummary) {
+      // Upgrade summary -> full whenever this tile should be full-detail: at
+      // close/terminal range (coarseSample_ off) every visible tile qualifies,
+      // and on the continental zoom only tiles inside the detail zone do.
       const bool needsFull =
-          coarseSample_ && tileInDetailZoneLocked(southLat, lonIndex);
+          !coarseSample_ || tileInDetailZoneLocked(southLat, lonIndex);
       if (!needsFull) return;
     }
   }
@@ -981,7 +991,17 @@ float DsfTerrainStore::elevationFt(double lat, double lon) const {
   std::lock_guard<std::mutex> lock(mu_);
   const auto now = std::chrono::steady_clock::now();
   const float elev = sampleElevationLocked(south, lonIdx, lat, lon, now);
-  if (!std::isnan(elev)) return elev;
+  if (!std::isnan(elev)) {
+    // Background-upgrade a summary-served sample to full DEM when this tile
+    // should be full-detail (see elevationFtRow); throttled so it is harmless
+    // off the render path.
+    const bool wantFull =
+        !coarseSample_ || tileInDetailZoneLocked(south, lonIdx);
+    if (wantFull && findResidentTileLocked(south, lonIdx, now) == nullptr) {
+      queueTileLocked(south, lonIdx, lat, lon, now, false);
+    }
+    return elev;
+  }
   if (tileMissedLocked(south, lonIdx)) return tileAbsentElevationFt();
   queueTileLocked(south, lonIdx, lat, lon, now, bulkSample_ || coarseSample_);
   return tileAbsentElevationFt();
@@ -1014,11 +1034,21 @@ void DsfTerrainStore::elevationFtRow(double lat, double lonStart,
     const float elev = sampleElevationLocked(south, lonIdx, lat, lon, now);
     if (!std::isnan(elev)) {
       out[i] = elev;
-      if (coarseSample_ && tileInDetailZoneLocked(south, lonIdx) &&
-          findResidentTileLocked(south, lonIdx, now) == nullptr &&
-          lonIdx != resolvedLonIdx) {
+      // The sample came from a resident full DEM tile or a coarse summary. When
+      // it is only the summary but this tile should be full-detail, queue a
+      // background upgrade so the blocky summary (16x16 cells ~ 3.75 NM) is
+      // replaced by the full DEM. Without this a tile whose full DEM was evicted
+      // (or only ever summarized while in coarse mode) stays pixelated forever:
+      // the summary read is non-NaN, so the first-load path below never runs.
+      // coarseSample upgrades are forced (prioritized near the view center);
+      // full-detail upgrades take the throttled path so a footprint larger than
+      // the cache does not thrash.
+      const bool wantFull =
+          !coarseSample_ || tileInDetailZoneLocked(south, lonIdx);
+      if (wantFull && lonIdx != resolvedLonIdx &&
+          findResidentTileLocked(south, lonIdx, now) == nullptr) {
         resolvedLonIdx = lonIdx;
-        queueTileLocked(south, lonIdx, lat, lon, now, true);
+        queueTileLocked(south, lonIdx, lat, lon, now, coarseSample_);
       }
       continue;
     }

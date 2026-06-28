@@ -20,6 +20,7 @@
 #include "XPLMNavigation.h"
 #include "XPLMPlugin.h"
 #include "XPLMUtilities.h"
+#include "avionics/AircraftProfile.h"
 #include "avionics/AptDatGeometryCache.h"
 #include "avionics/AptDatParser.h"
 #include "avionics/AssetPaths.h"
@@ -457,6 +458,8 @@ void DatarefDataSource::updateAircraftProfile() {
   if (acfPath == lastAircraftAcfPath_ && icao == lastAircraftIcao_) return;
   lastAircraftAcfPath_ = acfPath;
   lastAircraftIcao_ = icao;
+  data_.turnLeadBankDeg = static_cast<float>(
+      resolveTurnLeadBankDeg(icao, acfPath));
 
   // Re-probe the radar fit for the newly loaded airframe.
   weather_.resetEquipment();

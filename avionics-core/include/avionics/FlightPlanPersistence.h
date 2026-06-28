@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <string>
 
 #include <cctype>
@@ -46,8 +47,23 @@ struct InferredProcedureBlock {
   bool valid() const { return start >= 0 && count > 0; }
 };
 
-// First contiguous procedure-leg block in `legs` (requires at least one leg before it).
-InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs);
+// First contiguous procedure-leg block in `legs` (requires at least one leg
+// before it). `minStart` skips any leading legs that belong to an earlier
+// procedure block (e.g. a loaded arrival/STAR whose fixes carry procedureRole
+// tags) so the approach is only inferred from the tail after that block.
+InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs,
+                                                 int minStart = 0);
+
+// Lowest index at which a loaded approach can begin. The approach is the
+// procedure tail AFTER the destination airport, so it can never start at or
+// before the last airport ident that is itself followed by procedure legs (that
+// airport is the destination). Returned floor is never below `arrivalEnd` (a
+// separately tracked arrival/STAR block). This keeps a STAR's role-tagged fixes
+// from being mistaken for the approach when the arrival block is not tracked
+// (e.g. a route adopted from the sim/external FMS), so the STAR and the approach
+// stay distinct parent sections on the flight plan page.
+int fplApproachInferenceFloor(const std::vector<MapLeg>& legs,
+                              int arrivalEnd = 0);
 
 // Copies procedureRole (and any future per-leg PROC fields) from expanded legs
 // into the matching plan rows.
@@ -227,17 +243,25 @@ inline int approachBlockStartFromTransition(const std::vector<MapLeg>& legs,
 // otherwise infer from procedureRole tags, then anchor at the loaded transition.
 inline InferredProcedureBlock resolveApproachBlockInPlan(
     const std::vector<MapLeg>& legs, int storedStart, int storedCount,
-    const std::string& transition) {
+    const std::string& transition, int arrivalEnd = 0) {
   InferredProcedureBlock out;
-  if (storedCount > 0 && storedStart >= 0 &&
-      storedStart + storedCount <= static_cast<int>(legs.size())) {
+  const int minStart = fplApproachInferenceFloor(legs, arrivalEnd);
+  // A stored block that falls inside a loaded arrival/STAR block is stale
+  // (its legs belong to the arrival, not an approach) - re-infer the tail.
+  const bool storedUsable = storedCount > 0 && storedStart >= minStart &&
+                            storedStart + storedCount <=
+                                static_cast<int>(legs.size());
+  if (storedUsable) {
     out.start = storedStart;
     out.count = storedCount;
   } else {
-    out = inferProcedureBlockInPlan(legs);
+    out = inferProcedureBlockInPlan(legs, minStart);
   }
   if (!out.valid()) return out;
   out.start = approachBlockStartFromTransition(legs, transition, out.start);
+  if (out.start < minStart) {
+    return InferredProcedureBlock{};
+  }
   out.count = static_cast<int>(legs.size()) - out.start;
   if (out.count <= 0) {
     out.start = -1;
@@ -439,6 +463,7 @@ inline bool operator==(const PersistedFlightPlan& a,
     if (a.legs[i].id != b.legs[i].id || a.legs[i].lat != b.legs[i].lat ||
         a.legs[i].lon != b.legs[i].lon ||
         a.legs[i].procedureRole != b.legs[i].procedureRole ||
+        a.legs[i].viaAirway != b.legs[i].viaAirway ||
         a.legs[i].altitudeConstraintFt != b.legs[i].altitudeConstraintFt ||
         a.legs[i].altitudeConstraint != b.legs[i].altitudeConstraint ||
         a.legs[i].altitudeDesignated != b.legs[i].altitudeDesignated) {

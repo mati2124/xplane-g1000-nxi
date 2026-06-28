@@ -341,6 +341,12 @@ void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
                           const MapViewConfig& config, const FlightData& flight,
                           float symSize, float labelSize);
 
+// VNAV top-of-descent marker: a small ring on the course with a boxed "TOD"
+// label, placed at the geographic point computed by the VNAV profile.
+void drawTopOfDescent(Renderer& r, const Proj& proj,
+                      const MapViewConfig& config, const FlightData& flight,
+                      float symSize, float labelSize);
+
 // Procedure preview polyline (PROC menu): dashed cyan course through the
 // published fixes.
 void drawProcedurePreview(Renderer& r, const Proj& proj,

@@ -1,5 +1,6 @@
 #include "avionics/FlightPlanPersistence.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
@@ -80,6 +81,9 @@ bool parsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
     if (fields.size() >= 7) {
       legOut.procedureRole = fields[3];
       applyPersistedLegAltitudeFields(fields, 4, legOut);
+      // Optional trailing airway tag (Load Airway grouping), appended after the
+      // VNAV altitude fields so older saves still parse.
+      if (fields.size() >= 8) legOut.viaAirway = fields[7];
       return !legOut.id.empty();
     }
     return false;
@@ -91,7 +95,15 @@ bool parsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
 std::string formatPersistedFlightPlanLeg(const MapLeg& leg) {
   char buf[256];
   const bool hasAlt = legHasPersistedAltitude(leg);
-  if (!leg.procedureRole.empty() && !hasAlt) {
+  if (!leg.viaAirway.empty()) {
+    // Full form with a trailing airway tag so Load Airway grouping survives a
+    // restart (altitude fields default to 0 when the leg has no constraint).
+    const int kind = static_cast<int>(leg.altitudeConstraint);
+    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s|%d|%d|%d|%s",
+                  leg.id.c_str(), leg.lat, leg.lon, leg.procedureRole.c_str(),
+                  leg.altitudeConstraintFt, kind,
+                  leg.altitudeDesignated ? 1 : 0, leg.viaAirway.c_str());
+  } else if (!leg.procedureRole.empty() && !hasAlt) {
     std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s", leg.id.c_str(), leg.lat,
                   leg.lon, leg.procedureRole.c_str());
   } else if (hasAlt) {
@@ -125,12 +137,18 @@ void preserveFlightPlanIdents(std::vector<MapLeg>& plan,
   for (std::size_t i = 0; i < plan.size() && i < published.size(); ++i) {
     MapLeg& leg = plan[i];
     const MapLeg& pub = published[static_cast<std::size_t>(i)];
+    const bool samePosition =
+        std::fabs(leg.lat - pub.lat) <= kLatLonMatchDeg &&
+        std::fabs(leg.lon - pub.lon) <= kLatLonMatchDeg;
+    // The sim FMS does not carry the airway tag; restore it from the last
+    // published plan so the FPL "Airway -" grouping survives the round trip.
+    if (leg.viaAirway.empty() && !pub.viaAirway.empty() && samePosition &&
+        (leg.id == pub.id || isFmsLatLonIdent(leg.id))) {
+      leg.viaAirway = pub.viaAirway;
+    }
     if (leg.id == pub.id) continue;
     if (!isFmsLatLonIdent(leg.id) || isFmsLatLonIdent(pub.id)) continue;
-    if (std::fabs(leg.lat - pub.lat) > kLatLonMatchDeg ||
-        std::fabs(leg.lon - pub.lon) > kLatLonMatchDeg) {
-      continue;
-    }
+    if (!samePosition) continue;
     leg.id = pub.id;
   }
 }
@@ -161,9 +179,11 @@ bool findLegSequenceInPlan(const std::vector<MapLeg>& plan,
   return true;
 }
 
-InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs) {
+InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs,
+                                                 int minStart) {
   InferredProcedureBlock out;
-  for (int i = 0; i < static_cast<int>(legs.size()); ++i) {
+  const int scanFrom = std::max(0, minStart);
+  for (int i = scanFrom; i < static_cast<int>(legs.size()); ++i) {
     if (!legs[static_cast<std::size_t>(i)].procedureRole.empty()) {
       out.start = i;
       break;
@@ -174,7 +194,10 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
   // before AMXUQ when only GRRDN carries procedureRole after a sim re-import).
   // Walk back through those intermediates but stop at the destination airport
   // (KJAX) — it belongs in the approach header, not the approach leg block.
-  while (out.start > 0 &&
+  // Never walk back past `minStart`, which marks the end of an earlier
+  // procedure block (e.g. a loaded arrival/STAR) whose fixes are not approach
+  // legs.
+  while (out.start > scanFrom &&
          legs[static_cast<std::size_t>(out.start - 1)].procedureRole.empty()) {
     if (isAirportIdent(legs[static_cast<std::size_t>(out.start - 1)].id)) {
       break;
@@ -194,6 +217,31 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
     out.start = -1;
   }
   return out;
+}
+
+int fplApproachInferenceFloor(const std::vector<MapLeg>& legs, int arrivalEnd) {
+  int floor = std::max(0, arrivalEnd);
+  // The destination airport separates the STAR (before it) from the approach
+  // (after it). Find the last airport ident that is followed by at least one
+  // procedure-role leg: that airport is the destination, and the approach can
+  // only begin after it. Requiring a trailing role leg avoids treating a 4-char
+  // missed-approach fix (which isAirportIdent() also matches) as the boundary.
+  const int n = static_cast<int>(legs.size());
+  for (int i = n - 1; i >= 0; --i) {
+    if (!isAirportIdent(legs[static_cast<std::size_t>(i)].id)) continue;
+    bool roleAfter = false;
+    for (int j = i + 1; j < n; ++j) {
+      if (!legs[static_cast<std::size_t>(j)].procedureRole.empty()) {
+        roleAfter = true;
+        break;
+      }
+    }
+    if (roleAfter) {
+      floor = std::max(floor, i + 1);
+      break;
+    }
+  }
+  return floor;
 }
 
 void mergeProcedureLegMetadata(std::vector<MapLeg>& plan, int start,
@@ -514,9 +562,15 @@ void enrichPersistedFlightPlanFromLegs(PersistedFlightPlan& plan) {
     plan.approachLegStart = -1;
     plan.approachLegCount = 0;
   }
-  InferredProcedureBlock block = inferProcedureBlockInPlan(plan.legs);
+  // The approach is the procedure tail after any loaded arrival/STAR block; its
+  // fixes are not approach legs even when they carry procedureRole tags.
+  const int arrivalEnd = plan.arrivalLegCount > 0
+                             ? plan.arrivalLegStart + plan.arrivalLegCount
+                             : 0;
+  InferredProcedureBlock block =
+      inferProcedureBlockInPlan(plan.legs, arrivalEnd);
   if (!block.valid()) return;
-  if (plan.approachLegCount <= 0) {
+  if (plan.approachLegCount <= 0 || plan.approachLegStart < arrivalEnd) {
     plan.approachLegStart = block.start;
     plan.approachLegCount = block.count;
   }

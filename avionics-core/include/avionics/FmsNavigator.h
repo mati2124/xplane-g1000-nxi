@@ -75,6 +75,8 @@ class FmsNavigator {
   double directToOriginLat() const { return directToOriginLat_; }
   double directToOriginLon() const { return directToOriginLon_; }
 
+  void setTurnLeadBankDeg(double bankDeg) { turnLeadBankDeg_ = bankDeg; }
+
   // Advance waypoint sequencing and compute lateral guidance for the current
   // ownship position. altitudeFt enables course-to-altitude leg sequencing.
   NavigationSolution update(double lat, double lon, float groundSpeedKts,
@@ -115,6 +117,7 @@ class FmsNavigator {
   double directToOriginLat_ = 0.0;
   double directToOriginLon_ = 0.0;
   bool directToOriginValid_ = false;
+  double turnLeadBankDeg_ = 15.0;
 };
 
 // Copies navigator outputs into FlightData for PFD/FMA/HSI rendering and AP

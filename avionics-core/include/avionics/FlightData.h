@@ -58,6 +58,12 @@ struct VnvProfile {
   int timeToTodSec = 0;              // time to TOD at current ground speed
   bool capturing = false;            // past TOD: descending on the path
   float verticalDeviationFt = 0.0f;  // current altitude minus path altitude
+  // Geographic position of the top of descent along the route, for the MFD map
+  // "TOD" marker (G1000 NXi Pilot's Guide, Section 5). Valid only while the TOD
+  // is still ahead of the aircraft (distanceToTodNm > 0).
+  bool todValid = false;
+  double todLat = 0.0;
+  double todLon = 0.0;
 };
 
 // Decoded, platform-agnostic flight state consumed by the gauges.
@@ -186,6 +192,8 @@ struct FlightData {
   std::string gpsFlightPhase = "ENR";
   // Automatic waypoint sequencing suspended at the MAPt (SUSP annunciation).
   bool gpsSequencingSuspended = false;
+  // Assumed fly-by bank for turn lead / leg sequencing (see AircraftProfile).
+  float turnLeadBankDeg = 15.0f;
   // Missed approach segment is active (PROC Activate Missed or equivalent).
   bool missedApproachActive = false;
 

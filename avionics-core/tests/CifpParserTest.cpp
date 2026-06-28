@@ -493,5 +493,47 @@ TEST(CifpParserTest, ExpandsKcmiR04CmiHoldAtBostnAndMugte) {
   EXPECT_TRUE(viaIaf[static_cast<std::size_t>(bostnViaIaf)].hold.active);
 }
 
+CifpAirportProcedures makeShfty6StarData() {
+  CifpAirportProcedures data;
+  data.icao = "KFMY";
+  auto addLeg = [&](int seq, const std::string& routeType,
+                    const std::string& transition, const std::string& fixIdent,
+                    const std::string& altDesc, int alt1Ft) {
+    CifpLeg leg;
+    leg.kind = ProcedureType::Arrival;
+    leg.sequence = seq;
+    leg.routeType = routeType;
+    leg.procedureName = "SHFTY6";
+    leg.transition = transition;
+    leg.pathTerminator = "TF";
+    leg.fixIdent = fixIdent;
+    leg.altitudeDescription = altDesc;
+    leg.altitude1Ft = alt1Ft;
+    data.legs.push_back(leg);
+  };
+  addLeg(10, "2", "INPIN", "INPIN", "+", 6000);
+  addLeg(20, "2", "INPIN", "VALCH", "-", 4000);
+  addLeg(30, "2", "INPIN", "SHFTY", "", 3000);
+  return data;
+}
+
+TEST(CifpParserTest, ExpandsStarAltitudeConstraints) {
+  const CifpAirportProcedures data = makeShfty6StarData();
+  std::unordered_map<std::string, std::pair<double, double>> fixes;
+  fixes["INPIN"] = {28.553525, -81.807444};
+  fixes["VALCH"] = {28.055708, -81.665625};
+  fixes["SHFTY"] = {27.706664, -81.766033};
+  const std::vector<MapLeg> legs =
+      expandCifpProcedure(data, ProcedureType::Arrival, "SHFTY6", "INPIN",
+                          mapFixLookup, &fixes);
+  ASSERT_EQ(legs.size(), 3u);
+  EXPECT_EQ(legs[0].altitudeConstraintFt, 6000);
+  EXPECT_EQ(legs[0].altitudeConstraint, AltConstraintType::AtOrAbove);
+  EXPECT_EQ(legs[1].altitudeConstraintFt, 4000);
+  EXPECT_EQ(legs[1].altitudeConstraint, AltConstraintType::AtOrBelow);
+  EXPECT_EQ(legs[2].altitudeConstraintFt, 3000);
+  EXPECT_EQ(legs[2].altitudeConstraint, AltConstraintType::At);
+}
+
 }  // namespace
 }  // namespace avionics::test

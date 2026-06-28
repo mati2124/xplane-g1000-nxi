@@ -34,6 +34,13 @@ struct FplRouteEdit {
   std::string* approachHeaderLabel = nullptr;
   bool directToActive = false;
   bool localDraft = false;
+  // MFD Load Airway display: when groupAirways is set, legs carrying a viaAirway
+  // tag are routed through the procedure display rows so the "Airway -" header +
+  // collapse/expand grouping applies (the PFD window leaves this off). The MFD
+  // sets airwaysCollapsed to its current collapse-toggle state so the cursor
+  // math matches the rendered rows.
+  bool groupAirways = false;
+  bool airwaysCollapsed = false;
   // Optional departure / arrival procedure blocks. When set, cursor-row math
   // uses the same procedure display rows as the PFD/MFD FPL list renderer.
   int* departureLegStart = nullptr;

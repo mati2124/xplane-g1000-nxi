@@ -35,6 +35,7 @@ add_library(avionics-core STATIC
   src/SoftkeyController.cpp
   src/SoftkeyDirectTo.cpp
   src/SoftkeyFlightPlan.cpp
+  src/SoftkeyLoadAirway.cpp
   src/SoftkeyProcedures.cpp
   src/SoftkeyPfdPageMenu.cpp
   src/SoftkeyNearest.cpp
@@ -58,6 +59,7 @@ add_library(avionics-core STATIC
   src/render/mfd/MfdControllerMapSettings.cpp
   src/render/mfd/MfdControllerProcedures.cpp
   src/render/mfd/MfdControllerFlightPlan.cpp
+  src/render/mfd/MfdControllerLoadAirway.cpp
   src/render/mfd/MfdControllerDirectTo.cpp
   src/render/mfd/MfdControllerMapPointer.cpp
   src/render/mfd/MfdControllerWeatherRadar.cpp
@@ -132,6 +134,7 @@ add_library(avionics-core STATIC
   src/render/pfd/ChromePfdSetupWindow.cpp
   src/render/pfd/ChromeDirectToWindow.cpp
   src/render/pfd/ChromePageMenuWindow.cpp
+  src/render/pfd/ChromeSelectAirwayWindow.cpp
   # Vendored QR Code generator (Nayuki, MIT) used to draw the Navigraph
   # device-authorization sign-in QR on the AUX - SIMBRIEF page.
   third_party/qrcodegen/qrcodegen.c

@@ -143,6 +143,53 @@ TEST(FplLayoutDestinationTest, ProcedureInsertOnEnrouteBlankAppendsFix) {
   EXPECT_EQ(insertRow, static_cast<int>(legs.size()));
 }
 
+TEST(FplLayoutDestinationTest, EnrouteBlankInsertKeepsDestinationAirportLast) {
+  // KJAX (origin) -> KFMY (destination). Adding an enroute fix on the Enroute
+  // "add a fix" row must insert before the destination airport, not after it,
+  // so KFMY stays the destination instead of being pushed into Enroute.
+  const std::vector<pfd::FplSectionRow> rows =
+      pfd::buildFplSectionRows(2, /*destinationFilled=*/true);
+  int enrouteBlankSelectable = -1;
+  int sel = 0;
+  for (const pfd::FplSectionRow& sr : rows) {
+    if (!pfd::fplSectionRowIsSelectable(sr, 2, true)) continue;
+    if (sr.kind == pfd::FplSectionRow::Kind::EnrouteBlank) {
+      enrouteBlankSelectable = sel;
+      break;
+    }
+    ++sel;
+  }
+  ASSERT_GE(enrouteBlankSelectable, 0);
+  const int insertRow = pfd::fplSectionInsertIndexForSelectable(
+      enrouteBlankSelectable, rows, 2, true);
+  EXPECT_EQ(insertRow, 1) << "enroute fix should insert before the destination";
+}
+
+TEST(FplLayoutDestinationTest, CommitEnrouteFixKeepsDestinationAirport) {
+  std::vector<MapLeg> legs = {makeLeg("KJAX"), makeLeg("KFMY")};
+  bool destinationFilled = true;
+  int approachLegStart = 0;
+  int approachLegCount = 0;
+  int cursorRow = 0;
+  FplRouteEdit edit{legs, destinationFilled, approachLegStart, approachLegCount,
+                    cursorRow};
+
+  // Cursor on the Enroute "add a fix" blank slot (selectable row 1: Origin=0,
+  // EnrouteBlank=1, Destination=2).
+  const int enrouteBlankRow = 1;
+  MapFeature match;
+  match.id = "JAYJA";
+  ASSERT_TRUE(fplCommitWaypointIdent(edit, /*navSource=*/nullptr, match, "JAYJA",
+                                     enrouteBlankRow, /*approachAirport=*/{},
+                                     FplCursorLayout::SectionRows));
+
+  ASSERT_EQ(legs.size(), 3u);
+  EXPECT_EQ(legs[0].id, "KJAX");
+  EXPECT_EQ(legs[1].id, "JAYJA");
+  EXPECT_EQ(legs[2].id, "KFMY") << "destination airport must stay last";
+  EXPECT_TRUE(fplLayoutDestinationFilled(legs, destinationFilled, 0));
+}
+
 TEST(FplLayoutDestinationTest, RemovingLastDepartureLegClearsDeparture) {
   std::vector<MapLeg> legs = {makeLeg("KFMY"), makeLeg("CSHEL"),
                               makeLeg("LAL"), makeLeg("TEBOW")};

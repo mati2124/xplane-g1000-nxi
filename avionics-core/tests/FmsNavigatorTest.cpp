@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "avionics/AircraftProfile.h"
 #include "avionics/FmsNavigator.h"
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
@@ -774,6 +775,14 @@ TEST(FmsNavigatorTest, TurnLeadDistanceCapsSharpTurns) {
   EXPECT_GT(moderate, 0.0);
   EXPECT_NEAR(sharp, capped, 0.01);
   EXPECT_LT(sharp, 5.0);
+}
+
+TEST(FmsNavigatorTest, TurnLeadBankDegReducesLeadAtHigherBank) {
+  const double piston = turnLeadDistanceNm(250.0, 45.0, 90.0, 15.0);
+  const double jet = turnLeadDistanceNm(250.0, 45.0, 90.0, 25.0);
+  EXPECT_GT(piston, jet);
+  EXPECT_NEAR(resolveTurnLeadBankDeg("SF50", ""), 25.0, 0.01);
+  EXPECT_NEAR(resolveTurnLeadBankDeg("C172", ""), 15.0, 0.01);
 }
 
 TEST(FmsNavigatorTest, TurnAnticipationSharpTurnShowsCountdownBeforeFlip) {

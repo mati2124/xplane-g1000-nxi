@@ -44,7 +44,11 @@ struct WindowFrame {
 
 WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
                             float rawAnim, const char* title, float panelW,
-                            float panelH);
+                            float panelH,
+                            Color bodyTop = colors::kPopoutBodyTop,
+                            Color bodyBottom = colors::kPopoutBodyBottom,
+                            Color titleColor = colors::kPopoutCyan,
+                            float titleTopPad = 0.0f);
 
 // Garmin Direct-To icon (a "D" with a horizontal arrow piercing it), matching
 // the bezel key and the PFD Navigation Status Box. Returns x just past the glyph.
@@ -108,5 +112,8 @@ void drawDirectToWindow(Renderer& r, float w, float h, const Layout& L,
                         const SoftkeyController& ui);
 void drawPageMenuWindow(Renderer& r, float w, float h, const Layout& L,
                         const SoftkeyController& ui);
+// FPL - Select Airway window (page menu -> Load Airway). Overlays the FPL window.
+void drawSelectAirwayWindow(Renderer& r, float w, float h, const Layout& L,
+                            const SoftkeyController& ui);
 
 }  // namespace avionics::pfd

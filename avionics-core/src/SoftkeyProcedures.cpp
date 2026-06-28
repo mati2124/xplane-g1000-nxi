@@ -21,6 +21,16 @@ ProcedureMenuHost SoftkeyController::procedureMenuHost() {
       fplLoadedApproach_,
       persistedApproachRestore_,
       nullptr,
+      &fplDepartureLegStart_,
+      &fplDepartureLegCount_,
+      &fplLoadedDeparture_,
+      &persistedDepartureRestore_,
+      &fplDepartureHeaderLabel_,
+      &fplArrivalLegStart_,
+      &fplArrivalLegCount_,
+      &fplLoadedArrival_,
+      &persistedArrivalRestore_,
+      &fplArrivalHeaderLabel_,
       [this]() { return procDefaultAirportIcao(); },
       [this]() { return nearestAirportIds(mapData_); },
       [this]() { flightPlanPublishEdit(); },
@@ -168,9 +178,14 @@ bool SoftkeyController::consumeProcLoadRequest(MapProcedure& out) {
 
 std::string SoftkeyController::flightPlanApproachAirportIcao() const {
   if (fplApproachLegCount_ <= 0) return {};
-  const std::string loadedIcao =
+  std::string loadedIcao =
       persistedApproachRestore_.active ? persistedApproachRestore_.airportIcao
                                        : std::string();
+  // The approach serves the destination airport — the same airport a loaded
+  // arrival/STAR serves. Use it when the approach's own airport wasn't captured
+  // (e.g. the approach was inferred from leg roles after a sim/Direct-To resync)
+  // so the destination is not mislabeled as the airport before the approach.
+  if (loadedIcao.empty()) loadedIcao = flightPlanArrivalAirportIcao();
   return fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_, loadedIcao);
 }
 

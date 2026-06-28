@@ -129,6 +129,14 @@ void drawProcWindow(Renderer& r, const FlightData& d, const MapData& map,
                     const MfdController& ui, float x, float y, float w,
                     float h, float displayH);
 
+// The Select Airway window (FPL page MENU -> Load Airway), drawn over the
+// Active Flight Plan page: the fixed Entry fix, the Airway and Exit selectors,
+// the scrolling fix chain with the highlighted exit, and the Load? button
+// (Pilot's Guide, Flight Planning - Load Airway).
+void drawLoadAirwayWindow(Renderer& r, const FlightData& d, const MapData& map,
+                          const MfdController& ui, float x, float y, float w,
+                          float h, float displayH);
+
 // The Map Settings window (MENU -> Map Settings on the Navigation Map page),
 // drawn over the current MFD page: the Group selector and the active group's
 // settings rows (Pilot's Guide Fig. 5-7).

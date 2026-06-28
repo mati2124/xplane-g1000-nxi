@@ -512,6 +512,11 @@ enum class FplDisplayRowKind {
   SepDash,
   ApproachHeader,
   ApproachLeg,
+  // Enroute "Airway - <name>.<exit>" parent row above a loaded airway segment
+  // (Pilot's Guide, Flight Planning - Load Airway). Display-only, like the
+  // Enroute / procedure header rows. legIndex points at the airway's exit fix
+  // so the renderer can read its viaAirway name and exit ident.
+  AirwayHeader,
   // Published hold (HILPT/hold-in-lieu) shown on its own line below its fix,
   // matching the trainer FPL list ("HOLD" with the inbound course / leg length).
   // legIndex points at the parent fix leg that carries the hold.
@@ -731,8 +736,14 @@ inline int fplSectionInsertIndexForSelectable(
       return 0;
     case FplSectionRow::Kind::EnrouteLeg:
       return sr->legIndex >= 0 ? sr->legIndex : legCount;
-    case FplSectionRow::Kind::EnrouteBlank:
-      return legCount;
+    case FplSectionRow::Kind::EnrouteBlank: {
+      // The Enroute "add a fix" slot inserts after any existing enroute legs
+      // but before a filled destination airport, so a new enroute waypoint does
+      // not push the destination up into the Enroute section.
+      const FplSectionLayout layout =
+          fplSectionLayout(legCount, destinationFilled);
+      return std::min(legCount, layout.enrouteFirst + layout.enrouteCount);
+    }
     case FplSectionRow::Kind::Destination:
       if (sr->legIndex >= 0) return sr->legIndex;
       return fplSectionLayout(legCount, destinationFilled).destLegIndex >= 0
@@ -1107,21 +1118,68 @@ inline bool fplUsesProcedureDisplayRows(const std::string& departureHeader,
          !arrivalHeader.empty() || arrivalCount > 0 || approachCount > 0;
 }
 
+// True when a terminal-procedure block (departure/arrival) still fits the plan.
+// A stale block left behind after the plan was shrunk would otherwise force the
+// procedure display path and render a phantom header plus blank rows for
+// out-of-range legs. An empty block (count <= 0) trivially fits.
+inline bool fplBlockFitsPlan(int start, int count, int planSize) {
+  return count <= 0 || (start >= 0 && start + count <= planSize);
+}
+
+// True when any leg carries a loaded-airway tag (Load Airway grouping). The MFD
+// FPL page routes such plans through the procedure display rows so the airway
+// header + collapse/expand grouping can be drawn.
+inline bool fplPlanHasAirwayLegs(const std::vector<MapLeg>& legs) {
+  for (const MapLeg& leg : legs) {
+    if (!leg.viaAirway.empty()) return true;
+  }
+  return false;
+}
+
 
 
 inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
     const std::vector<MapLeg>& legs, int depStart, int depCount,
     const std::string& departureHeader, int arrStart, int arrCount,
     const std::string& arrivalHeader, int approachStart, int approachCount,
-    bool blankOriginSection, bool destinationFilled) {
-  if (departureHeader.empty() && depCount <= 0 && arrivalHeader.empty() &&
-      arrCount <= 0 && approachCount > 0) {
+    bool blankOriginSection, bool destinationFilled,
+    bool airwaysCollapsed = false) {
+  // A plan carrying loaded-airway legs always uses the full body below so the
+  // enroute legs can be grouped under "Airway -" headers (the approach-only and
+  // empty fast paths do not group airways).
+  const bool hasAirways = fplPlanHasAirwayLegs(legs);
+
+  // Defensive: terminal-procedure block indices can go stale when the plan is
+  // replaced or shrunk (e.g. loading an approach that truncates a longer route)
+  // without the departure/arrival grouping being cleared. A block that no longer
+  // fits the leg list would otherwise emit a parent header plus blank rows for
+  // out-of-range legs (and read past the leg vector). Drop blocks that do not
+  // fit and clamp the approach to the available legs.
+  const int legCount = static_cast<int>(legs.size());
+  std::string depHeader = departureHeader;
+  std::string arrHeader = arrivalHeader;
+  if (depCount > 0 && (depStart < 0 || depStart + depCount > legCount)) {
+    depCount = 0;
+    depHeader.clear();
+  }
+  if (arrCount > 0 && (arrStart < 0 || arrStart + arrCount > legCount)) {
+    arrCount = 0;
+    arrHeader.clear();
+  }
+  if (approachCount > 0 && (approachStart < 0 || approachStart >= legCount)) {
+    approachCount = 0;
+  } else if (approachCount > 0 && approachStart + approachCount > legCount) {
+    approachCount = legCount - approachStart;
+  }
+
+  if (!hasAirways && depHeader.empty() && depCount <= 0 &&
+      arrHeader.empty() && arrCount <= 0 && approachCount > 0) {
     return buildFplApproachDisplayRows(legs, approachStart, approachCount,
                                       blankOriginSection, destinationFilled);
   }
 
-  if (departureHeader.empty() && depCount <= 0 && arrivalHeader.empty() &&
-      arrCount <= 0 && approachCount <= 0) {
+  if (!hasAirways && depHeader.empty() && depCount <= 0 &&
+      arrHeader.empty() && arrCount <= 0 && approachCount <= 0) {
     return {};
   }
 
@@ -1133,11 +1191,11 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
     }
   };
 
-  const bool hasDeparture = !departureHeader.empty() || depCount > 0;
-  const bool hasArrival = !arrivalHeader.empty() || arrCount > 0;
+  const bool hasDeparture = !depHeader.empty() || depCount > 0;
+  const bool hasArrival = !arrHeader.empty() || arrCount > 0;
 
   if (hasDeparture) {
-    if (!departureHeader.empty()) {
+    if (!depHeader.empty()) {
       rows.push_back({FplDisplayRowKind::DepartureHeader, -1});
     }
     for (int i = 0; i < depCount; ++i) {
@@ -1157,10 +1215,41 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
   const std::vector<int> enrouteLegs = fplProcedureEnrouteLegIndices(
       legs, depStart, depCount, arrStart, arrCount,
       approachStart, approachCount, destinationFilled);
-  for (const int legIdx : enrouteLegs) {
-    if (fplHideLegForDuplicateIdent(legs, legIdx)) continue;
-    rows.push_back({FplDisplayRowKind::EnrouteLeg, legIdx});
-    pushHoldRowIfPresent(legIdx);
+  // Enroute legs, grouping a run of consecutive legs that belong to the same
+  // loaded airway under an "Airway - <name>.<exit>" header. Collapsed shows the
+  // exit fix only; expanded lists every fix in the segment.
+  for (std::size_t k = 0; k < enrouteLegs.size();) {
+    const int legIdx = enrouteLegs[k];
+    const std::string& aw = legs[static_cast<std::size_t>(legIdx)].viaAirway;
+    if (aw.empty()) {
+      if (!fplHideLegForDuplicateIdent(legs, legIdx)) {
+        rows.push_back({FplDisplayRowKind::EnrouteLeg, legIdx});
+        pushHoldRowIfPresent(legIdx);
+      }
+      ++k;
+      continue;
+    }
+    std::size_t j = k;
+    while (j + 1 < enrouteLegs.size() &&
+           legs[static_cast<std::size_t>(enrouteLegs[j + 1])].viaAirway == aw) {
+      ++j;
+    }
+    const int exitIdx = enrouteLegs[j];
+    rows.push_back({FplDisplayRowKind::AirwayHeader, exitIdx});
+    if (airwaysCollapsed) {
+      if (!fplHideLegForDuplicateIdent(legs, exitIdx)) {
+        rows.push_back({FplDisplayRowKind::EnrouteLeg, exitIdx});
+        pushHoldRowIfPresent(exitIdx);
+      }
+    } else {
+      for (std::size_t m = k; m <= j; ++m) {
+        const int idx = enrouteLegs[m];
+        if (fplHideLegForDuplicateIdent(legs, idx)) continue;
+        rows.push_back({FplDisplayRowKind::EnrouteLeg, idx});
+        pushHoldRowIfPresent(idx);
+      }
+    }
+    k = j + 1;
   }
   // The enroute add-fix slot: a standalone blank dash row only when no
   // arrival/approach follows (otherwise the SepDash separator is that slot).
@@ -1170,7 +1259,7 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
 
   if (hasArrival) {
     rows.push_back({FplDisplayRowKind::SepDash, -1});
-    if (!arrivalHeader.empty()) {
+    if (!arrHeader.empty()) {
       rows.push_back({FplDisplayRowKind::ArrivalHeader, -1});
     }
     for (int i = 0; i < arrCount; ++i) {
@@ -1220,11 +1309,12 @@ inline std::vector<FplDisplayRow> fplProcedureDisplayRowList(
     const std::vector<MapLeg>& legs, int depStart, int depCount,
     const std::string& departureHeader, int arrStart, int arrCount,
     const std::string& arrivalHeader, int approachStart, int approachCount,
-    bool blankOriginSection, bool destinationFilled) {
+    bool blankOriginSection, bool destinationFilled,
+    bool airwaysCollapsed = false) {
   return buildFplProcedureDisplayRows(
       legs, depStart, depCount, departureHeader, arrStart, arrCount,
       arrivalHeader, approachStart, approachCount, blankOriginSection,
-      destinationFilled);
+      destinationFilled, airwaysCollapsed);
 }
 
 
@@ -1236,12 +1326,13 @@ inline int fplProcedureSelectableCount(const std::vector<MapLeg>& legs,
                                        const std::string& arrivalHeader,
                                        int approachStart, int approachCount,
                                        bool blankOriginSection,
-                                       bool destinationFilled) {
+                                       bool destinationFilled,
+                                       bool airwaysCollapsed = false) {
   int count = 0;
   for (const FplDisplayRow& dr : fplProcedureDisplayRowList(
            legs, depStart, depCount, departureHeader, arrStart, arrCount,
            arrivalHeader, approachStart, approachCount, blankOriginSection,
-           destinationFilled)) {
+           destinationFilled, airwaysCollapsed)) {
     if (fplProcedureDisplayRowSelectable(dr.kind)) ++count;
   }
   return count;
@@ -1253,13 +1344,14 @@ inline const FplDisplayRow* fplProcedureSelectableRow(
     int selectableRow, const std::vector<MapLeg>& legs, int depStart,
     int depCount, const std::string& departureHeader, int arrStart,
     int arrCount, const std::string& arrivalHeader, int approachStart,
-    int approachCount, bool blankOriginSection, bool destinationFilled) {
+    int approachCount, bool blankOriginSection, bool destinationFilled,
+    bool airwaysCollapsed = false) {
   static FplDisplayRow scratch;
   int sel = 0;
   for (const FplDisplayRow& dr : fplProcedureDisplayRowList(
            legs, depStart, depCount, departureHeader, arrStart, arrCount,
            arrivalHeader, approachStart, approachCount, blankOriginSection,
-           destinationFilled)) {
+           destinationFilled, airwaysCollapsed)) {
     if (!fplProcedureDisplayRowSelectable(dr.kind)) continue;
     if (sel == selectableRow) {
       scratch = dr;
@@ -1277,11 +1369,12 @@ inline int fplProcedureLegIndexForSelectable(
     int selectableRow, const std::vector<MapLeg>& legs, int depStart,
     int depCount, const std::string& departureHeader, int arrStart,
     int arrCount, const std::string& arrivalHeader, int approachStart,
-    int approachCount, bool blankOriginSection, bool destinationFilled) {
+    int approachCount, bool blankOriginSection, bool destinationFilled,
+    bool airwaysCollapsed = false) {
   const FplDisplayRow* dr = fplProcedureSelectableRow(
       selectableRow, legs, depStart, depCount, departureHeader, arrStart,
       arrCount, arrivalHeader, approachStart, approachCount, blankOriginSection,
-      destinationFilled);
+      destinationFilled, airwaysCollapsed);
   if (dr == nullptr || !fplProcedureDisplayRowSelectable(dr->kind)) return -1;
   if (dr->kind == FplDisplayRowKind::OriginBlank ||
       dr->kind == FplDisplayRowKind::EnrouteBlank ||
@@ -1297,18 +1390,20 @@ inline int fplProcedureSelectableRowForLegIndex(
     int legIndex, const std::vector<MapLeg>& legs, int depStart, int depCount,
     const std::string& departureHeader, int arrStart, int arrCount,
     const std::string& arrivalHeader, int approachStart, int approachCount,
-    bool blankOriginSection, bool destinationFilled) {
+    bool blankOriginSection, bool destinationFilled,
+    bool airwaysCollapsed = false) {
   if (legIndex < 0) return -1;
   const int last = fplProcedureSelectableCount(
                        legs, depStart, depCount, departureHeader, arrStart,
                        arrCount, arrivalHeader, approachStart, approachCount,
-                       blankOriginSection, destinationFilled) -
+                       blankOriginSection, destinationFilled,
+                       airwaysCollapsed) -
                    1;
   for (int sel = 0; sel <= last; ++sel) {
     if (fplProcedureLegIndexForSelectable(
             sel, legs, depStart, depCount, departureHeader, arrStart, arrCount,
             arrivalHeader, approachStart, approachCount, blankOriginSection,
-            destinationFilled) == legIndex) {
+            destinationFilled, airwaysCollapsed) == legIndex) {
       return sel;
     }
   }
@@ -1321,12 +1416,13 @@ inline int fplProcedureDisplayRowIndexForSelectable(
     int selectableRow, const std::vector<MapLeg>& legs, int depStart,
     int depCount, const std::string& departureHeader, int arrStart,
     int arrCount, const std::string& arrivalHeader, int approachStart,
-    int approachCount, bool blankOriginSection, bool destinationFilled) {
+    int approachCount, bool blankOriginSection, bool destinationFilled,
+    bool airwaysCollapsed = false) {
   int sel = 0;
   const auto rows = fplProcedureDisplayRowList(
       legs, depStart, depCount, departureHeader, arrStart, arrCount,
       arrivalHeader, approachStart, approachCount, blankOriginSection,
-      destinationFilled);
+      destinationFilled, airwaysCollapsed);
   for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
     if (!fplProcedureDisplayRowSelectable(rows[static_cast<std::size_t>(i)].kind)) {
       continue;
@@ -1344,11 +1440,11 @@ inline int fplProcedureInsertIndexForSelectable(
     int depCount, const std::string& departureHeader, int arrStart,
     int arrCount, const std::string& arrivalHeader, int approachStart,
     int approachCount, int legCount, bool blankOriginSection,
-    bool destinationFilled) {
+    bool destinationFilled, bool airwaysCollapsed = false) {
   const FplDisplayRow* dr = fplProcedureSelectableRow(
       selectableRow, legs, depStart, depCount, departureHeader, arrStart,
       arrCount, arrivalHeader, approachStart, approachCount, blankOriginSection,
-      destinationFilled);
+      destinationFilled, airwaysCollapsed);
   if (dr == nullptr) return legCount;
   switch (dr->kind) {
     case FplDisplayRowKind::Origin:

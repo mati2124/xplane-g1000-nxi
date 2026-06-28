@@ -18,7 +18,8 @@ constexpr double kWaypointCaptureNm = 0.4;
 
 bool isCourseToAltLeg(const MapLeg& leg) {
   return leg.pathTerminator == "CA" || leg.pathTerminator == "FM" ||
-         leg.pathTerminator == "VM" || leg.pathTerminator == "VI";
+         leg.pathTerminator == "VM" || leg.pathTerminator == "VI" ||
+         leg.pathTerminator == "VA";
 }
 
 bool isPublishedCourseToFixLeg(const MapLeg& leg) {
@@ -223,7 +224,8 @@ bool FmsNavigator::shouldSequenceLeg(double lat, double lon,
   const double gsKts = std::max(40.0, static_cast<double>(groundSpeedKts));
   const double absTurnDeg = std::fabs(turnDeltaDeg);
   const double leadNm = legIdx > 0 && absTurnDeg >= 1.0
-                            ? turnLeadDistanceNm(gsKts, turnDeltaDeg)
+                            ? turnLeadDistanceNm(gsKts, turnDeltaDeg, 90.0,
+                                                 turnLeadBankDeg_)
                             : 0.0;
 
   const double turnPointNm = leadNm > 0.0 ? leadNm : kWaypointCaptureNm;
@@ -266,7 +268,8 @@ bool FmsNavigator::shouldSequenceDirectToOnPlan(double lat, double lon,
   // wider angle cap so sequencing and steering start before the fix.
   const double leadNm =
       absTurnDeg >= 1.0
-          ? turnLeadDistanceNm(gsKts, turnDeltaDeg, kDirectToFlyByMaxTurnDegCap)
+          ? turnLeadDistanceNm(gsKts, turnDeltaDeg, kDirectToFlyByMaxTurnDegCap,
+                               turnLeadBankDeg_)
           : 0.0;
 
   const double turnPointNm = leadNm > 0.0 ? leadNm : kWaypointCaptureNm;

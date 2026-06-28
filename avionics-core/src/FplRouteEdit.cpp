@@ -65,10 +65,15 @@ std::string fplEditArrivalHeader(const FplRouteEdit& edit) {
 }
 
 bool fplEditUsesProcedureDisplay(const FplRouteEdit& edit) {
-  return fplUsesProcedureDisplayRows(
-      fplEditDepartureHeader(edit), fplEditDepartureLegCount(edit),
-      fplEditArrivalHeader(edit), fplEditArrivalLegCount(edit),
-      edit.approachLegCount);
+  if (fplUsesProcedureDisplayRows(
+          fplEditDepartureHeader(edit), fplEditDepartureLegCount(edit),
+          fplEditArrivalHeader(edit), fplEditArrivalLegCount(edit),
+          edit.approachLegCount)) {
+    return true;
+  }
+  // MFD Load Airway: a plan with loaded-airway legs also uses the procedure
+  // display rows so the cursor math matches the grouped/collapsed list.
+  return edit.groupAirways && pfd::fplPlanHasAirwayLegs(edit.legs);
 }
 
 bool fplEditProcedureBlankOriginSection(const FplRouteEdit& edit,
@@ -232,23 +237,24 @@ bool fplCommitProcedureIdent(FplRouteEdit& edit, const NavFeatureSource* navSour
                                  fplEditDepartureHeader(edit), arrStart,
                                  arrCount, fplEditArrivalHeader(edit),
                                  edit.approachLegStart, edit.approachLegCount,
-                                 blankOrigin, layoutDestFilled) -
+                                 blankOrigin, layoutDestFilled,
+                                 edit.airwaysCollapsed) -
                              1;
   const int legIndex = fplProcedureLegIndexForSelectable(
       selectableCursorRow, edit.legs, depStart, depCount,
       fplEditDepartureHeader(edit), arrStart, arrCount,
       fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
-      blankOrigin, layoutDestFilled);
+      blankOrigin, layoutDestFilled, edit.airwaysCollapsed);
   const int row = fplProcedureInsertIndexForSelectable(
       selectableCursorRow, edit.legs, depStart, depCount,
       fplEditDepartureHeader(edit), arrStart, arrCount,
       fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
-      legCount, blankOrigin, layoutDestFilled);
+      legCount, blankOrigin, layoutDestFilled, edit.airwaysCollapsed);
   const pfd::FplDisplayRow* dr = fplProcedureSelectableRow(
       selectableCursorRow, edit.legs, depStart, depCount,
       fplEditDepartureHeader(edit), arrStart, arrCount,
       fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
-      blankOrigin, layoutDestFilled);
+      blankOrigin, layoutDestFilled, edit.airwaysCollapsed);
   if (dr != nullptr && dr->kind == FplDisplayRowKind::Destination &&
       dr->legIndex < 0) {
     edit.destinationFilled = true;
@@ -445,7 +451,8 @@ bool flightPlanLegsEqual(const std::vector<MapLeg>& a,
   if (a.size() != b.size()) return false;
   for (std::size_t i = 0; i < a.size(); ++i) {
     if (a[i].id != b[i].id || a[i].lat != b[i].lat || a[i].lon != b[i].lon ||
-        a[i].procedureRole != b[i].procedureRole) {
+        a[i].procedureRole != b[i].procedureRole ||
+        a[i].viaAirway != b[i].viaAirway) {
       return false;
     }
   }
@@ -481,11 +488,12 @@ bool fplDestinationFilledForDisplay(int legCount, bool directToActive) {
 std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
                                    int approachStart, const MapData* map,
                                    const std::string& loadedApproachAirportIcao) {
-  if (approachStart <= 0 && legs.empty()) {
-    return isAirportIdent(loadedApproachAirportIcao)
-               ? loadedApproachAirportIcao
-               : std::string();
-  }
+  // An explicitly loaded/known approach airport is authoritative. Prefer it over
+  // the "airport waypoint before the approach" heuristic, which returns the
+  // origin when the plan has no destination airport waypoint ahead of the
+  // approach (e.g. KJAX -> [RNAV approach into KFMY] with no KFMY leg).
+  if (isAirportIdent(loadedApproachAirportIcao)) return loadedApproachAirportIcao;
+  if (approachStart <= 0 && legs.empty()) return {};
   std::string icao = airportIcaoBeforeIndex(legs, approachStart);
   if (!icao.empty()) return icao;
   icao = directToAirportIcao(map);
@@ -494,7 +502,6 @@ std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
     icao = lastAirportInPlan(map->flightPlan);
     if (!icao.empty()) return icao;
   }
-  if (isAirportIdent(loadedApproachAirportIcao)) return loadedApproachAirportIcao;
   return {};
 }
 
@@ -510,7 +517,7 @@ int fplCursorLegIndex(const FplRouteEdit& edit,
         fplEditArrivalLegStart(edit), fplEditArrivalLegCount(edit),
         fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
         fplEditProcedureBlankOriginSection(edit, approachAirport),
-        fplEditProcedureDestinationFilled(edit));
+        fplEditProcedureDestinationFilled(edit), edit.airwaysCollapsed);
   }
   if (layout == FplCursorLayout::FlatLegList) {
     if (edit.cursorRow >= 0 && edit.cursorRow < legCount) return edit.cursorRow;
@@ -550,7 +557,8 @@ int fplCursorSelectableLast(const FplRouteEdit& edit,
                fplEditArrivalHeader(edit), edit.approachLegStart,
                edit.approachLegCount,
                fplEditProcedureBlankOriginSection(edit, approachAirport),
-               fplEditProcedureDestinationFilled(edit)) -
+               fplEditProcedureDestinationFilled(edit),
+               edit.airwaysCollapsed) -
                1);
   }
   if (layout == FplCursorLayout::FlatLegList) {
@@ -586,7 +594,7 @@ int fplActiveSelectableRow(const FplRouteEdit& edit,
         fplEditArrivalLegStart(edit), fplEditArrivalLegCount(edit),
         fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
         fplEditProcedureBlankOriginSection(edit, approachAirport),
-        fplEditProcedureDestinationFilled(edit));
+        fplEditProcedureDestinationFilled(edit), edit.airwaysCollapsed);
   }
   if (layout == FplCursorLayout::FlatLegList) {
     return activeLegIdx;

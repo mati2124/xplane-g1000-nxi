@@ -570,6 +570,13 @@ class MfdController {
     return !fplLoadedArrival_.name.empty() || fplArrivalLegCount_ > 0;
   }
   bool fplDestinationFilled() const { return fplDestinationFilled_; }
+  // FPL airway display: when collapsed, each loaded-airway segment shows only
+  // its "Airway - <name>.<exit>" header + the exit fix; expanded lists every
+  // intermediate fix (page menu "Collapse Airways"/"Expand Airways").
+  bool fplAirwaysCollapsed() const { return fplAirwaysCollapsed_; }
+  // True when the plan carries any loaded-airway leg (gates the collapse toggle
+  // and the airway-grouped FPL list display).
+  bool fplHasAirwayLegs() const;
   // FPL list layout: destination is the airport (plus STAR/approach when loaded).
   bool fplDestinationFilledForLayout() const;
   bool fplLocalDraft() const { return fplLocalDraft_; }
@@ -674,6 +681,41 @@ class MfdController {
   const MapLeg& holdActivatePromptLeg() const { return holdActivatePromptLeg_; }
   // FPL Activate Leg: ENT on a highlighted waypoint row (Pilot's Guide 5.6).
   bool consumeActivateLegRequest(int& toLegIndex);
+  // Published airways passing through `ident` (from the nav database); empty
+  // when no source is wired or the fix lies on no airway.
+  std::vector<std::string> airwaysThroughFix(const std::string& ident) const;
+
+  // ---- Load Airway window (FPL page MENU -> Load Airway, Pilot's Guide,
+  // Flight Planning - Load Airway) ----
+  // Opened with the list cursor on an enroute fix that lies on at least one
+  // published airway. The Airway field (small knob) picks the airway, the Exit
+  // field (small/large knob) scrolls the fix chain to the exit waypoint, and
+  // Load? inserts the expanded segment after the entry fix (tagged viaAirway so
+  // the FPL list groups it under an "Airway - <name>.<exit>" header).
+  enum class LoadAirwayField { Airway, Exit, Load };
+  bool loadAirwayWindowOpen() const { return loadAirway_.open; }
+  float loadAirwayWindowAnim() const { return loadAirway_.anim; }
+  const std::string& loadAirwayEntryIdent() const {
+    return loadAirway_.entryIdent;
+  }
+  std::string loadAirwayName() const;
+  std::string loadAirwayExitIdent() const;
+  LoadAirwayField loadAirwayField() const { return loadAirway_.field; }
+  // The fix chain shown in the scrolling list (entry fix first, then the legs
+  // toward the far end of the airway). Empty when the selected airway resolves
+  // to no chain.
+  const std::vector<MapLeg>& loadAirwayFixes() const { return loadAirway_.fixes; }
+  // List index of the highlighted exit fix (into loadAirwayFixes()).
+  int loadAirwayExitSel() const { return loadAirway_.exitSel; }
+  // DTK (deg) / cumulative DIS (NM) from the entry fix to the highlighted exit,
+  // shown beside the list (dashes when unavailable).
+  bool loadAirwayHasCourse() const { return loadAirway_.hasCourse; }
+  float loadAirwayDtkDeg() const { return loadAirway_.dtkDeg; }
+  float loadAirwayDisNm() const { return loadAirway_.disNm; }
+  // True once a valid airway + exit is chosen so Load? can run.
+  bool loadAirwayCanLoad() const;
+  // Open the window for an explicit entry fix (used by tests / dev states).
+  void openLoadAirwayWindow(const std::string& entryIdent);
 
   // GCU alphanumeric keypad during waypoint-ident entry (Direct-To / FPL / WPT).
   bool applyGcuEntryKey(char ch);
@@ -888,6 +930,8 @@ class MfdController {
     DisplayOnly,         // selectable but inert (the feature is not modeled)
     MapDeclutter,        // cycle the Navigation Map declutter (Detail) level
     OpenMapSettings,     // open the Map Settings window (Fig. 5-7)
+    FplLoadAirway,       // open the Select Airway window for the cursor fix
+    FplCollapseAirways,  // toggle the FPL airway collapse/expand display
     FplDeleteFlightPlan, // open the Delete Flight Plan confirmation
     ChartsFullScreen,    // Chart Setup: toggle the full-screen chart view
     ChartsColorScheme,   // Chart Setup: toggle day/night color scheme
@@ -966,7 +1010,7 @@ class MfdController {
   bool clrDefaultMapHoldSuppressed() const {
     return fplConfirm_ != FplConfirm::None ||
            catalogConfirm_ != CatalogConfirm::None || fplEntry_.active ||
-           fplAltEntry_.active;
+           fplAltEntry_.active || loadAirway_.open;
   }
 
  private:
@@ -1017,6 +1061,16 @@ class MfdController {
   bool courseReversalPromptBezelKey(BezelKey key);
   // Modal hold Direct-To confirmation (Activate/Cancel) on a selected HOLD row.
   bool holdActivatePromptBezelKey(BezelKey key);
+  // ---- Load Airway window (MfdControllerLoadAirway.cpp) ----
+  // Route a bezel key while the Select Airway window is open (always consumes).
+  bool loadAirwayBezelKey(BezelKey key);
+  // Recompute the fix chain + exit selection for the current airway pick.
+  void loadAirwayRefreshFixes();
+  // Recompute the entry->exit DTK/DIS preview for the highlighted exit.
+  void loadAirwayRefreshCourse();
+  // Insert the expanded airway segment after the entry fix and publish (Load?).
+  void loadAirwayCommit();
+  void closeLoadAirwayWindow();
   void openHoldActivatePrompt(int legIndex);
   void closeHoldActivatePrompt();
   void buildProcMenu();
@@ -1288,6 +1342,27 @@ class MfdController {
   MapLeg holdActivatePromptLeg_;
   bool fplActivateLegPending_ = false;
   int fplActivateLegIndex_ = -1;
+
+  // Load Airway window state (FPL page MENU -> Load Airway). The entry fix is
+  // fixed from the cursor leg when the window opens; the airway pick and exit
+  // selection scroll the fix chain; Load? inserts the expanded segment.
+  struct LoadAirwayState {
+    bool open = false;
+    float anim = 0.0f;  // 0..1 open progress, eased by update()
+    std::string entryIdent;
+    int entryLegIndex = -1;            // index in fplLegs_ of the entry fix
+    std::vector<std::string> airways;  // airways through the entry fix
+    int airwaySel = 0;                 // index into airways
+    std::vector<MapLeg> fixes;         // entry fix + chain toward the far end
+    int exitSel = 1;                   // index into fixes (>=1, never the entry)
+    LoadAirwayField field = LoadAirwayField::Airway;
+    bool hasCourse = false;
+    float dtkDeg = 0.0f;
+    float disNm = 0.0f;
+  };
+  LoadAirwayState loadAirway_;
+  // FPL airway collapse/expand display toggle (page menu).
+  bool fplAirwaysCollapsed_ = false;
   bool dtoPreservePlan_ = false;
   int dtoPreserveLegIndex_ = -1;
   int dtoPreserveFplCursorRow_ = -1;

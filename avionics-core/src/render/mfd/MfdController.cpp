@@ -567,6 +567,7 @@ void MfdController::update(double dtSeconds, const FlightData& data) {
   dtoAnim_ = approachAnim(dtoAnim_, dtoOpen_);
   pageMenuAnim_ = approachAnim(pageMenuAnim_, pageMenuOpen_);
   mapSettingsAnim_ = approachAnim(mapSettingsAnim_, mapSettingsOpen_);
+  loadAirway_.anim = approachAnim(loadAirway_.anim, loadAirway_.open);
 
   // ~1 Hz blink for highlight-select cursor fields: on for the first half of
   // each second (matches SoftkeyController::blinkOn_ and WT pulse).
@@ -835,6 +836,14 @@ void MfdController::pressBezelKey(BezelKey key) {
   // RANGE zoom still applies to the base page map.
   if (pageMenuOpen_ && !isMapRangePanBezelKey(key)) {
     pageMenuBezelKey(key);
+    rebuildLabels();
+    return;
+  }
+
+  // The Select Airway window is modal over the FPL page: it owns the FMS knob /
+  // ENT / CLR until Load? runs or it is backed out. RANGE still zooms the map.
+  if (loadAirway_.open && !isMapRangePanBezelKey(key)) {
+    loadAirwayBezelKey(key);
     rebuildLabels();
     return;
   }
@@ -1473,11 +1482,18 @@ bool MfdController::fplDestinationFilledForLayout() const {
 std::string MfdController::chartsDestinationAirport() const {
   int approachStart = fplApproachLegStart_;
   int approachCount = fplApproachLegCount_;
-  if (!fplHasLoadedApproach() || approachCount <= 0) {
-    const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  if (!fplHasLoadedApproach() || approachCount <= 0 ||
+      approachStart < arrivalEnd) {
+    const InferredProcedureBlock block =
+        inferProcedureBlockInPlan(fplLegs_, arrivalEnd);
     if (block.valid()) {
       approachStart = block.start;
       approachCount = block.count;
+    } else {
+      approachStart = 0;
+      approachCount = 0;
     }
   }
   const bool approachLoaded = approachCount > 0;
@@ -1768,7 +1784,8 @@ bool MfdController::blocksRadioBezel() const {
   // active Map Pointer does not claim the knob here.
   return dtoOpen_ || dtoEntry_.active || fplEntry_.active ||
          fplAltEntry_.active || fplConfirm_ != FplConfirm::None ||
-         wptEntry_.active || procMenuOpen_ || mapSettingsOpen_;
+         wptEntry_.active || procMenuOpen_ || mapSettingsOpen_ ||
+         loadAirway_.open;
 }
 
 }  // namespace avionics
