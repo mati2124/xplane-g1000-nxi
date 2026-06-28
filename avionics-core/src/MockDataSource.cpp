@@ -550,7 +550,8 @@ void MockDataSource::publishEisChannels() {
   // shows live gauges in the demo/screenshot feed (the real plugin reads these
   // from the sim datarefs declared in sf50.eis). Values mirror Fig. 3-2.
   if (eisSource_ != nullptr && eisSource_->ready() &&
-      eisSource_->layout().style == EisStripStyle::Turbofan) {
+      (eisSource_->layout().style == EisStripStyle::Turbofan ||
+       eisSource_->layout().style == EisStripStyle::Turboprop)) {
     const float t = static_cast<float>(elapsedSeconds_);
     const float n1 = groundMode_ ? 30.0f : 85.0f + 1.5f * std::sin(t * 0.2f);
     data_.eisChannels[eis_channels::kThrustPct] = groundMode_ ? 8.0f : 69.0f;
@@ -576,6 +577,7 @@ void MockDataSource::publishEisChannels() {
     data_.eisChannels[eis_channels::kGearRight] = gear;
     data_.eisChannels[eis_channels::kPitchTrim] = 0.5f;
     data_.eisChannels[eis_channels::kRollTrim] = 0.0f;
+    data_.eisChannels[eis_channels::kRudderTrim] = groundMode_ ? 0.0f : 0.32f;
     data_.eisChannels[eis_channels::kFlapsActual] = groundMode_ ? 0.5f : 0.0f;
     data_.eisChannels[eis_channels::kFlapsCommanded] =
         groundMode_ ? 0.5f : 0.0f;

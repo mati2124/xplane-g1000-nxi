@@ -37,7 +37,8 @@ enum class AircraftOverride {
   Auto = 0,
   C172 = 1,
   SF50 = 2,
-  Count = 3
+  PA46T = 3,
+  Count = 4
 };
 
 // In-process DataSource for the X-Plane plugin: resolves dataref handles once

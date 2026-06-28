@@ -8,7 +8,11 @@ float eisChannelValue(const FlightData& data, const std::string& channel,
                       float fallback) {
   const auto it = data.eisChannels.find(channel);
   if (it == data.eisChannels.end()) return fallback;
-  return it->second;
+  float val = it->second;
+  if (channel == "eng.prop_rpm" && val < 0.0f) {
+    return 0.0f;
+  }
+  return val;
 }
 
 void syncEisLegacyFields(FlightData& data) {

@@ -42,14 +42,14 @@ std::string fmtNoZeroSign(const char* pattern, double v, double quantum = 0.0) {
 }
 
 void strokeArc(Renderer& r, float cx, float cy, float radius, float a0Deg,
-               float a1Deg, float widthPx, const Color& c) {
+               float a1Deg, float widthPx, const Color& c, float yScale = 1.0f) {
   constexpr int kSegments = 24;
   Point pts[kSegments + 1];
   for (int i = 0; i <= kSegments; ++i) {
     const float a =
         (a0Deg + (a1Deg - a0Deg) * static_cast<float>(i) / kSegments) *
         kPi / 180.0f;
-    pts[i] = {cx + radius * std::sin(a), cy - radius * std::cos(a)};
+    pts[i] = {cx + radius * std::sin(a), cy - (radius * std::cos(a)) * yScale};
   }
   r.strokePolyline(pts, kSegments + 1, widthPx, c);
 }
@@ -202,15 +202,22 @@ void drawBar(Renderer& r, const Rect& area, float y, const char* label,
              int bandCount, int ticks, bool scale, bool valid,
              float displayH) {
   const float labelSize = mfdFontPx(kLabelWt, displayH);
-  r.fillText(area.x + area.w * 0.5f, y, label, labelSize, TextAlign::Center,
-             colors::kLabelText);
+  const bool isTurboprop = area.w < 120.0f;
+  const float dialR = area.w * (area.w > 120.0f ? 0.525f : 0.60f);
+  const float w = isTurboprop ? (dialR * 2.0f) : area.w;
+  const float x0 = isTurboprop ? (area.x + area.w * 0.5f - dialR) : area.x;
+
+  if (isTurboprop) {
+    r.fillText(x0, y, label, labelSize, TextAlign::Left, colors::kLabelText);
+  } else {
+    r.fillText(area.x + area.w * 0.5f, y, label, labelSize, TextAlign::Center,
+               colors::kLabelText);
+  }
 
   // The real unit leaves a clear gap between the label and its bar (the
   // pointer rides up into it), so sit the track a little lower than the label.
   const float axisY = y + labelSize * 1.35f;
   const float bandH = labelSize * 0.48f;
-  const float x0 = area.x;
-  const float w = area.w;
   const bool ticked = ticks > 0;
   auto xFor = [&](float v) {
     const float frac =
@@ -320,11 +327,18 @@ void drawFuelQty(Renderer& r, const FlightData& d, const EisGauge& gauge,
 
 float drawReadout(Renderer& r, const Rect& area, float y, const char* label,
                   const std::string& value, float displayH) {
-  r.fillText(area.x, y, label, mfdFontPx(kLabelWt, displayH), TextAlign::Left,
+  const float labelSize = mfdFontPx(kLabelWt, displayH);
+  const float valueSize = mfdFontPx(kValueWt, displayH);
+
+  const float dialR = area.w * (area.w > 120.0f ? 0.525f : 0.60f);
+  const float leftEdge = area.x + area.w * 0.5f - dialR;
+  const float rightEdge = area.x + area.w * 0.5f + dialR;
+
+  r.fillText(leftEdge, y, label, labelSize, TextAlign::Left,
              colors::kLabelText);
-  r.fillText(area.x + area.w, y, value, mfdFontPx(kValueWt, displayH),
+  r.fillText(rightEdge, y, value, valueSize,
              TextAlign::Right, colors::kWhite);
-  return y + mfdFontPx(kValueWt, displayH) * 1.35f;
+  return y + valueSize * 1.35f;
 }
 
 // Electrical group row (G1000 NXi Pilot's Guide Fig. 3-9): the parameter name
@@ -367,6 +381,224 @@ float drawElectricalRow(Renderer& r, const Rect& area, float y,
   return y + valueSize * 1.4f;
 }
 
+float clamp01(float v) { return std::max(0.0f, std::min(1.0f, v)); }
+
+// Two-tank vertical fuel quantity: L and R vertical bars side-by-side.
+void drawFuelQtyVert(Renderer& r, const FlightData& d, const EisGauge& gauge,
+                     const Rect& area, float& y, bool valid, float displayH) {
+  const float labelSize = mfdFontPx(kLabelWt, displayH);
+  const float valueSize = mfdFontPx(kValueWt, displayH);
+
+  // Title at the top (draw "FUEL QTY" and "LBS" in two separate lines)
+  r.fillText(area.x + area.w * 0.5f, y, "FUEL QTY", labelSize, TextAlign::Center, colors::kLabelText);
+  y += labelSize * 0.95f;
+  r.fillText(area.x + area.w * 0.5f, y, "LBS", labelSize, TextAlign::Center, colors::kLabelText);
+
+  const float trackTop = y + labelSize * 1.3f;
+  const float trackH = labelSize * 6.5f * 1.25f; // 25% taller!
+  const float trackW = std::max(4.0f, area.w * 0.12f);
+
+  const float lxC = area.x + area.w * 0.32f - 5.0f; // moved 5px outwards!
+  const float rxC = area.x + area.w * 0.68f + 5.0f; // moved 5px outwards!
+
+  const float minV = gauge.min;
+  const float maxV = gauge.max;
+  const float span = (maxV - minV) != 0.0f ? (maxV - minV) : 1.0f;
+
+  auto yFor = [&](float v) {
+    return trackTop + trackH * (1.0f - clamp01((v - minV) / span));
+  };
+
+  auto drawOneBar = [&](float cxBar, float qty, const std::string& sideLabel) {
+    const float x = cxBar - trackW * 0.5f;
+    r.fillRect(x, trackTop, trackW, trackH, Color{0.13f, 0.13f, 0.13f, 1.0f});
+    for (const EisBand& b : gauge.bands) {
+      const float y0 = yFor(b.hi);
+      const float y1 = yFor(b.lo);
+      r.fillRect(x, y0, trackW, y1 - y0, eisBandColor(b.color));
+    }
+    r.strokeLine(x, trackTop, x, trackTop + trackH, 1.0f, colors::kPanelBorder);
+
+    // Draw horizontal ticks on the columns for each 100 increment scale mark
+    const float step = (maxV - minV) / 6.0f;
+    for (float val = minV; val <= maxV + 0.1f; val += step) {
+      const float tickY = yFor(val);
+      r.strokeLine(x, tickY, x + trackW, tickY, 1.0f, colors::kWhite);
+    }
+
+    const float gap = 4.0f; // 4 pixel space between the gauge and static line
+
+    // Draw the static white line on the outside of each column running the full height of the track
+    if (cxBar < area.x + area.w * 0.5f) {
+      r.strokeLine(x - gap, trackTop, x - gap, trackTop + trackH, 1.5f, colors::kWhite);
+    } else {
+      r.strokeLine(x + trackW + gap, trackTop, x + trackW + gap, trackTop + trackH, 1.5f, colors::kWhite);
+    }
+
+    if (valid) {
+      const float vy = yFor(qty);
+      const float barW = 8.0f;
+
+      if (cxBar < area.x + area.w * 0.5f) {
+        // Left bar: white bar on the outside (left side of the white line) up to vy, with a horizontal flat top
+        r.fillRect(x - gap - barW, vy, barW, (trackTop + trackH) - vy, colors::kWhite);
+      } else {
+        // Right bar: white bar on the outside (right side of the white line) up to vy, with a horizontal flat top
+        r.fillRect(x + trackW + gap, vy, barW, (trackTop + trackH) - vy, colors::kWhite);
+      }
+    }
+
+    // Label inside/above the bar
+    r.fillText(cxBar, trackTop - labelSize * 0.2f, sideLabel, labelSize * 0.9f,
+               TextAlign::Center, colors::kLabelText);
+  };
+
+  drawOneBar(lxC, eisChannelValue(d, gauge.channel, 0.0f), "L");
+  drawOneBar(rxC, eisChannelValue(d, gauge.channelRight, 0.0f), "R");
+
+  // Draw central scale text labels: from 0 to 600 in increments of 100, exactly centered in the middle of L and R columns
+  const float scaleTextSize = labelSize * 0.82f;
+  const float step = (maxV - minV) / 6.0f;
+  for (float val = minV; val <= maxV + 0.1f; val += step) {
+    const float labelY = yFor(val);
+    r.fillText(area.x + area.w * 0.5f, labelY + scaleTextSize * 0.35f,
+               fmt("%.0f", val), scaleTextSize, TextAlign::Center, colors::kWhite);
+  }
+
+  // Draw digital readouts under each bar
+  const float valY = trackTop + trackH + valueSize * 0.95f;
+  const float lVal = eisChannelValue(d, gauge.channel, 0.0f);
+  const float rVal = eisChannelValue(d, gauge.channelRight, 0.0f);
+  r.fillText(lxC, valY, valid ? fmt("%.0f", lVal) : std::string("---"),
+             valueSize, TextAlign::Center, colors::kWhite);
+  r.fillText(rxC, valY, valid ? fmt("%.0f", rVal) : std::string("---"),
+             valueSize, TextAlign::Center, colors::kWhite);
+
+  y = valY + valueSize * 0.5f + 30.0f; // shifted down 30 pixels!
+}
+
+void drawDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
+              const Rect& area, float& y, float displayH) {
+  const float cx = area.x + area.w * 0.5f;
+  const float lblSize = mfdFontPx(kLabelWt * 1.25f, displayH);
+  const float valSize = mfdFontPx(kValueWt * 1.10f, displayH);
+
+  // Set radius dynamically (larger for narrow column, default for single column)
+  const float radius = area.w * (area.w > 120.0f ? 0.525f : 0.60f);
+
+  const float ringW = std::max(1.8f, radius * 0.08f);
+  const float outerLineW = std::max(1.0f, radius * 0.02f);
+  const float outerLineR =
+      radius + ringW * 0.5f + outerLineW * 0.5f + std::max(1.0f, radius * 0.03f);
+
+  const bool isTurboprop = area.w < 120.0f;
+  const float yScale = isTurboprop ? 1.12f : 1.0f;
+
+  // Position cy such that the top of the arc starts exactly at the bottom of the previous gauge (y)
+  const float cy = y + outerLineR * yScale;
+
+  // Arc parameters (41% of 360 deg = 148 deg sweep starting at -90 deg - 0 point is horizontal)
+  constexpr float kStartDeg = -90.0f;
+  constexpr float kSweepDeg = 148.0f;
+
+  auto angleFor = [&](float val) {
+    const float frac = std::max(0.0f, std::min(1.0f, (val - gauge.min) / (gauge.max - gauge.min)));
+    return kStartDeg + kSweepDeg * frac;
+  };
+  auto rad = [](float deg) { return deg * kPi / 180.0f; };
+
+  // Base green arc (circular)
+  strokeArc(r, cx, cy, radius, kStartDeg, kStartDeg + kSweepDeg, ringW,
+            colors::kBandGreen, yScale);
+
+  // Bands (circular)
+  for (const EisBand& band : gauge.bands) {
+    strokeArc(r, cx, cy, radius, angleFor(band.lo), angleFor(band.hi),
+              ringW * 1.04f, eisBandColor(band.color), yScale);
+  }
+
+  // Outer line wrapping the arc (circular)
+  strokeArc(r, cx, cy, outerLineR, kStartDeg, kStartDeg + kSweepDeg, outerLineW,
+            colors::kWhite, yScale);
+
+  // End-cap ticks
+  const float tickInner = radius - ringW * 0.5f - std::max(2.0f, radius * 0.12f);
+  const float tickOuter = outerLineR + outerLineW * 0.5f;
+  for (float end : {kStartDeg, kStartDeg + kSweepDeg}) {
+    const float a = rad(end);
+    r.strokeLine(cx + tickInner * std::sin(a), cy - (tickInner * std::cos(a)) * yScale,
+                 cx + tickOuter * std::sin(a), cy - (tickOuter * std::cos(a)) * yScale,
+                 std::max(1.5f, radius * 0.022f), colors::kWhite);
+  }
+
+  const bool valid = d.dataLinkValid;
+  const float val = eisChannelValue(d, gauge.channel, 0.0f);
+
+  if (valid) {
+    const float a = rad(angleFor(val));
+    const float sa = std::sin(a);
+    const float ca = std::cos(a);
+
+    // Tip at inner edge of the arc, no needle tail to center
+    const float tipR = radius - ringW * 0.5f;
+    const float baseR = tipR - std::max(4.5f, radius * 0.16f);
+    const float baseW = std::max(3.5f, radius * 0.12f);
+
+    const Point ptr[3] = {
+      {cx + tipR * sa, cy - (tipR * ca) * yScale},
+      {cx + baseR * sa - baseW * ca, cy - (baseR * ca + baseW * sa) * yScale},
+      {cx + baseR * sa + baseW * ca, cy - (baseR * ca - baseW * sa) * yScale}
+    };
+    const bool overspeed = gauge.hasRedline && val >= gauge.redline;
+    r.fillPolygon(ptr, 3, overspeed ? colors::kBandRed : colors::kWhite);
+  }
+
+
+
+  // Text labels centered slightly left-shifted to offset the right-aligned readout
+  const size_t spacePos = gauge.label.find(' ');
+  if (spacePos != std::string::npos) {
+    const std::string line1 = gauge.label.substr(0, spacePos);
+    const std::string line2 = gauge.label.substr(spacePos + 1);
+    r.fillText(cx - radius * 0.18f, cy - radius * 0.38f, line1.c_str(), lblSize, TextAlign::Center,
+               colors::kLabelText, FontFace::DejaVuSemiBold);
+    r.fillText(cx - radius * 0.18f, cy - radius * 0.08f, line2.c_str(), lblSize * 0.9f, TextAlign::Center,
+               colors::kLabelText, FontFace::DejaVuSemiBold);
+  } else {
+    r.fillText(cx - radius * 0.18f, cy - radius * 0.23f, gauge.label.c_str(), lblSize, TextAlign::Center,
+               colors::kLabelText, FontFace::DejaVuSemiBold);
+  }
+
+  // Digital readout inside the middle of the gauge, dynamically colored by band
+  Color readoutColor = colors::kWhite;
+  if (valid) {
+    if (gauge.hasRedline && val >= gauge.redline) {
+      readoutColor = colors::kBandRed;
+    } else {
+      for (const EisBand& band : gauge.bands) {
+        if (val >= band.lo && val <= band.hi) {
+          readoutColor = eisBandColor(band.color);
+          break;
+        }
+      }
+    }
+  }
+
+  // Digital readout text positioned at the bottom-right, under the end of the arc (moved 20px up, 5px right)
+  r.fillText(cx + radius * 0.85f + 5.0f, cy + radius * 0.35f - 20.0f,
+             valid ? fmt(gauge.format.c_str(), val) : std::string("____"),
+             valSize, TextAlign::Right,
+             readoutColor,
+             FontFace::DejaVuSemiBold);
+
+  // Update y to the exact bottom of the outer line of the arc (compressed for intermediate dials)
+  if (gauge.channel == "eng.ng") {
+    y = cy + outerLineR * yScale;
+  } else {
+    y = cy + radius * 0.35f * yScale;
+  }
+}
+
 std::vector<BarBand> toBarBands(const EisGauge& gauge) {
   std::vector<BarBand> bands;
   bands.reserve(gauge.bands.size());
@@ -388,8 +620,16 @@ float gaugeHeight(const EisGauge& gauge, const Rect& inner, float barStride,
       return barStride;
     case EisGaugeType::FuelQty:
       return labelSize * 5.0f;
+    case EisGaugeType::FuelQtyVert:
+      return labelSize * 9.5f;
+    case EisGaugeType::Dial:
+      if (gauge.channel == "eng.ng") {
+        return inner.w * 1.05f;
+      } else {
+        return inner.w * 0.65f;
+      }
     case EisGaugeType::Readout:
-      return valueSize * 1.35f + labelSize * 0.5f;
+      return valueSize * 1.35f;
     case EisGaugeType::Electrical:
       return valueSize * 2.45f;
   }
@@ -428,13 +668,19 @@ void drawGauge(Renderer& r, const FlightData& d, const EisGauge& gauge,
       drawFuelQty(r, d, gauge, inner, y, valid, displayH);
       break;
     }
+    case EisGaugeType::FuelQtyVert: {
+      drawFuelQtyVert(r, d, gauge, inner, y, valid, displayH);
+      break;
+    }
+    case EisGaugeType::Dial: {
+      drawDial(r, d, gauge, inner, y, displayH);
+      break;
+    }
     case EisGaugeType::Readout: {
-      const float value = eisChannelValue(d, gauge.channel, 0.0f);
       y = drawReadout(
           r, inner, y, gauge.label.c_str(),
-          valid ? fmt(gauge.format.c_str(), value) : std::string("____._"),
+          valid ? fmt(gauge.format.c_str(), eisChannelValue(d, gauge.channel, 0.0f)) : std::string("____._"),
           displayH);
-      y += labelSize * 0.5f;
       break;
     }
     case EisGaugeType::Electrical: {
@@ -450,9 +696,334 @@ void drawGauge(Renderer& r, const FlightData& d, const EisGauge& gauge,
 
 }  // namespace
 
+void drawRightColumnPA46(Renderer& r, const FlightData& d, const Rect& a, float displayH, bool valid) {
+  const float labelSize = mfdFontPx(kLabelWt, displayH);
+  const float valueSize = mfdFontPx(kValueWt, displayH);
+  
+  auto chan = [](const FlightData& fd, const char* name) {
+    auto it = fd.eisChannels.find(name);
+    return it != fd.eisChannels.end() ? it->second : 0.0f;
+  };
+
+  auto clamp = [](float val, float low, float high) {
+    return std::max(low, std::min(high, val));
+  };
+
+  const float bottomMargin = labelSize * 1.2f;
+  const float rightNatural = labelSize * 0.9f + (labelSize * 1.1f + labelSize * 0.9f + 100.0f + valueSize * 0.9f * 2.0f + 65.0f) // cabin block height
+    + (labelSize * 1.1f + labelSize * 1.1f + labelSize * 0.9f + 16.0f) // electrical block
+    + (labelSize * 0.9f + 16.0f) // vacuum block
+    + (labelSize * 0.9f + 18.0f) // rudder trim block
+    + (labelSize * 0.85f + labelSize * 0.8f + 50.0f) // flaps block
+    + 30.0f; // gear block
+  const float rightSlack = std::max(0.0f, a.h - bottomMargin - rightNatural);
+  const float rightExtra = rightSlack / 5.0f;
+
+  float y = a.y + labelSize * 0.9f;
+
+  // 1. Cabin Pressurization block
+  r.fillText(a.x + a.w * 0.5f, y, "CABIN PRESS", labelSize, TextAlign::Center, colors::kLabelText);
+  y += labelSize * 1.1f;
+
+  const float rate = chan(d, eis_channels::kCabinRateFpm);
+  const float alt = chan(d, eis_channels::kCabinAltFt);
+  const float diff = chan(d, eis_channels::kCabinDiffPsi);
+  const float dest = chan(d, eis_channels::kDestElevFt);
+
+  // Side-by-side vertical tracks for Cabin Alt (L) and FPM (R)
+  const float barH = 100.0f; // 100 pixels tall!
+  const float barW = std::max(4.0f, a.w * 0.12f);
+  const float leftCx = a.x + a.w * 0.22f;
+  const float rightCx = a.x + a.w * 0.78f;
+
+  // ALT FT label and value (Left side of column), FPM label and value (Right side of column)
+  r.fillText(a.x, y, "ALT FT", labelSize * 0.8f, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w, y, "FPM", labelSize * 0.8f, TextAlign::Right, colors::kLabelText);
+
+  const float trackTop = y + labelSize * 0.9f;
+  
+  auto yForAlt = [&](float val) {
+    return trackTop + barH * (1.0f - clamp01(val / 25000.0f));
+  };
+  r.fillRect(leftCx - barW * 0.5f, trackTop, barW, barH, Color{0.13f, 0.13f, 0.13f, 1.0f});
+  r.fillRect(leftCx - barW * 0.3f, trackTop, barW * 0.6f, barH, colors::kBandGreen);
+  if (valid) {
+    const float ay = yForAlt(alt);
+    const float px = leftCx - barW * 0.5f;
+    const Point ptr[3] = {
+      {px, ay},
+      {px - 6.0f, ay - 4.0f},
+      {px - 6.0f, ay + 4.0f}
+    };
+    r.fillPolygon(ptr, 3, colors::kWhite);
+    r.fillRect(px - 10.0f, ay - 4.0f, 4.0f, 8.0f, colors::kWhite);
+  }
+  r.fillText(a.x, trackTop + barH + valueSize * 0.9f,
+             valid ? fmt("%.0f", alt) : std::string("----"),
+             valueSize * 0.9f, TextAlign::Left, colors::kWhite);
+
+  // Cabin Rate FPM: -2000 to +2000 FPM
+  auto yForRate = [&](float val) {
+    return trackTop + barH * (0.5f - 0.5f * clamp(val / 2000.0f, -1.0f, 1.0f));
+  };
+  r.fillRect(rightCx - barW * 0.5f, trackTop, barW, barH, Color{0.13f, 0.13f, 0.13f, 1.0f});
+  r.fillRect(rightCx - barW * 0.3f, trackTop, barW * 0.6f, barH, colors::kBandGreen);
+  if (valid) {
+    const float ry = yForRate(rate);
+    const float px = rightCx + barW * 0.5f;
+    const Point ptr[3] = {
+      {px, ry},
+      {px + 6.0f, ry - 4.0f},
+      {px + 6.0f, ry + 4.0f}
+    };
+    r.fillPolygon(ptr, 3, colors::kWhite);
+    r.fillRect(px + 6.0f, ry - 4.0f, 4.0f, 8.0f, colors::kWhite);
+  }
+  r.fillText(a.x + a.w, trackTop + barH + valueSize * 0.9f,
+             valid ? fmt("%.0f", rate) : std::string("----"),
+             valueSize * 0.9f, TextAlign::Right, colors::kWhite);
+
+  y = trackTop + barH + valueSize * 1.5f;
+
+  // Horizontal DIFF PSI
+  r.fillText(a.x, y, "DIFF PSI", labelSize * 0.85f, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w, y, valid ? fmt("%.1f", diff) : std::string("-.-"),
+             valueSize * 0.9f, TextAlign::Right, colors::kWhite);
+  y += labelSize * 0.9f;
+  const float barW_h = a.w;
+  r.fillRect(a.x, y, barW_h, 4.0f, Color{0.13f, 0.13f, 0.13f, 1.0f});
+  
+  // Background colored bands: green from 0 to 5, red from 5 to 6
+  const float maxDiff = 6.0f;
+  const float x5 = barW_h * (5.0f / maxDiff);
+  r.fillRect(a.x, y - 1.0f, x5, 6.0f, Color{0.0f, 0.35f, 0.0f, 1.0f}); // dark green band
+  r.fillRect(a.x + x5, y - 1.0f, barW_h - x5, 6.0f, Color{0.4f, 0.0f, 0.0f, 1.0f}); // dark red band
+
+  if (valid) {
+    if (diff <= 5.0f) {
+      const float fillW = barW_h * clamp01(diff / maxDiff);
+      r.fillRect(a.x, y, fillW, 4.0f, colors::kBandGreen);
+    } else {
+      r.fillRect(a.x, y, x5, 4.0f, colors::kBandGreen);
+      const float fillRed = barW_h * (clamp(diff, 5.0f, maxDiff) - 5.0f) / maxDiff;
+      r.fillRect(a.x + x5, y, fillRed, 4.0f, colors::kBandRed);
+    }
+    const float needleX = a.x + barW_h * clamp01(diff / maxDiff);
+    r.strokeLine(needleX, y - 2.0f, needleX, y + 6.0f, 1.5f, colors::kWhite);
+  }
+
+  // Add markers below the tape for 0, 3, 6
+  const float tickY = y + 8.0f;
+  auto drawDiffTick = [&](float v) {
+    const float tx = a.x + barW_h * (v / maxDiff);
+    r.strokeLine(tx, y + 4.0f, tx, y + 7.0f, 1.0f, colors::kWhite);
+    r.fillText(tx, tickY + labelSize * 0.75f, fmt("%.0f", v), labelSize * 0.75f, TextAlign::Center, colors::kWhite);
+  };
+  drawDiffTick(0.0f);
+  drawDiffTick(3.0f);
+  drawDiffTick(6.0f);
+  y = tickY + labelSize * 0.75f + 8.0f;
+
+  // Destination Altitude
+  r.fillText(a.x, y, "DEST ALTD", labelSize * 0.85f, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w, y, valid ? fmt("%.0f", dest) : std::string("-----"),
+             valueSize * 0.9f, TextAlign::Right, colors::kMagenta);
+  y += labelSize * 1.1f;
+
+  // Separator Line
+  r.strokeLine(a.x, y, a.x + a.w, y, 1.0f, colors::kPanelSeparator);
+  y += 10.0f + rightExtra;
+
+  // 2. ELECTRICAL
+  r.fillText(a.x + a.w * 0.5f, y, "ELECTRICAL", labelSize, TextAlign::Center, colors::kLabelText);
+  y += labelSize * 1.1f;
+
+  // AMPS GEN / ALT
+  const float genAmps = chan(d, eis_channels::kGen1Amps);
+  const float altAmps = chan(d, eis_channels::kGen2Amps);
+  
+  // Line 1: AMPS (left-aligned) and GEN (right-aligned at 45% of column) and GEN reading (green, right-aligned)
+  r.fillText(a.x, y, "AMPS", labelSize * 0.85f, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w * 0.45f, y, "GEN", labelSize * 0.85f, TextAlign::Right, colors::kLabelText);
+  r.fillText(a.x + a.w, y, valid ? fmt("%.0f", genAmps) : std::string("---"),
+             valueSize * 0.9f, TextAlign::Right, colors::kBandGreen);
+  
+  y += labelSize * 1.1f;
+
+  // Line 2: ALT (right-aligned with GEN at 45% of column) and ALT reading (white, right-aligned)
+  r.fillText(a.x + a.w * 0.45f, y, "ALT", labelSize * 0.85f, TextAlign::Right, colors::kLabelText);
+  r.fillText(a.x + a.w, y, valid ? fmt("%.0f", altAmps) : std::string("---"),
+             valueSize * 0.9f, TextAlign::Right, colors::kWhite);
+  
+  y += labelSize * 1.1f;
+
+  // Volts and horizontal battery bar
+  const float volts = chan(d, eis_channels::kBusVoltsMain);
+  r.fillText(a.x, y, "BATT VOLTS", labelSize * 0.85f, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w, y, valid ? fmt("%.1f", volts) : std::string("--.-"),
+             valueSize * 0.9f, TextAlign::Right, colors::kWhite);
+  y += labelSize * 0.9f;
+
+  r.fillRect(a.x, y, barW_h, 4.0f, Color{0.13f, 0.13f, 0.13f, 1.0f});
+  const float greenLoX = barW_h * ((24.0f - 20.0f) / 12.0f);
+  const float greenHiX = barW_h * ((30.0f - 20.0f) / 12.0f);
+  r.fillRect(a.x + greenLoX, y - 1.0f, greenHiX - greenLoX, 6.0f, Color{0.0f, 0.35f, 0.0f, 1.0f});
+  if (valid) {
+    const float fillW = barW_h * clamp01((volts - 20.0f) / 12.0f);
+    const Color voltsColor = (volts < 24.0f || volts > 30.0f) ? colors::kBandRed : colors::kBandGreen;
+    r.fillRect(a.x, y, fillW, 4.0f, voltsColor);
+    r.strokeLine(a.x + fillW, y - 2.0f, a.x + fillW, y + 6.0f, 1.5f, colors::kWhite);
+  }
+  y += 12.0f;
+
+  // Separator Line
+  r.strokeLine(a.x, y, a.x + a.w, y, 1.0f, colors::kPanelSeparator);
+  y += 10.0f + rightExtra;
+
+  // 3. VACUUM
+  const float vac = chan(d, eis_channels::kVacuum);
+  r.fillText(a.x, y, "VACUUM IN HG", labelSize * 0.85f, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w, y, valid ? fmt("%.2f", vac) : std::string("-.--"),
+             valueSize * 0.9f, TextAlign::Right, colors::kWhite);
+  y += labelSize * 0.9f;
+
+  r.fillRect(a.x, y, barW_h, 4.0f, Color{0.13f, 0.13f, 0.13f, 1.0f});
+  const float vacGreenLoX = barW_h * ((4.5f - 3.0f) / 4.0f);
+  const float vacGreenHiX = barW_h * ((5.5f - 3.0f) / 4.0f);
+  r.fillRect(a.x + vacGreenLoX, y - 1.0f, vacGreenHiX - vacGreenLoX, 6.0f, Color{0.0f, 0.35f, 0.0f, 1.0f});
+  if (valid) {
+    const float fillW = barW_h * clamp01((vac - 3.0f) / 4.0f);
+    const Color vacColor = (vac < 4.5f || vac > 5.5f) ? colors::kBandRed : colors::kBandGreen;
+    r.fillRect(a.x, y, fillW, 4.0f, vacColor);
+    r.strokeLine(a.x + fillW, y - 2.0f, a.x + fillW, y + 6.0f, 1.5f, colors::kWhite);
+  }
+  y += 12.0f;
+
+  // Separator Line
+  r.strokeLine(a.x, y, a.x + a.w, y, 1.0f, colors::kPanelSeparator);
+  y += 10.0f + rightExtra;
+
+  // 4. RUDDER TRIM
+  const float rudTrim = chan(d, eis_channels::kRudderTrim);
+  const float rudDeg = rudTrim * 10.0f;
+  const std::string rudStr = std::abs(rudDeg) < 0.1f ? "0.0" : (fmt("%.1f", std::abs(rudDeg)) + (rudDeg < 0.0f ? " L" : " R"));
+
+  r.fillText(a.x, y, "RUDDER TRIM", labelSize * 0.85f, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w, y, valid ? rudStr : std::string("---"),
+             valueSize * 0.9f, TextAlign::Right, colors::kWhite);
+  y += labelSize * 0.9f;
+
+  r.fillRect(a.x, y, barW_h, 3.0f, Color{0.25f, 0.25f, 0.25f, 1.0f});
+  r.strokeLine(a.x + barW_h * 0.5f, y - 3.0f, a.x + barW_h * 0.5f, y + 6.0f, 1.0f, colors::kWhite);
+  if (valid) {
+    const float px = a.x + barW_h * (0.5f + 0.5f * clamp(rudTrim, -1.0f, 1.0f));
+    const Point ptr[3] = {
+      {px, y - 4.0f},
+      {px - 4.0f, y + 4.0f},
+      {px + 4.0f, y + 4.0f}
+    };
+    r.fillPolygon(ptr, 3, colors::kWhite);
+  }
+  y += rightExtra - 35.0f;
+
+  // 5. FLAPS
+  r.fillText(a.x, y, "FLAPS", labelSize * 0.85f, TextAlign::Left, colors::kLabelText);
+  const float flapsAct = chan(d, eis_channels::kFlapsActual);
+  const float flapFrac = clamp01(flapsAct);
+  float flapsDeg = 0.0f;
+  if (flapFrac <= 0.333f) {
+    flapsDeg = (flapFrac / 0.333f) * 10.0f;
+  } else if (flapFrac <= 0.666f) {
+    flapsDeg = 10.0f + ((flapFrac - 0.333f) / 0.333f) * 10.0f;
+  } else {
+    flapsDeg = 20.0f + ((flapFrac - 0.666f) / 0.334f) * 16.0f;
+  }
+  r.fillText(a.x + a.w, y, valid ? fmt("%.0f\x5E", flapsDeg) : std::string("---"),
+             valueSize * 0.9f, TextAlign::Right, colors::kWhite);
+  y += labelSize * 0.8f;
+
+  const float pivotX = a.x + 15.0f;
+  const float pivotY = y + 15.0f;
+  const float rot = flapsDeg * (50.0f / 36.0f) * kPi / 180.0f; // 50 degrees sweep total
+  const float cosR = std::cos(rot);
+  const float sinR = std::sin(rot);
+
+  r.strokeLine(pivotX - 3.0f, pivotY, pivotX + 3.0f, pivotY, 1.0f, colors::kWhite);
+  Point wing[5] = {
+    {0.0f, -4.0f},
+    {30.0f, -1.5f},
+    {36.0f, 0.0f},
+    {15.0f, 2.5f},
+    {0.0f, 4.0f}
+  };
+  Point rotWing[5];
+  for (int i = 0; i < 5; ++i) {
+    rotWing[i] = {
+      pivotX + wing[i].x * cosR - wing[i].y * sinR,
+      pivotY + wing[i].x * sinR + wing[i].y * cosR
+    };
+  }
+  r.fillPolygon(rotWing, 5, colors::kWhite);
+
+  const float scaleR = 38.0f;
+  const float flapsScaleSize = labelSize * 0.78f;
+  auto drawFlapTick = [&](float deg, const char* txt) {
+    const float aRad = deg * (50.0f / 36.0f) * kPi / 180.0f;
+    const float cosA = std::cos(aRad);
+    const float sinA = std::sin(aRad);
+    const float tx0 = pivotX + scaleR * cosA;
+    const float ty0 = pivotY + scaleR * sinA;
+    const float tx1 = pivotX + (scaleR + 10.0f) * cosA; // Ticks are 10px long radial lines!
+    const float ty1 = pivotY + (scaleR + 10.0f) * sinA;
+    r.strokeLine(tx0, ty0, tx1, ty1, 1.0f, colors::kWhite);
+    r.fillText(tx1 + 5.0f * cosA, ty1 + 5.0f * sinA + flapsScaleSize * 0.35f, txt, flapsScaleSize, TextAlign::Left, colors::kWhite);
+  };
+  drawFlapTick(0.0f, "0");
+  drawFlapTick(10.0f, "10");
+  drawFlapTick(20.0f, "20");
+  drawFlapTick(36.0f, "36");
+
+  y += 48.0f;
+
+  // Separator Line
+  r.strokeLine(a.x, y, a.x + a.w, y, 1.0f, colors::kPanelSeparator);
+  y += 12.0f + rightExtra;
+
+  // 6. LANDING GEAR
+  const float gearN = chan(d, eis_channels::kGearNose);
+  const float gearL = chan(d, eis_channels::kGearLeft);
+  const float gearR = chan(d, eis_channels::kGearRight);
+
+  const float gearCx = a.x + a.w * 0.5f;
+  const float gearR_circ = 13.0f; // Over double the size!
+  const float dx_spacing = 33.0f; // Spread out slightly more!
+  const float dy_spacing = 26.0f;
+
+  const float bottomLimit = a.y + a.h - bottomMargin;
+  const float mainY = bottomLimit - gearR_circ - 4.0f; // Just above the bottom of the frame
+  const float noseY = mainY - dy_spacing;
+  
+  // Draw the "LANDING GEAR" text header centered above the nose gear
+  r.fillText(gearCx, noseY - gearR_circ - 14.0f, "LANDING GEAR", labelSize * 0.85f,
+             TextAlign::Center, colors::kLabelText);
+
+  auto drawGearLight = [&](float cx, float cy, float value) {
+    strokeArc(r, cx, cy, gearR_circ, 0.0f, 360.0f, 2.5f, colors::kWhite);
+    if (valid && value >= 1.0f) {
+      r.fillCircle(cx, cy, gearR_circ - 1.2f, colors::kBandGreen);
+    }
+  };
+
+  drawGearLight(gearCx, noseY, gearN);
+  drawGearLight(gearCx - dx_spacing, mainY, gearL);
+  drawGearLight(gearCx + dx_spacing, mainY, gearR);
+}
+
 float eisStripWidthFrac(EisStripStyle style) {
-  // 150/1024 piston, 195/1024 turbofan, against the 1024 px GDU canvas.
-  return style == EisStripStyle::Turbofan ? 195.0f / 1024.0f : 150.0f / 1024.0f;
+  // 150/1024 piston, 195/1024 turbofan, 240/1024 turboprop (2-column layout), against the 1024 px GDU canvas.
+  if (style == EisStripStyle::Turbofan) return 195.0f / 1024.0f;
+  if (style == EisStripStyle::Turboprop) return 240.0f / 1024.0f;
+  return 150.0f / 1024.0f;
 }
 
 void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
@@ -463,8 +1034,6 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
     drawEisStripTurbofan(r, d, layout, area, displayH, reduced);
     return;
   }
-  // The piston (Cessna Nav III) stack already fits the PFD reversionary column,
-  // so `reduced` has no effect on it.
 
   // Solid black backing for the whole engine instrument strip (real unit).
   r.fillRect(area.x, area.y, area.w, area.h, colors::kBlack);
@@ -477,14 +1046,62 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
 
   const bool valid = d.dataLinkValid;
   const float pad = area.w * 0.10f;
-  const Rect inner{area.x + pad, area.y, area.w - 2.0f * pad, area.h};
   const float labelSize = mfdFontPx(kLabelWt, displayH);
   const float valueSize = mfdFontPx(kValueWt, displayH);
   const float barStride = labelSize * 3.1f;
-
-  // No strip heading on the real unit: the RPM dial sits near the top with a
-  // small breathing gap above the arc.
   const float topPad = labelSize * 0.9f;
+  const float bottomMargin = labelSize * 1.2f;
+
+  if (layout.style == EisStripStyle::Turboprop) {
+    // Two-column layout for the PA-46T!
+    const float colW = (area.w - pad * 3.0f) * 0.5f;
+    const Rect leftCol{area.x + pad, area.y, colW, area.h};
+    const Rect rightCol{area.x + pad * 2.0f + colW, area.y, colW, area.h};
+
+    // Draw vertical divider line
+    r.strokeLine(area.x + pad + colW + pad * 0.5f, area.y + topPad,
+                 area.x + pad + colW + pad * 0.5f, area.y + area.h - bottomMargin,
+                 1.0f, colors::kPanelSeparator);
+
+    // Left Column: loaded engine gauges (from pa46t.eis)
+    const float halfwayY = area.y + area.h * 0.5f;
+    const float topY = area.y + topPad;
+    const float dialStride = (halfwayY - topY) / 4.0f;
+
+    // Draw dials in the top half
+    int dialIndex = 0;
+    for (const EisSection& section : layout.sections) {
+      for (const EisGauge& gauge : section.gauges) {
+        if (gauge.type == EisGaugeType::Dial || gauge.type == EisGaugeType::RpmDial) {
+          float tempY = topY + dialIndex * dialStride;
+          drawGauge(r, d, gauge, leftCol, tempY, valid, displayH, barStride, labelSize);
+          dialIndex++;
+        }
+      }
+    }
+
+    // Draw remaining non-dial gauges starting exactly at the halfway mark, stacked tightly downwards
+    float leftY = halfwayY;
+    for (const EisSection& section : layout.sections) {
+      for (const EisGauge& gauge : section.gauges) {
+        if (gauge.type != EisGaugeType::Dial && gauge.type != EisGaugeType::RpmDial) {
+          drawGauge(r, d, gauge, leftCol, leftY, valid, displayH, barStride, labelSize);
+          if (gauge.channel == "eng.oil_temp_c") {
+            // Draw a white horizontal divider line following the temp
+            leftY += labelSize * 0.4f;
+            r.strokeLine(leftCol.x, leftY, leftCol.x + leftCol.w, leftY, 1.0f, colors::kWhite);
+            leftY += labelSize * 0.8f;
+          }
+        }
+      }
+    }
+
+    // Right Column: custom systems/synoptics
+    drawRightColumnPA46(r, d, rightCol, displayH, valid);
+    return;
+  }
+
+  const Rect inner{area.x + pad, area.y, area.w - 2.0f * pad, area.h};
 
   // Pre-measure the stack so the leftover height can be shared evenly between
   // gauges. The real EIS strip fills the full column rather than bunching the
@@ -498,7 +1115,6 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
       ++gaugeCount;
     }
   }
-  const float bottomMargin = labelSize * 1.2f;
   const float slack = std::max(0.0f, area.h - bottomMargin - natural);
   const float extra = gaugeCount > 1 ? slack / (gaugeCount - 1) : 0.0f;
 

@@ -47,6 +47,7 @@ inline constexpr const char* kGearLeft = "gear.left";
 inline constexpr const char* kGearRight = "gear.right";
 inline constexpr const char* kPitchTrim = "trim.pitch";      // -1..1 (-=nose dn)
 inline constexpr const char* kRollTrim = "trim.roll";        // -1..1 (-=left)
+inline constexpr const char* kRudderTrim = "trim.rudder";      // -1..1 (-=left)
 inline constexpr const char* kFlapsActual = "flaps.actual";  // 0..1
 inline constexpr const char* kFlapsCommanded = "flaps.commanded";  // 0..1
 inline constexpr const char* kCabinRateFpm = "cabin.rate_fpm";
@@ -68,6 +69,8 @@ enum class EisGaugeType {
   FuelQty,
   Readout,
   Electrical,
+  FuelQtyVert,
+  Dial,
 };
 
 // Overall engine-page layout family. Piston is the single-column Cessna Nav III
@@ -79,6 +82,7 @@ enum class EisGaugeType {
 enum class EisStripStyle {
   Piston,
   Turbofan,
+  Turboprop,
 };
 
 enum class EisBandColor {

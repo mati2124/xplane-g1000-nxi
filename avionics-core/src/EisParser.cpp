@@ -47,12 +47,20 @@ bool parseGaugeType(const std::string& token, EisGaugeType& out) {
     out = EisGaugeType::FuelQty;
     return true;
   }
+  if (token == "FUEL_QTY_VERT") {
+    out = EisGaugeType::FuelQtyVert;
+    return true;
+  }
   if (token == "READOUT") {
     out = EisGaugeType::Readout;
     return true;
   }
   if (token == "ELECTRICAL") {
     out = EisGaugeType::Electrical;
+    return true;
+  }
+  if (token == "DIAL") {
+    out = EisGaugeType::Dial;
     return true;
   }
   return false;
@@ -117,6 +125,8 @@ EisLayout parseEisText(const std::string& text) {
     if (matchKeyword(line, "STYLE", rest)) {
       if (rest == "TURBOFAN") {
         layout.style = EisStripStyle::Turbofan;
+      } else if (rest == "TURBOPROP") {
+        layout.style = EisStripStyle::Turboprop;
       } else {
         layout.style = EisStripStyle::Piston;
       }

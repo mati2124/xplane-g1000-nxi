@@ -467,6 +467,9 @@ void DatarefDataSource::updateAircraftProfile() {
   } else if (aircraftOverride_ == AircraftOverride::SF50) {
     icao = "SF50";
     acfPath = "sf50";
+  } else if (aircraftOverride_ == AircraftOverride::PA46T) {
+    icao = "PA46T";
+    acfPath = "pa46t";
   }
 
   if (acfPath == lastAircraftAcfPath_ && icao == lastAircraftIcao_) return;
@@ -680,7 +683,14 @@ void DatarefDataSource::update(double dtSeconds) {
     if (b.arrayIndex < 0) {
       raw = XPLMGetDataf(b.ref);
     } else {
-      XPLMGetDatavf(b.ref, &raw, b.arrayIndex, 1);
+      XPLMDataTypeID type = XPLMGetDataRefTypes(b.ref);
+      if (type & xplmType_IntArray) {
+        int val = 0;
+        XPLMGetDatavi(b.ref, &val, b.arrayIndex, 1);
+        raw = static_cast<float>(val);
+      } else {
+        XPLMGetDatavf(b.ref, &raw, b.arrayIndex, 1);
+      }
     }
     data_.eisChannels[b.channel] = raw * b.scale + b.offset;
   }

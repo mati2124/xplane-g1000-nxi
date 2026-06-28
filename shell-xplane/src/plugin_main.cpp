@@ -2132,6 +2132,7 @@ constexpr int kReplaceDisplaysMenuRef = -1;
 constexpr int kAircraftOverrideAutoRef = -2;
 constexpr int kAircraftOverrideC172Ref = -3;
 constexpr int kAircraftOverrideSF50Ref = -4;
+constexpr int kAircraftOverridePA46TRef = -5;
 
 constexpr int kReplaceDisplaysMenuIndex = kPresetCount + 1;
 constexpr int kFmsDebugMenuIndex = kPresetCount + 2;
@@ -2139,6 +2140,7 @@ constexpr int kFmsDebugMenuIndex = kPresetCount + 2;
 constexpr int kAircraftOverrideAutoIndex = kPresetCount + 4;
 constexpr int kAircraftOverrideC172Index = kPresetCount + 5;
 constexpr int kAircraftOverrideSF50Index = kPresetCount + 6;
+constexpr int kAircraftOverridePA46TIndex = kPresetCount + 7;
 
 // Puts a check mark beside the active preset and clears the others.
 void RefreshRateMenuChecks() {
@@ -2159,6 +2161,8 @@ void RefreshRateMenuChecks() {
                     g_aircraftOverride == avionics::AircraftOverride::C172 ? xplm_Menu_Checked : xplm_Menu_Unchecked);
   XPLMCheckMenuItem(g_rateMenu, kAircraftOverrideSF50Index,
                     g_aircraftOverride == avionics::AircraftOverride::SF50 ? xplm_Menu_Checked : xplm_Menu_Unchecked);
+  XPLMCheckMenuItem(g_rateMenu, kAircraftOverridePA46TIndex,
+                    g_aircraftOverride == avionics::AircraftOverride::PA46T ? xplm_Menu_Checked : xplm_Menu_Unchecked);
 }
 
 void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
@@ -2196,6 +2200,15 @@ void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
     g_aircraftOverride = avionics::AircraftOverride::SF50;
     if (g_dataSource) {
       g_dataSource->setAircraftOverride(avionics::AircraftOverride::SF50);
+    }
+    SaveConfig();
+    RefreshRateMenuChecks();
+    return;
+  }
+  if (idx == kAircraftOverridePA46TRef) {
+    g_aircraftOverride = avionics::AircraftOverride::PA46T;
+    if (g_dataSource) {
+      g_dataSource->setAircraftOverride(avionics::AircraftOverride::PA46T);
     }
     SaveConfig();
     RefreshRateMenuChecks();
@@ -2288,6 +2301,9 @@ void BuildRateMenu() {
   XPLMAppendMenuItem(
       g_rateMenu, "Aircraft Layout: Cirrus SF50",
       reinterpret_cast<void*>(static_cast<intptr_t>(kAircraftOverrideSF50Ref)), 1);
+  XPLMAppendMenuItem(
+      g_rateMenu, "Aircraft Layout: Piper PA-46T",
+      reinterpret_cast<void*>(static_cast<intptr_t>(kAircraftOverridePA46TRef)), 1);
   // "Install Update" is bound to its command so it is both clickable and
   // key-bindable. Disabled until the update pump finds a newer release.
   XPLMAppendMenuSeparator(g_rateMenu);
