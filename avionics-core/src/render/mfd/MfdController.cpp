@@ -510,6 +510,7 @@ void MfdController::stepPage(int direction) {
   mapSettingsOpen_ = false;
   chartViewActive_ = false;  // leaving the page closes its chart view
   wptInfoView_ = WptInfoView::Airport;  // and its WPT sub-view selection
+  radarCursorOn_ = false;
   if (pageGroup_ == MfdPageGroup::Checklist) {
     stepChecklist(direction);
     return;
@@ -532,7 +533,10 @@ void MfdController::selectGroup(MfdPageGroup group) {
   if (pageGroup_ == group) {
     stepPage(1);
   } else {
-    if (pageGroup_ == MfdPageGroup::Map) mapResetPointer();
+    if (pageGroup_ == MfdPageGroup::Map) {
+      mapResetPointer();
+      radarCursorOn_ = false;
+    }
     if (pageGroup_ == MfdPageGroup::Waypoint) wptResetInteraction();
     if (pageGroup_ == MfdPageGroup::Nearest) nrstResetInteraction();
     chartViewActive_ = false;
@@ -1010,6 +1014,7 @@ void MfdController::stepPageGroup(int direction) {
   switch (pageGroup_) {
     case MfdPageGroup::Map:
       mapResetPointer();
+      radarCursorOn_ = false;
       break;
     case MfdPageGroup::Waypoint:
       wptResetInteraction();
@@ -1040,6 +1045,7 @@ void MfdController::clrDefaultMap() {
   wptResetInteraction();
   nrstResetInteraction();
   mapResetPointer();
+  radarCursorOn_ = false;
   dtoOpen_ = false;
   dtoArmed_ = false;
   dtoEntry_.reset();

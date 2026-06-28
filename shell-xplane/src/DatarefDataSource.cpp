@@ -426,6 +426,13 @@ void DatarefDataSource::refreshAirspeedEnvelope() {
   applyAirspeedEnvelopeDefaults(data_);
 }
 
+void DatarefDataSource::setAircraftOverride(AircraftOverride override) {
+  if (aircraftOverride_ == override) return;
+  aircraftOverride_ = override;
+  lastAircraftAcfPath_.clear();
+  lastAircraftIcao_.clear();
+}
+
 void DatarefDataSource::updateAircraftProfile() {
   std::string acfPath;
   if (acfRelativePath_ != nullptr) {
@@ -452,6 +459,14 @@ void DatarefDataSource::updateAircraftProfile() {
         icao.pop_back();
       }
     }
+  }
+
+  if (aircraftOverride_ == AircraftOverride::C172) {
+    icao = "C172";
+    acfPath = "c172";
+  } else if (aircraftOverride_ == AircraftOverride::SF50) {
+    icao = "SF50";
+    acfPath = "sf50";
   }
 
   if (acfPath == lastAircraftAcfPath_ && icao == lastAircraftIcao_) return;

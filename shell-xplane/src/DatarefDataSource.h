@@ -33,6 +33,13 @@ namespace avionics {
 
 class MfdController;
 
+enum class AircraftOverride {
+  Auto = 0,
+  C172 = 1,
+  SF50 = 2,
+  Count = 3
+};
+
 // In-process DataSource for the X-Plane plugin: resolves dataref handles once
 // and reads them each frame. Dataref reads inside the sim are cheap, so no
 // interpolation is needed here (unlike the standalone/network source).
@@ -42,6 +49,8 @@ class DatarefDataSource : public DataSource {
   ~DatarefDataSource() override;
 
   void update(double dtSeconds) override;
+  AircraftOverride aircraftOverride() const { return aircraftOverride_; }
+  void setAircraftOverride(AircraftOverride override);
   const FlightData& snapshot() const override { return data_; }
   const MapData& mapSnapshot() const override { return map_; }
   std::uint32_t mapGeometryEpoch() const override { return map_.geometryEpoch; }
@@ -432,6 +441,7 @@ class DatarefDataSource : public DataSource {
   int lastSentHsiSource_ = -1;
   bool gpsOverrideActive_ = false;
   bool lastNavigatorDirectTo_ = false;
+  AircraftOverride aircraftOverride_ = AircraftOverride::Auto;
 
   void resetGpsCouplingState();
   void ensureSimCdiSource(CdiSource source);
