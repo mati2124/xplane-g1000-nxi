@@ -25,7 +25,8 @@ in [`MultiFunctionDisplay.cpp`](MultiFunctionDisplay.cpp).
 | [`MfdNearestPages.cpp`](MfdNearestPages.cpp) | NRST — nearest airports, intersections, … |
 | [`MfdWaypointPages.cpp`](MfdWaypointPages.cpp) | WPT — airport / navaid information |
 | [`MfdFlightPlanPage.cpp`](MfdFlightPlanPage.cpp) | FPL — active flight plan |
-| [`MfdAuxPages.cpp`](MfdAuxPages.cpp) | AUX — trip planning, utility, GPS status, system setup |
+| [`MfdFlightPlanCatalogPage.cpp`](MfdFlightPlanCatalogPage.cpp) | FPL — Flight Plan Catalog preview / activate / invert |
+| [`MfdAuxPages.cpp`](MfdAuxPages.cpp) | AUX — trip planning, utility, GPS status, system setup, SimBrief |
 | [`MfdChecklistPage.cpp`](MfdChecklistPage.cpp) | Checklist pages |
 | [`MfdMapSettingsPage.cpp`](MfdMapSettingsPage.cpp) | Map setup overlays |
 | [`MfdWeatherRadarPage.cpp`](MfdWeatherRadarPage.cpp) | MAP — airborne weather radar (GWX wedge) |
@@ -38,6 +39,7 @@ alongside the navigation map.
 | File | Responsibility |
 | ---- | -------------- |
 | [`MfdController.cpp`](MfdController.cpp) | Core page state, softkey handling |
+| [`MfdControllerFlightPlan.cpp`](MfdControllerFlightPlan.cpp) | Active FPL edits, catalog actions, SimBrief import state |
 | [`MfdControllerPageMenu.cpp`](MfdControllerPageMenu.cpp) | Page menu / group navigation |
 | [`MfdControllerMapSettings.cpp`](MfdControllerMapSettings.cpp) | Map setup menus and toggles |
 | [`MfdControllerProcedures.cpp`](MfdControllerProcedures.cpp) | Departure / arrival / approach UI |
@@ -68,6 +70,10 @@ ICAO-keyed `assets/eis/<icao>.eis` → bundled default); see the EIS section of 
 3. Implement in `MfdYourPage.cpp`.
 4. Wire softkeys in the relevant `MfdController*.cpp`.
 5. Add `case` + title in [`MultiFunctionDisplay.cpp`](MultiFunctionDisplay.cpp).
+
+For active flight-plan, catalog, SimBrief, procedure, or VNAV changes, also see
+the contributor guide in
+[`docs/contributors/flight-plan.md`](../../../../docs/contributors/flight-plan.md).
 
 ## Conventions
 

@@ -230,16 +230,30 @@ Install the plugin (above) on the machine running X-Plane and the standalone
 shell picks up the live route with no manual save. Override the port with
 `--fms-bridge-port` if 49100 is in use. When the plugin isn't installed (or
 X-Plane is on another host without it), the shell falls back to a loaded/exported
-`.fms` file (`--fms-plan`) or a SimBrief OFP, exactly as before.
+`.fms` file (`--fms-plan`) and any locally active catalog/edit route.
 
 The bridge is **bidirectional**: edits made in the shell are programmed back into
-X-Plane's FMS over the same channel. Building or editing a plan on the FPL page,
-loading a SimBrief OFP, and activating Direct-To all push to the real FMS (route
-waypoints resolve to database navaids where possible, otherwise lat/lon, and
-Direct-To uses X-Plane's present-position direct leg). The shell sends each edit
-with an acknowledgement + retry so a dropped UDP packet doesn't lose the write.
-Pass `--no-fms-write` to keep edits display-only while still reading the live
-route.
+X-Plane's FMS over the same channel. Building or editing a completed plan on the
+FPL page, activating a stored catalog plan, and activating Direct-To all push to
+the real FMS (route waypoints resolve to database navaids where possible,
+otherwise lat/lon, and Direct-To uses X-Plane's present-position direct leg). The
+shell sends each edit with an acknowledgement + retry so a dropped UDP packet
+doesn't lose the write. Pass `--no-fms-write` to keep edits display-only while
+still reading the live route.
+
+#### SimBrief OFP import
+
+The AUX - SIMBRIEF page signs in through Navigraph's device-code flow and fetches
+the latest SimBrief OFP for the signed-in account. The two shells intentionally
+handle a successful fetch differently:
+
+| Shell | Result |
+| ----- | ------ |
+| **Standalone** | The OFP is saved as a **Flight Plan Catalog** entry. Open **FPL → Flight Plan Catalog**, preview the row, and press **Activate** to make it the active route and write it to X-Plane through the bridge. The standalone must have a live X-Plane link before Login/FETCH are enabled. |
+| **X-Plane plugin** | The OFP immediately replaces the active displayed route inside the sim. |
+
+Opening the standalone Flight Plan Catalog page re-fetches the latest OFP when
+signed in, so a newly generated dispatch can appear without restarting the app.
 
 #### Command bridge (cockpit keys → standalone)
 
