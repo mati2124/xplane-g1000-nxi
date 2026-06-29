@@ -86,7 +86,7 @@ tick, and routes physical bezel keys / keyboard input into the engine.
 | [`shell-standalone/`](shell-standalone/) | GLFW app: UDP/Web API link to X-Plane, local nav-data stores, optional off-screen screenshot mode. |
 | [`installer/`](installer/) | Platform installers (Windows Inno Setup, macOS, Linux) that stage release assets. |
 | [`tools/`](tools/) | Dev utilities: plugin hot-reload, nav-data conversion, PDF reference extraction. |
-| [`docs/`](docs/) | Reference PDFs and comparison screenshots (not build docs). |
+| [`docs/`](docs/) | Reference PDFs, comparison screenshots, and contributor notes. |
 | [`X-Plane-SDK/`](X-Plane-SDK/) | Vendored X-Plane SDK headers/libs for the plugin shell. |
 
 CMake options (see root [`CMakeLists.txt`](CMakeLists.txt)):
@@ -108,6 +108,8 @@ Headers here are the stable surface the shells and tests include.
 | UI state | [`SoftkeyController.h`](avionics-core/include/avionics/SoftkeyController.h), [`MfdController.h`](avionics-core/include/avionics/MfdController.h) |
 | Instruments (entry points) | [`render/PrimaryFlightDisplay.h`](avionics-core/include/avionics/render/PrimaryFlightDisplay.h), [`render/MultiFunctionDisplay.h`](avionics-core/include/avionics/render/MultiFunctionDisplay.h), [`render/MapView.h`](avionics-core/include/avionics/render/MapView.h) |
 | Nav databases | [`NavDatabase.h`](avionics-core/include/avionics/NavDatabase.h), [`CifpParser.h`](avionics-core/include/avionics/CifpParser.h), [`AptDatParser.h`](avionics-core/include/avionics/AptDatParser.h) |
+| Flight plans, procedures, VNAV | [`FplRouteEdit.h`](avionics-core/include/avionics/FplRouteEdit.h), [`FlightPlanPersistence.h`](avionics-core/include/avionics/FlightPlanPersistence.h), [`FlightPlanCatalog.h`](avionics-core/include/avionics/FlightPlanCatalog.h), [`ProcedureSupport.h`](avionics-core/include/avionics/ProcedureSupport.h), [`VnavGuidance.h`](avionics-core/include/avionics/VnavGuidance.h) |
+| Plugin/standalone FMS bridge | [`FlightPlanBridgeProtocol.h`](avionics-core/include/avionics/FlightPlanBridgeProtocol.h), [`CommandBridgeProtocol.h`](avionics-core/include/avionics/CommandBridgeProtocol.h) |
 
 ### Source tree (`src/`)
 
@@ -184,6 +186,7 @@ Deeper file-to-feature maps:
 | Add or fix an MFD page | [`MfdPages.h`](avionics-core/src/render/mfd/MfdPages.h) + matching `Mfd*Page.cpp`; page routing in [`MfdController`](avionics-core/src/render/mfd/MfdController.cpp) |
 | Change boot / connection-lost screens | [`BootScreen.cpp`](avionics-core/src/render/BootScreen.cpp), timing in [`AvionicsEngine`](avionics-core/include/avionics/AvionicsEngine.h) |
 | Wire a new simulator data field | Add to [`FlightData`](avionics-core/include/avionics/FlightData.h), populate in both `DataSource` implementations, consume in the relevant `draw…` |
+| Change flight-plan editing, procedures, SimBrief import, VNAV, or FMS write-back | [`docs/contributors/flight-plan.md`](docs/contributors/flight-plan.md) for the ownership map, then the headers listed there |
 | Parse a new nav file format | [`src/nav/`](avionics-core/src/nav/) + shell store that fills `MapData` |
 | Change drawing primitives / fonts | [`Renderer.h`](avionics-core/include/avionics/Renderer.h), implement in [`NanoVgRenderer.cpp`](render-nanovg/src/NanoVgRenderer.cpp) |
 | Plugin ↔ standalone bridges (FPL, commands) | [`shell-xplane/src/FlightPlanBridge.*`](shell-xplane/src/), [`shell-standalone/src/FlightPlanBridgeClient.*`](shell-standalone/src/) |
@@ -209,4 +212,6 @@ PFD inset and the full-screen MFD map (`fontPx` / `kWtCanvasHeight` in
 ## Related docs
 
 - [README.md](README.md) — build, run, bezel binding, EIS, NEXRAD, release status
+- [docs/contributors/flight-plan.md](docs/contributors/flight-plan.md) — FPL
+  editing, procedure metadata, SimBrief import, VNAV, and FMS bridge notes
 - [docs/reference/](docs/reference/) — Garmin G1000 NXi Pilot's Guide (PDF)
