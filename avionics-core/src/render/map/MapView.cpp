@@ -99,18 +99,20 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
       map.terrain->hasElevationTiles();
 
   // NXi chart base. Default to black "land" and only paint the navy ocean base
-  // once real coastline/land data is available for the view: a map with no land
-  // data yet (the GSHHG store still loading, or a failed load) reads as land,
-  // not as a screen full of blank ocean. When the DSF land mask is active the
-  // base stays black too: the raster paints navy only on pixels it has confirmed
-  // as water, so any tile that has not streamed in yet (sampled as NaN ->
-  // transparent) reads as land rather than flashing as ocean. The Direct-To /
-  // FPL popup inset always uses the black land base.
+  // once real GSHHG coastline data is available for the view: a map with no
+  // coastline data (the GSHHG store still loading, a failed load, or a
+  // DSF-elevation-only build) reads as land, not as a screen full of blank
+  // ocean. DSF elevation tiles alone do NOT justify the navy base -- at wide
+  // range (e.g. 150 NM) only a few tiles around ownship are resident, so the
+  // rest of the view samples NaN and a navy base would show through as "blue
+  // over land". With a black base the terrain raster instead paints navy only
+  // where it has confirmed water (e <= 0) and topo on land, and uncovered
+  // no-data pixels stay black. When the DSF land mask is active the base also
+  // stays black for the same reason. The Direct-To / FPL popup inset always
+  // uses the black land base.
   if (config.style.showLand && map.positionValid &&
       (config.style.showChrome || config.style.showLand)) {
-    const bool landDataLoaded =
-        !landLines.empty() ||
-        (map.terrain != nullptr && map.terrain->hasElevationTiles());
+    const bool landDataLoaded = !landLines.empty();
     const Color chartBase =
         (config.useInsetMapData || !landDataLoaded || useDsfLandMask)
             ? mapview::kMapLandFill
@@ -190,11 +192,14 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
         scaleRangeNm, viewHalfExtentNm, config.style.terrainMaxRangeNm);
   }
 
-  // Rivers overlay on top of the topo raster so the thin blue hydrography stays
-  // visible whether terrain is on or off (the raster otherwise paints over the
-  // river lines), matching the real NXi.
+  // Rivers and political/state boundaries overlay on top of the topo raster so
+  // the thin hydrography and the country/state lines stay visible whether
+  // terrain is on or off (the raster otherwise paints over them), matching the
+  // real NXi.
   if (config.style.showLand && !landLines.empty()) {
     mapview::drawRiverData(r, landLines, proj, rangeNm);
+    mapview::drawBorderData(r, landLines, proj, rangeNm,
+                            config.style.showLandData);
   }
 
   // Dim fallback when land styling is off and no terrain raster is shown.
@@ -293,9 +298,7 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // Taxiway/apron pavement at very close range, under the runway quads.
   if (config.style.showTaxiways && config.style.showFeatures &&
       !map.taxiways.empty()) {
-    const bool landDataLoaded =
-        !landLines.empty() ||
-        (map.terrain != nullptr && map.terrain->hasElevationTiles());
+    const bool landDataLoaded = !landLines.empty();
     const Color taxiwayHoleFill =
         (config.useInsetMapData || !landDataLoaded || useDsfLandMask)
             ? mapview::kMapLandFill

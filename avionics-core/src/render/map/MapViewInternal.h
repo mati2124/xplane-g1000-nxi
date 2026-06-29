@@ -284,6 +284,14 @@ void drawLandData(Renderer& r, const std::vector<MapLandLine>& landLines,
 void drawRiverData(Renderer& r, const std::vector<MapLandLine>& landLines,
                    const Proj& proj, float rangeNm);
 
+// National (country) and state/province boundary lines, drawn after the topo
+// raster so they stay visible over terrain shading instead of being painted
+// over -- matching the real NXi. State/province boundaries are man-made land
+// data and suppressed when `showCulture` is false (Detail 3 declutter); country
+// borders are always drawn. Kept out of drawLandData's pre-terrain pass.
+void drawBorderData(Renderer& r, const std::vector<MapLandLine>& landLines,
+                    const Proj& proj, float rangeNm, bool showCulture = true);
+
 // Populated places: a dot plus name, decluttered by city rank vs. range.
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,
                 float rangeNm, float symSize, float labelSize);

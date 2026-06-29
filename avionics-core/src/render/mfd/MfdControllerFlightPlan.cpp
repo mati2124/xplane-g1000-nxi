@@ -370,6 +370,19 @@ void MfdController::fplResetInteraction() {
   closeLoadAirwayWindow();
 }
 
+void MfdController::syncFplPreviewRange(MfdPageGroup target) {
+  if (target == pageGroup_) return;
+  if (target == MfdPageGroup::FlightPlan) {
+    // Entering FPL: remember the current MAP zoom so the route auto-fit preview
+    // can take over rangeIndex_ without losing it.
+    rangeIndexBeforeFpl_ = rangeIndex_;
+  } else if (pageGroup_ == MfdPageGroup::FlightPlan) {
+    // Leaving FPL: restore the MAP zoom captured on entry.
+    rangeIndex_ = rangeIndexBeforeFpl_;
+    displayRangeNm_ = mapRangeNmAt(rangeIndex_);
+  }
+}
+
 void MfdController::fplOpenProcedureRemoveConfirm(FplConfirm which) {
   fplConfirm_ = which;
   fplConfirmOk_ = true;

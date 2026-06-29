@@ -1041,10 +1041,17 @@ class MfdController {
   // confirmation, waypoint or VNAV-altitude entry, catalog confirmation). While
   // one is open the press-and-hold CLR (DFLT MAP) must not fire, or it would
   // blow away the popup the same CLR press just opened.
+  //
+  // The FPL cursor parked on the ALT column also claims CLR: there a short CLR
+  // removes the fix's VNAV altitude constraint in place (no modal), so the
+  // press-and-hold must not escalate to DFLT MAP and close the FPL page out
+  // from under the edit.
   bool clrDefaultMapHoldSuppressed() const {
     return fplConfirm_ != FplConfirm::None ||
            catalogConfirm_ != CatalogConfirm::None || fplEntry_.active ||
-           fplAltEntry_.active || loadAirway_.open;
+           fplAltEntry_.active || loadAirway_.open ||
+           (pageGroup_ == MfdPageGroup::FlightPlan && fplCursorOn_ &&
+            fplCursorCol_ == FplCursorCol::Altitude);
   }
 
  private:
@@ -1143,6 +1150,10 @@ class MfdController {
   MapSetting mapSettingAtCursor(int cursor) const;
   // Reset every FPL interaction state (cursor, entry, menu, confirmation).
   void fplResetInteraction();
+  // Save the MAP zoom when a page-group change enters FPL, and restore it when
+  // the change leaves FPL, so the FPL route auto-fit preview never clobbers the
+  // pilot's MAP range. Call with the target group before assigning pageGroup_.
+  void syncFplPreviewRange(MfdPageGroup target);
   // Open the Remove Departure/Arrival/Approach confirmation, seeding the prompt
   // subject (the loaded procedure name) for the confirmation window.
   void fplOpenProcedureRemoveConfirm(FplConfirm which);
@@ -1218,6 +1229,11 @@ class MfdController {
   // again (the FPL page is a toggle overlaid on normal page navigation).
   MfdPageGroup groupBeforeFpl_ = MfdPageGroup::Map;
   int rangeIndex_ = kMapRangeDefaultIndex;  // ladder index (defaults to 10 NM)
+  // Map zoom captured when the FPL page is opened. The FPL route preview shares
+  // rangeIndex_ and auto-fits it to the loaded route every frame, so the MAP
+  // zoom is saved here on entry and restored when FPL is left (see
+  // syncFplPreviewRange) -- otherwise MAP forgets its scale after a FPL visit.
+  int rangeIndexBeforeFpl_ = kMapRangeDefaultIndex;
   // Animated scale eased toward mapRangeNmAt(rangeIndex_) by update(); seeded
   // to the default so the first frame is already at the right zoom.
   float displayRangeNm_ = mapRangeNmAt(kMapRangeDefaultIndex);

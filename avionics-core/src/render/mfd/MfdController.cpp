@@ -532,6 +532,7 @@ void MfdController::selectGroup(MfdPageGroup group) {
   if (pageGroup_ == group) {
     stepPage(1);
   } else {
+    syncFplPreviewRange(group);
     if (pageGroup_ == MfdPageGroup::Map) mapResetPointer();
     if (pageGroup_ == MfdPageGroup::Waypoint) wptResetInteraction();
     if (pageGroup_ == MfdPageGroup::Nearest) nrstResetInteraction();
@@ -926,9 +927,11 @@ void MfdController::pressBezelKey(BezelKey key) {
       // FPL toggles the Active Flight Plan page; pressing it again returns to
       // the page that was displayed before.
       if (pageGroup_ == MfdPageGroup::FlightPlan) {
+        syncFplPreviewRange(groupBeforeFpl_);
         pageGroup_ = groupBeforeFpl_;
         fplResetInteraction();
       } else {
+        syncFplPreviewRange(MfdPageGroup::FlightPlan);
         groupBeforeFpl_ = pageGroup_;
         pageGroup_ = MfdPageGroup::FlightPlan;
         // Open the page with the FMS cursor inactive, like the real unit: no fix
@@ -1016,6 +1019,7 @@ void MfdController::stepPageGroup(int direction) {
     }
   }
   if (target == pageGroup_) return;
+  syncFplPreviewRange(target);
   // Drop any per-group interaction state of the group we are leaving, mirroring
   // selectGroup() so the knob and the group keys behave identically.
   switch (pageGroup_) {
@@ -1061,6 +1065,7 @@ void MfdController::clrDefaultMap() {
   chartViewActive_ = false;
   chartsAirportEntry_.reset();
   chartsAirportOverride_.clear();
+  syncFplPreviewRange(MfdPageGroup::Map);
   pageGroup_ = MfdPageGroup::Map;
   pageIndex_[static_cast<int>(MfdPageGroup::Map)] = 0;
   rebuildLabels();
