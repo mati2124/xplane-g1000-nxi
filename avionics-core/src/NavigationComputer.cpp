@@ -253,7 +253,18 @@ void runNavigationFrame(FmsNavigator& navigator, const MapData& map,
     return;
   }
 
+  // In VOR/LOC mode the displayed course (CRS) is the nav radio's OBS, read from
+  // the sim into data.courseDeg upstream. The FMS still computes the active-leg
+  // solution for the nav status box, but its desired track must NOT overwrite the
+  // VOR OBS: doing so pins CRS to the flight-plan track every frame, so the CRS
+  // knob (and the sim's own OBS knob) appear to do nothing. Only a GPS source
+  // drives the displayed course from the FMS desired track. OBS mode is a GPS
+  // sub-mode whose solution already carries the OBS setting, so it keeps it.
+  const float obsCourseDeg = data.courseDeg;
   applyNavigationSolution(data, sol, nmPerDot);
+  if (cdiSource != CdiSource::Gps) {
+    data.courseDeg = obsCourseDeg;
+  }
 
   if (cdiSource == CdiSource::Gps && !obsMode) {
     sol = applyFlyByTurnCourse(sol, map, data, obsMode, cdiSource, nmPerDot);

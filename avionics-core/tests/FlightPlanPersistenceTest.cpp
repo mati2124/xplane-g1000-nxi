@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "avionics/MapData.h"
+#include "avionics/NavFeatureSource.h"
 
 namespace avionics {
 namespace {
@@ -220,6 +221,98 @@ TEST(FlightPlanPersistenceTest, PersistedNavigationSnapshotCapturesActiveLeg) {
   const PersistedDirectTo saved = persistedNavigationSnapshot(map, data);
   EXPECT_FALSE(saved.active);
   EXPECT_EQ(saved.activeLegIndex, 1);
+}
+
+class FakeStarNavSource : public NavFeatureSource {
+ public:
+  bool ready() const override { return true; }
+  std::vector<MapFeature> nearby(double, double, float,
+                                 std::size_t) const override {
+    return {};
+  }
+  std::vector<MapLeg> expandProcedure(
+      const std::string& icao, ProcedureType type, const std::string& name,
+      const std::string& transition) const override {
+    if (icao != "KFMY" || type != ProcedureType::Arrival || name != "SHFTY6" ||
+        transition != "INPIN") {
+      return {};
+    }
+    MapLeg atOrAbove = makeLeg("INPIN", 28.55, -81.80);
+    atOrAbove.altitudeConstraintFt = 6000;
+    atOrAbove.altitudeConstraint = AltConstraintType::AtOrAbove;
+    MapLeg atOrBelow = makeLeg("VALCH", 28.05, -81.66);
+    atOrBelow.altitudeConstraintFt = 4000;
+    atOrBelow.altitudeConstraint = AltConstraintType::AtOrBelow;
+    MapLeg at = makeLeg("SHFTY", 27.70, -81.76);
+    at.altitudeConstraintFt = 3000;
+    at.altitudeConstraint = AltConstraintType::At;
+    return {atOrAbove, atOrBelow, at};
+  }
+};
+
+TEST(FlightPlanPersistenceTest, RestoreTerminalProcedureMetadataByFixId) {
+  FakeStarNavSource nav;
+  PersistedLoadedApproach meta;
+  meta.active = true;
+  meta.type = ProcedureType::Arrival;
+  meta.airportIcao = "KFMY";
+  meta.name = "SHFTY6";
+  meta.transition = "INPIN";
+
+  std::vector<MapLeg> plan = {
+      makeLeg("KJAX", 30.48, -81.68),
+      makeLeg("ENROUTE", 29.50, -81.70),
+      makeLeg("INPIN", 28.55, -81.80),
+      makeLeg("VALCH", 28.05, -81.66),
+      makeLeg("SHFTY", 27.70, -81.76),
+      makeLeg("KFMY", 26.58, -81.86),
+  };
+
+  const TerminalProcedureMetadataRestore result =
+      restoreTerminalProcedureMetadata(&nav, meta, plan, 2, 3);
+  ASSERT_TRUE(result.merged);
+  EXPECT_FALSE(result.stopRetrying);
+  EXPECT_EQ(plan[2].altitudeConstraintFt, 6000);
+  EXPECT_EQ(plan[2].altitudeConstraint, AltConstraintType::AtOrAbove);
+  EXPECT_EQ(plan[3].altitudeConstraintFt, 4000);
+  EXPECT_EQ(plan[3].altitudeConstraint, AltConstraintType::AtOrBelow);
+  EXPECT_EQ(plan[4].altitudeConstraintFt, 3000);
+  EXPECT_EQ(plan[4].altitudeConstraint, AltConstraintType::At);
+}
+
+// The SimBrief importer tags the STAR transition-entry fix (INPIN here) with the
+// inbound airway, so it lands outside the via_airway-derived arrival block. The
+// restore must grow the block back across it and attach its altitude.
+TEST(FlightPlanPersistenceTest, RestoreTerminalProcedureCorrectsBlockSpan) {
+  FakeStarNavSource nav;
+  PersistedLoadedApproach meta;
+  meta.active = true;
+  meta.type = ProcedureType::Arrival;
+  meta.airportIcao = "KFMY";
+  meta.name = "SHFTY6";
+  meta.transition = "INPIN";
+
+  std::vector<MapLeg> plan = {
+      makeLeg("KJAX", 30.48, -81.68),
+      makeLeg("ENROUTE", 29.50, -81.70),
+      makeLeg("INPIN", 28.55, -81.80),
+      makeLeg("VALCH", 28.05, -81.66),
+      makeLeg("SHFTY", 27.70, -81.76),
+      makeLeg("KFMY", 26.58, -81.86),
+  };
+
+  // Importer block excludes the leading transition fix INPIN (start=3, count=2).
+  const TerminalProcedureMetadataRestore result =
+      restoreTerminalProcedureMetadata(&nav, meta, plan, 3, 2);
+  ASSERT_TRUE(result.merged);
+  ASSERT_TRUE(result.spanCorrected());
+  EXPECT_EQ(result.correctedStart, 2);
+  EXPECT_EQ(result.correctedCount, 3);
+  // The transition fix now carries its published restriction, and the enroute
+  // fix / airports before it are untouched.
+  EXPECT_EQ(plan[2].altitudeConstraintFt, 6000);
+  EXPECT_EQ(plan[2].altitudeConstraint, AltConstraintType::AtOrAbove);
+  EXPECT_EQ(plan[1].altitudeConstraintFt, 0);
 }
 
 }  // namespace

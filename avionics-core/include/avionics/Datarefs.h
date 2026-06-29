@@ -118,6 +118,20 @@ inline constexpr const char* kCom2FrequencyHz =
 inline constexpr const char* kCom2StandbyFrequencyHz =
     "sim/cockpit2/radios/actuators/com2_standby_frequency_hz";
 
+// 8.33 kHz-capable COM frequency datarefs (X-Plane 10.30+). The legacy
+// *_frequency_hz datarefs above are int MHz x 100 (10 kHz resolution), which
+// truncates 25 kHz channels ending in .x25/.x75 to .x2/.x7 (e.g. 135.925 reads
+// back as 135.92). These store the channel number exactly as shown on the radio
+// in kHz (int, e.g. 135925 == 135.925), so the glass matches the tuned channel.
+inline constexpr const char* kCom1FrequencyHz833 =
+    "sim/cockpit2/radios/actuators/com1_frequency_hz_833";
+inline constexpr const char* kCom1StandbyFrequencyHz833 =
+    "sim/cockpit2/radios/actuators/com1_standby_frequency_hz_833";
+inline constexpr const char* kCom2FrequencyHz833 =
+    "sim/cockpit2/radios/actuators/com2_frequency_hz_833";
+inline constexpr const char* kCom2StandbyFrequencyHz833 =
+    "sim/cockpit2/radios/actuators/com2_standby_frequency_hz_833";
+
 // Per-radio audio volume (float 0..1), driven by the COM VOL/SQ and NAV VOL/ID
 // knobs. Writable actuators: turning a knob reads the current level, steps it,
 // and writes it back. X-Plane has no per-COM squelch dataref (squelch is
@@ -145,6 +159,13 @@ inline constexpr const char* kHsiSourceSelect =
     "sim/cockpit2/radios/actuators/HSI_source_select_pilot";  // 0=Nav1 1=Nav2 2=GPS
 inline constexpr const char* kHsiObsCourseDegMag =
     "sim/cockpit2/radios/actuators/hsi_obs_deg_mag_pilot";
+// Per-radio OBS course actuators. hsi_obs_deg_mag_pilot is only a read mirror of
+// the selected source; to actually move a VOR/LOC CDI the OBS must be written on
+// the underlying nav radio (the G1000 CRS knob sets the selected VOR's OBS).
+inline constexpr const char* kNav1ObsCourseDegMag =
+    "sim/cockpit2/radios/actuators/nav1_obs_deg_mag_pilot";
+inline constexpr const char* kNav2ObsCourseDegMag =
+    "sim/cockpit2/radios/actuators/nav2_obs_deg_mag_pilot";
 inline constexpr const char* kHsiDeviationDots =
     "sim/cockpit2/radios/indicators/hsi_hdef_dots_pilot";
 inline constexpr const char* kHsiFromTo =

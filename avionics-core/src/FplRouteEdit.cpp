@@ -211,12 +211,31 @@ bool fplCommitSectionIdent(FplRouteEdit& edit, const NavFeatureSource* navSource
   leg.lat = match.lat;
   leg.lon = match.lon;
   leg.id = ident;
+  int committedLegIndex = -1;
   if (legIndex >= 0 && legIndex < legCount) {
     edit.legs[static_cast<std::size_t>(legIndex)] = leg;
+    committedLegIndex = legIndex;
   } else {
     edit.legs.insert(edit.legs.begin() + row, leg);
+    committedLegIndex = row;
   }
   if (edit.legs.size() >= 3) edit.destinationFilled = true;
+  // Land the list cursor on the leg just entered so it is immediately
+  // selectable (CLR removes it, ENT activates it). Without this the cursor is
+  // stranded on a now-blank slot — e.g. entering the first fix on an empty plan
+  // shifts it up into the Origin row while the cursor stays below it, leaving
+  // the new waypoint unreachable. The other commit paths do the same.
+  const int newLegCount = fplEditSectionLegCount(edit);
+  const bool newDestFilled = fplEditLayoutDestinationFilled(edit);
+  const std::vector<pfd::FplSectionRow> newRows = fplFilteredSectionRows(
+      newLegCount, newDestFilled, directToPlanBody, edit.legs);
+  const int committedRow = fplSectionSelectableRowForLegIndex(
+      committedLegIndex, newRows, newLegCount, newDestFilled);
+  if (committedRow >= 0) {
+    edit.cursorRow = committedRow;
+  } else {
+    edit.cursorRow = std::min(lastSection, selectableCursorRow);
+  }
   return true;
 }
 
@@ -545,6 +564,47 @@ bool fplCursorOnHoldRow(const FplRouteEdit& edit,
   return dr != nullptr && dr->kind == FplDisplayRowKind::Hold;
 }
 
+FplCursorProcedureBlock fplCursorProcedureHeader(
+    const FplRouteEdit& edit, const std::string& approachAirport,
+    FplCursorLayout layout) {
+  if (layout != FplCursorLayout::SectionRows) return FplCursorProcedureBlock::None;
+  if (!fplEditUsesProcedureDisplay(edit)) return FplCursorProcedureBlock::None;
+  const FplDisplayRow* dr = fplProcedureSelectableRow(
+      edit.cursorRow, edit.legs, fplEditDepartureLegStart(edit),
+      fplEditDepartureLegCount(edit), fplEditDepartureHeader(edit),
+      fplEditArrivalLegStart(edit), fplEditArrivalLegCount(edit),
+      fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
+      fplEditProcedureBlankOriginSection(edit, approachAirport),
+      fplEditProcedureDestinationFilled(edit), edit.airwaysCollapsed);
+  if (dr == nullptr) return FplCursorProcedureBlock::None;
+  switch (dr->kind) {
+    case FplDisplayRowKind::DepartureHeader:
+      return FplCursorProcedureBlock::Departure;
+    case FplDisplayRowKind::ArrivalHeader:
+      return FplCursorProcedureBlock::Arrival;
+    case FplDisplayRowKind::ApproachHeader:
+      return FplCursorProcedureBlock::Approach;
+    default:
+      return FplCursorProcedureBlock::None;
+  }
+}
+
+int fplCursorAirwayHeaderExitLeg(const FplRouteEdit& edit,
+                                 const std::string& approachAirport,
+                                 FplCursorLayout layout) {
+  if (layout != FplCursorLayout::SectionRows) return -1;
+  if (!fplEditUsesProcedureDisplay(edit)) return -1;
+  const FplDisplayRow* dr = fplProcedureSelectableRow(
+      edit.cursorRow, edit.legs, fplEditDepartureLegStart(edit),
+      fplEditDepartureLegCount(edit), fplEditDepartureHeader(edit),
+      fplEditArrivalLegStart(edit), fplEditArrivalLegCount(edit),
+      fplEditArrivalHeader(edit), edit.approachLegStart, edit.approachLegCount,
+      fplEditProcedureBlankOriginSection(edit, approachAirport),
+      fplEditProcedureDestinationFilled(edit), edit.airwaysCollapsed);
+  if (dr == nullptr || dr->kind != FplDisplayRowKind::AirwayHeader) return -1;
+  return dr->legIndex;
+}
+
 int fplCursorSelectableLast(const FplRouteEdit& edit,
                             const std::string& approachAirport,
                             FplCursorLayout layout) {
@@ -703,6 +763,112 @@ bool fplRemoveLegAtIndex(FplRouteEdit& edit, int legIndex) {
       edit, static_cast<int>(edit.legs.size()));
   fplAdjustApproachGroupingAfterRemove(edit, legIndex);
   fplAdjustTerminalProcedureGroupingAfterRemove(edit, legIndex);
+  return true;
+}
+
+namespace {
+
+// After erasing a contiguous [eraseStart, eraseStart+eraseCount) leg block,
+// slide the start index of every other procedure block that sat after it so
+// the surviving blocks still point at their legs in the shorter list. The
+// removed block's own grouping is cleared separately by the caller.
+void fplShiftProcedureBlocksAfterErase(FplRouteEdit& edit, int eraseStart,
+                                       int eraseCount) {
+  if (eraseCount <= 0) return;
+  if (edit.approachLegCount > 0 && edit.approachLegStart >= eraseStart) {
+    edit.approachLegStart -= eraseCount;
+  }
+  if (edit.departureLegStart != nullptr && edit.departureLegCount != nullptr &&
+      *edit.departureLegCount > 0 && *edit.departureLegStart >= eraseStart) {
+    *edit.departureLegStart -= eraseCount;
+  }
+  if (edit.arrivalLegStart != nullptr && edit.arrivalLegCount != nullptr &&
+      *edit.arrivalLegCount > 0 && *edit.arrivalLegStart >= eraseStart) {
+    *edit.arrivalLegStart -= eraseCount;
+  }
+}
+
+// Erase the leg block [start, start+count) and refresh destination-filled.
+// Returns false (without touching the legs) when the block is empty or stale
+// (out of range for the current plan), so the caller still clears its grouping.
+bool fplEraseProcedureLegBlock(FplRouteEdit& edit, int start, int count) {
+  if (count <= 0) return false;
+  if (start < 0 || start + count > static_cast<int>(edit.legs.size())) {
+    return false;
+  }
+  edit.legs.erase(edit.legs.begin() + start,
+                  edit.legs.begin() + start + count);
+  fplShiftProcedureBlocksAfterErase(edit, start, count);
+  fplRefreshDestinationFilledAfterRemove(edit,
+                                         static_cast<int>(edit.legs.size()));
+  return true;
+}
+
+}  // namespace
+
+bool fplRemoveDeparture(FplRouteEdit& edit) {
+  if (edit.departureLegStart == nullptr || edit.departureLegCount == nullptr ||
+      *edit.departureLegCount <= 0) {
+    return false;
+  }
+  const bool erased = fplEraseProcedureLegBlock(edit, *edit.departureLegStart,
+                                                *edit.departureLegCount);
+  *edit.departureLegStart = 0;
+  *edit.departureLegCount = 0;
+  if (edit.departureHeaderLabel != nullptr) edit.departureHeaderLabel->clear();
+  if (edit.loadedDeparture != nullptr) *edit.loadedDeparture = {};
+  return erased;
+}
+
+bool fplRemoveArrival(FplRouteEdit& edit) {
+  if (edit.arrivalLegStart == nullptr || edit.arrivalLegCount == nullptr ||
+      *edit.arrivalLegCount <= 0) {
+    return false;
+  }
+  const bool erased = fplEraseProcedureLegBlock(edit, *edit.arrivalLegStart,
+                                                *edit.arrivalLegCount);
+  *edit.arrivalLegStart = 0;
+  *edit.arrivalLegCount = 0;
+  if (edit.arrivalHeaderLabel != nullptr) edit.arrivalHeaderLabel->clear();
+  if (edit.loadedArrival != nullptr) *edit.loadedArrival = {};
+  return erased;
+}
+
+bool fplRemoveApproach(FplRouteEdit& edit) {
+  if (edit.approachLegCount <= 0) return false;
+  const bool erased = fplEraseProcedureLegBlock(edit, edit.approachLegStart,
+                                                edit.approachLegCount);
+  edit.approachLegStart = 0;
+  edit.approachLegCount = 0;
+  if (edit.loadedApproach != nullptr) *edit.loadedApproach = {};
+  if (edit.approachHeaderLabel != nullptr) edit.approachHeaderLabel->clear();
+  return erased;
+}
+
+bool fplRemoveAirwaySegment(FplRouteEdit& edit, int anyLegIndex) {
+  const int n = static_cast<int>(edit.legs.size());
+  if (anyLegIndex < 0 || anyLegIndex >= n) return false;
+  const std::string airway =
+      edit.legs[static_cast<std::size_t>(anyLegIndex)].viaAirway;
+  if (airway.empty()) return false;
+  // Loaded-airway fixes are inserted as one contiguous block, so the segment is
+  // the run of neighbouring legs that share this viaAirway tag.
+  int start = anyLegIndex;
+  while (start > 0 &&
+         edit.legs[static_cast<std::size_t>(start - 1)].viaAirway == airway) {
+    --start;
+  }
+  int end = anyLegIndex;
+  while (end + 1 < n &&
+         edit.legs[static_cast<std::size_t>(end + 1)].viaAirway == airway) {
+    ++end;
+  }
+  const int count = end - start + 1;
+  edit.legs.erase(edit.legs.begin() + start,
+                  edit.legs.begin() + start + count);
+  fplShiftProcedureBlocksAfterErase(edit, start, count);
+  fplRefreshDestinationFilledAfterRemove(edit,
+                                         static_cast<int>(edit.legs.size()));
   return true;
 }
 

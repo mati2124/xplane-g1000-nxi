@@ -79,6 +79,17 @@ std::vector<MfdController::PageMenuItem> MfdController::buildPageMenu() const {
     const PageMenuAction collapseState =
         hasAirways ? PageMenuAction::FplCollapseAirways
                    : PageMenuAction::DisplayOnly;
+    // Remove Departure/Arrival/Approach are live only when that terminal
+    // procedure is loaded (Pilot's Guide 5.6); otherwise they grey out.
+    const PageMenuAction removeDepState =
+        fplHasLoadedDeparture() ? PageMenuAction::FplRemoveDeparture
+                                : PageMenuAction::Disabled;
+    const PageMenuAction removeArrState =
+        fplHasLoadedArrival() ? PageMenuAction::FplRemoveArrival
+                              : PageMenuAction::Disabled;
+    const PageMenuAction removeApprState =
+        fplHasLoadedApproach() ? PageMenuAction::FplRemoveApproach
+                               : PageMenuAction::Disabled;
     return {
         {"Load Airway", loadAirwayState},
         {collapseText, collapseState},
@@ -93,9 +104,9 @@ std::vector<MfdController::PageMenuItem> MfdController::buildPageMenu() const {
         {"Invert Flight Plan", PageMenuAction::DisplayOnly},
         {"Temperature Compensation", PageMenuAction::DisplayOnly},
         {"Create New User Waypoint", PageMenuAction::Disabled},
-        {"Remove Departure", PageMenuAction::Disabled},
-        {"Remove Arrival", PageMenuAction::Disabled},
-        {"Remove Approach", PageMenuAction::DisplayOnly},
+        {"Remove Departure", removeDepState},
+        {"Remove Arrival", removeArrState},
+        {"Remove Approach", removeApprState},
     };
   }
   if (chartViewActive_) {
@@ -210,6 +221,18 @@ void MfdController::pageMenuActivate() {
       pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
       fplConfirm_ = FplConfirm::DeleteFlightPlan;
       fplConfirmOk_ = true;
+      break;
+    case PageMenuAction::FplRemoveDeparture:
+      pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveDeparture);
+      break;
+    case PageMenuAction::FplRemoveArrival:
+      pageMenuOpen_ = false;
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveArrival);
+      break;
+    case PageMenuAction::FplRemoveApproach:
+      pageMenuOpen_ = false;
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveApproach);
       break;
     case PageMenuAction::ChartsFullScreen:
       chartsFullScreen_ = !chartsFullScreen_;

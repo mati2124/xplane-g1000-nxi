@@ -154,6 +154,23 @@ bool fplCursorOnHoldRow(const FplRouteEdit& edit,
                         const std::string& approachAirport,
                         FplCursorLayout layout);
 
+// Which loaded terminal-procedure header (if any) the FPL list cursor is on.
+// The procedure header rows are selectable cursor stops; landing on one and
+// pressing CLR removes the whole SID/STAR/approach (Pilot's Guide 5.6).
+enum class FplCursorProcedureBlock { None, Departure, Arrival, Approach };
+FplCursorProcedureBlock fplCursorProcedureHeader(const FplRouteEdit& edit,
+                                                 const std::string& approachAirport,
+                                                 FplCursorLayout layout);
+
+// Exit-fix leg index of the "Airway - <name>.<exit>" header row under the FPL
+// list cursor, or -1 when the cursor is not on an airway header. The airway
+// header is a selectable cursor stop; landing on it and pressing CLR removes
+// the whole loaded-airway segment (Pilot's Guide, Flight Planning - Load
+// Airway).
+int fplCursorAirwayHeaderExitLeg(const FplRouteEdit& edit,
+                                 const std::string& approachAirport,
+                                 FplCursorLayout layout);
+
 int fplCursorSelectableLast(const FplRouteEdit& edit,
                             const std::string& approachAirport,
                             FplCursorLayout layout);
@@ -177,6 +194,22 @@ void fplRefreshDestinationFilledAfterRemove(FplRouteEdit& edit, int legCountAfte
 void fplAdjustApproachGroupingAfterRemove(FplRouteEdit& edit, int removedLegIndex);
 
 bool fplRemoveLegAtIndex(FplRouteEdit& edit, int legIndex);
+
+// Remove a whole loaded terminal procedure (Pilot's Guide 5.6, "Remove
+// Departure / Arrival / Approach"): erase the procedure's contiguous leg block,
+// clear its grouping (header label + loaded procedure), and slide the remaining
+// procedure blocks' start indices to follow the shorter leg list. Returns false
+// when no such procedure is loaded (nothing removed).
+bool fplRemoveDeparture(FplRouteEdit& edit);
+bool fplRemoveArrival(FplRouteEdit& edit);
+bool fplRemoveApproach(FplRouteEdit& edit);
+
+// Remove the whole loaded-airway segment that the leg at `anyLegIndex` belongs
+// to: the contiguous run of legs sharing its viaAirway tag (the fixes shown
+// under one "Airway - <name>.<exit>" header). Slides any following procedure
+// blocks to follow the shorter leg list. Returns false when that leg carries no
+// airway tag (nothing removed).
+bool fplRemoveAirwaySegment(FplRouteEdit& edit, int anyLegIndex);
 
 void fplClearFlightPlan(FplRouteEdit& edit);
 

@@ -444,9 +444,18 @@ class MfdController {
   // identifier (ENT inserts it before the selected row), CLR on a row opens
   // the "Remove <wpt>?" confirmation, and MENU offers Delete Flight Plan.
 
-  // Confirmation window opened by CLR on a waypoint row or the page menu's
-  // Delete Flight Plan option. ENT executes the highlighted OK/CANCEL choice.
-  enum class FplConfirm { None, RemoveWaypoint, DeleteFlightPlan };
+  // Confirmation window opened by CLR on a waypoint row, CLR on a loaded
+  // SID/STAR/approach, or a page-menu Remove/Delete option. ENT executes the
+  // highlighted OK/CANCEL choice.
+  enum class FplConfirm {
+    None,
+    RemoveWaypoint,
+    RemoveDeparture,
+    RemoveArrival,
+    RemoveApproach,
+    RemoveAirway,
+    DeleteFlightPlan,
+  };
 
   // Editable field within a flight-plan row. The large FMS knob steps the cursor
   // through the identifier and the VNAV altitude-constraint column (Pilot's
@@ -516,6 +525,14 @@ class MfdController {
   int storeFlightPlanInCatalog(const std::vector<MapLeg>& legs);
   int storeFlightPlanFromSimBriefImport(const SimBriefOfpImport& imp);
 
+  // After a catalog plan is activated, yields the full PersistedFlightPlan once
+  // (including SID/STAR/approach grouping) so the shell can mirror the procedure
+  // metadata onto the peer GDU. The route legs already propagate via the route
+  // override, but the procedure block ranges + headers are per-controller state
+  // and would otherwise be lost on the PFD (it would show the SID/STAR fixes as
+  // plain Enroute legs). Returns false when no activation is pending.
+  bool consumeActivatedFlightPlan(PersistedFlightPlan& out);
+
   // ---- catalog actions (softkeys / page menu; also exercised by tests) ----
   // Add a new empty stored plan and select it.
   void catalogCreateNew();
@@ -545,7 +562,8 @@ class MfdController {
       const std::vector<MapLeg>& legs, bool destinationFilled,
       const FlightPlanApproachState& approach,
       const FlightPlanTerminalProcedureState& departure = {},
-      const FlightPlanTerminalProcedureState& arrival = {});
+      const FlightPlanTerminalProcedureState& arrival = {},
+      bool peerLocalDraft = false);
   // Mirror the peer GDU's FPL list scroll/selection (PFD window vs MFD page).
   void adoptFlightPlanCursorFromPeer(int cursorRow, bool followsActive);
 
@@ -701,6 +719,12 @@ class MfdController {
   std::string loadAirwayName() const;
   std::string loadAirwayExitIdent() const;
   LoadAirwayField loadAirwayField() const { return loadAirway_.field; }
+  // Published airways through the entry fix, and the index of the chosen one,
+  // for the Airway dropdown.
+  const std::vector<std::string>& loadAirwayAirways() const {
+    return loadAirway_.airways;
+  }
+  int loadAirwayAirwaySel() const { return loadAirway_.airwaySel; }
   // The fix chain shown in the scrolling list (entry fix first, then the legs
   // toward the far end of the airway). Empty when the selected airway resolves
   // to no chain.
@@ -933,6 +957,9 @@ class MfdController {
     FplLoadAirway,       // open the Select Airway window for the cursor fix
     FplCollapseAirways,  // toggle the FPL airway collapse/expand display
     FplDeleteFlightPlan, // open the Delete Flight Plan confirmation
+    FplRemoveDeparture,  // open the Remove Departure confirmation
+    FplRemoveArrival,    // open the Remove Arrival confirmation
+    FplRemoveApproach,   // open the Remove Approach confirmation
     ChartsFullScreen,    // Chart Setup: toggle the full-screen chart view
     ChartsColorScheme,   // Chart Setup: toggle day/night color scheme
     // Flight Plan Catalog page menu (Pilot's Guide, Flight Plan Storage).
@@ -1019,6 +1046,7 @@ class MfdController {
   friend void applyMfdState(MfdController&, const MfdPersistentState&);
 
   void tryRestorePersistedApproach();
+  void tryRestorePersistedTerminalProcedures();
   void reinferApproachFromProcedureLegs();
   // Leg index under the FPL cursor (-1 for blank / sep rows in approach view).
   int fplCursorLegIndex() const;
@@ -1108,6 +1136,14 @@ class MfdController {
   MapSetting mapSettingAtCursor(int cursor) const;
   // Reset every FPL interaction state (cursor, entry, menu, confirmation).
   void fplResetInteraction();
+  // Open the Remove Departure/Arrival/Approach confirmation, seeding the prompt
+  // subject (the loaded procedure name) for the confirmation window.
+  void fplOpenProcedureRemoveConfirm(FplConfirm which);
+  // Execute the highlighted Remove Departure/Arrival/Approach: erase the
+  // procedure's legs, clear its grouping + persisted-restore state, and publish.
+  void fplRemoveLoadedDeparture();
+  void fplRemoveLoadedArrival();
+  void fplRemoveLoadedApproach();
   // ---- Flight Plan Catalog ----
   // Bezel keys while the Flight Plan Catalog page is up: FMS push toggles the
   // list cursor, the large knob scrolls slots, ENT activates the selection, the
@@ -1252,6 +1288,10 @@ class MfdController {
   bool fplEditPending_ = false;
   bool fplLocalDraft_ = false;
   bool fplNavDirectToActive_ = false;
+  // Set when a catalog plan is activated so the shell can mirror its procedure
+  // grouping onto the peer GDU (see consumeActivatedFlightPlan).
+  bool activatedPlanPending_ = false;
+  PersistedFlightPlan activatedPlan_{};
   bool fplDestinationFilled_ = false;
   MapProcedure fplLoadedApproach_{};
   int fplApproachLegStart_ = 0;
@@ -1272,6 +1312,8 @@ class MfdController {
   // altitudes, and glidepath (not persisted per-leg) are re-attached after a
   // restart. Set on restore, cleared once applied (or known unmatchable).
   bool fplApproachRestorePending_ = false;
+  bool fplDepartureRestorePending_ = false;
+  bool fplArrivalRestorePending_ = false;
   bool fplCursorOn_ = false;
   bool fplListCursorFollowsActive_ = true;
   int fplCursorRow_ = 0;

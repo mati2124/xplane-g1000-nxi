@@ -38,6 +38,33 @@ bool procedureMenuIsArrDep(const ProcedureMenuHost& host) {
          host.state.category == ProcedureType::Departure;
 }
 
+MapFeature loadedApproachAirportFeature(const ProcedureMenuHost& host) {
+  if (host.nav == nullptr || !host.nav->ready()) return {};
+  std::string icao =
+      host.persistedRestore.active ? host.persistedRestore.airportIcao
+                                   : std::string();
+  if (icao.empty() && host.defaultAirportIcao) {
+    icao = host.defaultAirportIcao();
+  }
+  if (icao.empty()) return {};
+  for (const MapFeature& f : host.nav->lookupIdent(icao, 8)) {
+    if (f.type == MapFeatureType::Airport) return f;
+  }
+  return {};
+}
+
+// NXi: ground-based approach primary navaid goes to NAV1 standby on Load (and
+// again on Activate Approach when the procedure is already in the plan).
+void queueLoadedApproachNavStandbyTune(ProcedureMenuHost& host) {
+  if (host.approachLegCount <= 0) return;
+  mergeProcedurePrimaryNavFreq(host.nav, host.map,
+                             loadedApproachAirportFeature(host),
+                             host.loadedApproach);
+  if (procedureApproachNavStandbyMhz(host.loadedApproach) <= 0.0f) return;
+  host.state.loadTarget = host.loadedApproach;
+  host.state.loadPending = true;
+}
+
 void procedureMenuApplyApproachDefaults(ProcedureMenuHost& host) {
   host.state.selectedName.clear();
   host.state.selectedTransition.clear();
@@ -605,6 +632,9 @@ void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
     host.loadedApproach =
         findProcedureInCatalog(host.state.category, name, transition,
                                proceduresForAirport(host, icao, host.state.category));
+    mergeProcedurePrimaryNavFreq(host.nav, host.map,
+                                 procedureMenuAirportFeature(host),
+                                 host.loadedApproach);
     host.persistedRestore =
         persistedFromMapProcedure(host.loadedApproach, icao);
     if (host.approachHeaderLabel != nullptr) {
@@ -1144,6 +1174,7 @@ bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key) {
             return true;
           case ProcMenuAction::ActivateApproach:
             if (host.approachLegCount > 0) {
+              queueLoadedApproachNavStandbyTune(host);
               host.requestActivateLeg(host.approachLegStart);
               host.closeProceduresMenu();
             }

@@ -799,6 +799,23 @@ inline bool fplApproachDisplayRowSelectable(FplDisplayRowKind kind) {
 
     case FplDisplayRowKind::ArrivalLeg:
 
+    // The loaded SID/STAR/approach header lines are cursor stops too: the knob
+    // can land on them and CLR removes the whole procedure (Pilot's Guide 5.6,
+    // trainer). They carry no leg index, so the leg-index helpers map them to
+    // -1 (handled below).
+    case FplDisplayRowKind::DepartureHeader:
+
+    case FplDisplayRowKind::ArrivalHeader:
+
+    case FplDisplayRowKind::ApproachHeader:
+
+    // The "Airway - <name>.<exit>" header is a cursor stop as well: landing on
+    // it and pressing CLR removes the whole loaded-airway segment (Pilot's
+    // Guide, Flight Planning - Load Airway). It carries the exit fix's leg index
+    // for label rendering, but the leg-index helpers map it to -1 (handled
+    // below) so it is treated as a segment-removal stop, not a single fix.
+    case FplDisplayRowKind::AirwayHeader:
+
       return true;
 
     default:
@@ -807,6 +824,20 @@ inline bool fplApproachDisplayRowSelectable(FplDisplayRowKind kind) {
 
   }
 
+}
+
+// True for the procedure header rows (Departure/Arrival/Approach) that are now
+// selectable cursor stops but represent a whole procedure rather than a leg.
+inline bool fplDisplayRowIsProcedureHeader(FplDisplayRowKind kind) {
+  return kind == FplDisplayRowKind::DepartureHeader ||
+         kind == FplDisplayRowKind::ArrivalHeader ||
+         kind == FplDisplayRowKind::ApproachHeader;
+}
+
+// True for the "Airway - <name>.<exit>" header row: a selectable cursor stop
+// that represents a whole loaded-airway segment rather than a single leg.
+inline bool fplDisplayRowIsAirwayHeader(FplDisplayRowKind kind) {
+  return kind == FplDisplayRowKind::AirwayHeader;
 }
 
 
@@ -971,7 +1002,9 @@ inline int fplApproachLegIndexForSelectable(int selectableRow,
 
   if (dr->kind == FplDisplayRowKind::OriginBlank ||
       dr->kind == FplDisplayRowKind::EnrouteBlank ||
-      dr->kind == FplDisplayRowKind::SepDash) {
+      dr->kind == FplDisplayRowKind::SepDash ||
+      fplDisplayRowIsAirwayHeader(dr->kind) ||
+      fplDisplayRowIsProcedureHeader(dr->kind)) {
     return -1;
   }
 
@@ -1095,7 +1128,10 @@ inline std::vector<int> fplProcedureEnrouteLegIndices(
   std::vector<int> out;
   const int legCount = static_cast<int>(legs.size());
   if (legCount < 2) return out;
-  const int lastEnroute = destinationFilled ? legCount - 2 : legCount - 1;
+  const int lastEnroute =
+      fplDestinationIsAirwayExit(legs, destinationFilled)
+          ? legCount - 1
+          : (destinationFilled ? legCount - 2 : legCount - 1);
   for (int i = 1; i <= lastEnroute; ++i) {
     if (fplLegInProcedureBlock(i, depStart, depCount)) continue;
     if (fplLegInProcedureBlock(i, arrStart, arrCount)) continue;
@@ -1272,7 +1308,8 @@ inline std::vector<FplDisplayRow> buildFplProcedureDisplayRows(
     if (destinationFilled && legs.size() >= 2) {
       const FplSectionLayout layout =
           fplSectionLayout(static_cast<int>(legs.size()), destinationFilled);
-      if (layout.destLegIndex >= 0) {
+      if (layout.destLegIndex >= 0 &&
+          !fplDestinationIsAirwayExit(legs, destinationFilled)) {
         // Filled destination airport ends the route; no trailing blank row.
         rows.push_back({FplDisplayRowKind::DestinationLabel, -1});
         rows.push_back({FplDisplayRowKind::Destination, layout.destLegIndex});
@@ -1378,7 +1415,9 @@ inline int fplProcedureLegIndexForSelectable(
   if (dr == nullptr || !fplProcedureDisplayRowSelectable(dr->kind)) return -1;
   if (dr->kind == FplDisplayRowKind::OriginBlank ||
       dr->kind == FplDisplayRowKind::EnrouteBlank ||
-      dr->kind == FplDisplayRowKind::SepDash) {
+      dr->kind == FplDisplayRowKind::SepDash ||
+      fplDisplayRowIsAirwayHeader(dr->kind) ||
+      fplDisplayRowIsProcedureHeader(dr->kind)) {
     return -1;
   }
   return dr->legIndex;

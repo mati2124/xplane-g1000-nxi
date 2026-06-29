@@ -278,6 +278,21 @@ bool procedureUsesNavPrimaryFrequency(const MapProcedure& proc) {
   return false;
 }
 
+void mergeProcedurePrimaryNavFreq(const NavFeatureSource* nav,
+                                    const MapData* map,
+                                    const MapFeature& airport,
+                                    MapProcedure& proc) {
+  if (!procedureUsesNavPrimaryFrequency(proc)) return;
+  const ProcPrimaryNav primary = resolveProcPrimaryNav(nav, map, airport, proc);
+  if (primary.frequency > 0.0f) proc.frequencyMhz = primary.frequency;
+}
+
+float procedureApproachNavStandbyMhz(const MapProcedure& proc) {
+  if (proc.type != ProcedureType::Approach) return 0.0f;
+  if (!procedureUsesNavPrimaryFrequency(proc)) return 0.0f;
+  return proc.frequencyMhz;
+}
+
 ProcPrimaryNav resolveProcPrimaryNav(const NavFeatureSource* nav,
                                      const MapData* map,
                                      const MapFeature& airport,

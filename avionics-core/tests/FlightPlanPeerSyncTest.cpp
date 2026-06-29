@@ -81,6 +81,39 @@ class PlanDataSource : public DataSource {
   MapData map_;
 };
 
+// Powered source whose map plan + nearby features can be mutated, mirroring the
+// standalone where a published flight-plan edit is pushed back into the map
+// snapshot both GDUs read (and where the FMS waypoint-entry window resolves a
+// typed ident against the nearby map features when no nav database is loaded).
+class MutablePlanSource : public DataSource {
+ public:
+  MutablePlanSource(std::vector<MapLeg> plan, std::vector<MapFeature> features,
+                    std::string activeFromIdent, std::string activeToIdent) {
+    map_.flightPlan = std::move(plan);
+    map_.features = std::move(features);
+    map_.positionValid = true;
+    data_.fmaFromWpt = std::move(activeFromIdent);
+    data_.fmaToWpt = std::move(activeToIdent);
+  }
+  void update(double) override {}
+  const FlightData& snapshot() const override { return data_; }
+  const MapData& mapSnapshot() const override { return map_; }
+  bool requiresPowerUpAcknowledge() const override { return false; }
+  void setPlan(std::vector<MapLeg> plan) { map_.flightPlan = std::move(plan); }
+
+ private:
+  FlightData data_;
+  MapData map_;
+};
+
+MapFeature MakeFeature(const std::string& id, double lat, double lon) {
+  MapFeature f;
+  f.id = id;
+  f.lat = lat;
+  f.lon = lon;
+  return f;
+}
+
 MapLeg MakeLeg(const std::string& id, double lat, double lon) {
   MapLeg leg;
   leg.id = id;
@@ -152,6 +185,76 @@ TEST(FlightPlanPeerSyncTest, DeleteOnMfdIsNotRevivedByPeerSync) {
 
   EXPECT_TRUE(mfd.mfdController().fplLegs().empty());
   EXPECT_TRUE(pfd.softkeyController().flightPlanLegs().empty());
+}
+
+// Off-plan GPS Direct-To blanks both GDUs' leg lists (localDraft=false). Delete
+// Flight Plan on the MFD must stick even if the PFD re-adopts a stale map route.
+TEST(FlightPlanPeerSyncTest, DeleteAfterOffPlanDirectToIsNotRevivedByPeerSync) {
+  NullRenderer renderer;
+
+  class DirectToThenStaleMapSource : public DataSource {
+   public:
+    DirectToThenStaleMapSource() {
+      map_.flightPlan = {
+          MakeLeg("KFMY", 26.586, -81.863),
+          MakeLeg("BOSTN", 26.700, -81.500),
+          MakeLeg("KCMI", 40.039, -88.278),
+      };
+      data_.fmaToWpt = "RSW";
+      map_.directToActive = true;
+      map_.directTo = MakeLeg("RSW", 26.536, -81.755);
+    }
+    void update(double) override {}
+    const FlightData& snapshot() const override { return data_; }
+    const MapData& mapSnapshot() const override { return map_; }
+    bool requiresPowerUpAcknowledge() const override { return false; }
+    void endDirectToKeepStaleMapPlan() {
+      data_.fmaToWpt.clear();
+      map_.directToActive = false;
+      map_.directTo = {};
+    }
+
+   private:
+    FlightData data_;
+    MapData map_;
+  };
+
+  DirectToThenStaleMapSource source;
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+  ASSERT_TRUE(pfd.softkeyController().flightPlanLegs().empty());
+  ASSERT_TRUE(mfd.mfdController().fplLegs().empty());
+
+  DeleteFlightPlanOnMfd(mfd.mfdController());
+  ASSERT_TRUE(mfd.mfdController().fplLegs().empty());
+  ASSERT_TRUE(mfd.mfdController().fplLocalDraft());
+
+  std::vector<MapLeg> published;
+  ASSERT_TRUE(mfd.mfdController().consumeFlightPlanEdit(published));
+  EXPECT_TRUE(published.empty());
+
+  source.endDirectToKeepStaleMapPlan();
+
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  EXPECT_TRUE(mfd.mfdController().fplLegs().empty());
+  EXPECT_TRUE(pfd.softkeyController().flightPlanLegs().empty());
+  EXPECT_TRUE(pfd.softkeyController().flightPlanLocalDraft());
 }
 
 const std::vector<MapLeg> kReproPlan = {
@@ -512,6 +615,210 @@ TEST(FlightPlanPeerSyncTest, MfdCursorCanSelectAltitudeColumn) {
   // clamp must not snap it back to the ident column).
   for (int i = 0; i < 5; ++i) mfd.update(1.0 / 60.0);
   EXPECT_EQ(ui.fplCursorCol(), MfdController::FplCursorCol::Altitude);
+}
+
+// Drives the MFD Active Flight Plan page to insert a new enroute fix exactly the
+// way the pilot does: cursor on, large knob down to the Enroute "add a fix"
+// slot, small knob to open the entry, GCU keys to spell the ident, ENT to
+// commit. Returns true once the fix is in the MFD's working route.
+bool AddEnrouteFixOnMfd(AvionicsEngine& mfd, const std::string& ident) {
+  MfdController& ui = mfd.mfdController();
+  ui.pressBezelKey(BezelKey::Fpl);
+  if (ui.pageGroup() != MfdPageGroup::FlightPlan) return false;
+  ui.pressBezelKey(BezelKey::FmsPush);  // cursor on
+  if (!ui.fplCursorOn()) return false;
+
+  // Step the large knob until the selection lands on the Enroute blank "add a
+  // fix" slot (a non-leg row in the Ident column). Filled leg rows also expose
+  // the VNAV ALT column on the knob, so each takes an extra detent.
+  bool onBlank = false;
+  for (int i = 0; i < 16 && !onBlank; ++i) {
+    mfd.update(1.0 / 60.0);
+    const bool blankIdent =
+        ui.fplCursorLegIndexPublic() < 0 &&
+        ui.fplCursorCol() == MfdController::FplCursorCol::Ident &&
+        ui.fplCursorRow() > 0;
+    if (blankIdent) {
+      onBlank = true;
+      break;
+    }
+    ui.pressBezelKey(BezelKey::FmsOuterCw);
+  }
+  if (!onBlank) return false;
+
+  ui.pressBezelKey(BezelKey::FmsInnerCw);  // open the ident entry box
+  if (!ui.fplEntryActive()) return false;
+  for (char ch : ident) ui.applyGcuEntryKey(ch);
+  ui.pressBezelKey(BezelKey::Ent);  // commit the fix
+  if (ui.fplEntryActive()) return false;
+  for (const MapLeg& leg : ui.fplLegs()) {
+    if (leg.id == ident) return true;
+  }
+  return false;
+}
+
+bool PlanContainsIdent(const std::vector<MapLeg>& legs, const std::string& id) {
+  for (const MapLeg& leg : legs) {
+    if (leg.id == id) return true;
+  }
+  return false;
+}
+
+const std::vector<MapLeg> kEnrouteAddPlan = {
+    MakeLeg("KFMY", 26.586, -81.863),
+    MakeLeg("RSW", 26.536, -81.755),
+    MakeLeg("KCMI", 40.039, -88.278),
+};
+
+// Reported bug: a fix added in the Enroute section on the MFD Active Flight Plan
+// page does not appear on the PFD Active Flight Plan window. The new fix must
+// propagate to the PFD via the per-frame peer sync (and the published map plan).
+TEST(FlightPlanPeerSyncTest, EnrouteFixAddedOnMfdAppearsOnPfd) {
+  NullRenderer renderer;
+  MutablePlanSource source(kEnrouteAddPlan,
+                           {MakeFeature("SINCA", 27.10, -81.40)},
+                           /*activeFromIdent=*/"KFMY", /*activeToIdent=*/"RSW");
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+
+  // Both GDUs adopt the route from the shared map snapshot and settle the peer
+  // reconciliation (both hold the same agreed plan, no local draft yet).
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+  ASSERT_EQ(mfd.mfdController().fplLegs().size(), kEnrouteAddPlan.size());
+  ASSERT_EQ(pfd.softkeyController().flightPlanLegs().size(),
+            kEnrouteAddPlan.size());
+
+  ASSERT_TRUE(AddEnrouteFixOnMfd(mfd, "SINCA"));
+  ASSERT_TRUE(PlanContainsIdent(mfd.mfdController().fplLegs(), "SINCA"));
+
+  // Standalone publishes the consumed edit back into the shared map snapshot.
+  std::vector<MapLeg> published;
+  if (mfd.mfdController().consumeFlightPlanEdit(published)) {
+    source.setPlan(published);
+  }
+
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  EXPECT_TRUE(PlanContainsIdent(pfd.softkeyController().flightPlanLegs(), "SINCA"))
+      << "enroute fix added on the MFD should appear on the PFD";
+}
+
+// Same as above but with the PFD Active Flight Plan window open while the fix is
+// added on the MFD (the state the pilot is actually looking at when they notice
+// the PFD did not update).
+TEST(FlightPlanPeerSyncTest, EnrouteFixAddedOnMfdAppearsOnPfdWithPfdFplOpen) {
+  NullRenderer renderer;
+  MutablePlanSource source(kEnrouteAddPlan,
+                           {MakeFeature("SINCA", 27.10, -81.40)},
+                           /*activeFromIdent=*/"KFMY", /*activeToIdent=*/"RSW");
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+  ASSERT_EQ(pfd.softkeyController().flightPlanLegs().size(),
+            kEnrouteAddPlan.size());
+
+  pfd.softkeyController().pressBezelKey(BezelKey::Fpl);
+  ASSERT_EQ(pfd.softkeyController().activeWindow(), PfdWindow::FlightPlan);
+  for (int i = 0; i < 3; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  ASSERT_TRUE(AddEnrouteFixOnMfd(mfd, "SINCA"));
+  std::vector<MapLeg> published;
+  if (mfd.mfdController().consumeFlightPlanEdit(published)) {
+    source.setPlan(published);
+  }
+
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  EXPECT_TRUE(PlanContainsIdent(pfd.softkeyController().flightPlanLegs(), "SINCA"))
+      << "enroute fix added on the MFD should appear on the open PFD FPL window";
+}
+
+// Reported bug: an enroute fix added on the MFD never appears on the PFD when
+// the PFD Active Flight Plan window has a waypoint-entry box open at the moment
+// of the edit. The PFD's adopt is (correctly) blocked while its entry is open,
+// but the peer sync still advances its change-detection baseline to the MFD's
+// new plan -- so once the PFD entry closes, the PFD's stale route is mistaken
+// for the freshly edited side and the MFD's fix is never propagated.
+TEST(FlightPlanPeerSyncTest, EnrouteFixAddedOnMfdReachesPfdAfterPfdEntryCloses) {
+  NullRenderer renderer;
+  MutablePlanSource source(kEnrouteAddPlan,
+                           {MakeFeature("SINCA", 27.10, -81.40)},
+                           /*activeFromIdent=*/"KFMY", /*activeToIdent=*/"RSW");
+
+  AvionicsEngine pfd(source, renderer, "TEST");
+  AvionicsEngine mfd(source, renderer, "TEST");
+  pfd.setPage(DisplayPage::PrimaryFlightDisplay);
+  mfd.setPage(DisplayPage::MultiFunctionDisplay);
+  pfd.setSoftkeyPeer(&mfd);
+  mfd.setSoftkeyPeer(&pfd);
+  pfd.skipBoot();
+  mfd.skipBoot();
+
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+  ASSERT_EQ(pfd.softkeyController().flightPlanLegs().size(),
+            kEnrouteAddPlan.size());
+
+  // Open the PFD Active Flight Plan window and a waypoint-entry box (the small
+  // knob on the highlighted ident row opens it).
+  pfd.softkeyController().pressBezelKey(BezelKey::Fpl);
+  pfd.softkeyController().pressBezelKey(BezelKey::FmsInnerCw);
+  ASSERT_TRUE(pfd.softkeyController().flightPlanEntryActive());
+
+  // Add the fix on the MFD while the PFD entry is open, and publish it back to
+  // the shared map snapshot like the standalone does.
+  ASSERT_TRUE(AddEnrouteFixOnMfd(mfd, "SINCA"));
+  std::vector<MapLeg> published;
+  if (mfd.mfdController().consumeFlightPlanEdit(published)) {
+    source.setPlan(published);
+  }
+  for (int i = 0; i < 5; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  // Close the PFD entry box. The PFD must now pick up the MFD's fix.
+  pfd.softkeyController().pressBezelKey(BezelKey::Clr);
+  ASSERT_FALSE(pfd.softkeyController().flightPlanEntryActive());
+  for (int i = 0; i < 10; ++i) {
+    pfd.update(1.0 / 60.0);
+    mfd.update(1.0 / 60.0);
+  }
+
+  EXPECT_TRUE(PlanContainsIdent(pfd.softkeyController().flightPlanLegs(), "SINCA"))
+      << "fix added on the MFD must reach the PFD once its entry box closes";
 }
 
 }  // namespace

@@ -144,6 +144,13 @@ void AvionicsEngine::update(double dtSeconds) {
         softkeys_.cdiSourceFor(snap.cdiSource), 0.0f);
   }
 
+  // Reconcile PFD/MFD flight-plan drafts before either side adopts from the map
+  // feed. During GPS Direct-To a delete on one GDU can leave both lists empty
+  // while only the editing side marks localDraft; propagating that draft first
+  // stops the other GDU from resurrecting a stale sim route.
+  syncCourseReversalPromptPeer();
+  syncFlightPlanPeer();
+
   // Flight-plan sync uses mapSnapshot(); pump the source first so a route
   // override applied before this frame's update is visible (softkeys_.update
   // above may have seen a stale plan).
@@ -154,12 +161,6 @@ void AvionicsEngine::update(double dtSeconds) {
   // is owned by the source; the controller only holds the interactive state).
   mfd_.syncChecklist(dataSource_->checklistSnapshot());
   syncSoftkeyPeerRadioVolume();
-  // Apply course-reversal answers (strip HILPT hold on NO) before peer FPL sync
-  // so the other GDU cannot re-adopt a stale hold row.
-  syncCourseReversalPromptPeer();
-  // Peer sync runs before the map-driven FPL adopt so a PFD Active Flight
-  // Plan edit is not overwritten by a stale mapSnapshot on the other GDU.
-  syncFlightPlanPeer();
   // Keep the FPL page's editable plan in step with the active flight plan
   // (and ownship, for waypoint-entry lookups). The active leg's TO ident
   // seeds the Direct-To window's default waypoint.
@@ -250,14 +251,8 @@ void AvionicsEngine::syncFlightPlanPeer() {
   const std::vector<MapLeg>& mfdLegs = mfdFpl.fplLegs();
   const bool skDest = pfdSk.flightPlanDestinationFilled();
   const bool mfdDest = mfdFpl.fplDestinationFilled();
-  if (::avionics::flightPlanLegsEqual(skLegs, mfdLegs) && skDest == mfdDest) {
-    lastPeerPlan_ = skLegs;
-    lastPeerDestFilled_ = skDest;
-    lastPeerPlanValid_ = true;
-    syncFlightPlanCursorPeer();
-    return;
-  }
-
+  const bool skDraft = pfdSk.flightPlanLocalDraft();
+  const bool mfdDraft = mfdFpl.fplLocalDraft();
   const FlightPlanApproachState skApproach = pfdSk.flightPlanApproachState();
   const FlightPlanApproachState mfdApproach = mfdFpl.flightPlanApproachState();
   const FlightPlanTerminalProcedureState skDeparture =
@@ -268,6 +263,26 @@ void AvionicsEngine::syncFlightPlanPeer() {
       pfdSk.flightPlanArrivalState();
   const FlightPlanTerminalProcedureState mfdArrival =
       mfdFpl.flightPlanArrivalState();
+
+  if (::avionics::flightPlanLegsEqual(skLegs, mfdLegs) && skDest == mfdDest) {
+    // Legs match but draft ownership can differ (e.g. Delete Flight Plan during
+    // GPS Direct-To leaves empty legs on both GDUs while only the editing side
+    // marks localDraft). Mirror the draft side so the delete is not undone.
+    if (skDraft != mfdDraft) {
+      if (mfdDraft && !skDraft) {
+        pfdSk.adoptFlightPlanFromPeer(mfdLegs, mfdDest, mfdApproach, mfdDeparture,
+                                      mfdArrival, /*peerLocalDraft=*/true);
+      } else if (skDraft && !mfdDraft) {
+        mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach, skDeparture,
+                                       skArrival, /*peerLocalDraft=*/true);
+      }
+    }
+    lastPeerPlan_ = skLegs;
+    lastPeerDestFilled_ = skDest;
+    lastPeerPlanValid_ = true;
+    syncFlightPlanCursorPeer();
+    return;
+  }
 
   // Figure out which GDU moved away from the last plan both sides agreed on.
   // The side that changed is the one the pilot just edited (e.g. Delete Flight
@@ -282,32 +297,39 @@ void AvionicsEngine::syncFlightPlanPeer() {
       !::avionics::flightPlanLegsEqual(mfdLegs, lastPeerPlan_) ||
       mfdDest != lastPeerDestFilled_;
 
+  // Record the change-detection baseline from what the receiving GDU actually
+  // holds after the adopt, not from the plan we asked it to take. A GDU declines
+  // the adopt while its own waypoint-entry / confirmation window is open
+  // (adoptFlightPlanFromPeer early-returns), so the two routes still differ. If
+  // the baseline advanced to the edited plan anyway, the unchanged GDU's stale
+  // route would next frame look like the freshly edited side and the real edit
+  // would never propagate once the blocking window closed.
   if (mfdChanged && !skChanged) {
     pfdSk.adoptFlightPlanFromPeer(mfdLegs, mfdDest, mfdApproach, mfdDeparture,
-                                  mfdArrival);
-    lastPeerPlan_ = mfdLegs;
-    lastPeerDestFilled_ = mfdDest;
+                                  mfdArrival, mfdDraft);
+    lastPeerPlan_ = pfdSk.flightPlanLegs();
+    lastPeerDestFilled_ = pfdSk.flightPlanDestinationFilled();
   } else if (skChanged && !mfdChanged) {
-    mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach, skDeparture,
-                                   skArrival);
-    lastPeerPlan_ = skLegs;
-    lastPeerDestFilled_ = skDest;
+    if (!mfdDraft) {
+      mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach, skDeparture,
+                                     skArrival, skDraft);
+      lastPeerPlan_ = mfdFpl.fplLegs();
+      lastPeerDestFilled_ = mfdFpl.fplDestinationFilled();
+    }
   } else {
     // Both (or neither, on first sync) deviate: fall back to the draft heuristic
     // and otherwise keep the MFD aligned with the PFD Active Flight Plan window
     // (the primary route editor on the PFD).
-    const bool skDraft = pfdSk.flightPlanLocalDraft();
-    const bool mfdDraft = mfdFpl.fplLocalDraft();
     if (mfdDraft && !skDraft) {
       pfdSk.adoptFlightPlanFromPeer(mfdLegs, mfdDest, mfdApproach, mfdDeparture,
-                                    mfdArrival);
-      lastPeerPlan_ = mfdLegs;
-      lastPeerDestFilled_ = mfdDest;
-    } else {
+                                    mfdArrival, /*peerLocalDraft=*/true);
+      lastPeerPlan_ = pfdSk.flightPlanLegs();
+      lastPeerDestFilled_ = pfdSk.flightPlanDestinationFilled();
+    } else if (!mfdDraft) {
       mfdFpl.adoptFlightPlanFromPeer(skLegs, skDest, skApproach, skDeparture,
-                                     skArrival);
-      lastPeerPlan_ = skLegs;
-      lastPeerDestFilled_ = skDest;
+                                     skArrival, skDraft);
+      lastPeerPlan_ = mfdFpl.fplLegs();
+      lastPeerDestFilled_ = mfdFpl.fplDestinationFilled();
     }
   }
   lastPeerPlanValid_ = true;

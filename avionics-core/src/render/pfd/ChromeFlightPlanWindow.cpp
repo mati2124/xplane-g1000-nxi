@@ -20,9 +20,10 @@ namespace {
 // OK / CANCEL pair; the highlighted choice gets the cyan select plate.
 void drawFplConfirm(Renderer& r, const WindowFrame& f, float size,
                     const std::string& line1, const std::string& line2,
-                    bool okSelected, float a) {
+                    bool okSelected, float a, const std::string& line3 = {}) {
+  const bool threeLine = !line3.empty();
   const float boxW = f.w * 0.82f;
-  const float boxH = size * 6.2f;
+  const float boxH = size * (threeLine ? 7.3f : 6.2f);
   const float bx = f.x + (f.w - boxW) * 0.5f;
   const float by = f.top + (f.h - boxH) * 0.5f;
   const float radius = size * 0.4f;
@@ -32,10 +33,22 @@ void drawFplConfirm(Renderer& r, const WindowFrame& f, float size,
                       withAlpha(colors::kMenuBorderGray, a));
 
   const float cx = bx + boxW * 0.5f;
-  r.fillText(cx, by + size * 1.2f, line1, size, TextAlign::Center,
+  // Keep long procedure subjects (e.g. "SKNNR-RW08B.BANNG3.LUCKK") inside the
+  // box by shrinking any line that would overrun the available text width.
+  const float maxTextW = boxW - size * 1.0f;
+  const auto fitSize = [&](const std::string& s) {
+    const float w = r.measureTextWidth(s, size);
+    if (w <= maxTextW || w <= 0.0f) return size;
+    return size * (maxTextW / w);
+  };
+  r.fillText(cx, by + size * 1.2f, line1, fitSize(line1), TextAlign::Center,
              withAlpha(colors::kWhite, a));
   if (!line2.empty()) {
-    r.fillText(cx, by + size * 2.3f, line2, size, TextAlign::Center,
+    r.fillText(cx, by + size * 2.3f, line2, fitSize(line2), TextAlign::Center,
+               withAlpha(colors::kWhite, a));
+  }
+  if (threeLine) {
+    r.fillText(cx, by + size * 3.4f, line3, fitSize(line3), TextAlign::Center,
                withAlpha(colors::kWhite, a));
   }
 
@@ -100,8 +113,23 @@ float rnavGpsSuffixGap(float size) { return size * 0.08f; }
 // Trainer FPL after load: KFMY-RNAV GPS 05 LPV (no dash between RNAV and GPS).
 void drawFplApproachHeader(Renderer& r, float x, float cy, const std::string& icao,
                            const std::string& label, float size, const Color& color,
-                           float a) {
+                           float a, float maxWidth = 0.0f) {
   const std::string prefix = icao + "-";
+  // Shrink the whole header uniformly when it would run past the list edge /
+  // scroll bar (long procedure subjects like "SKNNR-RW08B.BANNG3.LUCKK").
+  if (maxWidth > 0.0f) {
+    float full = r.measureTextWidth(prefix, size);
+    if (labelIsRnavGps(label)) {
+      const float subSize = size * 0.72f;
+      full += r.measureTextWidth("RNAV", size) + rnavGpsSuffixGap(size) +
+              r.measureTextWidth("GPS", subSize);
+      const std::string rest = restAfterRnavGps(label);
+      if (!rest.empty()) full += r.measureTextWidth(" " + rest, size);
+    } else {
+      full += r.measureTextWidth(label, size);
+    }
+    if (full > maxWidth && full > 0.0f) size *= maxWidth / full;
+  }
   float xx = x;
   r.fillText(xx, cy, prefix, size, TextAlign::Left, withAlpha(color, a));
   xx += r.measureTextWidth(prefix, size);
@@ -945,6 +973,16 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
     }
   }
 
+  // Procedure header rows span the full list width (no DTK/DIS columns), so
+  // they may shrink to the right edge, reserving the scroll-bar lane.
+  const float headerRight = scrolling ? listRight - scrollW : listRight;
+  const float headerMaxW = headerRight - identX - fontPx(2.0f, h);
+  const auto headerFitSize = [&](const std::string& s) {
+    const float w = r.measureTextWidth(s, size);
+    if (w <= headerMaxW || w <= 0.0f) return size;
+    return size * (headerMaxW / w);
+  };
+
   for (int idx = first; idx < end; ++idx) {
     const float rowCy =
         bodyTop + rowH * (static_cast<float>(idx - first) + 0.5f);
@@ -952,14 +990,34 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
       const FplDisplayRow& dr =
           procedureDisplayRows[static_cast<std::size_t>(idx)];
       switch (dr.kind) {
-        case FplDisplayRowKind::DepartureHeader:
-          drawFplApproachHeader(r, identX, rowCy, depAirport, depHeader, size,
-                                colors::kPopoutCyan, a);
+        case FplDisplayRowKind::DepartureHeader: {
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          if (showSelection) {
+            const std::string t = depAirport + "-" + depHeader;
+            render::drawCursorSelect(r, identX, rowCy, t, headerFitSize(t),
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            drawFplApproachHeader(r, identX, rowCy, depAirport, depHeader, size,
+                                  colors::kPopoutCyan, a, headerMaxW);
+          }
           continue;
-        case FplDisplayRowKind::ArrivalHeader:
-          drawFplApproachHeader(r, identX, rowCy, arrAirport, arrHeader, size,
-                                colors::kPopoutCyan, a);
+        }
+        case FplDisplayRowKind::ArrivalHeader: {
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          if (showSelection) {
+            const std::string t = arrAirport + "-" + arrHeader;
+            render::drawCursorSelect(r, identX, rowCy, t, headerFitSize(t),
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            drawFplApproachHeader(r, identX, rowCy, arrAirport, arrHeader, size,
+                                  colors::kPopoutCyan, a, headerMaxW);
+          }
           continue;
+        }
         case FplDisplayRowKind::SepDash: {
           const bool showSelection = fplShowListRowSelection(
               selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
@@ -968,15 +1026,30 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                          withAlpha(colors::kPopoutCyan, a), showSelection, blinkOn, a);
           continue;
         }
-        case FplDisplayRowKind::ApproachHeader:
+        case FplDisplayRowKind::ApproachHeader: {
           // Procedure title aligns with section labels (Enroute); legs indent below.
-          drawFplApproachHeader(r, identX, rowCy, approachAirport,
-                                ui.flightPlanApproachHeaderLabel(), size,
-                                colors::kPopoutCyan, a);
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          if (showSelection) {
+            const std::string t =
+                approachAirport + "-" + ui.flightPlanApproachHeaderLabel();
+            render::drawCursorSelect(r, identX, rowCy, t, headerFitSize(t),
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            drawFplApproachHeader(r, identX, rowCy, approachAirport,
+                                  ui.flightPlanApproachHeaderLabel(), size,
+                                  colors::kPopoutCyan, a, headerMaxW);
+          }
           continue;
+        }
         case FplDisplayRowKind::AirwayHeader: {
           // "Airway - <name>.<exit>" parent row above a loaded airway segment
-          // (Pilot's Guide, Load Airway); display-only, aligned with Enroute.
+          // (Pilot's Guide, Load Airway); aligned with Enroute. Selectable
+          // cursor stop: CLR on it removes the whole airway segment.
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
           if (dr.legIndex < 0 ||
               dr.legIndex >= static_cast<int>(legs.size())) {
             continue;
@@ -984,8 +1057,13 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
           const MapLeg& exitLeg = legs[static_cast<std::size_t>(dr.legIndex)];
           const std::string awLabel =
               "Airway - " + exitLeg.viaAirway + "." + exitLeg.id;
-          r.fillText(identX, rowCy, awLabel, size, TextAlign::Left,
-                     withAlpha(colors::kPopoutCyan, a));
+          if (showSelection) {
+            render::drawCursorSelect(r, identX, rowCy, awLabel, size,
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            r.fillText(identX, rowCy, awLabel, size, TextAlign::Left,
+                       withAlpha(colors::kPopoutCyan, a));
+          }
           continue;
         }
         case FplDisplayRowKind::Hold: {
@@ -1475,6 +1553,15 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   if (confirm == SoftkeyController::FplConfirm::RemoveWaypoint) {
     drawFplConfirm(r, f, size, "Remove " + ui.flightPlanRemoveIdent(),
                    "from flight plan?", ui.flightPlanConfirmOk(), a);
+  } else if (confirm == SoftkeyController::FplConfirm::RemoveDeparture ||
+             confirm == SoftkeyController::FplConfirm::RemoveArrival ||
+             confirm == SoftkeyController::FplConfirm::RemoveApproach ||
+             confirm == SoftkeyController::FplConfirm::RemoveAirway) {
+    // The procedure / airway subject (e.g. "KATL-BBABE.CHPPR1.RW08B" or
+    // "Airway V16") gets its own line so it fits the narrow PFD window
+    // (trainer "Remove <subject> from flight plan?").
+    drawFplConfirm(r, f, size, "Remove", ui.flightPlanRemoveIdent(),
+                   ui.flightPlanConfirmOk(), a, "from flight plan?");
   } else if (confirm == SoftkeyController::FplConfirm::DeleteFlightPlan) {
     drawFplConfirm(r, f, size, "Delete the active", "flight plan?",
                    ui.flightPlanConfirmOk(), a);

@@ -114,6 +114,11 @@ class DatarefDataSource : public DataSource {
   void setTransponderCode(int code);
   void setTransponderMode(int mode);
 
+  // HDG / CRS / BARO knob commits from the bezel (mirrors standalone shell).
+  void setHeadingBug(float deg);
+  void setSelectedCourse(float deg, CdiSource source);
+  void setBaroInHg(float inHg);
+
   // Flight-plan edits from the PFD Active Flight Plan window or the MFD FPL
   // page. Programs the sim FMS when programSimulator is true; otherwise the
   // route is kept on the in-plugin display feed only.
@@ -303,6 +308,12 @@ class DatarefDataSource : public DataSource {
   XPLMDataRef latitude_ = nullptr;
   XPLMDataRef longitude_ = nullptr;
 
+  // TCAS target arrays for the map traffic overlay (element 0 is ownship).
+  XPLMDataRef tcasTargetLat_ = nullptr;
+  XPLMDataRef tcasTargetLon_ = nullptr;
+  XPLMDataRef tcasTargetEleMeters_ = nullptr;
+  XPLMDataRef tcasTargetVerticalSpeedFpm_ = nullptr;
+
   // Sim UTC clock and date for the chrome clock and the Trip Planning
   // sunrise/sunset rows.
   XPLMDataRef zuluTimeSec_ = nullptr;
@@ -321,15 +332,21 @@ class DatarefDataSource : public DataSource {
   XPLMDataRef nav1DmeId_ = nullptr;
   XPLMDataRef nav2DmeId_ = nullptr;
 
-  // NAV/COM active + standby frequency datarefs (int, value = MHz x 100) read
-  // each frame so the glass shows the live radios, and written by the bezel
-  // tuning above. Indexed by RadioUnit; activeMember/standbyMember point at the
-  // matching FlightData fields.
+  // NAV/COM active + standby frequency datarefs (int) read each frame so the
+  // glass shows the live radios, and written by the bezel tuning above. NAV
+  // uses the MHz x 100 datarefs; COM uses the 8.33 kHz-capable datarefs (channel
+  // in kHz) so .x25/.x75 channels are not truncated. Indexed by RadioUnit;
+  // activeMember/standbyMember point at the matching FlightData fields, and
+  // mhzToInt records the dataref's MHz scale.
   struct RadioRef {
     XPLMDataRef active = nullptr;
     XPLMDataRef standby = nullptr;
     float FlightData::* activeMember = nullptr;
     float FlightData::* standbyMember = nullptr;
+    // Dataref-integer value per MHz: 100 for the legacy NAV MHz x 100 datarefs,
+    // 1000 for the 8.33 kHz-capable COM datarefs (channel in kHz). MHz =
+    // value / mhzToInt; value = lround(MHz * mhzToInt).
+    float mhzToInt = 100.0f;
     // Per-radio audio volume (float 0..1), read each frame and written by the
     // VOL/SQ / VOL/ID knobs.
     XPLMDataRef volume = nullptr;
@@ -415,6 +432,10 @@ class DatarefDataSource : public DataSource {
 
   XPLMDataRef gpsHdef_ = nullptr;
   XPLMDataRef hsiObsCourse_ = nullptr;
+  XPLMDataRef nav1ObsCourse_ = nullptr;
+  XPLMDataRef nav2ObsCourse_ = nullptr;
+  XPLMDataRef selectedHeading_ = nullptr;
+  XPLMDataRef baroSetting_ = nullptr;
   XPLMDataRef hsiSourceSelect_ = nullptr;
   XPLMDataRef overrideGps_ = nullptr;
   XPLMDataRef gpsCourseDegMag_ = nullptr;

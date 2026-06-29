@@ -157,21 +157,41 @@ int selectVnavTargetIndex(const std::vector<MapLeg>& plan, int activeIdx,
   if (target == nullptr) return best;
   if (target->distNm <= 0.0) return best;
 
-  // Floor protection: an "at or above" floor must never be busted on the way to
-  // the chosen gate. Project the descent from the aircraft's CURRENT altitude
-  // (not the ideal path) straight to the gate; if it would arrive below a floor
-  // before the floor's fix, level at the nearest such floor instead, then resume
-  // the descent once past it. Using current altitude -- rather than the ideal
-  // FPA path -- keeps the floor protected even when the aircraft is already
-  // below the geometric path (e.g. it descended early), which is exactly when a
-  // floor like "cross BUNGE at or above 16000" would otherwise be ignored.
+  // Floor protection: a crossing restriction we must not descend below before
+  // its fix becomes the target if the descent toward the chosen (deeper, lower)
+  // gate would bust it. This covers both an "at or above" floor AND the lower
+  // edge of an "at" gate -- "cross MCFIE at 12000" must not be flown through at
+  // 8000 just because FAROT at 3000 sits further along.
+  //
+  // Two different trajectories can each bust such a restriction, so guard
+  // against the more restrictive (lower) of the two:
+  //   * the ideal FPA descent path that arrives at the chosen gate -- catches
+  //     the common case where the aircraft is still high and a single
+  //     continuous descent to the deep gate slices below a nearer, higher
+  //     crossing restriction (e.g. heading straight from cruise to "FAROT at
+  //     3000" cuts through "MCFIE at 12000"); and
+  //   * the straight line from the aircraft's CURRENT altitude to the gate --
+  //     catches the case where the aircraft descended early and is already
+  //     below the ideal path, where the FPA path alone would still look clear
+  //     (e.g. "cross BUNGE at or above 16000").
+  // If either dips below a restriction before its fix, level at the nearest
+  // such fix instead, then resume the descent once past it.
+  const float fpaToBest = pathFpaToTarget(plan, activeIdx, best);
+  const double tanFpaToBest =
+      std::tan(static_cast<double>(fpaToBest) * kPi / 180.0);
   for (const VnvConstraint& c : cons) {
     if (c.legIdx >= best) break;
-    if (c.type != AltConstraintType::AtOrAbove) continue;
+    if (c.type != AltConstraintType::AtOrAbove &&
+        c.type != AltConstraintType::At)
+      continue;
     const double frac = c.distNm / target->distNm;
-    const double projAltFt =
+    const double projAltCurrent =
         currentAltFt +
         (static_cast<double>(target->altFt) - currentAltFt) * frac;
+    const double projAltIdeal =
+        static_cast<double>(target->altFt) +
+        tanFpaToBest * (target->distNm - c.distNm) * kFeetPerNm;
+    const double projAltFt = std::min(projAltCurrent, projAltIdeal);
     if (projAltFt < static_cast<double>(c.altFt) - 1.0) {
       return c.legIdx;
     }
@@ -240,12 +260,30 @@ VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
           ? static_cast<int>(std::lround(vnv.distanceToTodNm / gsKts * 3600.0))
           : 0;
 
+  // Deviation from the (possibly extended) descent path at the current along-
+  // track position. Valid before TOD too: the path sits above the aircraft and
+  // descends to meet it at TOD, so the indicator rides in from the top.
+  const double pathAltFt = vnv.targetAltFt + tanFpa * distNm * kFeetPerNm;
+  vnv.verticalDeviationFt = static_cast<float>(data.altitudeFt - pathAltFt);
+
   // Geographic TOD position for the MFD map marker: only while the top of
-  // descent is still ahead (once past it the descent has begun and the real
-  // unit removes the marker).
-  if (vnv.distanceToTodNm > 0.0f) {
+  // descent is still ahead AND the aircraft is still clearly above the descent
+  // path. The geometry is recomputed from the current altitude each frame, so
+  // gating on distance alone lets the marker cling to the ownship as it descends
+  // just below the path; the deviation dead band makes it disappear at/near the
+  // real top of descent the way the unit removes it once the descent begins.
+  if (vnv.distanceToTodNm > 0.0f &&
+      vnv.verticalDeviationFt < -kVnavTodHideDevFt) {
     vnv.todValid = pointAlongTrackNm(map, data, plan, vnv.distanceToTodNm,
                                      vnv.todLat, vnv.todLon);
+  }
+
+  // Geographic bottom-of-descent position for the MFD map marker: the point
+  // where the path levels at the target constraint, i.e. the target waypoint
+  // (distNm along track). Shown while the target leg is still ahead.
+  if (distNm > 0.0) {
+    vnv.bodValid =
+        pointAlongTrackNm(map, data, plan, distNm, vnv.bodLat, vnv.bodLon);
   }
 
   const double timeToTargetMin = (distNm / gsKts) * 60.0;
@@ -255,11 +293,6 @@ VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
                                timeToTargetMin)
           : 0.0f;
 
-  // Deviation from the (possibly extended) descent path at the current along-
-  // track position. Valid before TOD too: the path sits above the aircraft and
-  // descends to meet it at TOD, so the indicator rides in from the top.
-  const double pathAltFt = vnv.targetAltFt + tanFpa * distNm * kFeetPerNm;
-  vnv.verticalDeviationFt = static_cast<float>(data.altitudeFt - pathAltFt);
   if (vnv.distanceToTodNm <= 0.0f) {
     vnv.capturing = true;
   }

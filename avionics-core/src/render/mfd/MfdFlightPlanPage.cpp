@@ -1218,10 +1218,24 @@ void drawFplConfirmWindow(Renderer& r, const MfdController& ui,
   const FontScope fs(r, FontFace::DejaVuSemiBold);
   auto P = [&](float v) { return mfdFontPx(v, displayH); };
 
-  const std::string question =
-      ui.fplConfirm() == MfdController::FplConfirm::RemoveWaypoint
-          ? "Remove " + ui.fplRemoveIdent() + "?"
-          : "Delete all waypoints in flight plan?";
+  std::string question;
+  switch (ui.fplConfirm()) {
+    case MfdController::FplConfirm::RemoveWaypoint:
+      question = "Remove " + ui.fplRemoveIdent() + "?";
+      break;
+    case MfdController::FplConfirm::RemoveDeparture:
+    case MfdController::FplConfirm::RemoveArrival:
+    case MfdController::FplConfirm::RemoveApproach:
+    case MfdController::FplConfirm::RemoveAirway:
+      // fplRemoveIdent() carries the removal subject (e.g. "CSHEL6 departure"
+      // or "Airway V16").
+      question = "Remove " + ui.fplRemoveIdent() + " from flight plan?";
+      break;
+    case MfdController::FplConfirm::DeleteFlightPlan:
+    case MfdController::FplConfirm::None:
+      question = "Delete all waypoints in flight plan?";
+      break;
+  }
 
   const float textSize = mfdFontPx(18.0f, displayH);
   const float lineH = textSize * 1.4f;
@@ -2023,8 +2037,8 @@ void drawLoadAirwayWindow(Renderer& r, const FlightData& d, const MapData& map,
       r, Rect{x + w - boxW - P(2.0f), y + P(2.0f), boxW, boxH}, displayH);
 
   const float fieldH = P(44.0f);
-  const float gap = P(10.0f);
-  float slotY = inner.y;
+  const float gap = P(20.0f);
+  float slotY = inner.y + P(4.0f);
 
   // A single-value field box: the value is highlighted (pulsing cyan) when the
   // field cursor is parked on it.
@@ -2043,11 +2057,12 @@ void drawLoadAirwayWindow(Renderer& r, const FlightData& d, const MapData& map,
     slotY += fieldH + gap;
   };
 
+  const Field field = ui.loadAirwayField();
   drawValueField("Entry", ui.loadAirwayEntryIdent(), false);
-  drawValueField("Airway", ui.loadAirwayName(),
-                 ui.loadAirwayField() == Field::Airway);
-  drawValueField("Exit", ui.loadAirwayExitIdent(),
-                 ui.loadAirwayField() == Field::Exit);
+  const float airwayBoxTop = slotY;  // captured before drawValueField advances
+  drawValueField("Airway", ui.loadAirwayName(), field == Field::Airway);
+  const float exitBoxTop = slotY;
+  drawValueField("Exit", ui.loadAirwayExitIdent(), field == Field::Exit);
 
   // Footer Load? button.
   const float buttonsH = P(38.0f);
@@ -2058,61 +2073,110 @@ void drawLoadAirwayWindow(Renderer& r, const FlightData& d, const MapData& map,
                                labelSize * 1.3f)) *
                        0.5f,
       btnCy, "Load?", labelSize,
-      ui.loadAirwayField() == Field::Load && ui.loadAirwayCanLoad(), blinkOn);
+      field == Field::Load && ui.loadAirwayCanLoad(), blinkOn);
 
-  // Fix-chain list with the highlighted exit, and the entry->exit DTK/DIS to
-  // its right (Pilot's Guide, Load Airway). The list occupies the left portion
-  // under the Exit field; the course readout sits in the right column.
   const std::vector<MapLeg>& fixes = ui.loadAirwayFixes();
-  const float listTop = slotY;
-  const float listBot = buttonsY - gap;
-  const float listW = inner.w * 0.52f;
-  const Rect listBox{inner.x, listTop, listW, std::max(P(20.0f), listBot - listTop)};
-  r.strokeRoundedRect(listBox.x, listBox.y, listBox.w, listBox.h, P(8.0f), 1.5f,
-                      colors::kGroupBoxBorder);
-
-  const float rowH = labelSize * 1.5f;
   const int exitSel = ui.loadAirwayExitSel();
-  const int total = static_cast<int>(fixes.size());
-  const int maxRows =
-      std::max(1, static_cast<int>((listBox.h - P(8.0f)) / rowH));
-  int first = 0;
-  if (total > maxRows) {
-    // Keep the highlighted exit visible.
-    first = std::min(std::max(0, exitSel - maxRows / 2), total - maxRows);
-  }
-  const int last = std::min(total, first + maxRows);
-  const float textX = listBox.x + P(8.0f);
-  float ry = listBox.y + P(4.0f);
-  for (int i = first; i < last; ++i) {
-    const float cy = ry + rowH * 0.5f;
-    const std::string& id = fixes[static_cast<std::size_t>(i)].id;
-    if (i == exitSel) {
-      if (ui.loadAirwayField() == Field::Exit) {
-        drawCursorText(r, textX, cy, id, labelSize, TextAlign::Left);
-      } else {
-        drawCursorSelect(r, textX, cy, id, labelSize, TextAlign::Left, blinkOn);
-      }
-    } else {
-      // The entry fix (index 0) is context only; draw it dimmer than the
-      // selectable exits.
-      const Color c = i == 0 ? colors::kTitleGray : colors::kPopoutCyan;
-      r.fillText(textX, cy, id, labelSize, TextAlign::Left, c);
+  const float rowH = labelSize * 1.5f;
+
+  // Sequence group box (always shown): the chosen entry->exit fix chain, each
+  // leg showing its DTK/DIS inline in the right columns (no free-floating
+  // course readout).
+  {
+    const Rect seqSlot{inner.x, slotY, inner.w,
+                       std::max(P(24.0f), buttonsY - gap - slotY)};
+    const Rect seq = drawGroupBox(r, seqSlot, "Sequence", displayH, titleBg);
+    const int total = std::min(exitSel + 1, static_cast<int>(fixes.size()));
+    const int maxRows = std::max(1, static_cast<int>(seq.h / rowH));
+    int first = 0;
+    if (total > maxRows) {
+      first = std::min(std::max(0, exitSel - maxRows / 2), total - maxRows);
     }
-    ry += rowH;
+    const int last = std::min(total, first + maxRows);
+    const float seqRight = seq.x + seq.w;
+    float ry = seq.y;
+    for (int i = first; i < last; ++i) {
+      const float cy = ry + rowH * 0.5f;
+      const std::string& id = fixes[static_cast<std::size_t>(i)].id;
+      if (i == exitSel) {
+        drawCursorSelect(r, seq.x, cy, id, labelSize, TextAlign::Left, blinkOn);
+      } else {
+        r.fillText(seq.x, cy, id, labelSize, TextAlign::Left,
+                   colors::kPopoutCyan);
+      }
+      // Each leg (every fix after the entry) shows the course/distance into it.
+      if (i >= 1) {
+        const MapLeg& a = fixes[static_cast<std::size_t>(i - 1)];
+        const MapLeg& b = fixes[static_cast<std::size_t>(i)];
+        const float dis = static_cast<float>(navDistanceNm(a.lat, a.lon, b.lat, b.lon));
+        const float dtk = static_cast<float>(navBearingDeg(a.lat, a.lon, b.lat, b.lon));
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%.1f", dis);
+        drawValueWithUnit(r, seqRight, cy, buf, "NM", labelSize,
+                          colors::kWhitesmoke);
+        const float disW =
+            r.measureTextWidth("NM", labelSize * kUnitEm) +
+            r.measureTextWidth(buf, labelSize);
+        std::snprintf(buf, sizeof(buf), "%03.0f", dtk);
+        drawValueWithUnit(r, seqRight - disW - labelSize * 0.6f, cy, buf, kDeg,
+                          labelSize, colors::kWhitesmoke);
+      }
+      ry += rowH;
+    }
   }
 
-  // Course / distance readout beside the list.
-  if (ui.loadAirwayHasCourse()) {
-    const float colCy = listBox.y + rowH * 1.0f;
-    const float colR = inner.x + inner.w;
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%03.0f", ui.loadAirwayDtkDeg());
-    drawValueWithUnit(r, colR - r.measureTextWidth("  ", labelSize), colCy, buf,
-                      kDeg, labelSize, colors::kWhitesmoke);
-    std::snprintf(buf, sizeof(buf), "%.1f", ui.loadAirwayDisNm());
-    drawValueWithUnit(r, colR - r.measureTextWidth("  ", labelSize),
-                      colCy + rowH, buf, "NM", labelSize, colors::kWhitesmoke);
+  // Dropdown overlay (drawn last so it floats above the Exit/Sequence boxes):
+  // a popup list anchored under the active Airway/Exit field. The Sequence box
+  // behind it carries the course/distance, so no separate readout is drawn.
+  const bool airwayDropdown = field == Field::Airway;
+  const bool exitDropdown = field == Field::Exit;
+  if (airwayDropdown || exitDropdown) {
+    std::vector<std::string> items;
+    int sel = 0;
+    int greyed = -1;
+    float dropTop = 0.0f;
+    if (airwayDropdown) {
+      items = ui.loadAirwayAirways();
+      sel = ui.loadAirwayAirwaySel();
+      dropTop = airwayBoxTop + fieldH * 0.62f;
+    } else {
+      items.reserve(fixes.size());
+      for (const MapLeg& fx : fixes) items.push_back(fx.id);
+      sel = exitSel;
+      greyed = 0;  // the entry fix can never be the exit
+      dropTop = exitBoxTop + fieldH * 0.62f;
+    }
+
+    constexpr int kDropdownRows = 7;
+    const int n = static_cast<int>(items.size());
+    const int visible = std::max(1, std::min(n, kDropdownRows));
+    int dfirst = 0;
+    if (n > visible) {
+      dfirst = std::max(0, std::min(sel - visible / 2, n - visible));
+    }
+    float maxW = 0.0f;
+    for (const std::string& it : items) {
+      maxW = std::max(maxW, r.measureTextWidth(it.c_str(), labelSize));
+    }
+    const float dPadX = labelSize * 0.5f;
+    const float dropW = std::min(inner.w * 0.6f, maxW + 2.0f * dPadX);
+    const float dropH = rowH * static_cast<float>(visible) + labelSize * 0.4f;
+    r.fillRoundedRect(inner.x, dropTop, dropW, dropH, P(6.0f), colors::kBlack);
+    r.strokeRoundedRect(inner.x + 0.75f, dropTop + 0.75f, dropW - 1.5f,
+                        dropH - 1.5f, P(6.0f), 1.5f, colors::kMenuBorderGray);
+    const int dlast = std::min(n, dfirst + visible);
+    float dy = dropTop + labelSize * 0.2f;
+    for (int i = dfirst; i < dlast; ++i) {
+      const float cy = dy + rowH * 0.5f;
+      const std::string& it = items[static_cast<std::size_t>(i)];
+      if (i == sel) {
+        drawCursorText(r, inner.x + dPadX, cy, it, labelSize, TextAlign::Left);
+      } else {
+        const Color c = i == greyed ? colors::kTitleGray : colors::kPopoutCyan;
+        r.fillText(inner.x + dPadX, cy, it, labelSize, TextAlign::Left, c);
+      }
+      dy += rowH;
+    }
   }
 }
 
@@ -2524,13 +2588,25 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                                                 activeSelectableRow, cursorOn);
         switch (dr.kind) {
           case FplDisplayRowKind::DepartureHeader:
-            drawFplApproachHeader(r, labelX, cy, depAirport, depHeader, rowSize,
-                                  colors::kCyan);
+            ++selectableIdx;
+            if (showSelection) {
+              drawCursorSelect(r, labelX, cy, depAirport + "-" + depHeader,
+                               rowSize, TextAlign::Left, blinkOn);
+            } else {
+              drawFplApproachHeader(r, labelX, cy, depAirport, depHeader, rowSize,
+                                    colors::kCyan);
+            }
             fy += rowH;
             continue;
           case FplDisplayRowKind::ArrivalHeader:
-            drawFplApproachHeader(r, labelX, cy, arrAirport, arrHeader, rowSize,
-                                  colors::kCyan);
+            ++selectableIdx;
+            if (showSelection) {
+              drawCursorSelect(r, labelX, cy, arrAirport + "-" + arrHeader,
+                               rowSize, TextAlign::Left, blinkOn);
+            } else {
+              drawFplApproachHeader(r, labelX, cy, arrAirport, arrHeader, rowSize,
+                                    colors::kCyan);
+            }
             fy += rowH;
             continue;
           case FplDisplayRowKind::SepDash:
@@ -2540,20 +2616,34 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
             fy += rowH;
             continue;
           case FplDisplayRowKind::ApproachHeader:
-            drawFplApproachHeader(r, labelX, cy, approachAirport,
-                                  ui.fplApproachHeaderLabel(), rowSize,
-                                  colors::kCyan);
+            ++selectableIdx;
+            if (showSelection) {
+              drawCursorSelect(r, labelX, cy,
+                               approachAirport + "-" + ui.fplApproachHeaderLabel(),
+                               rowSize, TextAlign::Left, blinkOn);
+            } else {
+              drawFplApproachHeader(r, labelX, cy, approachAirport,
+                                    ui.fplApproachHeaderLabel(), rowSize,
+                                    colors::kCyan);
+            }
             fy += rowH;
             continue;
           case FplDisplayRowKind::AirwayHeader: {
             // "Airway - <name>.<exit>" parent row above a loaded airway segment
             // (Pilot's Guide, Load Airway). dr.legIndex points at the exit fix.
+            // Selectable cursor stop: CLR on it removes the whole airway.
+            ++selectableIdx;
             const MapLeg& exitLeg =
                 plan[static_cast<std::size_t>(dr.legIndex)];
             const std::string awLabel =
                 "Airway - " + exitLeg.viaAirway + "." + exitLeg.id;
-            r.fillText(labelX, cy, awLabel, rowSize, TextAlign::Left,
-                       colors::kCyan);
+            if (showSelection) {
+              drawCursorSelect(r, labelX, cy, awLabel, rowSize, TextAlign::Left,
+                               blinkOn);
+            } else {
+              r.fillText(labelX, cy, awLabel, rowSize, TextAlign::Left,
+                         colors::kCyan);
+            }
             fy += rowH;
             continue;
           }

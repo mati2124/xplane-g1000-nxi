@@ -40,6 +40,9 @@ constexpr double kResubscribeIntervalSeconds = 3.0;
 constexpr float kMetersPerSecondToKnots = 1.943844f;
 // X-Plane radio frequency datarefs are MHz x 100 (11030 == 110.30 MHz).
 constexpr float kRadioHzToMhz = 0.01f;
+// 8.33 kHz-capable COM datarefs store the channel in kHz (135925 == 135.925),
+// so they carry the .x25/.x75 digit the legacy MHz x 100 datarefs truncate.
+constexpr float kCom833HzToMhz = 0.001f;
 // X-Plane failure_enum value meaning the instrument is currently inoperative.
 constexpr int kFailureInop = 6;
 
@@ -181,13 +184,13 @@ const DatarefBinding kBindings[] = {
      Smooth::Snap},
     {datarefs::kNav2StandbyFrequencyHz, kRadioHzToMhz,
      &FlightData::nav2StandbyMhz, Smooth::Snap},
-    {datarefs::kCom1FrequencyHz, kRadioHzToMhz, &FlightData::com1ActiveMhz,
+    {datarefs::kCom1FrequencyHz833, kCom833HzToMhz, &FlightData::com1ActiveMhz,
      Smooth::Snap},
-    {datarefs::kCom1StandbyFrequencyHz, kRadioHzToMhz,
+    {datarefs::kCom1StandbyFrequencyHz833, kCom833HzToMhz,
      &FlightData::com1StandbyMhz, Smooth::Snap},
-    {datarefs::kCom2FrequencyHz, kRadioHzToMhz, &FlightData::com2ActiveMhz,
+    {datarefs::kCom2FrequencyHz833, kCom833HzToMhz, &FlightData::com2ActiveMhz,
      Smooth::Snap},
-    {datarefs::kCom2StandbyFrequencyHz, kRadioHzToMhz,
+    {datarefs::kCom2StandbyFrequencyHz833, kCom833HzToMhz,
      &FlightData::com2StandbyMhz, Smooth::Snap},
 
     // Per-radio audio volume (0..1), so the NavCom box shows the live level
@@ -1927,35 +1930,46 @@ struct RadioPaths {
   const char* standby;
   float FlightData::* activeMember;
   float FlightData::* standbyMember;
+  // MHz -> dataref-integer scale: 100 for the legacy NAV MHz x 100 datarefs,
+  // 1000 for the 8.33 kHz-capable COM datarefs (channel in kHz).
+  float mhzToInt;
 };
+
+// NAV datarefs are int MHz x 100; COM uses the 8.33 kHz-capable datarefs which
+// are the channel in kHz (MHz x 1000), so the .x25/.x75 digit round-trips.
+constexpr float kMhzToRadioHz = 100.0f;
+constexpr float kMhzToCom833Hz = 1000.0f;
 
 RadioPaths radioPaths(RadioUnit unit) {
   switch (unit) {
     case RadioUnit::Nav1:
       return {datarefs::kNav1FrequencyHz, datarefs::kNav1StandbyFrequencyHz,
-              &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz};
+              &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz,
+              kMhzToRadioHz};
     case RadioUnit::Nav2:
       return {datarefs::kNav2FrequencyHz, datarefs::kNav2StandbyFrequencyHz,
-              &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz};
+              &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz,
+              kMhzToRadioHz};
     case RadioUnit::Com1:
-      return {datarefs::kCom1FrequencyHz, datarefs::kCom1StandbyFrequencyHz,
-              &FlightData::com1ActiveMhz, &FlightData::com1StandbyMhz};
+      return {datarefs::kCom1FrequencyHz833,
+              datarefs::kCom1StandbyFrequencyHz833, &FlightData::com1ActiveMhz,
+              &FlightData::com1StandbyMhz, kMhzToCom833Hz};
     case RadioUnit::Com2:
-      return {datarefs::kCom2FrequencyHz, datarefs::kCom2StandbyFrequencyHz,
-              &FlightData::com2ActiveMhz, &FlightData::com2StandbyMhz};
+      return {datarefs::kCom2FrequencyHz833,
+              datarefs::kCom2StandbyFrequencyHz833, &FlightData::com2ActiveMhz,
+              &FlightData::com2StandbyMhz, kMhzToCom833Hz};
   }
   return {datarefs::kNav1FrequencyHz, datarefs::kNav1StandbyFrequencyHz,
-          &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz};
+          &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz,
+          kMhzToRadioHz};
 }
 
-constexpr float kMhzToRadioHz = 100.0f;
-
-// Radio frequency datarefs are integers (MHz x 100). A float MHz like 114.15f
-// is actually ~114.1499996, so 114.15 * 100 = 11414.9996; writing that to the
-// integer dataref truncates to 11414 (-> 114.14). Round to the nearest 10 kHz
-// channel first so the active frequency lands exactly where the pilot tuned it.
-float radioMhzToHz(float mhz) {
-  return static_cast<float>(std::lround(mhz * kMhzToRadioHz));
+// Radio frequency datarefs are integers. A float MHz like 114.15f is actually
+// ~114.1499996, so 114.15 * 100 = 11414.9996; writing that to the integer
+// dataref truncates to 11414 (-> 114.14). Round to the nearest channel first so
+// the active frequency lands exactly where the pilot tuned it.
+float radioMhzToHz(float mhz, float mhzToInt) {
+  return static_cast<float>(std::lround(mhz * mhzToInt));
 }
 
 }  // namespace
@@ -2028,7 +2042,7 @@ void XPlaneConnection::setMapViewHalfExtentNm(float halfExtentNm) {
 
 void XPlaneConnection::tuneRadioStandby(RadioUnit unit, float standbyMhz) {
   const RadioPaths paths = radioPaths(unit);
-  sendDataref(paths.standby, radioMhzToHz(standbyMhz));
+  sendDataref(paths.standby, radioMhzToHz(standbyMhz, paths.mhzToInt));
   target_.*(paths.standbyMember) = standbyMhz;
   data_.*(paths.standbyMember) = standbyMhz;
 }
@@ -2037,8 +2051,8 @@ void XPlaneConnection::transferRadio(RadioUnit unit) {
   const RadioPaths paths = radioPaths(unit);
   const float active = target_.*(paths.activeMember);
   const float standby = target_.*(paths.standbyMember);
-  sendDataref(paths.active, radioMhzToHz(standby));
-  sendDataref(paths.standby, radioMhzToHz(active));
+  sendDataref(paths.active, radioMhzToHz(standby, paths.mhzToInt));
+  sendDataref(paths.standby, radioMhzToHz(active, paths.mhzToInt));
   target_.*(paths.activeMember) = standby;
   target_.*(paths.standbyMember) = active;
   data_.*(paths.activeMember) = standby;
@@ -2100,7 +2114,26 @@ void XPlaneConnection::setHeadingBug(float deg) {
 }
 
 void XPlaneConnection::setSelectedCourse(float deg) {
-  sendDataref(datarefs::kHsiObsCourseDegMag, deg);
+  setSelectedCourse(deg, data_.cdiSource);
+}
+
+void XPlaneConnection::setSelectedCourse(float deg, CdiSource source) {
+  // hsi_obs_deg_mag_pilot is a read-only mirror of the selected source's OBS for
+  // VOR/LOC: writing it does not move the CDI. The CRS knob must set the OBS on
+  // the nav radio that drives the HSI (G1000 CRS = selected VOR's OBS). Write the
+  // per-radio OBS for a VOR source, and the HSI OBS for GPS (GPS/OBS course).
+  switch (source) {
+    case CdiSource::Nav1:
+      sendDataref(datarefs::kNav1ObsCourseDegMag, deg);
+      break;
+    case CdiSource::Nav2:
+      sendDataref(datarefs::kNav2ObsCourseDegMag, deg);
+      break;
+    case CdiSource::Gps:
+    default:
+      sendDataref(datarefs::kHsiObsCourseDegMag, deg);
+      break;
+  }
   target_.courseDeg = deg;
   data_.courseDeg = deg;
 }

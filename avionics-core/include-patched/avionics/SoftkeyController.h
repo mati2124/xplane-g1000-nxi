@@ -416,8 +416,17 @@ class SoftkeyController {
   float flightPlanEntryDistanceNm() const;
 
   // Modal confirmation prompt shown over the window (CLR removes a waypoint,
-  // MENU deletes the whole plan).
-  enum class FplConfirm { None, RemoveWaypoint, DeleteFlightPlan };
+  // MENU deletes the whole plan). RemoveDeparture/Arrival/Approach delete a
+  // whole loaded SID/STAR/approach block (Pilot's Guide 5.6).
+  enum class FplConfirm {
+    None,
+    RemoveWaypoint,
+    RemoveDeparture,
+    RemoveArrival,
+    RemoveApproach,
+    RemoveAirway,
+    DeleteFlightPlan
+  };
   FplConfirm flightPlanConfirm() const { return fplConfirm_; }
   bool flightPlanConfirmOk() const { return fplConfirmOk_; }
   const std::string& flightPlanRemoveIdent() const { return fplRemoveIdent_; }
@@ -449,7 +458,8 @@ class SoftkeyController {
       const std::vector<MapLeg>& legs, bool destinationFilled,
       const FlightPlanApproachState& approach,
       const FlightPlanTerminalProcedureState& departure = {},
-      const FlightPlanTerminalProcedureState& arrival = {});
+      const FlightPlanTerminalProcedureState& arrival = {},
+      bool peerLocalDraft = false);
   // Mirror the peer GDU's FPL list scroll/selection (PFD window vs MFD page).
   void adoptFlightPlanCursorFromPeer(int cursorRow, bool followsActive);
 
@@ -844,7 +854,15 @@ class SoftkeyController {
   FmsWaypointEntry* activeWaypointEntry();
   void syncFlightPlanLegs(const MapData& map, bool navDirectTo = false);
   void tryRestorePersistedApproach();
+  void tryRestorePersistedTerminalProcedures();
   void reinferApproachFromProcedureLegs();
+  // Open the removal confirmation, seeding the prompt subject from the FPL
+  // header label (e.g. "KATL-BBABE.CHPPR1.RW08B").
+  void fplOpenProcedureRemoveConfirm(FplConfirm which);
+  // Remove a whole loaded terminal procedure and clear its restore state.
+  void fplRemoveLoadedDeparture();
+  void fplRemoveLoadedArrival();
+  void fplRemoveLoadedApproach();
   // Procedures window (PROC bezel key): build the top-level menu on open, route
   // the FMS knob / ENT / CLR while it is open, move the menu cursor (skipping
   // disabled rows), and load the selected procedure's legs into the plan.
@@ -868,6 +886,9 @@ class SoftkeyController {
     FplActivateLeg,      // activate the highlighted FPL leg (Pilot's Guide 5.6)
     FplLoadAirway,       // open the Select Airway window for the cursor fix
     FplCollapseAirways,  // toggle the FPL airway collapse/expand display
+    FplRemoveDeparture,  // open the Remove Departure confirmation
+    FplRemoveArrival,    // open the Remove Arrival confirmation
+    FplRemoveApproach,   // open the Remove Approach confirmation
     FplDeleteFlightPlan, // open the Delete Flight Plan confirmation
   };
   struct PfdPageMenuItem {
@@ -1035,6 +1056,8 @@ class SoftkeyController {
   // is ready. Set on restore, cleared once the re-expansion has been applied (or
   // is known to be unmatchable).
   bool fplApproachRestorePending_ = false;
+  bool fplDepartureRestorePending_ = false;
+  bool fplArrivalRestorePending_ = false;
   MapProcedure procSelectedProcedure() const;
   std::string formatApproachLabel(const MapProcedure& proc) const;
   std::string procDefaultAirportIcao() const;

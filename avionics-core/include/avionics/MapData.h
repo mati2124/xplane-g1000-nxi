@@ -361,12 +361,12 @@ struct AirportRunwayInfo {
   bool lighted = false;  // edge lights present
 };
 
-// One closed paved polygon (taxiway, apron, or ramp) from an apt.dat row-110
-// pavement chunk, for the close-range airport diagram (SafeTaxi-style). Only
-// the outer boundary is kept; holes and bezier curves are approximated as
-// straight segments between the boundary nodes.
+// One paved region (taxiway, apron, or ramp) from an apt.dat row-110 chunk, for
+// the close-range airport diagram (SafeTaxi-style). contours[0] is the outer
+// boundary; later contours are holes (grass islands punched out of the slab).
+// Bezier curves are approximated as straight segments between nodes.
 struct MapPavement {
-  std::vector<GeoPoint> outline;
+  std::vector<std::vector<GeoPoint>> contours;
 };
 
 // A taxiway identifier label (e.g. "A", "E2") for the SafeTaxi diagram, placed

@@ -54,6 +54,25 @@ struct InferredProcedureBlock {
 InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs,
                                                  int minStart = 0);
 
+// Destination airport leg immediately before a loaded approach (FPL display
+// anchor, not a flyover fix on the navigation map). Returns -1 when absent.
+int destinationAirportLegBeforeApproach(const std::vector<MapLeg>& legs,
+                                          int minStart = 0);
+
+// Plan legs for map route display: omits the destination airport row when an
+// approach follows it so enroute connects to the IAF instead of the airport.
+std::vector<MapLeg> mapRouteDisplayLegs(const std::vector<MapLeg>& legs,
+                                          int minStart = 0);
+
+// Map a leg index in `legs` to the display-route index after omitting the
+// destination-airport row; returns -1 when that leg is omitted.
+int mapRouteDisplayLegIndex(const std::vector<MapLeg>& legs, int planLegIndex,
+                              int minStart = 0);
+
+// Inverse of mapRouteDisplayLegIndex.
+int mapRoutePlanLegIndex(const std::vector<MapLeg>& legs, int routeLegIndex,
+                           int minStart = 0);
+
 // Lowest index at which a loaded approach can begin. The approach is the
 // procedure tail AFTER the destination airport, so it can never start at or
 // before the last airport ident that is itself followed by procedure legs (that
@@ -285,6 +304,16 @@ inline bool fplHideLegForDuplicateIdent(const std::vector<MapLeg>& legs,
   return false;
 }
 
+// True when the filled destination leg is tagged as an airway exit (Load Airway
+// merged the exit with the waypoint that was already next in the plan). Such a
+// fix is listed under its "Airway - <name>.<exit>" header, not as a separate
+// Destination section row.
+inline bool fplDestinationIsAirwayExit(const std::vector<MapLeg>& legs,
+                                         bool destinationFilled) {
+  if (!destinationFilled || legs.size() < 2) return false;
+  return !legs.back().viaAirway.empty();
+}
+
 // Active-leg highlight: prefer the last plan index (approach over enroute dupes).
 inline int fplActiveLegIndexInPlan(const std::vector<MapLeg>& legs,
                                    const std::string& activeIdent) {
@@ -479,6 +508,28 @@ inline bool operator!=(const PersistedFlightPlan& a,
 }
 
 class NavFeatureSource;
+
+struct TerminalProcedureMetadataRestore {
+  bool merged = false;
+  // True when CIFP expansion succeeded but no stored block legs matched (stop
+  // retrying every frame).
+  bool stopRetrying = false;
+  // Block span after matching the expanded procedure against the plan. May grow
+  // beyond the passed-in block when the importer's heuristic excluded a fix that
+  // CIFP says belongs to the procedure (e.g. a STAR transition-entry fix that
+  // SimBrief tagged with the inbound airway). -1 when unchanged/unmatched.
+  int correctedStart = -1;
+  int correctedCount = 0;
+  bool spanCorrected() const { return correctedStart >= 0; }
+};
+
+// Re-attaches CIFP SID/STAR metadata (altitude constraints, holds, roles) onto
+// legs in a known departure/arrival block, and corrects the block span to cover
+// every contiguous plan leg the expanded procedure claims. Used when a SimBrief
+// import or a saved plan carries procedure headers but bare navlog legs.
+TerminalProcedureMetadataRestore restoreTerminalProcedureMetadata(
+    const NavFeatureSource* nav, const PersistedLoadedApproach& meta,
+    std::vector<MapLeg>& plan, int blockStart, int blockCount);
 
 // Infer procedure metadata (runway, RNAV name, LPV) from tagged approach legs.
 bool inferApproachMetadataFromLegs(const std::vector<MapLeg>& legs,

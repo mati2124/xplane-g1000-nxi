@@ -136,6 +136,46 @@ TEST(VnavGuidanceTest, FloorProtectedWhenAircraftBelowIdealPath) {
   EXPECT_EQ(vnv.targetAltFt, 16000);
 }
 
+// Regression: KFMY->KJAX, cruising well above a near crossing restriction
+// ("MCFIE at 12000") with a much lower deep gate beyond ("FAROT at 3000").
+// Picking the earliest top-of-descent would target FAROT and draw a path that
+// slices through MCFIE far below 12000 -- the aircraft descends early and never
+// honors the 12000 crossing. The nearer restriction must control instead.
+TEST(VnavGuidanceTest, NearCrossingRestrictionHonoredOverDeepGate) {
+  std::vector<MapLeg> plan = {
+      makeLeg("FABES", 26.0, 0, AltConstraintType::None),
+      makeLeg("MCFIE", 26.058, 12000, AltConstraintType::At),
+      makeLeg("TEBOW", 26.171, 0, AltConstraintType::None),
+      makeLeg("FAROT", 26.337, 3000, AltConstraintType::At),
+  };
+  const MapData map = makeMap(plan);
+  const FlightData data = makeData("FABES", 21600.0f);
+
+  const VnvProfile vnv = computeVnvProfile(map, data);
+  ASSERT_TRUE(vnv.active);
+  EXPECT_EQ(vnv.targetWpt, "MCFIE");
+  EXPECT_EQ(vnv.targetAltFt, 12000);
+}
+
+// As above, but the near restriction is an "at or above" floor rather than a
+// hard "at": the straight descent to the deep gate would still bust it, so it
+// remains the controlling target.
+TEST(VnavGuidanceTest, NearFloorHonoredOverDeepGateFromCruise) {
+  std::vector<MapLeg> plan = {
+      makeLeg("FABES", 26.0, 0, AltConstraintType::None),
+      makeLeg("MCFIE", 26.058, 12000, AltConstraintType::AtOrAbove),
+      makeLeg("TEBOW", 26.171, 0, AltConstraintType::None),
+      makeLeg("FAROT", 26.337, 3000, AltConstraintType::At),
+  };
+  const MapData map = makeMap(plan);
+  const FlightData data = makeData("FABES", 21600.0f);
+
+  const VnvProfile vnv = computeVnvProfile(map, data);
+  ASSERT_TRUE(vnv.active);
+  EXPECT_EQ(vnv.targetWpt, "MCFIE");
+  EXPECT_EQ(vnv.targetAltFt, 12000);
+}
+
 // Same plan flown correctly: high and on the geometric path, the 3 deg descent
 // to MOEMO clears the BUNGE floor, so the deeper gate stays the target.
 TEST(VnavGuidanceTest, FloorNotTargetedWhenOnIdealPath) {

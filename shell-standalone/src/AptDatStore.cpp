@@ -1,8 +1,11 @@
 #include "AptDatStore.h"
 
 #include "XPlaneInstall.h"
+#include "avionics/AptDatGeometryCache.h"
 #include "avionics/AptDatParser.h"
 
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 
 namespace avionics {
@@ -25,6 +28,26 @@ std::string join(const std::string& dir, const std::string& leaf) {
 bool fileExists(const std::string& path) {
   std::ifstream f(path);
   return f.good();
+}
+
+std::string cacheDir() {
+#if defined(_WIN32)
+  const char* base = std::getenv("LOCALAPPDATA");
+  return base ? std::string(base) + "\\xplane-g1000-nxi" : std::string();
+#elif defined(__APPLE__)
+  const char* home = std::getenv("HOME");
+  return home ? std::string(home) + "/Library/Application Support/xplane-g1000-nxi"
+              : std::string();
+#else
+  const char* home = std::getenv("HOME");
+  return home ? std::string(home) + "/.local/share/xplane-g1000-nxi"
+              : std::string();
+#endif
+}
+
+std::string aptGeometryCachePath() {
+  const std::string dir = cacheDir();
+  return dir.empty() ? std::string() : join(dir, "apt_geometry.cache");
 }
 
 }  // namespace
@@ -61,7 +84,23 @@ void AptDatStore::load() {
 
   std::ifstream in(path);
   if (in.good()) {
-    AptDatParseResult parsed = parseAptDat(in);
+    AptDatParseResult parsed;
+    const std::string cachePath = aptGeometryCachePath();
+    if (!cachePath.empty()) {
+      std::error_code ec;
+      std::filesystem::create_directories(cacheDir(), ec);
+    }
+    const bool cached =
+        !cachePath.empty() &&
+        loadAptDatGeometryCache(cachePath, path, parsed);
+    if (!cached) {
+      in.close();
+      in.open(path);
+      if (in.good()) parsed = parseAptDat(in);
+      if (!cachePath.empty()) {
+        saveAptDatGeometryCache(cachePath, path, parsed);
+      }
+    }
     cells_ = std::move(parsed.runwayCells);
     pavementCells_ = std::move(parsed.pavementCells);
     taxiwayLabelCells_ = std::move(parsed.taxiwayLabelCells);

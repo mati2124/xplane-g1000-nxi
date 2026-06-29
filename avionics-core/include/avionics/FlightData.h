@@ -64,6 +64,12 @@ struct VnvProfile {
   bool todValid = false;
   double todLat = 0.0;
   double todLon = 0.0;
+  // Geographic position of the bottom of descent (where the path levels at the
+  // target constraint, i.e. the target waypoint), for the MFD map "BOD" marker.
+  // Valid while the target leg is still ahead of the aircraft.
+  bool bodValid = false;
+  double bodLat = 0.0;
+  double bodLon = 0.0;
 };
 
 // Decoded, platform-agnostic flight state consumed by the gauges.

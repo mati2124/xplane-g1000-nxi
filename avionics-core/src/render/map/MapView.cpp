@@ -293,7 +293,14 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // Taxiway/apron pavement at very close range, under the runway quads.
   if (config.style.showTaxiways && config.style.showFeatures &&
       !map.taxiways.empty()) {
-    mapview::drawTaxiways(r, map, proj, rangeNm);
+    const bool landDataLoaded =
+        !landLines.empty() ||
+        (map.terrain != nullptr && map.terrain->hasElevationTiles());
+    const Color taxiwayHoleFill =
+        (config.useInsetMapData || !landDataLoaded || useDsfLandMask)
+            ? mapview::kMapLandFill
+            : mapview::kMapOceanFill;
+    mapview::drawTaxiways(r, map, proj, rangeNm, taxiwayHoleFill);
   }
 
   // Runway pavement quads at close range, under the airport symbols/labels.
@@ -341,9 +348,10 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
     mapview::drawFlightPlanLabels(r, map, proj, config, flight, symSize,
                                   labelSize);
   }
-  // VNAV top-of-descent marker, on the active flight-plan course.
+  // VNAV top/bottom-of-descent markers, on the active flight-plan course.
   if (config.style.showFlightPlan && !procPreviewActive) {
     mapview::drawTopOfDescent(r, proj, config, flight, symSize, labelSize);
+    mapview::drawBottomOfDescent(r, proj, config, flight, symSize, labelSize);
   }
   if (config.style.showFlightPlan && map.positionValid && !procPreviewActive) {
     mapview::drawDirectToCourseLabel(r, map, flight, proj, config, symSize,

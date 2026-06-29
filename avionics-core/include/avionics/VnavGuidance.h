@@ -20,6 +20,12 @@ inline constexpr int kVnavFlashBeforeInterceptSec = 60;
 // The PFD VNAV deviation indicator appears one minute before the top of descent
 // (G1000 NXi Pilot's Guide, Vertical Navigation).
 inline constexpr int kVnavVdiShowBeforeTodSec = 60;
+// The MFD map "TOD" marker is hidden once the aircraft is within this many feet
+// of the descent path. The TOD geometry is recomputed from the current altitude
+// each frame, so without a buffer the marker clings to the aircraft as it
+// descends just below the path; this dead band makes it disappear at/near the
+// real top of descent instead of following the ownship down.
+inline constexpr float kVnavTodHideDevFt = 150.0f;
 
 // Computes the active VNAV profile from the flight plan's altitude constraints.
 VnvProfile computeVnvProfile(const MapData& map, const FlightData& data);

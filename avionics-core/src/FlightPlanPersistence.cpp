@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <unordered_set>
 #include <vector>
 
 #include "avionics/FplRouteEdit.h"
@@ -219,6 +220,54 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
   return out;
 }
 
+int destinationAirportLegBeforeApproach(const std::vector<MapLeg>& legs,
+                                          int minStart) {
+  const int approachStart = fplApproachInferenceFloor(legs, minStart);
+  if (approachStart <= 0 ||
+      approachStart >= static_cast<int>(legs.size())) {
+    return -1;
+  }
+  const int destIdx = approachStart - 1;
+  if (destIdx < minStart) return -1;
+  if (!isAirportIdent(legs[static_cast<std::size_t>(destIdx)].id)) return -1;
+  return destIdx;
+}
+
+std::vector<MapLeg> mapRouteDisplayLegs(const std::vector<MapLeg>& legs,
+                                          int minStart) {
+  const int destIdx = destinationAirportLegBeforeApproach(legs, minStart);
+  if (destIdx < 0) return legs;
+  std::vector<MapLeg> out;
+  out.reserve(legs.size() - 1);
+  out.insert(out.end(), legs.begin(),
+             legs.begin() + static_cast<std::size_t>(destIdx));
+  out.insert(out.end(), legs.begin() + static_cast<std::size_t>(destIdx + 1),
+             legs.end());
+  return out;
+}
+
+int mapRouteDisplayLegIndex(const std::vector<MapLeg>& legs, int planLegIndex,
+                              int minStart) {
+  if (planLegIndex < 0 ||
+      planLegIndex >= static_cast<int>(legs.size())) {
+    return -1;
+  }
+  const int destIdx = destinationAirportLegBeforeApproach(legs, minStart);
+  if (destIdx < 0) return planLegIndex;
+  if (planLegIndex == destIdx) return -1;
+  if (planLegIndex > destIdx) return planLegIndex - 1;
+  return planLegIndex;
+}
+
+int mapRoutePlanLegIndex(const std::vector<MapLeg>& legs, int routeLegIndex,
+                           int minStart) {
+  if (routeLegIndex < 0) return -1;
+  const int destIdx = destinationAirportLegBeforeApproach(legs, minStart);
+  if (destIdx < 0) return routeLegIndex;
+  if (routeLegIndex >= destIdx) return routeLegIndex + 1;
+  return routeLegIndex;
+}
+
 int fplApproachInferenceFloor(const std::vector<MapLeg>& legs, int arrivalEnd) {
   int floor = std::max(0, arrivalEnd);
   // The destination airport separates the STAR (before it) from the approach
@@ -244,29 +293,99 @@ int fplApproachInferenceFloor(const std::vector<MapLeg>& legs, int arrivalEnd) {
   return floor;
 }
 
+void mergeProcedureLegFields(MapLeg& dst, const MapLeg& src) {
+  dst.procedureRole = src.procedureRole;
+  dst.hold = src.hold;
+  dst.pathTerminator = src.pathTerminator;
+  if (src.legCourseDeg > 0.0f) {
+    dst.legCourseDeg = src.legCourseDeg;
+  }
+  if (src.missedInitial.active) {
+    dst.missedInitial = src.missedInitial;
+  }
+  if (src.altitudeConstraintFt > 0) {
+    dst.altitudeConstraintFt = src.altitudeConstraintFt;
+    dst.altitudeConstraint = src.altitudeConstraint;
+  }
+  if (src.glidePathAngleDeg > 0.0f) {
+    dst.glidePathAngleDeg = src.glidePathAngleDeg;
+  }
+}
+
 void mergeProcedureLegMetadata(std::vector<MapLeg>& plan, int start,
                                const std::vector<MapLeg>& procedureLegs) {
   for (std::size_t i = 0; i < procedureLegs.size(); ++i) {
     const std::size_t idx = static_cast<std::size_t>(start) + i;
     if (idx >= plan.size()) break;
     if (plan[idx].id != procedureLegs[i].id) continue;
-    plan[idx].procedureRole = procedureLegs[i].procedureRole;
-    plan[idx].hold = procedureLegs[i].hold;
-    plan[idx].pathTerminator = procedureLegs[i].pathTerminator;
-    if (procedureLegs[i].legCourseDeg > 0.0f) {
-      plan[idx].legCourseDeg = procedureLegs[i].legCourseDeg;
-    }
-    if (procedureLegs[i].missedInitial.active) {
-      plan[idx].missedInitial = procedureLegs[i].missedInitial;
-    }
-    if (procedureLegs[i].altitudeConstraintFt > 0) {
-      plan[idx].altitudeConstraintFt = procedureLegs[i].altitudeConstraintFt;
-      plan[idx].altitudeConstraint = procedureLegs[i].altitudeConstraint;
-    }
-    if (procedureLegs[i].glidePathAngleDeg > 0.0f) {
-      plan[idx].glidePathAngleDeg = procedureLegs[i].glidePathAngleDeg;
+    mergeProcedureLegFields(plan[idx], procedureLegs[i]);
+  }
+}
+
+TerminalProcedureMetadataRestore restoreTerminalProcedureMetadata(
+    const NavFeatureSource* nav, const PersistedLoadedApproach& meta,
+    std::vector<MapLeg>& plan, int blockStart, int blockCount) {
+  TerminalProcedureMetadataRestore result;
+  if (!meta.active || meta.name.empty() || meta.airportIcao.empty()) {
+    result.stopRetrying = true;
+    return result;
+  }
+  if (nav == nullptr || !nav->ready() || plan.empty()) {
+    return result;
+  }
+  if (blockStart < 0 || blockCount <= 0 ||
+      blockStart + blockCount > static_cast<int>(plan.size())) {
+    result.stopRetrying = true;
+    return result;
+  }
+
+  const std::vector<MapLeg> expanded =
+      nav->expandProcedure(meta.airportIcao, meta.type, meta.name,
+                           meta.transition);
+  if (expanded.empty()) return result;
+
+  // Fix idents the procedure claims. The importer's via_airway heuristic can
+  // exclude a transition-entry/exit fix that CIFP includes (it carries the
+  // procedure's altitude restriction), so grow the block outward across any
+  // contiguous plan leg whose ident the procedure also names.
+  std::unordered_set<std::string> procedureIds;
+  for (const MapLeg& src : expanded) procedureIds.insert(src.id);
+
+  const int planSize = static_cast<int>(plan.size());
+  int start = blockStart;
+  int end = blockStart + blockCount;  // one past the last block leg
+  while (start - 1 >= 0) {
+    const MapLeg& prev = plan[static_cast<std::size_t>(start - 1)];
+    if (isAirportIdent(prev.id)) break;
+    if (procedureIds.find(prev.id) == procedureIds.end()) break;
+    --start;
+  }
+  while (end < planSize) {
+    const MapLeg& next = plan[static_cast<std::size_t>(end)];
+    if (isAirportIdent(next.id)) break;
+    if (procedureIds.find(next.id) == procedureIds.end()) break;
+    ++end;
+  }
+
+  int mergedCount = 0;
+  for (const MapLeg& src : expanded) {
+    for (int i = start; i < end; ++i) {
+      if (plan[static_cast<std::size_t>(i)].id != src.id) continue;
+      mergeProcedureLegFields(plan[static_cast<std::size_t>(i)], src);
+      ++mergedCount;
+      break;
     }
   }
+  if (mergedCount == 0) {
+    result.stopRetrying = true;
+    return result;
+  }
+  result.merged = true;
+  if (start != blockStart || end != blockStart + blockCount) {
+    result.correctedStart = start;
+    result.correctedCount = end - start;
+  }
+  return result;
 }
 
 void removeLoadedApproachLegs(std::vector<MapLeg>& legs, int approachStart,

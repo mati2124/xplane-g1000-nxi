@@ -12,7 +12,8 @@ constexpr char kMagic[4] = {'A', 'P', 'T', 'G'};
 // v2 adds runway-end designators and the taxiway-label cells.
 // v3 adds airport facility name/city and per-airport runway info.
 // v4 accepts XP12 asphalt/concrete appearance surface codes (20-57) for taxiways.
-constexpr std::uint32_t kVersion = 4;
+// v5 stores multi-contour pavement (outer boundary plus grass-island holes).
+constexpr std::uint32_t kVersion = 5;
 
 bool aptDatIdentity(const std::string& aptDatPath, std::int64_t& sizeOut,
                     std::int64_t& mtimeOut) {
@@ -107,10 +108,14 @@ bool writePavementCells(
     out.write(reinterpret_cast<const char*>(&key), sizeof(key));
     out.write(reinterpret_cast<const char*>(&count), sizeof(count));
     for (const MapPavement& pav : pavements) {
-      const auto vertCount = static_cast<std::uint32_t>(pav.outline.size());
-      out.write(reinterpret_cast<const char*>(&vertCount), sizeof(vertCount));
-      for (const GeoPoint& g : pav.outline) {
-        if (!writeGeoPoint(out, g)) return false;
+      const auto contourCount = static_cast<std::uint32_t>(pav.contours.size());
+      out.write(reinterpret_cast<const char*>(&contourCount), sizeof(contourCount));
+      for (const std::vector<GeoPoint>& contour : pav.contours) {
+        const auto vertCount = static_cast<std::uint32_t>(contour.size());
+        out.write(reinterpret_cast<const char*>(&vertCount), sizeof(vertCount));
+        for (const GeoPoint& g : contour) {
+          if (!writeGeoPoint(out, g)) return false;
+        }
       }
     }
   }
@@ -133,14 +138,20 @@ bool readPavementCells(std::istream& in,
     pavements.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
       MapPavement pav;
-      std::uint32_t vertCount = 0;
-      in.read(reinterpret_cast<char*>(&vertCount), sizeof(vertCount));
+      std::uint32_t contourCount = 0;
+      in.read(reinterpret_cast<char*>(&contourCount), sizeof(contourCount));
       if (!in.good()) return false;
-      pav.outline.reserve(vertCount);
-      for (std::uint32_t v = 0; v < vertCount; ++v) {
-        GeoPoint g;
-        if (!readGeoPoint(in, g)) return false;
-        pav.outline.push_back(g);
+      pav.contours.resize(contourCount);
+      for (std::uint32_t c = 0; c < contourCount; ++c) {
+        std::uint32_t vertCount = 0;
+        in.read(reinterpret_cast<char*>(&vertCount), sizeof(vertCount));
+        if (!in.good()) return false;
+        pav.contours[c].reserve(vertCount);
+        for (std::uint32_t v = 0; v < vertCount; ++v) {
+          GeoPoint g;
+          if (!readGeoPoint(in, g)) return false;
+          pav.contours[c].push_back(g);
+        }
       }
       pavements.push_back(std::move(pav));
     }

@@ -172,7 +172,9 @@ inline Rect drawGroupBox(Renderer& r, const Rect& slot, const char* title,
 // rule beneath the title. Returns the inner content rect. Callers that want the
 // menu in DejaVu SemiBold push a FontScope around this and their content.
 inline Rect drawDialog(Renderer& r, const Rect& box, const char* title,
-                       float displayH, Color bg = colors::kBlack) {
+                       float displayH, Color bg = colors::kBlack,
+                       Color titleColor = colors::kCyan,
+                       float titlePadPx = 0.0f) {
   const float radius = mfdFontPx(10.0f, displayH);
   const float borderW = mfdFontPx(3.0f, displayH);
   r.fillRoundedRect(box.x, box.y, box.w, box.h, radius, bg);
@@ -181,11 +183,14 @@ inline Rect drawDialog(Renderer& r, const Rect& box, const char* title,
                       colors::kMenuBorderGray);
 
   const float titleSize = mfdFontPx(16.0f, displayH);
-  float top = box.y + mfdFontPx(6.0f, displayH);
+  // Extra grey breathing room above the title and below it before the separator
+  // (the Page Menu pads its title generously; other dialogs pass 0).
+  const float titlePad = mfdFontPx(titlePadPx, displayH);
+  float top = box.y + mfdFontPx(6.0f, displayH) + titlePad;
   if (title != nullptr && title[0] != '\0') {
     r.fillText(box.x + box.w * 0.5f, top + titleSize * 0.7f, title, titleSize,
-               TextAlign::Center, colors::kCyan);
-    const float sepY = top + titleSize * 1.35f;
+               TextAlign::Center, titleColor);
+    const float sepY = top + titleSize * 1.35f + titlePad;
     const float sepInset = borderW + box.w * 0.01f;
     r.strokeLine(box.x + sepInset, sepY, box.x + box.w - sepInset, sepY, 1.5f,
                  colors::kWhitesmoke);

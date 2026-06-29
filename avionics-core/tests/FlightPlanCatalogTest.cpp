@@ -6,6 +6,7 @@
 #include "avionics/FlightPlanCatalog.h"
 #include "avionics/MapData.h"
 #include "avionics/MfdController.h"
+#include "avionics/SimBriefOfpSupport.h"
 #include "avionics/render/BezelKeys.h"
 
 namespace avionics {
@@ -25,6 +26,14 @@ std::vector<MapLeg> SampleRoute() {
       MakeLeg("BOSTN", 26.700, -81.500),
       MakeLeg("KCMI", 40.039, -88.278),
   };
+}
+
+SimBriefOfpImport SampleSimBriefImport() {
+  SimBriefOfpImport imp;
+  imp.legs = SampleRoute();
+  imp.originIcao = "KFMY";
+  imp.destinationIcao = "KCMI";
+  return imp;
 }
 
 // ---- FlightPlanCatalog model --------------------------------------------
@@ -59,6 +68,43 @@ TEST(FlightPlanCatalogModelTest, RemovePlanShrinksTheCatalog) {
   EXPECT_TRUE(cat.removePlan(0));
   EXPECT_EQ(cat.size(), 1);
   EXPECT_FALSE(cat.removePlan(5));  // out of range
+}
+
+TEST(FlightPlanCatalogModelTest, SimBriefReimportUpdatesExistingSlot) {
+  FlightPlanCatalog cat;
+  const SimBriefOfpImport imp = SampleSimBriefImport();
+
+  EXPECT_EQ(cat.addPlanFromSimBriefImport(imp), 0);
+  ASSERT_EQ(cat.size(), 1);
+
+  SimBriefOfpImport again = imp;
+  again.sidIdent = "DCT1";
+  again.sidTrans = "TRANS";
+  EXPECT_EQ(cat.addPlanFromSimBriefImport(again), 0);
+  EXPECT_EQ(cat.size(), 1);
+  EXPECT_EQ(cat.plan(0).departureMeta.name, "DCT1");
+}
+
+TEST(FlightPlanCatalogModelTest, SimBriefImportWithDifferentRouteAddsSlot) {
+  FlightPlanCatalog cat;
+  EXPECT_EQ(cat.addPlanFromSimBriefImport(SampleSimBriefImport()), 0);
+
+  SimBriefOfpImport other = SampleSimBriefImport();
+  other.legs.back().id = "KORD";
+  other.destinationIcao = "KORD";
+  EXPECT_EQ(cat.addPlanFromSimBriefImport(other), 1);
+  EXPECT_EQ(cat.size(), 2);
+}
+
+TEST(FlightPlanCatalogModelTest, DedupeByRouteCollapsesDuplicates) {
+  FlightPlanCatalog cat;
+  cat.addPlanFromLegs(SampleRoute());
+  cat.addPlanFromLegs(SampleRoute());
+  cat.addPlanFromLegs(SampleRoute());
+  ASSERT_EQ(cat.size(), 3);
+
+  EXPECT_EQ(cat.dedupeByRoute(), 2);
+  EXPECT_EQ(cat.size(), 1);
 }
 
 TEST(FlightPlanCatalogTest, ImportingAnEmptyRouteStoresNothing) {
@@ -124,6 +170,30 @@ TEST(FlightPlanCatalogTest, CopyAddsADuplicateSlot) {
   const int copyIdx = ui.catalogCopySelected();
   EXPECT_EQ(copyIdx, 1);
   EXPECT_EQ(ui.flightPlanCatalog().size(), 2);
+}
+
+TEST(FlightPlanCatalogTest, SimBriefReimportDoesNotGrowCatalog) {
+  MfdController ui;
+  const SimBriefOfpImport imp = SampleSimBriefImport();
+
+  EXPECT_EQ(ui.storeFlightPlanFromSimBriefImport(imp), 0);
+  EXPECT_TRUE(ui.consumeCatalogDirty());
+  EXPECT_EQ(ui.storeFlightPlanFromSimBriefImport(imp), 0);
+  EXPECT_EQ(ui.flightPlanCatalog().size(), 1);
+  EXPECT_TRUE(ui.consumeCatalogDirty());
+}
+
+TEST(FlightPlanCatalogTest, RestoreDedupesLegacyDuplicateImports) {
+  std::vector<PersistedFlightPlan> snapshot;
+  snapshot.push_back(FlightPlanCatalog::makeEntryFromLegs(SampleRoute()));
+  snapshot.push_back(FlightPlanCatalog::makeEntryFromLegs(SampleRoute()));
+  snapshot.push_back(FlightPlanCatalog::makeEntryFromLegs(SampleRoute()));
+  ASSERT_EQ(snapshot.size(), 3u);
+
+  MfdController dst;
+  dst.restoreFlightPlanCatalog(snapshot);
+  EXPECT_EQ(dst.flightPlanCatalog().size(), 1);
+  EXPECT_TRUE(dst.consumeCatalogDirty());
 }
 
 TEST(FlightPlanCatalogTest, DeleteRemovesTheSelectedSlot) {

@@ -442,7 +442,7 @@ int mapRouteSliceStart(const MapData& map) {
   return 0;
 }
 
-std::vector<MapLeg> legsForMapRoute(const MapData& map) {
+std::vector<MapLeg> mapRouteBaseLegs(const MapData& map) {
   if (map.flightPlan.size() < 2) {
     return map.flightPlan;
   }
@@ -474,6 +474,10 @@ std::vector<MapLeg> legsForMapRoute(const MapData& map) {
   return std::vector<MapLeg>(
       map.flightPlan.begin() + procStart,
       map.flightPlan.begin() + procStart + procCount);
+}
+
+std::vector<MapLeg> legsForMapRoute(const MapData& map) {
+  return mapRouteDisplayLegs(mapRouteBaseLegs(map));
 }
 
 // Direct-To whose target is the first fix shown on the map route (e.g.
@@ -519,7 +523,8 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
                     float symSize) {
   if (config.rangeNm > kContinentalChartRangeNm) return;
 
-  const std::vector<MapLeg> routeLegs = legsForMapRoute(map);
+  const std::vector<MapLeg> baseLegs = mapRouteBaseLegs(map);
+  const std::vector<MapLeg> routeLegs = mapRouteDisplayLegs(baseLegs);
   if (routeLegs.size() < 2) return;
 
   const int activeTo = activeFlightPlanToIndex(map, flight);
@@ -527,7 +532,11 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
   const float activeWidth = flightPlanRouteWidth(symSize);
   const float previewWidth = missedApproachRouteWidth(symSize);
   const int maptIdx = findMaptIndexInRoute(routeLegs);
-  const bool missedActive = missedApproachSegmentActive(maptIdx, activeTo);
+  const int activeToInRoute =
+      (activeTo >= 0)
+          ? mapRouteDisplayLegIndex(baseLegs, activeTo - procOffset)
+          : -1;
+  const bool missedActive = missedApproachSegmentActive(maptIdx, activeToInRoute);
 
   // Direct-To into the head of the route: prepend the course origin so the
   // target fix is an interior vertex and earns a fly-by turn curve into its
@@ -563,8 +572,10 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
     for (std::size_t i = 0; i < routeLegs.size(); ++i) {
       const MapLeg& leg = routeLegs[i];
       if (!leg.hold.active) continue;
-      const bool holdActive = mapHoldRacetrackActive(
-          map, flight, static_cast<int>(i) + procOffset, activeTo);
+      const int planLegIndex =
+          mapRoutePlanLegIndex(baseLegs, static_cast<int>(i)) + procOffset;
+      const bool holdActive =
+          mapHoldRacetrackActive(map, flight, planLegIndex, activeTo);
       const Color& holdColor = holdActive ? colors::kMagenta : colors::kWhite;
       drawHoldRacetrack(r, leg, proj, holdWidth, holdColor,
                         flight.groundSpeedKts);
@@ -592,23 +603,21 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
   // sliced to the loaded procedure during approach Direct-To). While flying the
   // hold itself the inbound leg reverts to white and the racetrack carries the
   // magenta, so skip the active-leg highlight when in the hold.
-  if (!map.directToActive && !flight.fmaLegIsHold && activeTo >= 0) {
-    const int activeToInRoute = activeTo - procOffset;
-    if (activeToInRoute >= 1 &&
-        activeToInRoute < static_cast<int>(routeLegs.size())) {
-      const std::size_t leg = static_cast<std::size_t>(activeToInRoute) - 1;
-      drawRouteLeg(r, route, leg, routeLegs, proj, activeWidth,
-                   colors::kMagenta);
-    }
+  if (!map.directToActive && !flight.fmaLegIsHold && activeToInRoute >= 1 &&
+      activeToInRoute < static_cast<int>(routeLegs.size())) {
+    const std::size_t leg = static_cast<std::size_t>(activeToInRoute) - 1;
+    drawRouteLeg(r, route, leg, routeLegs, proj, activeWidth,
+                 colors::kMagenta);
   }
 
   const float holdWidth = missedActive ? activeWidth : previewWidth;
   for (std::size_t i = 0; i < routeLegs.size(); ++i) {
     const MapLeg& leg = routeLegs[i];
     if (!leg.hold.active) continue;
+    const int planLegIndex =
+        mapRoutePlanLegIndex(baseLegs, static_cast<int>(i)) + procOffset;
     const bool holdActive =
-        mapHoldRacetrackActive(map, flight,
-                               static_cast<int>(i) + procOffset, activeTo);
+        mapHoldRacetrackActive(map, flight, planLegIndex, activeTo);
     const Color& holdColor = holdActive ? colors::kMagenta : colors::kWhite;
     drawHoldRacetrack(r, leg, proj, holdWidth, holdColor,
                       flight.groundSpeedKts);
@@ -621,7 +630,8 @@ void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
                           float symSize, float labelSize) {
   if (config.rangeNm > kContinentalChartRangeNm) return;
 
-  const std::vector<MapLeg> routeLegs = legsForMapRoute(map);
+  const std::vector<MapLeg> baseLegs = mapRouteBaseLegs(map);
+  const std::vector<MapLeg> routeLegs = mapRouteDisplayLegs(baseLegs);
   if (routeLegs.empty()) return;
 
   const int activeTo = activeFlightPlanToIndex(map, flight);
@@ -635,7 +645,8 @@ void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
     // real fixes, so the real unit draws no map ident for them.
     if (isNonFixDepartureLeg(routeLegs[i])) continue;
     const Point pt = projectLeg(proj, routeLegs[i]);
-    const int planIndex = static_cast<int>(i) + procOffset;
+    const int planIndex =
+        mapRoutePlanLegIndex(baseLegs, static_cast<int>(i)) + procOffset;
     const Color c =
         (!map.directToActive && planIndex == activeTo) ? colors::kMagenta
                                                        : colors::kWhite;
@@ -661,10 +672,33 @@ void drawTopOfDescent(Renderer& r, const Proj& proj,
   r.fillCircle(x, y, outerR, colors::kWhite);
   r.fillCircle(x, y, innerR, colors::kBlack);
 
-  // Boxed "TOD" ident above the ring, matching the flight-plan label style.
+  // Plain "TOD" tag above the ring (not a navigable fix — no ident box).
   const float textSize = labelSize * kMapIdentLabelScale;
-  drawRouteIdentBox(r, x, y - outerR - textSize * 0.9f - kMapLabelLiftPx, "TOD",
-                    textSize, colors::kWhite);
+  r.fillText(x, y - outerR - textSize * 0.9f - kMapLabelLiftPx, "TOD", textSize,
+             TextAlign::Center, colors::kWhite, kMapLabelFace);
+}
+
+void drawBottomOfDescent(Renderer& r, const Proj& proj,
+                         const MapViewConfig& config, const FlightData& flight,
+                         float symSize, float labelSize) {
+  if (config.rangeNm > kContinentalChartRangeNm) return;
+  const VnvProfile& vnv = flight.vnv;
+  if (!vnv.active || !vnv.bodValid) return;
+
+  float x = 0.0f;
+  float y = 0.0f;
+  proj.toPx(vnv.bodLat, vnv.bodLon, x, y);
+
+  // Same small open ring as the TOD marker (white disc with a black core).
+  const float outerR = std::max(4.0f, symSize * 0.42f);
+  const float innerR = std::max(2.0f, outerR - std::max(2.0f, symSize * 0.18f));
+  r.fillCircle(x, y, outerR, colors::kWhite);
+  r.fillCircle(x, y, innerR, colors::kBlack);
+
+  // Plain "BOD" tag above the ring (not a navigable fix — no ident box).
+  const float textSize = labelSize * kMapIdentLabelScale;
+  r.fillText(x, y - outerR - textSize * 0.9f - kMapLabelLiftPx, "BOD", textSize,
+             TextAlign::Center, colors::kWhite, kMapLabelFace);
 }
 
 void drawProcedurePreview(Renderer& r, const Proj& proj,

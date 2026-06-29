@@ -41,10 +41,14 @@ add_executable(avionics-core-tests
   ProcedureMenuCourseReversalTest.cpp
   DeleteFlightPlanTest.cpp
   RemoveWaypointTest.cpp
+  ProcedureRemoveTest.cpp
   FlightPlanPeerSyncTest.cpp
   FlightPlanCatalogTest.cpp
   SimBriefParseTest.cpp
   FplLayoutDestinationTest.cpp
+  FplSectionCommitCursorTest.cpp
+  MapRouteLegsTest.cpp
+  AptDatPavementTest.cpp
   DirectToRestoreTest.cpp
   stb_image_impl.cpp
 )

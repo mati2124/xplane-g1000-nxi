@@ -417,7 +417,8 @@ class SoftkeyController {
       const std::vector<MapLeg>& legs, bool destinationFilled,
       const FlightPlanApproachState& approach,
       const FlightPlanTerminalProcedureState& departure = {},
-      const FlightPlanTerminalProcedureState& arrival = {});
+      const FlightPlanTerminalProcedureState& arrival = {},
+      bool peerLocalDraft = false);
   // Mirror the peer GDU's FPL list scroll/selection (PFD window vs MFD page).
   void adoptFlightPlanCursorFromPeer(int cursorRow, bool followsActive);
 
@@ -812,6 +813,7 @@ class SoftkeyController {
   FmsWaypointEntry* activeWaypointEntry();
   void syncFlightPlanLegs(const MapData& map, bool navDirectTo = false);
   void tryRestorePersistedApproach();
+  void tryRestorePersistedTerminalProcedures();
   void reinferApproachFromProcedureLegs();
   // Procedures window (PROC bezel key): build the top-level menu on open, route
   // the FMS knob / ENT / CLR while it is open, move the menu cursor (skipping
@@ -963,6 +965,8 @@ class SoftkeyController {
   // is ready. Set on restore, cleared once the re-expansion has been applied (or
   // is known to be unmatchable).
   bool fplApproachRestorePending_ = false;
+  bool fplDepartureRestorePending_ = false;
+  bool fplArrivalRestorePending_ = false;
   MapProcedure procSelectedProcedure() const;
   std::string formatApproachLabel(const MapProcedure& proc) const;
   std::string procDefaultAirportIcao() const;

@@ -1547,6 +1547,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
                   const char* fmsPlan, bool showBezel,
                   const char* eisSelector, const char* checklistSelector) {
   glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  glfwWindowHint(GLFW_STENCIL_BITS, 8);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -3654,6 +3655,7 @@ bool HasFlag(int argc, char** argv, const char* flag) {
 GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
                                  bool decorated, GLFWwindow* share, int width,
                                  int height, GLFWmonitor* monitor) {
+  glfwWindowHint(GLFW_STENCIL_BITS, 8);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -3867,6 +3869,7 @@ void IdentifyMonitors(double seconds) {
   if (seconds <= 0.0) seconds = 4.0;
   GLFWmonitor* primary = glfwGetPrimaryMonitor();
 
+  glfwWindowHint(GLFW_STENCIL_BITS, 8);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -4770,13 +4773,16 @@ int main(int argc, char** argv) {
       mfdUi.setChartsState(chartsState);
     }
 
-    // A loaded PROC approach with an ILS frequency tunes NAV1 standby (same as
-    // the MFD's procedure load).
+    // Loaded ILS/LOC/VOR/NDB approach: NXi places the primary navaid frequency
+    // in NAV1 standby (pilot swaps active); CRS is not set — LOC slaving handles
+    // course when VLOC is selected.
     if (pfdEngine != nullptr) {
       avionics::MapProcedure pfdProc;
-      if (pfdEngine->softkeyController().consumeProcLoadRequest(pfdProc) &&
-          pfdProc.frequencyMhz > 0.0f) {
-        xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, pfdProc.frequencyMhz);
+      if (pfdEngine->softkeyController().consumeProcLoadRequest(pfdProc)) {
+        const float mhz = avionics::procedureApproachNavStandbyMhz(pfdProc);
+        if (mhz > 0.0f) {
+          xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, mhz);
+        }
       }
     }
 
@@ -4784,9 +4790,11 @@ int main(int argc, char** argv) {
     // SimBrief flow above — drained after bridge events below.
     if (mfdEngine != nullptr) {
       avionics::MapProcedure proc;
-      if (mfdEngine->mfdController().consumeProcLoadRequest(proc) &&
-          proc.frequencyMhz > 0.0f) {
-        xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, proc.frequencyMhz);
+      if (mfdEngine->mfdController().consumeProcLoadRequest(proc)) {
+        const float mhz = avionics::procedureApproachNavStandbyMhz(proc);
+        if (mhz > 0.0f) {
+          xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, mhz);
+        }
       }
 
       // Map panning: keep the feed's nearby-data queries centered on the panned
@@ -4856,6 +4864,20 @@ int main(int argc, char** argv) {
             xplane, app.demoSource, editedPlan,
             mfdEngine->mfdController().fplDestinationFilled());
         app.flightPlanPersistDirty = true;
+      }
+      // A catalog plan was just activated on the MFD: mirror its SID/STAR/
+      // approach grouping onto the PFD. The route legs already propagate via the
+      // route override, but the procedure block ranges + headers are per-
+      // controller state, so without this the PFD would render the SID/STAR
+      // fixes as plain Enroute legs and not match the MFD.
+      avionics::PersistedFlightPlan activatedPlan;
+      if (mfdEngine->mfdController().consumeActivatedFlightPlan(activatedPlan) &&
+          pfdEngine != nullptr) {
+        pfdEngine->softkeyController().restorePersistedFlightPlan(activatedPlan);
+        if (activatedPlan.approachMeta.active) {
+          pfdEngine->softkeyController().setPersistedLoadedApproach(
+              activatedPlan.approachMeta);
+        }
       }
     }
 
@@ -4942,8 +4964,13 @@ int main(int argc, char** argv) {
           else xplane.setHeadingBug(deg);
         }
         if (ui.consumeCourse(deg)) {
-          if (demoRadio != nullptr) demoRadio->setSelectedCourse(deg);
-          else xplane.setSelectedCourse(deg);
+          if (demoRadio != nullptr) {
+            demoRadio->setSelectedCourse(deg);
+          } else {
+            const avionics::CdiSource src =
+                ui.cdiSourceFor(xplane.snapshot().cdiSource);
+            xplane.setSelectedCourse(deg, src);
+          }
         }
         float inHg = 0.0f;
         if (ui.consumeBaro(inHg)) {

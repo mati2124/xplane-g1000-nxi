@@ -1,5 +1,6 @@
 #include <algorithm>
 
+#include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
 #include "avionics/NavFeatureSource.h"
 #include "avionics/SoftkeyController.h"
@@ -115,6 +116,27 @@ void SoftkeyController::loadAirwayCommit() {
   const std::size_t insertPos = static_cast<std::size_t>(at + 1);
   fplLegs_.insert(fplLegs_.begin() + static_cast<std::ptrdiff_t>(insertPos),
                   segment.begin(), segment.end());
+
+  // When the airway exit fix coincides with the next existing waypoint in the
+  // plan (commonly the destination), merge them: the airway-tagged exit fix is
+  // canonical and the duplicate that followed is removed. Otherwise the exit
+  // fix is suppressed as a duplicate ident and never shows under its
+  // "Airway - <name>.<exit>" header.
+  const std::size_t exitPos = insertPos + segment.size() - 1;
+  const std::size_t afterPos = exitPos + 1;
+  if (afterPos < fplLegs_.size() &&
+      fplLegIdentsEqual(fplLegs_[exitPos].id, fplLegs_[afterPos].id)) {
+    MapLeg& exitLeg = fplLegs_[exitPos];
+    const MapLeg& dup = fplLegs_[afterPos];
+    // Keep any constraint the following waypoint carried (e.g. destination).
+    if (exitLeg.altitudeConstraint == AltConstraintType::None &&
+        dup.altitudeConstraint != AltConstraintType::None) {
+      exitLeg.altitudeConstraintFt = dup.altitudeConstraintFt;
+      exitLeg.altitudeConstraint = dup.altitudeConstraint;
+      exitLeg.altitudeDesignated = dup.altitudeDesignated;
+    }
+    fplLegs_.erase(fplLegs_.begin() + static_cast<std::ptrdiff_t>(afterPos));
+  }
 
   closeLoadAirwayWindow();
   FplRouteEdit edit = flightPlanRouteEditState();

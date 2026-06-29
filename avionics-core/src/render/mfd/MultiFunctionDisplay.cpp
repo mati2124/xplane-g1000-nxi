@@ -404,20 +404,31 @@ void drawPageMenu(Renderer& r, const MfdController& ui, float x, float y,
   const float groupSlotH = titleSize * 0.55f + pad + n * rowH + pad * 0.8f;
   const float footGap = mfd::mfdFontPx(10.0f, displayH);
   const float footH = footSize * 3.4f + footGap;
+  // Grey breathing room: extra padding above and below the "Page Menu" title,
+  // a gap under the title separator before the black Options box, and a gap
+  // below the footer, matching the trainer's tall Page Menu (Fig. 5-6 /
+  // trainer screenshot067).
+  const float titlePadPx = 11.0f;
+  const float titlePad = mfd::mfdFontPx(titlePadPx, displayH);
+  const float topGap = mfd::mfdFontPx(16.0f, displayH);
+  const float botPad = mfd::mfdFontPx(16.0f, displayH);
   const float boxW = w * 0.40f;
-  const float boxH =
-      titleSize * 1.6f + mfd::mfdFontPx(6.0f, displayH) + groupSlotH + footH +
-      pad * 2.0f;
+  const float boxH = titleSize * 1.6f + mfd::mfdFontPx(6.0f, displayH) +
+                     2.0f * titlePad + topGap + groupSlotH + footH +
+                     pad * 2.0f + botPad;
 
   // Anchored to the top-right corner of the display, flush under the top bar,
-  // matching the real unit (Pilot's Guide Fig. 5-6) rather than centered.
+  // matching the real unit (Pilot's Guide Fig. 5-6) rather than centered. The
+  // dialog body is the flat menu grey with a white title; the "Options" group
+  // box inside stays black, like the trainer's Page Menu.
   const float margin = mfd::mfdFontPx(6.0f, displayH);
   const Rect inner = drawDialog(
       r, Rect{x + w - boxW - margin, y + margin, boxW, boxH}, "Page Menu",
-      displayH);
+      displayH, colors::kPageMenuBodyTop, colors::kWhite, titlePadPx);
 
-  const Rect group = drawGroupBox(
-      r, Rect{inner.x, inner.y, inner.w, groupSlotH}, "Options", displayH);
+  const Rect group =
+      drawGroupBox(r, Rect{inner.x, inner.y + topGap, inner.w, groupSlotH},
+                   "Options", displayH, colors::kPageMenuBodyTop);
 
   float fy = group.y;
   for (int i = 0; i < n; ++i) {

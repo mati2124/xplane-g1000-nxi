@@ -187,17 +187,20 @@ bool parseNodeLatLon(const std::string& line, double& lat, double& lon) {
 
 void commitPavement(std::unordered_map<int, std::vector<MapPavement>>& out,
                     MapPavement& pavement) {
-  if (pavement.outline.size() >= 3) {
-    double sumLat = 0.0;
-    double sumLon = 0.0;
-    for (const GeoPoint& g : pavement.outline) {
-      sumLat += g.lat;
-      sumLon += g.lon;
-    }
-    const double cLat = sumLat / static_cast<double>(pavement.outline.size());
-    const double cLon = sumLon / static_cast<double>(pavement.outline.size());
-    out[cellKey(cLat, cLon)].push_back(std::move(pavement));
+  if (pavement.contours.empty() || pavement.contours[0].size() < 3) {
+    pavement = MapPavement{};
+    return;
   }
+  const std::vector<GeoPoint>& outer = pavement.contours[0];
+  double sumLat = 0.0;
+  double sumLon = 0.0;
+  for (const GeoPoint& g : outer) {
+    sumLat += g.lat;
+    sumLon += g.lon;
+  }
+  const double cLat = sumLat / static_cast<double>(outer.size());
+  const double cLon = sumLon / static_cast<double>(outer.size());
+  out[cellKey(cLat, cLon)].push_back(std::move(pavement));
   pavement = MapPavement{};
 }
 
@@ -469,13 +472,20 @@ AptDatParseResult parseAptDat(std::istream& in) {
   TaxiNetwork taxi;
 
   // Row-110 pavement chunk accumulation state. A chunk runs from its 110
-  // header until the next non-node row; only the first (outer) boundary loop is
-  // kept and only when the surface is hard.
+  // header until the next non-node row; every closed loop is kept (outer plus
+  // grass-island holes) when the surface is hard.
   bool inPavement = false;
   bool pavementKeep = false;
-  bool firstLoopClosed = false;
   MapPavement pavement;
+  std::vector<GeoPoint> currentLoop;
+  auto flushLoop = [&]() {
+    if (currentLoop.size() >= 3) {
+      pavement.contours.push_back(std::move(currentLoop));
+    }
+    currentLoop.clear();
+  };
   auto endPavement = [&]() {
+    flushLoop();
     if (inPavement && pavementKeep) {
       commitPavement(result.pavementCells, pavement);
     } else {
@@ -483,7 +493,7 @@ AptDatParseResult parseAptDat(std::istream& in) {
     }
     inPavement = false;
     pavementKeep = false;
-    firstLoopClosed = false;
+    currentLoop.clear();
   };
 
   std::string line;
@@ -497,14 +507,14 @@ AptDatParseResult parseAptDat(std::istream& in) {
     // row terminates it.
     if (inPavement) {
       if (code >= 111 && code <= 116) {
-        if (pavementKeep && !firstLoopClosed) {
+        if (pavementKeep) {
           double lat = 0.0;
           double lon = 0.0;
           if (parseNodeLatLon(line, lat, lon)) {
-            pavement.outline.push_back({lat, lon});
+            currentLoop.push_back({lat, lon});
           }
         }
-        if (code >= 113) firstLoopClosed = true;  // loop/chain terminated
+        if (code >= 113) flushLoop();  // loop or chain terminated
         continue;
       }
       endPavement();
@@ -513,9 +523,9 @@ AptDatParseResult parseAptDat(std::istream& in) {
     if (code == 110) {
       long surface = 0;
       inPavement = true;
-      firstLoopClosed = false;
       pavementKeep = parsePavementSurface(line, surface) && isHardSurface(surface);
       pavement = MapPavement{};
+      currentLoop.clear();
       continue;
     }
 
@@ -638,14 +648,14 @@ std::vector<MapPavement> nearbyPavementFromCells(
       const auto it = cells.find((la + 90) * 360 + (lo + 180));
       if (it == cells.end()) continue;
       for (const MapPavement& pav : it->second) {
-        if (pav.outline.empty()) continue;
+        if (pav.contours.empty() || pav.contours[0].empty()) continue;
         double sumLat = 0.0;
         double sumLon = 0.0;
-        for (const GeoPoint& g : pav.outline) {
+        for (const GeoPoint& g : pav.contours[0]) {
           sumLat += g.lat;
           sumLon += g.lon;
         }
-        const double n = static_cast<double>(pav.outline.size());
+        const double n = static_cast<double>(pav.contours[0].size());
         if (std::fabs(sumLat / n - lat) > dLat ||
             std::fabs(sumLon / n - lon) > dLon) {
           continue;

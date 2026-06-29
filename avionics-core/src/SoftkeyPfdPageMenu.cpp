@@ -57,10 +57,25 @@ SoftkeyController::buildPfdPageMenu() const {
       const PfdPageMenuAction deleteState =
           legCount > 0 ? PfdPageMenuAction::FplDeleteFlightPlan
                        : PfdPageMenuAction::Disabled;
+
+      // Remove Departure/Arrival/Approach are live only when that terminal
+      // procedure is loaded (Pilot's Guide 5.6); otherwise they grey out.
+      const PfdPageMenuAction removeDepState =
+          flightPlanHasLoadedDeparture() ? PfdPageMenuAction::FplRemoveDeparture
+                                         : PfdPageMenuAction::Disabled;
+      const PfdPageMenuAction removeArrState =
+          flightPlanHasLoadedArrival() ? PfdPageMenuAction::FplRemoveArrival
+                                       : PfdPageMenuAction::Disabled;
+      const PfdPageMenuAction removeApprState =
+          flightPlanHasLoadedApproach() ? PfdPageMenuAction::FplRemoveApproach
+                                        : PfdPageMenuAction::Disabled;
       return {
           {"Activate Leg", activateState},
           {"Load Airway", loadAirwayState},
           {collapseText, collapseState},
+          {"Remove Departure", removeDepState},
+          {"Remove Arrival", removeArrState},
+          {"Remove Approach", removeApprState},
           {"Delete Flight Plan", deleteState},
       };
     }
@@ -168,6 +183,18 @@ void SoftkeyController::pageMenuActivate() {
       pageMenuOpen_ = false;
       break;
     }
+    case PfdPageMenuAction::FplRemoveDeparture:
+      pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveDeparture);
+      break;
+    case PfdPageMenuAction::FplRemoveArrival:
+      pageMenuOpen_ = false;
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveArrival);
+      break;
+    case PfdPageMenuAction::FplRemoveApproach:
+      pageMenuOpen_ = false;
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveApproach);
+      break;
     case PfdPageMenuAction::FplDeleteFlightPlan:
       pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
       fplConfirm_ = FplConfirm::DeleteFlightPlan;

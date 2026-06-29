@@ -62,6 +62,10 @@ void SoftkeyController::syncFlightPlanLegs(const MapData& map, bool navDirectTo)
     }
     tryRestorePersistedApproach();
   }
+  if ((fplDepartureRestorePending_ || fplArrivalRestorePending_) &&
+      navSource_ != nullptr && navSource_->ready()) {
+    tryRestorePersistedTerminalProcedures();
+  }
 
   const bool mapChanged = !flightPlanLegsEqual(map.flightPlan, fplLastMapPlan_);
   if (mapChanged) {
@@ -192,6 +196,71 @@ FplRouteEdit SoftkeyController::flightPlanRouteEditState() const {
   return edit;
 }
 
+void SoftkeyController::fplOpenProcedureRemoveConfirm(FplConfirm which) {
+  fplConfirm_ = which;
+  fplConfirmOk_ = true;
+  // The prompt subject matches the FPL list header text exactly (trainer /
+  // Pilot's Guide: "Remove KATL-BBABE.CHPPR1.RW08B from flight plan?"): the
+  // airport ICAO, a dash, then the procedure header label. Fall back to the
+  // loaded procedure name, then the bare procedure word, when not known.
+  const auto subject = [](const std::string& icao, const std::string& label,
+                          const std::string& name, const char* word) {
+    const std::string body = !label.empty() ? label : name;
+    if (body.empty()) return std::string(word);
+    return icao.empty() ? body : icao + "-" + body;
+  };
+  switch (which) {
+    case FplConfirm::RemoveDeparture:
+      fplRemoveIdent_ =
+          subject(flightPlanDepartureAirportIcao(), flightPlanDepartureHeaderLabel(),
+                  fplLoadedDeparture_.name, "departure");
+      break;
+    case FplConfirm::RemoveArrival:
+      fplRemoveIdent_ =
+          subject(flightPlanArrivalAirportIcao(), flightPlanArrivalHeaderLabel(),
+                  fplLoadedArrival_.name, "arrival");
+      break;
+    case FplConfirm::RemoveApproach:
+      fplRemoveIdent_ =
+          subject(flightPlanApproachAirportIcao(), flightPlanApproachHeaderLabel(),
+                  fplLoadedApproach_.name, "approach");
+      break;
+    default:
+      break;
+  }
+}
+
+void SoftkeyController::fplRemoveLoadedDeparture() {
+  FplRouteEdit edit = flightPlanRouteEditState();
+  if (!fplRemoveDeparture(edit)) return;
+  persistedDepartureRestore_ = {};
+  fplDepartureRestorePending_ = false;
+  fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
+                    FplCursorLayout::SectionRows);
+  flightPlanPublishEdit();
+}
+
+void SoftkeyController::fplRemoveLoadedArrival() {
+  FplRouteEdit edit = flightPlanRouteEditState();
+  if (!fplRemoveArrival(edit)) return;
+  persistedArrivalRestore_ = {};
+  fplArrivalRestorePending_ = false;
+  fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
+                    FplCursorLayout::SectionRows);
+  flightPlanPublishEdit();
+}
+
+void SoftkeyController::fplRemoveLoadedApproach() {
+  if (fplApproachLegCount_ <= 0) reinferApproachFromProcedureLegs();
+  FplRouteEdit edit = flightPlanRouteEditState();
+  if (!fplRemoveApproach(edit)) return;
+  persistedApproachRestore_ = {};
+  fplApproachRestorePending_ = false;
+  fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
+                    FplCursorLayout::SectionRows);
+  flightPlanPublishEdit();
+}
+
 std::string SoftkeyController::flightPlanCursorLegIdent() const {
   const int legIndex = flightPlanSelectedLegIndex();
   if (legIndex < 0 || legIndex >= static_cast<int>(fplLegs_.size())) return {};
@@ -288,20 +357,45 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
     switch (key) {
       case BezelKey::Ent:
         if (fplConfirmOk_) {
-          if (fplConfirm_ == FplConfirm::RemoveWaypoint) {
-            const int legIndex = fplCursorLegIndex(
-                edit, approachAirport, FplCursorLayout::SectionRows);
-            if (fplRemoveLegAtIndex(edit, legIndex)) {
-              flightPlanPublishEdit();
+          switch (fplConfirm_) {
+            case FplConfirm::RemoveWaypoint: {
+              const int legIndex = fplCursorLegIndex(
+                  edit, approachAirport, FplCursorLayout::SectionRows);
+              if (fplRemoveLegAtIndex(edit, legIndex)) {
+                flightPlanPublishEdit();
+              }
+              break;
             }
-          } else {
-            fplClearFlightPlan(edit);
-            persistedApproachRestore_ = {};
-            persistedDepartureRestore_ = {};
-            persistedArrivalRestore_ = {};
-            dtoRequestTarget_ = {};
-            dtoRequestPending_ = true;
-            flightPlanPublishEdit();
+            case FplConfirm::RemoveDeparture:
+              fplRemoveLoadedDeparture();
+              break;
+            case FplConfirm::RemoveArrival:
+              fplRemoveLoadedArrival();
+              break;
+            case FplConfirm::RemoveApproach:
+              fplRemoveLoadedApproach();
+              break;
+            case FplConfirm::RemoveAirway: {
+              const int exitLeg = ::avionics::fplCursorAirwayHeaderExitLeg(
+                  edit, approachAirport, FplCursorLayout::SectionRows);
+              if (::avionics::fplRemoveAirwaySegment(edit, exitLeg)) {
+                fplClampCursorRow(edit, approachAirport,
+                                  FplCursorLayout::SectionRows);
+                flightPlanPublishEdit();
+              }
+              break;
+            }
+            case FplConfirm::DeleteFlightPlan:
+              fplClearFlightPlan(edit);
+              persistedApproachRestore_ = {};
+              persistedDepartureRestore_ = {};
+              persistedArrivalRestore_ = {};
+              dtoRequestTarget_ = {};
+              dtoRequestPending_ = true;
+              flightPlanPublishEdit();
+              break;
+            case FplConfirm::None:
+              break;
           }
         }
         fplConfirm_ = FplConfirm::None;
@@ -361,6 +455,41 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
     return true;
   }
 
+  // The loaded SID/STAR/approach header rows are selectable cursor stops; CLR on
+  // one removes the whole procedure, and the inner knob is a no-op there (not a
+  // text-entry field). (Pilot's Guide 5.6, trainer.)
+  const ::avionics::FplCursorProcedureBlock cursorProcHeader =
+      ::avionics::fplCursorProcedureHeader(edit, approachAirport,
+                                           FplCursorLayout::SectionRows);
+  const bool onProcHeader =
+      cursorProcHeader != ::avionics::FplCursorProcedureBlock::None;
+  // The "Airway - <name>.<exit>" header is a selectable cursor stop too; CLR on
+  // it removes the whole loaded-airway segment, and the inner knob is a no-op
+  // there (not a text-entry field). (Pilot's Guide, Load Airway.)
+  const int cursorAirwayExitLeg = ::avionics::fplCursorAirwayHeaderExitLeg(
+      edit, approachAirport, FplCursorLayout::SectionRows);
+  const bool onAirwayHeader = cursorAirwayExitLeg >= 0;
+  const auto openRemoveAirwayConfirm = [&]() {
+    fplConfirm_ = FplConfirm::RemoveAirway;
+    fplConfirmOk_ = true;
+    fplRemoveIdent_ =
+        "Airway " +
+        fplLegs_[static_cast<std::size_t>(cursorAirwayExitLeg)].viaAirway;
+  };
+  const auto confirmForCursorProcedure =
+      [](::avionics::FplCursorProcedureBlock block) {
+        switch (block) {
+          case ::avionics::FplCursorProcedureBlock::Departure:
+            return FplConfirm::RemoveDeparture;
+          case ::avionics::FplCursorProcedureBlock::Arrival:
+            return FplConfirm::RemoveArrival;
+          case ::avionics::FplCursorProcedureBlock::Approach:
+            return FplConfirm::RemoveApproach;
+          default:
+            return FplConfirm::None;
+        }
+      };
+
   if (!fplCursorOn_) {
     // Cursor off: outer knob scrolls the section list. Inner knob on the
     // highlighted ident row opens waypoint entry (trainer / Pilot's Guide).
@@ -375,6 +504,8 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
       return true;
     }
     if (key == BezelKey::FmsInnerCw || key == BezelKey::FmsInnerCcw) {
+      if (onProcHeader || onAirwayHeader)
+        return true;  // header is a removal stop, not entry
       if (!fplEntry_.active) {
         fplEntry_.open(navSource_, mapData_,
                        fplIdentEntrySeedAtCursor(edit, approachAirport,
@@ -390,9 +521,22 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
     // close the window. CLR still closes when the cursor is just following the
     // active leg (no explicit selection made yet).
     if (key == BezelKey::Clr && !fplListCursorFollowsActive_) {
+      if (onProcHeader) {
+        // CLR on a SID/STAR/approach header removes the whole procedure.
+        fplOpenProcedureRemoveConfirm(confirmForCursorProcedure(cursorProcHeader));
+        return true;
+      }
+      if (onAirwayHeader) {
+        // CLR on an "Airway -" header removes the whole loaded-airway segment.
+        openRemoveAirwayConfirm();
+        return true;
+      }
       const int legIndex =
           fplCursorLegIndex(edit, approachAirport, FplCursorLayout::SectionRows);
       if (legIndex >= 0 && legIndex < legCount) {
+        // CLR on an individual leg removes just that fix, whether it is a plain
+        // enroute waypoint or a single leg of a loaded SID/STAR/approach. CLR on
+        // the procedure header (handled above) removes the whole procedure.
         fplConfirm_ = FplConfirm::RemoveWaypoint;
         fplConfirmOk_ = true;
         fplRemoveIdent_ = fplLegs_[static_cast<std::size_t>(legIndex)].id;
@@ -415,6 +559,8 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
       return true;
     case BezelKey::FmsInnerCw:
     case BezelKey::FmsInnerCcw: {
+      if (onProcHeader || onAirwayHeader)
+        return true;  // header is a removal stop, not entry
       if (!fplEntry_.active) {
         fplEntry_.open(navSource_, mapData_,
                        fplIdentEntrySeedAtCursor(edit, approachAirport,
@@ -426,9 +572,22 @@ bool SoftkeyController::flightPlanBezelKey(BezelKey key) {
       return true;
     }
     case BezelKey::Clr: {
+      if (onProcHeader) {
+        // CLR on a SID/STAR/approach header removes the whole procedure.
+        fplOpenProcedureRemoveConfirm(confirmForCursorProcedure(cursorProcHeader));
+        return true;
+      }
+      if (onAirwayHeader) {
+        // CLR on an "Airway -" header removes the whole loaded-airway segment.
+        openRemoveAirwayConfirm();
+        return true;
+      }
       const int legIndex =
           fplCursorLegIndex(edit, approachAirport, FplCursorLayout::SectionRows);
       if (legIndex >= 0 && legIndex < legCount) {
+        // CLR on an individual leg removes just that fix, whether it is a plain
+        // enroute waypoint or a single leg of a loaded SID/STAR/approach. CLR on
+        // the procedure header (handled above) removes the whole procedure.
         fplConfirm_ = FplConfirm::RemoveWaypoint;
         fplConfirmOk_ = true;
         fplRemoveIdent_ = fplLegs_[static_cast<std::size_t>(legIndex)].id;
@@ -559,6 +718,50 @@ void SoftkeyController::tryRestorePersistedApproach() {
   }
 }
 
+void SoftkeyController::tryRestorePersistedTerminalProcedures() {
+  bool publishNeeded = false;
+
+  if (fplDepartureRestorePending_) {
+    const bool wasPending = fplDepartureRestorePending_;
+    const TerminalProcedureMetadataRestore result =
+        restoreTerminalProcedureMetadata(navSource_, persistedDepartureRestore_,
+                                         fplLegs_, fplDepartureLegStart_,
+                                         fplDepartureLegCount_);
+    if (result.spanCorrected()) {
+      fplDepartureLegStart_ = result.correctedStart;
+      fplDepartureLegCount_ = result.correctedCount;
+    }
+    if (result.merged || result.stopRetrying) {
+      fplDepartureRestorePending_ = false;
+    }
+    if (result.merged && wasPending) {
+      publishNeeded = true;
+    }
+  }
+
+  if (fplArrivalRestorePending_) {
+    const bool wasPending = fplArrivalRestorePending_;
+    const TerminalProcedureMetadataRestore result =
+        restoreTerminalProcedureMetadata(navSource_, persistedArrivalRestore_,
+                                         fplLegs_, fplArrivalLegStart_,
+                                         fplArrivalLegCount_);
+    if (result.spanCorrected()) {
+      fplArrivalLegStart_ = result.correctedStart;
+      fplArrivalLegCount_ = result.correctedCount;
+    }
+    if (result.merged || result.stopRetrying) {
+      fplArrivalRestorePending_ = false;
+    }
+    if (result.merged && wasPending) {
+      publishNeeded = true;
+    }
+  }
+
+  if (publishNeeded) {
+    flightPlanPublishEdit();
+  }
+}
+
 void SoftkeyController::reinferApproachFromProcedureLegs() {
   const int arrivalEnd =
       fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
@@ -656,18 +859,21 @@ void SoftkeyController::adoptFlightPlanFromPeer(
     const std::vector<MapLeg>& legs, bool destinationFilled,
     const FlightPlanApproachState& approach,
     const FlightPlanTerminalProcedureState& departure,
-    const FlightPlanTerminalProcedureState& arrival) {
+    const FlightPlanTerminalProcedureState& arrival,
+    bool peerLocalDraft) {
   if (fplEntry_.active || fplConfirm_ != FplConfirm::None) return;
+  const bool peerDraft = !legs.empty() || peerLocalDraft;
   if (flightPlanLegsEqual(fplLegs_, legs) &&
       fplDestinationFilled_ == destinationFilled &&
       flightPlanApproachState() == approach &&
       flightPlanDepartureState() == departure &&
-      flightPlanArrivalState() == arrival) {
+      flightPlanArrivalState() == arrival &&
+      fplLocalDraft_ == peerDraft) {
     return;
   }
   fplLegs_ = legs;
   fplDestinationFilled_ = destinationFilled;
-  fplLocalDraft_ = !fplLegs_.empty();
+  fplLocalDraft_ = peerDraft;
   applyFlightPlanApproachState(approach);
   applyFlightPlanDepartureState(departure);
   applyFlightPlanArrivalState(arrival);
@@ -764,6 +970,8 @@ void SoftkeyController::restorePersistedFlightPlan(
   fplLastPublished_ = saved.legs;
   fplLastMapPlan_ = saved.legs;
   fplApproachRestorePending_ = false;
+  fplDepartureRestorePending_ = false;
+  fplArrivalRestorePending_ = false;
   if (saved.approachLegCount > 0) {
     fplApproachLegStart_ = saved.approachLegStart;
     fplApproachLegCount_ = saved.approachLegCount;
@@ -809,7 +1017,14 @@ void SoftkeyController::restorePersistedFlightPlan(
   fplApproachRestorePending_ = fplApproachLegCount_ > 0 &&
                                persistedApproachRestore_.active &&
                                !persistedApproachRestore_.name.empty();
+  fplDepartureRestorePending_ = saved.departureMeta.active &&
+                                !saved.departureMeta.name.empty() &&
+                                saved.departureLegCount > 0;
+  fplArrivalRestorePending_ = saved.arrivalMeta.active &&
+                              !saved.arrivalMeta.name.empty() &&
+                              saved.arrivalLegCount > 0;
   tryRestorePersistedApproach();
+  tryRestorePersistedTerminalProcedures();
 }
 
 void SoftkeyController::replaceFlightPlanFromExternal(

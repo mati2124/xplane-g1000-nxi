@@ -34,6 +34,17 @@ ProcPrimaryNav resolveProcPrimaryNav(const NavFeatureSource* nav,
                                      const MapFeature& airport,
                                      const MapProcedure& proc);
 
+// Merge the published primary navaid frequency into proc.frequencyMhz when the
+// approach uses a ground-based navaid (ILS/LOC/VOR/NDB). Matches the NXi PRIM
+// FREQ row and the standby tune on Load.
+void mergeProcedurePrimaryNavFreq(const NavFeatureSource* nav,
+                                  const MapData* map,
+                                  const MapFeature& airport,
+                                  MapProcedure& proc);
+
+// Standby MHz to load into NAV1 when an approach is committed (0 = none).
+float procedureApproachNavStandbyMhz(const MapProcedure& proc);
+
 std::string defaultProcedureTransition(
     const std::vector<std::string>& transitions);
 

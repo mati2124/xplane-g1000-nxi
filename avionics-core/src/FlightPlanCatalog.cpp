@@ -5,6 +5,19 @@
 #include "avionics/NavMath.h"
 
 namespace avionics {
+namespace {
+
+bool sameRouteLegs(const std::vector<MapLeg>& a, const std::vector<MapLeg>& b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].id != b[i].id || a[i].lat != b[i].lat || a[i].lon != b[i].lon) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
 
 void FlightPlanCatalog::setPlans(std::vector<PersistedFlightPlan> plans) {
   if (static_cast<int>(plans.size()) > kFlightPlanCatalogMaxPlans) {
@@ -43,7 +56,32 @@ int FlightPlanCatalog::addPlanFromLegs(const std::vector<MapLeg>& legs) {
 }
 
 int FlightPlanCatalog::addPlanFromSimBriefImport(const SimBriefOfpImport& imp) {
-  return addPlan(makeEntryFromSimBriefImport(imp));
+  const PersistedFlightPlan entry = makeEntryFromSimBriefImport(imp);
+  for (int i = 0; i < size(); ++i) {
+    if (sameRouteLegs(plans_[static_cast<std::size_t>(i)].legs, entry.legs)) {
+      plans_[static_cast<std::size_t>(i)] = entry;
+      return i;
+    }
+  }
+  return addPlan(entry);
+}
+
+int FlightPlanCatalog::dedupeByRoute() {
+  const int before = size();
+  std::vector<PersistedFlightPlan> unique;
+  unique.reserve(plans_.size());
+  for (const PersistedFlightPlan& plan : plans_) {
+    bool duplicate = false;
+    for (const PersistedFlightPlan& kept : unique) {
+      if (sameRouteLegs(kept.legs, plan.legs)) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) unique.push_back(plan);
+  }
+  plans_ = std::move(unique);
+  return before - size();
 }
 
 bool FlightPlanCatalog::removePlan(int index) {
