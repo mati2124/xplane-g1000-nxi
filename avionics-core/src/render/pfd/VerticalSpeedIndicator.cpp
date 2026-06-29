@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <vector>
 
+#include "avionics/VnavGuidance.h"
+
 namespace avionics::pfd {
 namespace {
 
@@ -59,6 +61,51 @@ void drawVsiPointer(Renderer& r, float tipX, float pointerY, float displayH,
     r.fillText(bodyCx, pointerY + kVsiReadoutInkDownPx * scale, text, fontSize,
                TextAlign::Center, colors::kWhite);
   }
+}
+
+// VNAV Target Altitude readout in a box above the VSI tape (G1000 NXi Pilot's
+// Guide): a magenta altitude in a box the same width as the VSI, aligned with
+// the cyan Selected Altitude box on the altimeter column. The number is smaller
+// than the Selected Altitude and is shrunk further if needed so a five-digit
+// value (large hundreds, small tens) stays inside the narrow VSI-width box.
+void drawVnavTargetAltitude(Renderer& r, float boxX, float boxTop, float boxW,
+                            float boxH, int targetAltFt, float displayH) {
+  const float cornerR = fontPx(kTapeCornerRadiusWt, displayH);
+  const std::vector<Point> boxPoly = {{boxX, boxTop},
+                                      {boxX + boxW, boxTop},
+                                      {boxX + boxW, boxTop + boxH},
+                                      {boxX, boxTop + boxH}};
+  const std::vector<float> boxRadii = {0.0f, cornerR, 0.0f, 0.0f};
+  std::vector<Point> boxShape = roundPolygonCorners(boxPoly, boxRadii);
+  r.fillPolygon(boxShape.data(), static_cast<int>(boxShape.size()),
+                colors::kReadoutBox);
+  boxShape.push_back(boxShape.front());
+  r.strokePolyline(boxShape.data(), static_cast<int>(boxShape.size()), 1.5f,
+                   colors::kTapeTopBorder);
+
+  const FontScope altFont(r, FontFace::DejaVuSemiBold);
+  const std::string text = formatInt(static_cast<float>(targetAltFt));
+
+  // Fit the composed (large hundreds + small tens) number inside the box.
+  float fontSize = fontPx(wt::kVsi, displayH);
+  const float availW = boxW * 0.84f;
+  const int n = static_cast<int>(text.size());
+  const int smallCount = std::min(kAltTrailingDigits, n);
+  const std::string largePart = text.substr(0, n - smallCount);
+  const std::string smallPart = text.substr(n - smallCount);
+  const float largeW =
+      r.measureTextWidth(largePart, fontSize, FontFace::DejaVuSemiBold);
+  const float smallW = r.measureTextWidth(
+      smallPart, fontSize * kAltSelectedTensScale, FontFace::DejaVuSemiBold);
+  const float composedW = largeW + smallW;
+  if (composedW > availW && composedW > 0.0f) {
+    fontSize *= availW / composedW;
+  }
+
+  const float rightX = boxX + boxW * 0.92f;
+  const float midY = boxTop + boxH * 0.5f;
+  drawAltitudeNumber(r, rightX, midY, text, fontSize, kAltTrailingDigits,
+                     kAltSelectedTensScale, TextAlign::Right, colors::kMagenta);
 }
 
 // Magenta chevron marking the Required Vertical Speed to reach a VNV target
@@ -171,6 +218,11 @@ void drawVerticalSpeedIndicator(Renderer& r, const Layout& L,
     drawFailureX(r, L.vsiX, L.vsiTop, L.vsiW, L.vsiH, "", h, FailTicks::LeftEdge,
                  kVsiTickMinorOuterFraction, kVsiTickMajorOuterFraction);
     return;
+  }
+  const float selAltBoxH = L.stripTop - L.altTop;
+  if (vnavPfdIndicationsActive(d)) {
+    drawVnavTargetAltitude(r, L.vsiX, L.altTop, L.vsiW, selAltBoxH,
+                             d.vnv.targetAltFt, h);
   }
   drawVsi(r, L.vsiX, L.vsiW, L.vsiTop, L.vsiH, L.attCy, h, d.verticalSpeedFpm,
           d.requiredVsValid, d.requiredVsFpm, d.selectedVsValid,

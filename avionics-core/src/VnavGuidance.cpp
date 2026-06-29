@@ -184,6 +184,13 @@ int selectVnavTargetIndex(const std::vector<MapLeg>& plan, int activeIdx,
     if (c.type != AltConstraintType::AtOrAbove &&
         c.type != AltConstraintType::At)
       continue;
+    // A restriction at or above the current altitude cannot be a descent
+    // level-off: leveling there would mean climbing, not descending. Honoring
+    // it as the target makes the descent distance negative, which would draw
+    // the top-of-descent marker BEYOND the bottom-of-descent. Such a floor is
+    // already satisfied-or-busted independent of the VNAV path, so it is not
+    // something the descent must protect.
+    if (static_cast<float>(c.altFt) >= currentAltFt) continue;
     const double frac = c.distNm / target->distNm;
     const double projAltCurrent =
         currentAltFt +
@@ -200,6 +207,17 @@ int selectVnavTargetIndex(const std::vector<MapLeg>& plan, int activeIdx,
 }
 
 }  // namespace
+
+bool vnavPfdIndicationsActive(const FlightData& data) {
+  if (!data.vnv.active || data.vnv.targetAltFt <= 0) return false;
+  if (data.altitudeFt <
+      static_cast<float>(data.vnv.targetAltFt) - kVnavIndicationHideBelowFt) {
+    return false;
+  }
+  const bool nearTod = data.vnv.timeToTodSec >= 0 &&
+                       data.vnv.timeToTodSec <= kVnavVdiShowBeforeTodSec;
+  return data.vnv.capturing || nearTod;
+}
 
 VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
   VnvProfile vnv;
@@ -259,6 +277,13 @@ VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
       vnv.distanceToTodNm > 0.0f
           ? static_cast<int>(std::lround(vnv.distanceToTodNm / gsKts * 3600.0))
           : 0;
+  // Time to the bottom of descent, i.e. the target constraint waypoint where
+  // the path levels off (distNm along track). The FPL page time field counts
+  // down to this once the descent has begun (past TOD), like the real unit.
+  vnv.timeToBodSec =
+      distNm > 0.0
+          ? static_cast<int>(std::lround(distNm / gsKts * 3600.0))
+          : 0;
 
   // Deviation from the (possibly extended) descent path at the current along-
   // track position. Valid before TOD too: the path sits above the aircraft and
@@ -299,18 +324,44 @@ VnvProfile computeVnvProfile(const MapData& map, const FlightData& data) {
   return vnv;
 }
 
+namespace {
+
+void clearVnavPfdIndications(FlightData& data) {
+  if (data.vdiKind == VerticalDeviationKind::Vnav) {
+    data.vdiKind = VerticalDeviationKind::None;
+    data.vdiValid = false;
+    data.vdiDeviationDots = 0.0f;
+  }
+  data.requiredVsValid = false;
+  data.requiredVsFpm = 0.0f;
+}
+
+}  // namespace
+
 void applyVnav(FlightData& data, const MapData& map) {
   data.vnv = computeVnvProfile(map, data);
-  const bool nearTod = data.vnv.timeToTodSec >= 0 &&
-                       data.vnv.timeToTodSec <= kVnavVdiShowBeforeTodSec;
-  if (data.vnv.active && (data.vnv.capturing || nearTod) &&
-      data.vdiKind == VerticalDeviationKind::None) {
+  if (suppressVnav(map, data)) {
+    clearVnavPfdIndications(data);
+    return;
+  }
+  const bool show = vnavPfdIndicationsActive(data);
+  const bool vdiOwnedByVnav =
+      data.vdiKind == VerticalDeviationKind::None ||
+      data.vdiKind == VerticalDeviationKind::Vnav;
+  if (show && vdiOwnedByVnav) {
     data.vdiKind = VerticalDeviationKind::Vnav;
     data.vdiValid = true;
     data.vdiDeviationDots = std::max(
         -2.0f, std::min(2.0f, data.vnv.verticalDeviationFt / kVnavDevFtPerDot));
     data.requiredVsValid = true;
     data.requiredVsFpm = data.vnv.vsRequiredFpm;
+  } else if (data.vdiKind == VerticalDeviationKind::Vnav) {
+    clearVnavPfdIndications(data);
+  } else if (!show) {
+    // Required VS is only driven by VNAV on the PFD; clear it when the trio
+    // drops even if another source still owns the VDI scale.
+    data.requiredVsValid = false;
+    data.requiredVsFpm = 0.0f;
   }
 }
 

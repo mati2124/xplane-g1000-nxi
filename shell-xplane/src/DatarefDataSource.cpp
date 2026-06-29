@@ -58,6 +58,8 @@ constexpr int kTrafficTargetCount = 8;
 constexpr float kTrafficMaxRangeNm = 40.0f;
 constexpr float kTrafficTaRangeNm = 1.0f;
 constexpr float kTrafficTaAltFt = 1200.0f;
+constexpr float kTrafficPaRangeNm = 5.0f;
+constexpr float kTrafficPaAltFt = 1200.0f;
 constexpr float kMetersToFeet = 3.28084f;
 constexpr std::size_t kMaxMapLandLines = 8000;
 constexpr std::size_t kMaxMapCities = 600;
@@ -1185,8 +1187,14 @@ void DatarefDataSource::updateMap(double dtSeconds) {
       tgt.lon = lon;
       tgt.relAltFt = eleMeters * kMetersToFeet - data_.altitudeFt;
       tgt.verticalSpeedFpm = verticalSpeedFpm;
-      tgt.trafficAdvisory = distNm <= kTrafficTaRangeNm &&
-                            std::fabs(tgt.relAltFt) <= kTrafficTaAltFt;
+      const float absAltFt = std::fabs(tgt.relAltFt);
+      if (distNm <= kTrafficTaRangeNm && absAltFt <= kTrafficTaAltFt) {
+        tgt.threat = TrafficThreat::Advisory;
+      } else if (distNm <= kTrafficPaRangeNm && absAltFt <= kTrafficPaAltFt) {
+        tgt.threat = TrafficThreat::Proximity;
+      } else {
+        tgt.threat = TrafficThreat::Other;
+      }
       map_.traffic.push_back(tgt);
     }
   }

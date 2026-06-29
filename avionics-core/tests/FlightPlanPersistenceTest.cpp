@@ -144,6 +144,78 @@ TEST(FlightPlanPersistenceTest, PersistedLegParsesLegacyFormatWithoutAltitude) {
   EXPECT_FALSE(decoded.altitudeDesignated);
 }
 
+TEST(FlightPlanPersistenceTest, PreserveIdentsRestoresDesignatedAltitude) {
+  // Last plan the avionics published carries a pilot-entered VNAV altitude.
+  std::vector<MapLeg> published = {
+      makeLeg("KFMY", 26.586, -81.863),
+      makeLeg("VASES", 26.5, -81.9),
+  };
+  published[1].altitudeConstraintFt = 4500;
+  published[1].altitudeConstraint = AltConstraintType::At;
+  published[1].altitudeDesignated = true;
+
+  // The sim FMS echoes the same route back without the custom constraint.
+  std::vector<MapLeg> adopted = {
+      makeLeg("KFMY", 26.586, -81.863),
+      makeLeg("VASES", 26.5, -81.9),
+  };
+  preserveFlightPlanIdents(adopted, published);
+
+  EXPECT_EQ(adopted[1].altitudeConstraintFt, 4500);
+  EXPECT_EQ(adopted[1].altitudeConstraint, AltConstraintType::At);
+  EXPECT_TRUE(adopted[1].altitudeDesignated);
+}
+
+TEST(FlightPlanPersistenceTest, PreserveIdentsRestoresAltitudeForLatLonIdent) {
+  // Sim re-imports the user fix as a coordinate-style ident at the same place.
+  std::vector<MapLeg> published = {makeLeg("VASES", 26.5, -81.9)};
+  published[0].altitudeConstraintFt = 3000;
+  published[0].altitudeConstraint = AltConstraintType::AtOrAbove;
+  published[0].altitudeDesignated = true;
+
+  std::vector<MapLeg> adopted = {makeLeg("+26-81", 26.5, -81.9)};
+  preserveFlightPlanIdents(adopted, published);
+
+  EXPECT_EQ(adopted[0].altitudeConstraintFt, 3000);
+  EXPECT_EQ(adopted[0].altitudeConstraint, AltConstraintType::AtOrAbove);
+  EXPECT_TRUE(adopted[0].altitudeDesignated);
+}
+
+TEST(FlightPlanPersistenceTest, PreserveIdentsKeepsProcedureConstraint) {
+  // A constraint already on the adopted leg (loaded procedure) must win over a
+  // stale designated one from the last published plan.
+  std::vector<MapLeg> published = {makeLeg("GRAMS", 26.512, -81.953)};
+  published[0].altitudeConstraintFt = 5000;
+  published[0].altitudeConstraint = AltConstraintType::At;
+  published[0].altitudeDesignated = true;
+
+  std::vector<MapLeg> adopted = {makeLeg("GRAMS", 26.512, -81.953, "faf")};
+  adopted[0].altitudeConstraintFt = 2100;
+  adopted[0].altitudeConstraint = AltConstraintType::AtOrAbove;
+  adopted[0].altitudeDesignated = false;
+  preserveFlightPlanIdents(adopted, published);
+
+  EXPECT_EQ(adopted[0].altitudeConstraintFt, 2100);
+  EXPECT_EQ(adopted[0].altitudeConstraint, AltConstraintType::AtOrAbove);
+  EXPECT_FALSE(adopted[0].altitudeDesignated);
+}
+
+TEST(FlightPlanPersistenceTest, PreserveIdentsSkipsAltitudeForMovedLeg) {
+  // A leg at a different position is a different waypoint; do not graft the old
+  // constraint onto it.
+  std::vector<MapLeg> published = {makeLeg("VASES", 26.5, -81.9)};
+  published[0].altitudeConstraintFt = 4500;
+  published[0].altitudeConstraint = AltConstraintType::At;
+  published[0].altitudeDesignated = true;
+
+  std::vector<MapLeg> adopted = {makeLeg("OTHER", 27.9, -80.5)};
+  preserveFlightPlanIdents(adopted, published);
+
+  EXPECT_EQ(adopted[0].altitudeConstraintFt, 0);
+  EXPECT_EQ(adopted[0].altitudeConstraint, AltConstraintType::None);
+  EXPECT_FALSE(adopted[0].altitudeDesignated);
+}
+
 TEST(FlightPlanPersistenceTest, InferApproachBlockIncludesUntaggedIafBeforeFaf) {
   // KFMY->KJAX with RNAV R08-Y via WADOR: sim export often tags only GRRDN
   // as faf, leaving WADOR/AMXUQ untagged. The approach block must start at

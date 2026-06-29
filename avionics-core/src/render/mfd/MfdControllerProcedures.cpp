@@ -62,21 +62,32 @@ std::vector<MapProcedure> MfdController::proceduresFor(ProcedureType type) const
 }
 
 std::string MfdController::procDefaultAirportIcao() const {
-  if (procMenu_.category == ProcedureType::Departure && !fplLegs_.empty() &&
-      isAirportIdent(fplLegs_.front().id)) {
-    return fplLegs_.front().id;
+  if (procMenu_.category == ProcedureType::Departure) {
+    std::string origin = firstKnownAirportInPlan(fplLegs_, mapData_, navSource_);
+    if (origin.empty() && !fplLegs_.empty() &&
+        isAirportIdent(fplLegs_.front().id)) {
+      origin = fplLegs_.front().id;
+    }
+    if (!origin.empty()) return origin;
   }
 
-  std::string icao = lastAirportInPlan(fplLegs_);
-  if (!icao.empty()) return icao;
-
-  icao = directToAirportIcao(mapData_);
-  if (!icao.empty()) return icao;
-
-  if (mapData_ != nullptr) {
-    icao = lastAirportInPlan(mapData_->flightPlan);
-    if (!icao.empty()) return icao;
+  std::string loadedApproachIcao;
+  if (persistedApproachRestore_.active) {
+    loadedApproachIcao = persistedApproachRestore_.airportIcao;
   }
+  std::string dest = fplDestinationAirportIcao(
+      {fplLegs_,
+       fplDestinationFilled_,
+       fplApproachLegStart_,
+       fplApproachLegCount_,
+       fplArrivalLegStart_,
+       fplArrivalLegCount_,
+       mapData_,
+       navSource_,
+       loadedApproachIcao,
+       fplArrivalAirportIcao(),
+       simbriefState_.destinationIcao});
+  if (!dest.empty()) return dest;
 
   if (isAirportIdent(activeWaypoint_)) return activeWaypoint_;
 

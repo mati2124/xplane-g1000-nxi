@@ -260,6 +260,49 @@ TEST(RemoveWaypointTest, MfdClrOnKjaxWithDepartureProcedureConfirmsKjax) {
 // be suppressed (regression for "popup shows for a second, then the page
 // closes"). clrDefaultMap() is what the hold would call; it tears the popup
 // down, which the engine's holdBezelKey now refuses while suppressed.
+TEST(RemoveWaypointTest, MfdClrRemovesKatlOriginWhenApproachSpanStale) {
+  // Origin airport + loaded approach with no enroute legs (KATL -> R20L into
+  // KBNA). A stale stored approach span that starts at leg 0 swallows the
+  // origin in the controller's cursor math while the renderer still shows KATL
+  // as a selectable Origin row — CLR must arm Remove KATL, not do nothing.
+  MapData map;
+  MapLeg katl = MakeLeg("KATL", 33.636, -84.428);
+  MapLeg wayln = MakeLeg("WAYLN", 36.0, -86.7);
+  wayln.procedureRole = "iaf";
+  MapLeg cramr = MakeLeg("CRAMR", 36.1, -86.8);
+  MapLeg juudd = MakeLeg("JUUDD", 36.2, -86.9);
+  juudd.procedureRole = "faf";
+  MapLeg xiyri = MakeLeg("XIYRI", 36.3, -87.0);
+  MapLeg rw20l = MakeLeg("RW20L", 36.4, -87.1);
+  rw20l.procedureRole = "mapt";
+  map.flightPlan = {katl, wayln, cramr, juudd, xiyri, rw20l};
+
+  MfdController ui;
+  ui.syncFlightPlan(map, "WAYLN", /*navDirectTo=*/false);
+
+  FlightPlanApproachState stale;
+  stale.legStart = 0;
+  stale.legCount = static_cast<int>(map.flightPlan.size());
+  stale.loaded.name = "R20LY";
+  stale.headerLabel = "KBNA-R20LY";
+  ui.applyFlightPlanApproachState(stale);
+
+  ui.pressBezelKey(BezelKey::Fpl);
+  ui.adoptFlightPlanCursorFromPeer(0, /*followsActive=*/false);
+  EXPECT_EQ(ui.fplApproachLegStart(), 1);
+  EXPECT_EQ(ui.fplCursorLegIndexPublic(), 0);
+  ui.pressBezelKey(BezelKey::FmsPush);
+  ui.pressBezelKey(BezelKey::Clr);
+
+  ASSERT_EQ(ui.fplConfirm(), MfdController::FplConfirm::RemoveWaypoint);
+  EXPECT_EQ(ui.fplRemoveIdent(), "KATL");
+
+  ui.pressBezelKey(BezelKey::Ent);  // confirm OK -> remove KATL
+  EXPECT_EQ(ui.fplConfirm(), MfdController::FplConfirm::None);
+  ASSERT_EQ(ui.fplLegs().size(), 5u);
+  EXPECT_EQ(ui.fplLegs().front().id, "WAYLN");
+}
+
 TEST(RemoveWaypointTest, MfdRemoveConfirmSuppressesClrDefaultMapHold) {
   MfdController ui;
   ui.syncFlightPlan(ThreeLegPlan(), /*activeWaypoint=*/{}, /*navDirectTo=*/false);

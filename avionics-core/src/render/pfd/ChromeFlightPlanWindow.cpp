@@ -637,11 +637,16 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   // The approach is the procedure tail after any loaded arrival/STAR block, so
   // its inference must skip the STAR legs (which can carry procedureRole tags).
   const int arrivalEnd = arrCount > 0 ? arrStart + arrCount : 0;
+  // The approach can never begin within or before a loaded SID/departure block;
+  // this keeps the approach inference's untagged-feeder walk-back from swallowing
+  // the SID/enroute legs when the destination-airport waypoint is absent (the
+  // sim drops it once an approach is loaded).
+  const int departureEnd = depCount > 0 ? depStart + depCount : 0;
   int approachStart = ui.flightPlanApproachLegStart();
   int approachCount = ui.flightPlanApproachLegCount();
   const InferredProcedureBlock approachBlock = resolveApproachBlockInPlan(
       legs, approachStart, approachCount, ui.flightPlanApproachTransition(),
-      arrivalEnd);
+      arrivalEnd, departureEnd);
   approachStart = approachBlock.start;
   approachCount = approachBlock.count;
   if (approachCount > 0 && approachStart >= 0 &&
@@ -681,7 +686,12 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
         approachAirport = arrAirport;
       } else if (approachStart > 0 &&
                  approachStart <= static_cast<int>(legs.size())) {
-        approachAirport = legs[static_cast<std::size_t>(approachStart - 1)].id;
+        const std::string& before =
+            legs[static_cast<std::size_t>(approachStart - 1)].id;
+        if (!(approachStart == 1 && !legs.empty() && before == legs.front().id &&
+              isAirportIdent(before))) {
+          approachAirport = before;
+        }
       }
     }
   }

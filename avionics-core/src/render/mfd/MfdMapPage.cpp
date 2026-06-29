@@ -480,30 +480,31 @@ void drawTrafficMapPage(Renderer& r, const FlightData& d, const MapData& map,
   // ownship heading, distance scaled to the ring radii. Off-scale targets are
   // dropped (the inner two rings are the dedicated traffic scope).
   const float headingRad = d.headingDeg * 0.01745329f;
-  const float symHalf = std::min(w, h) * 0.016f;
+  const float symHalf = std::min(w, h) * 0.020f;
   for (const MapTraffic& t : map.traffic) {
     const double brg =
         navBearingDeg(map.ownshipLat, map.ownshipLon, t.lat, t.lon);
     const double dist =
         navDistanceNm(map.ownshipLat, map.ownshipLon, t.lat, t.lon);
-    if (dist > kTrafficOuterNm) continue;
     const float a = static_cast<float>(brg) * 0.01745329f - headingRad;
+    if (dist > kTrafficOuterNm) {
+      // Off-scale Traffic Advisories are pinned to the outer ring as a half
+      // symbol at the intruder's relative bearing; other off-scale traffic is
+      // dropped (the scope only spans the inner two rings).
+      if (t.threat == TrafficThreat::Advisory) {
+        const float ex = cx + outerR * std::sin(a);
+        const float ey = cy - outerR * std::cos(a);
+        drawTrafficOffScaleAdvisory(r, ex, ey, symHalf, a);
+      }
+      continue;
+    }
     const float px = cx + static_cast<float>(dist) * nmToPx * std::sin(a);
     const float py = cy - static_cast<float>(dist) * nmToPx * std::cos(a);
 
-    if (t.trafficAdvisory) {
-      r.fillCircle(px, py, symHalf, colors::kBandYellow);
-    } else {
-      const Point diamond[5] = {{px, py - symHalf},
-                                {px + symHalf, py},
-                                {px, py + symHalf},
-                                {px - symHalf, py},
-                                {px, py - symHalf}};
-      r.strokePolyline(diamond, 5, 1.5f, colors::kWhite);
-    }
+    drawTrafficSymbol(r, px, py, symHalf, t.threat);
 
     const Color tagColor =
-        t.trafficAdvisory ? colors::kBandYellow : colors::kWhite;
+        t.threat == TrafficThreat::Advisory ? colors::kBandYellow : colors::kWhite;
     const float tagSize = mfdFontPx(13.0f, displayH);
     const bool above = t.relAltFt >= 0.0f;
     const float tagY = above ? py - symHalf - tagSize * 0.5f

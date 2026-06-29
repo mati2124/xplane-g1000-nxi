@@ -359,9 +359,53 @@ bool isAirportIdent(const std::string& id) {
   return true;
 }
 
+bool isAirportCodeFormat(const std::string& id) {
+  // Looser than isAirportIdent: an ICAO airport code is four characters that
+  // begin with a region letter, but the remaining three may be digits (e.g.
+  // K1H2, KX01, K0S9). Small US fields that have no ICAO code keep their FAA
+  // local identifier instead -- three alphanumeric characters that, unlike a
+  // three-letter VOR/NDB ident, always contain a digit (1H2, 06C, 9S2). Both
+  // shapes are kept stricter than "any few characters": a leading letter (ICAO)
+  // or an embedded digit (FAA LID) excludes plain enroute fixes / navaids. This
+  // only gates the nav-DB lookup in isKnownAirportIdent, which then confirms the
+  // ident is really an airport (so RNAV approach fixes like CF36 / RW18 that
+  // share this shape are rejected by the database). isAirportIdent stays
+  // four-letters-only for the procedure block / boundary heuristics that have no
+  // database to fall back on.
+  if (id.size() != 3 && id.size() != 4) return false;
+  bool hasDigit = false;
+  for (char c : id) {
+    const bool upper = c >= 'A' && c <= 'Z';
+    const bool digit = c >= '0' && c <= '9';
+    if (!upper && !digit) return false;
+    if (digit) hasDigit = true;
+  }
+  if (id.size() == 4) {
+    // ICAO code: four characters beginning with a region letter.
+    return id[0] >= 'A' && id[0] <= 'Z';
+  }
+  // Three-character ident: only an FAA local identifier (contains a digit)
+  // qualifies; a plain three-letter ident is a VOR/NDB, not an airport.
+  return hasDigit;
+}
+
+bool isAirportCodeWithDigit(const std::string& id) {
+  // An airport-format code that contains a digit (K1H2, KX01, K0S9). Enroute
+  // fixes are five letters and navaids three, so they never take this shape; the
+  // only other things that do are RNAV approach fixes (CF36, RW18), which are
+  // never a route endpoint. That makes this a reliable "this is the destination
+  // airport" signal for layout even when the nav database has not loaded the
+  // field -- which isKnownAirportIdent alone cannot do for small airports.
+  if (!isAirportCodeFormat(id)) return false;
+  for (char c : id) {
+    if (c >= '0' && c <= '9') return true;
+  }
+  return false;
+}
+
 bool isKnownAirportIdent(const std::string& id, const MapData* map,
                          const NavFeatureSource* navSource) {
-  if (!isAirportIdent(id)) return false;
+  if (!isAirportCodeFormat(id)) return false;
   if (navSource != nullptr && navSource->ready()) {
     const std::vector<MapFeature> hits = navSource->lookupIdent(id, 8);
     for (const MapFeature& f : hits) {
@@ -403,6 +447,16 @@ std::string airportIcaoBeforeIndex(const std::vector<MapLeg>& legs, int before) 
     if (isAirportIdent(legs[static_cast<std::size_t>(i)].id)) {
       return legs[static_cast<std::size_t>(i)].id;
     }
+  }
+  return {};
+}
+
+std::string lastKnownAirportBeforeIndex(const std::vector<MapLeg>& legs,
+                                        int before, const MapData* map,
+                                        const NavFeatureSource* navSource) {
+  for (int i = std::min(before, static_cast<int>(legs.size())) - 1; i >= 0; --i) {
+    const std::string& id = legs[static_cast<std::size_t>(i)].id;
+    if (isFlightPlanAirportIdent(id, map, navSource)) return id;
   }
   return {};
 }
@@ -514,12 +568,108 @@ std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
   if (isAirportIdent(loadedApproachAirportIcao)) return loadedApproachAirportIcao;
   if (approachStart <= 0 && legs.empty()) return {};
   std::string icao = airportIcaoBeforeIndex(legs, approachStart);
+  // When the only airport before the IAF is the route origin, it is the
+  // departure airport — not the approach destination (KATL -> R20L into KBNA with
+  // no KBNA enroute leg). Fall through to map / loaded metadata instead.
+  if (!icao.empty() && approachStart > 0 && !legs.empty() &&
+      isAirportIdent(legs.front().id) && icao == legs.front().id &&
+      static_cast<int>(legs.size()) > approachStart) {
+    icao.clear();
+  }
   if (!icao.empty()) return icao;
   icao = directToAirportIcao(map);
   if (!icao.empty()) return icao;
   if (map != nullptr) {
     icao = lastAirportInPlan(map->flightPlan);
     if (!icao.empty()) return icao;
+  }
+  icao = lastAirportInPlan(legs);
+  if (!icao.empty()) return icao;
+  return {};
+}
+
+std::string fplDestinationAirportIcao(const FplDestinationAirportQuery& query) {
+  const std::vector<MapLeg>& legs = query.legs;
+  int approachStart = query.approachLegStart;
+  int approachCount = query.approachLegCount;
+  const int arrivalEnd =
+      query.arrivalLegCount > 0 ? query.arrivalLegStart + query.arrivalLegCount
+                                : 0;
+  if (approachCount <= 0 || approachStart < arrivalEnd) {
+    const InferredProcedureBlock block =
+        inferProcedureBlockInPlan(legs, arrivalEnd);
+    if (block.valid()) {
+      approachStart = block.start;
+      approachCount = block.count;
+    }
+  }
+  const bool approachLoaded = approachCount > 0;
+  const bool layoutDestFilled =
+      query.approachLegCount > 0 ||
+      (query.destinationFilled && !legs.empty() &&
+       isFlightPlanAirportIdent(legs.back().id, query.map, query.nav));
+
+  std::string approachAirport;
+  if (approachLoaded) {
+    approachAirport = fplApproachAirportIcao(legs, approachStart, query.map,
+                                             query.loadedApproachAirportIcao);
+    if (!isFlightPlanAirportIdent(approachAirport, query.map, query.nav) &&
+        approachStart > 0 && approachStart <= static_cast<int>(legs.size())) {
+      const std::string candidate =
+          legs[static_cast<std::size_t>(approachStart - 1)].id;
+      if (!(approachStart == 1 && !legs.empty() &&
+            candidate == legs.front().id &&
+            isAirportIdent(candidate)) &&
+          isFlightPlanAirportIdent(candidate, query.map, query.nav)) {
+        approachAirport = candidate;
+      } else {
+        approachAirport.clear();
+      }
+    }
+  }
+
+  if (layoutDestFilled || approachLoaded) {
+    std::string icao = pfd::fplHeaderDestinationIdent(
+        legs, query.destinationFilled, approachStart, approachLoaded,
+        approachAirport);
+    if (isFlightPlanAirportIdent(icao, query.map, query.nav)) return icao;
+  }
+
+  const int approachEnd =
+      approachLoaded ? approachStart : static_cast<int>(legs.size());
+  std::string icao =
+      lastKnownAirportBeforeIndex(legs, approachEnd, query.map, query.nav);
+  if (!icao.empty() && approachStart > 0 && !legs.empty() &&
+      isAirportIdent(legs.front().id) && icao == legs.front().id &&
+      static_cast<int>(legs.size()) > approachStart) {
+    icao.clear();
+  }
+  if (!icao.empty()) return icao;
+
+  if (!query.arrivalAirportIcao.empty() &&
+      isFlightPlanAirportIdent(query.arrivalAirportIcao, query.map,
+                               query.nav)) {
+    return query.arrivalAirportIcao;
+  }
+
+  icao = directToAirportIcao(query.map);
+  if (!icao.empty()) return icao;
+
+  if (query.map != nullptr) {
+    icao = lastKnownAirportBeforeIndex(query.map->flightPlan,
+                                       static_cast<int>(query.map->flightPlan.size()),
+                                       query.map, query.nav);
+    if (!icao.empty()) return icao;
+  }
+
+  icao = lastKnownAirportBeforeIndex(legs, static_cast<int>(legs.size()),
+                                     query.map, query.nav);
+  if (!icao.empty()) return icao;
+
+  if (!query.simbriefDestinationIcao.empty() &&
+      isFlightPlanAirportIdent(query.simbriefDestinationIcao, query.map,
+                               query.nav)) {
+    return query.simbriefDestinationIcao;
   }
   return {};
 }
@@ -935,7 +1085,14 @@ MapLeg resolveDirectToTargetLeg(const FmsWaypointEntry& entry, bool preservePlan
                                 const std::vector<MapLeg>& planLegs) {
   if (preservePlan && preserveLegIndex >= 0 &&
       preserveLegIndex < static_cast<int>(planLegs.size())) {
-    return planLegs[static_cast<std::size_t>(preserveLegIndex)];
+    const MapLeg& preserved = planLegs[static_cast<std::size_t>(preserveLegIndex)];
+    // The preserved plan leg only applies while the entry still refers to it.
+    // If the pilot typed a different ident than the pre-filled selection, fall
+    // through and resolve the typed waypoint instead of the stale leg.
+    if (!entry.hasMatch || entry.match.id.empty() ||
+        entry.match.id == preserved.id) {
+      return preserved;
+    }
   }
   if (entry.hasMatch && !entry.match.id.empty()) {
     const int idx = legIndexInPlan(planLegs, entry.match.id);

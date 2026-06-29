@@ -274,5 +274,163 @@ TEST(ArrivalLoadTest, ApproachAfterStarStillInfers) {
   EXPECT_EQ(block.start + block.count, static_cast<int>(plan.size()));
 }
 
+// Fake nav that expands both the SHFTY6 STAR and an RNAV approach into KFMY, so
+// the interactive PROC load path can be driven for an approach after a STAR.
+class FakeStarApproachSource : public NavFeatureSource {
+ public:
+  bool ready() const override { return true; }
+  std::vector<MapFeature> nearby(double, double, float,
+                                 std::size_t) const override {
+    return {};
+  }
+  std::vector<MapProcedure> proceduresForAirport(
+      const std::string& icao, ProcedureType type) const override {
+    if (icao != "KFMY") return {};
+    if (type == ProcedureType::Arrival) {
+      MapProcedure p;
+      p.type = ProcedureType::Arrival;
+      p.name = "SHFTY6";
+      p.transition = "INPIN";
+      return {p};
+    }
+    if (type == ProcedureType::Approach) {
+      MapProcedure p;
+      p.type = ProcedureType::Approach;
+      p.name = "RNAV06";
+      p.transition = "HOMER";
+      return {p};
+    }
+    return {};
+  }
+  std::vector<MapLeg> expandProcedure(
+      const std::string& icao, ProcedureType type, const std::string& name,
+      const std::string& transition) const override {
+    if (icao != "KFMY") return {};
+    if (type == ProcedureType::Arrival && name == "SHFTY6" &&
+        transition == "INPIN") {
+      return {MakeLeg("INPIN"), MakeLeg("DEEDS"), MakeLeg("SHFTY")};
+    }
+    if (type == ProcedureType::Approach && name == "RNAV06") {
+      std::vector<MapLeg> legs = {MakeLeg("HOMER"), MakeLeg("GIPNO"),
+                                  MakeLeg("RW06"), MakeLeg("MISSD")};
+      legs[0].procedureRole = "iaf";
+      legs[2].procedureRole = "mapt";
+      legs[3].procedureRole = "mahp";
+      return legs;
+    }
+    return {};
+  }
+};
+
+// The reported bug: a STAR is already in the plan but its arrival block is NOT
+// separately tracked (a sim / external-FMS import), and an earlier role-tag
+// inference left the stored approach block spanning the STAR fixes. Loading an
+// approach must NOT erase the STAR.
+TEST(ArrivalLoadTest, LoadingApproachKeepsUntrackedStar) {
+  FakeStarApproachSource nav;
+  ProcedureMenuState state;
+  state.category = ProcedureType::Approach;
+  state.selectedAirportIcao = "KFMY";
+  state.selectedName = "RNAV06";
+  state.selectedTransition = "HOMER";
+
+  std::vector<MapLeg> legs = {MakeLeg("KJAX"), MakeLeg("DURTE"),
+                              MakeLeg("INPIN"), MakeLeg("DEEDS"),
+                              MakeLeg("SHFTY"), MakeLeg("KFMY")};
+  legs[2].procedureRole = "trans";
+  legs[3].procedureRole = "trans";
+  legs[4].procedureRole = "trans";
+  // Stale inferred approach block spans the STAR fixes (INPIN..KFMY).
+  int approachStart = 2, approachCount = 4, cursorRow = 0;
+  MapProcedure loadedApproach;
+  PersistedLoadedApproach persistedApproach;
+  std::string approachHeader;
+  int departureStart = 0, departureCount = 0;
+  MapProcedure loadedDeparture;
+  PersistedLoadedApproach persistedDeparture;
+  std::string departureHeader;
+  int arrivalStart = 0, arrivalCount = 0;  // arrival not tracked
+  MapProcedure loadedArrival;
+  PersistedLoadedApproach persistedArrival;
+  std::string arrivalHeader;
+
+  ProcedureMenuHost host = MakeHost(
+      state, &nav, legs, approachStart, approachCount, cursorRow, loadedApproach,
+      persistedApproach, approachHeader, departureStart, departureCount,
+      loadedDeparture, persistedDeparture, departureHeader, arrivalStart,
+      arrivalCount, loadedArrival, persistedArrival, arrivalHeader);
+
+  procedureMenuLoadSelected(host, "RNAV06", "HOMER");
+
+  const auto contains = [&](const std::string& id) {
+    for (const MapLeg& l : legs)
+      if (l.id == id) return true;
+    return false;
+  };
+  EXPECT_TRUE(contains("INPIN")) << "STAR fix INPIN was erased";
+  EXPECT_TRUE(contains("DEEDS")) << "STAR fix DEEDS was erased";
+  EXPECT_TRUE(contains("SHFTY")) << "STAR fix SHFTY was erased";
+  // The approach is appended at the tail.
+  EXPECT_TRUE(contains("HOMER"));
+  EXPECT_EQ(legs.back().id, "MISSD");
+}
+
+// A genuine prior approach (loaded after the destination airport) must still be
+// replaced when a new approach is loaded, without disturbing the STAR.
+TEST(ArrivalLoadTest, LoadingApproachReplacesPriorApproachKeepsStar) {
+  FakeStarApproachSource nav;
+  ProcedureMenuState state;
+  state.category = ProcedureType::Approach;
+  state.selectedAirportIcao = "KFMY";
+  state.selectedName = "RNAV06";
+  state.selectedTransition = "HOMER";
+
+  std::vector<MapLeg> legs = {
+      MakeLeg("KJAX"),  MakeLeg("DURTE"), MakeLeg("INPIN"), MakeLeg("DEEDS"),
+      MakeLeg("SHFTY"), MakeLeg("KFMY"),  MakeLeg("OLDIA"), MakeLeg("OLDFA"),
+      MakeLeg("RW13"),  MakeLeg("MISAP")};
+  legs[2].procedureRole = "trans";
+  legs[3].procedureRole = "trans";
+  legs[4].procedureRole = "trans";
+  legs[6].procedureRole = "iaf";
+  legs[8].procedureRole = "mapt";
+  legs[9].procedureRole = "mahp";
+  int approachStart = 6, approachCount = 4, cursorRow = 0;
+  MapProcedure loadedApproach;
+  loadedApproach.type = ProcedureType::Approach;
+  loadedApproach.name = "RNAV13";  // a real approach was previously loaded
+  PersistedLoadedApproach persistedApproach;
+  std::string approachHeader;
+  int departureStart = 0, departureCount = 0;
+  MapProcedure loadedDeparture;
+  PersistedLoadedApproach persistedDeparture;
+  std::string departureHeader;
+  int arrivalStart = 2, arrivalCount = 3;
+  MapProcedure loadedArrival;
+  PersistedLoadedApproach persistedArrival;
+  std::string arrivalHeader;
+
+  ProcedureMenuHost host = MakeHost(
+      state, &nav, legs, approachStart, approachCount, cursorRow, loadedApproach,
+      persistedApproach, approachHeader, departureStart, departureCount,
+      loadedDeparture, persistedDeparture, departureHeader, arrivalStart,
+      arrivalCount, loadedArrival, persistedArrival, arrivalHeader);
+
+  procedureMenuLoadSelected(host, "RNAV06", "HOMER");
+
+  const auto contains = [&](const std::string& id) {
+    for (const MapLeg& l : legs)
+      if (l.id == id) return true;
+    return false;
+  };
+  // STAR survives, prior approach removed, new approach appended.
+  EXPECT_TRUE(contains("INPIN"));
+  EXPECT_TRUE(contains("SHFTY"));
+  EXPECT_FALSE(contains("OLDIA")) << "prior approach was not replaced";
+  EXPECT_FALSE(contains("OLDFA")) << "prior approach was not replaced";
+  EXPECT_TRUE(contains("HOMER"));
+  EXPECT_EQ(legs.back().id, "MISSD");
+}
+
 }  // namespace
 }  // namespace avionics::test

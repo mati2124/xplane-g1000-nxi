@@ -21,7 +21,9 @@ namespace avionics::mfd {
 namespace {
 
 // Six cyan underscores per ident endpoint for an empty slot (trainer 060).
-inline constexpr const char* kCatalogEmptyIdent = "______";
+// Space-separated so they render as discrete placeholders, not one solid bar --
+// matching the empty-field style used elsewhere (e.g. MfdChartsPage "_ _ _ _").
+inline constexpr const char* kCatalogEmptyIdent = "_ _ _ _ _ _";
 
 std::string identOrDashes(const std::string& ident) {
   return ident.empty() ? std::string(kCatalogEmptyIdent) : ident;

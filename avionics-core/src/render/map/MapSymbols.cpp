@@ -246,4 +246,51 @@ void drawUiWaypointIcon(Renderer& r, MapFeatureType type, float x, float y,
   }
 }
 
+void drawTrafficSymbol(Renderer& r, float x, float y, float half,
+                       TrafficThreat threat) {
+  switch (threat) {
+    case TrafficThreat::Advisory:
+      r.fillCircle(x, y, half * 0.9f, colors::kBandYellow);
+      break;
+    case TrafficThreat::Proximity: {
+      const Point diamond[4] = {
+          {x, y - half}, {x + half, y}, {x, y + half}, {x - half, y}};
+      r.fillPolygon(diamond, 4, colors::kWhite);
+      break;
+    }
+    case TrafficThreat::Other: {
+      // Non-threat: white diamond with an opaque black center (not see-through)
+      // so it reads cleanly over map/terrain, per the NXi symbology.
+      const Point fill[4] = {
+          {x, y - half}, {x + half, y}, {x, y + half}, {x - half, y}};
+      r.fillPolygon(fill, 4, colors::kBlack);
+      const Point outline[5] = {{x, y - half}, {x + half, y}, {x, y + half},
+                                {x - half, y}, {x, y - half}};
+      r.strokePolyline(outline, 5, 1.8f, colors::kWhite);
+      break;
+    }
+  }
+}
+
+void drawTrafficOffScaleAdvisory(Renderer& r, float x, float y, float half,
+                                 float bearingRad) {
+  // Radial direction (outward from scope center) and the perpendicular tangent
+  // that forms the half-disc's flat diameter edge.
+  const float rx = std::sin(bearingRad);
+  const float ry = -std::cos(bearingRad);
+  const float tx = std::cos(bearingRad);
+  const float ty = std::sin(bearingRad);
+  constexpr int kSeg = 12;
+  Point arc[kSeg + 2];
+  for (int i = 0; i <= kSeg; ++i) {
+    const float a = static_cast<float>(i) / static_cast<float>(kSeg) *
+                    3.14159265f;  // 0..pi sweeps the outward half
+    const float cx = std::cos(a) * half;
+    const float cy = std::sin(a) * half;
+    arc[i] = {x + cx * tx + cy * rx, y + cx * ty + cy * ry};
+  }
+  arc[kSeg + 1] = arc[0];
+  r.fillPolygon(arc, kSeg + 2, colors::kBandYellow);
+}
+
 }  // namespace avionics

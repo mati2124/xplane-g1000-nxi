@@ -288,15 +288,22 @@ struct MapAirwaySegment {
   GeoPoint b;
 };
 
-// One TIS/TAS traffic target for the map overlay (TIS symbology: open white
-// diamond for non-threat traffic, solid yellow circle for a Traffic
-// Advisory, with a relative-altitude tag and climb/descend arrow).
+// TCAS threat classification for a traffic target, which selects the symbol
+// shape and color (Pilot's Guide, Hazard Avoidance - Traffic):
+//   Other      - non-threat: open white diamond
+//   Proximity  - proximity advisory: solid white diamond (within 5 NM and
+//                +/-1200 ft, but not a TA)
+//   Advisory   - traffic advisory (TA): solid yellow circle
+enum class TrafficThreat { Other, Proximity, Advisory };
+
+// One TIS/TAS traffic target for the map overlay, drawn with TCAS symbology
+// per `threat` plus a relative-altitude tag and climb/descend arrow.
 struct MapTraffic {
   double lat = 0.0;
   double lon = 0.0;
   float relAltFt = 0.0f;           // relative to ownship; + is above
   float verticalSpeedFpm = 0.0f;   // drives the climb/descend arrow
-  bool trafficAdvisory = false;    // TA threat level
+  TrafficThreat threat = TrafficThreat::Other;
 };
 
 // Land (cultural/hydro) vector data classes, from the bundled Natural Earth

@@ -554,9 +554,17 @@ inline std::vector<FplDisplayRow> buildFplApproachDisplayRows(
   const int sectionLegCount =
       blankOriginSection ? 0 : fplEnrouteDisplayLegCount(legs, approachStart);
 
+  // The enroute section's "destination" is the airport-before-approach, which
+  // only exists once the section has >=2 legs. With a single section leg that
+  // leg is the Origin (the approach airport is the real destination, drawn in
+  // the approach header). Passing destinationFilled there made buildFplSectionRows
+  // treat it as a destination-only plan and blank out the Origin row's leg index,
+  // so the cursor landed on a row mapping to no leg and CLR could not delete it.
+  const bool sectionDestinationFilled = destinationFilled && sectionLegCount >= 2;
+
   const std::vector<FplSectionRow> sectionRows =
 
-      buildFplSectionRows(sectionLegCount, destinationFilled);
+      buildFplSectionRows(sectionLegCount, sectionDestinationFilled);
 
   bool enrouteBlock = false;
 

@@ -4609,6 +4609,14 @@ int main(int argc, char** argv) {
           !navigraph.fetching()) {
         navigraph.requestFetch();
       }
+      // Opening the FPL - Flight Plan Catalog page re-fetches the latest OFP so
+      // a plan generated mid-session shows up without restarting (startup
+      // already auto-fetches on sign-in restore). The result lands in the
+      // catalog via storeFlightPlanFromSimBriefImport below.
+      if (mfdUi.consumeCatalogRefreshRequest() && simConnected &&
+          !navigraph.fetching()) {
+        navigraph.requestFetch();
+      }
     }
     // Persist the refresh token whenever the store rotates it (or clears it on
     // sign-out), so the next launch restores the session.
@@ -5102,13 +5110,22 @@ int main(int argc, char** argv) {
         }
         const avionics::PersistedDirectTo directTo =
             AuthoritativeDirectToSnapshot(pfdEngine, mfdEngine, app.activeSource);
-        if (directTo.active) {
-          if (directTo != app.settings.persistedDirectTo) {
-            app.settings.persistedDirectTo = directTo;
-            avionics::SaveAppSettings(app.settings);
-          }
-        } else if (!app.settings.persistedDirectTo.active) {
-          if (directTo != app.settings.persistedDirectTo) {
+        if (directTo != app.settings.persistedDirectTo) {
+          // Overwriting a saved active Direct-To with an inactive snapshot is
+          // only trustworthy once the source is live. Before the sim connects
+          // (and during a reconnect) the snapshot can briefly read "no
+          // Direct-To" before the restored state is re-applied; persisting that
+          // would forget the pilot's Direct-To and fall back to the first leg.
+          // A live source means the inactive state is real -- the navigator
+          // just sequenced onto (captured) the Direct-To leg, or the pilot
+          // cancelled it -- so the stale Direct-To must not be restored again.
+          const bool clearsSavedDirectTo =
+              app.settings.persistedDirectTo.active && !directTo.active;
+          const bool sourceLive =
+              app.activeSource != nullptr &&
+              app.activeSource->connectionState() ==
+                  avionics::ConnectionState::Connected;
+          if (!clearsSavedDirectTo || sourceLive) {
             app.settings.persistedDirectTo = directTo;
             avionics::SaveAppSettings(app.settings);
           }

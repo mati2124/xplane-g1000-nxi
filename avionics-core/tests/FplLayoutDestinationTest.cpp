@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "avionics/MapData.h"
+#include "avionics/NavFeatureSource.h"
+#include "avionics/SoftkeyController.h"
 #include "render/pfd/PfdFlightPlanSections.h"
 
 namespace avionics {
@@ -17,6 +19,24 @@ MapLeg makeLeg(const char* id) {
   return leg;
 }
 
+// A loaded nav database that resolves nothing -- models a session whose nav data
+// is ready but does not contain a small destination airport (e.g. K1H2).
+class EmptyReadyNavSource : public NavFeatureSource {
+ public:
+  bool ready() const override { return true; }
+  std::vector<MapFeature> nearby(double, double, float,
+                                 std::size_t) const override {
+    return {};
+  }
+  std::vector<MapFeature> lookupIdent(const std::string&,
+                                      std::size_t) const override {
+    return {};
+  }
+  std::string firstIdentWithPrefix(const std::string&) const override {
+    return {};
+  }
+};
+
 TEST(FplLayoutDestinationTest, LayoutDestinationFilledRequiresAirport) {
   const std::vector<MapLeg> fixEnding = {
       makeLeg("KFMY"), makeLeg("CSHEL"), makeLeg("LAL"), makeLeg("JINOS"),
@@ -27,6 +47,72 @@ TEST(FplLayoutDestinationTest, LayoutDestinationFilledRequiresAirport) {
 
   const std::vector<MapLeg> airportEnding = {makeLeg("KFMY"), makeLeg("KJAX")};
   EXPECT_TRUE(fplLayoutDestinationFilled(airportEnding, true, 0));
+}
+
+TEST(FplLayoutDestinationTest, AirportCodeWithDigitClassification) {
+  // The strict four-letter check stays strict (used for procedure-block
+  // boundaries); the looser format / digit helpers recognise airport codes that
+  // contain digits like K1H2 without being fooled by enroute fixes.
+  EXPECT_FALSE(isAirportIdent("K1H2"));
+  EXPECT_TRUE(isAirportCodeFormat("K1H2"));
+  EXPECT_TRUE(isAirportCodeWithDigit("K1H2"));
+  EXPECT_TRUE(isAirportCodeWithDigit("KX01"));
+  EXPECT_FALSE(isAirportCodeWithDigit("KJAX"));   // no digit
+  EXPECT_FALSE(isAirportCodeWithDigit("TEBOW"));  // five-letter enroute fix
+  EXPECT_FALSE(isAirportCodeWithDigit("BNA"));    // three-letter VOR
+
+  // Small US fields with no ICAO code keep their three-character FAA local
+  // identifier (1H2, 06C); these contain a digit and must read as airports, but
+  // a plain three-letter VOR/NDB ident must not.
+  EXPECT_TRUE(isAirportCodeFormat("1H2"));
+  EXPECT_TRUE(isAirportCodeWithDigit("1H2"));
+  EXPECT_TRUE(isAirportCodeWithDigit("06C"));
+  EXPECT_FALSE(isAirportIdent("1H2"));          // not four letters
+  EXPECT_FALSE(isAirportCodeFormat("BNA"));     // three-letter VOR, no digit
+  EXPECT_FALSE(isAirportCodeWithDigit("LAL"));  // three-letter VOR, no digit
+}
+
+TEST(FplLayoutDestinationTest, LayoutDestinationFilledAcceptsFaaLocalIdAirport) {
+  // The reported bug: entering the small field 1H2 (a three-character FAA local
+  // identifier, no ICAO code) as the destination must place it under
+  // Destination, not Enroute.
+  const std::vector<MapLeg> legs = {makeLeg("KBNA"), makeLeg("1H2")};
+  EXPECT_TRUE(fplLayoutDestinationFilled(legs, true, 0));
+}
+
+TEST(FplLayoutDestinationTest, ControllerDestinationFaaLocalIdNoNavDb) {
+  // 1H2 as the route endpoint, nav data loaded but not containing the field,
+  // must still place it under Destination.
+  EmptyReadyNavSource nav;
+  SoftkeyController ui;
+  ui.setNavFeatureSource(&nav);
+  ui.replaceFlightPlanFromExternal({makeLeg("KBNA"), makeLeg("1H2")});
+  EXPECT_TRUE(ui.flightPlanDestinationFilledForLayout());
+}
+
+TEST(FplLayoutDestinationTest, LayoutDestinationFilledAcceptsDigitAirport) {
+  // KBNA -> ... -> K1H2: the layout flag must treat K1H2 as the destination, not
+  // an enroute fix, even though the four-letter strict check rejects it.
+  const std::vector<MapLeg> legs = {makeLeg("KBNA"), makeLeg("GHM"),
+                                    makeLeg("K1H2")};
+  EXPECT_TRUE(fplLayoutDestinationFilled(legs, true, 0));
+}
+
+TEST(FplLayoutDestinationTest, ControllerDestinationDigitAirportNoNavDb) {
+  // Reproduces the reported bug: a SimBrief plan ending at the small field K1H2,
+  // with nav data loaded but not containing K1H2, must still place K1H2 under
+  // Destination (flightPlanDestinationFilledForLayout() == true).
+  EmptyReadyNavSource nav;
+  SoftkeyController ui;
+  ui.setNavFeatureSource(&nav);
+  ui.replaceFlightPlanFromExternal(
+      {makeLeg("KBNA"), makeLeg("GHM"), makeLeg("K1H2")});
+  EXPECT_TRUE(ui.flightPlanDestinationFilledForLayout());
+
+  // A fix-ending route (no airport) must still NOT be destination-filled.
+  ui.replaceFlightPlanFromExternal(
+      {makeLeg("KBNA"), makeLeg("GHM"), makeLeg("TEBOW")});
+  EXPECT_FALSE(ui.flightPlanDestinationFilledForLayout());
 }
 
 TEST(FplLayoutDestinationTest, SectionLayoutKeepsFixInEnroute) {

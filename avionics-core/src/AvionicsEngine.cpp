@@ -414,28 +414,41 @@ void AvionicsEngine::syncFlightPlanApproachPeer() {
   }
   if (!authoritative.active()) return;
 
+  // Bound the approach inference below any loaded SID/departure block so its
+  // untagged-feeder walk-back cannot swallow the SID when the destination-airport
+  // waypoint is absent (the sim drops it once an approach is loaded).
   const auto stateForLegs = [](const FlightPlanApproachState& source,
-                               const std::vector<MapLeg>& legs) {
-    return approachStateFitsPlan(source, legs) ? source
-                                               : FlightPlanApproachState{};
+                               const std::vector<MapLeg>& legs,
+                               int departureEnd) {
+    return fplResolvedApproachState(legs, source, source.loaded.transition, 0,
+                                    departureEnd);
+  };
+  const auto departureEndOf = [](int start, int count) {
+    return count > 0 ? start + count : 0;
   };
 
   const std::vector<MapLeg>& syncedLegs = pfdSk.flightPlanLegs();
-  const FlightPlanApproachState mfdState = stateForLegs(authoritative, syncedLegs);
+  const FlightPlanApproachState mfdState = stateForLegs(
+      authoritative, syncedLegs,
+      departureEndOf(mfd_.fplDepartureLegStart(), mfd_.fplDepartureLegCount()));
   if (!flightPlanApproachGroupingEqual(mfd_.flightPlanApproachState(), mfdState) ||
       mfd_.fplApproachHeaderLabel() != mfdState.headerLabel) {
     mfd_.applyFlightPlanApproachState(mfdState);
   }
 
-  const FlightPlanApproachState skState =
-      stateForLegs(authoritative, softkeys_.flightPlanLegs());
+  const FlightPlanApproachState skState = stateForLegs(
+      authoritative, softkeys_.flightPlanLegs(),
+      departureEndOf(softkeys_.flightPlanDepartureLegStart(),
+                     softkeys_.flightPlanDepartureLegCount()));
   if (!flightPlanApproachGroupingEqual(softkeys_.flightPlanApproachState(),
                                        skState)) {
     softkeys_.applyFlightPlanApproachState(skState);
   }
 
-  const FlightPlanApproachState peerMfdState =
-      stateForLegs(authoritative, syncedLegs);
+  const FlightPlanApproachState peerMfdState = stateForLegs(
+      authoritative, syncedLegs,
+      departureEndOf(softkeyPeer_->mfdController().fplDepartureLegStart(),
+                     softkeyPeer_->mfdController().fplDepartureLegCount()));
   if (!flightPlanApproachGroupingEqual(
           softkeyPeer_->mfdController().flightPlanApproachState(),
           peerMfdState) ||
@@ -445,7 +458,10 @@ void AvionicsEngine::syncFlightPlanApproachPeer() {
   }
 
   const FlightPlanApproachState peerSkState = stateForLegs(
-      authoritative, softkeyPeer_->softkeyController().flightPlanLegs());
+      authoritative, softkeyPeer_->softkeyController().flightPlanLegs(),
+      departureEndOf(
+          softkeyPeer_->softkeyController().flightPlanDepartureLegStart(),
+          softkeyPeer_->softkeyController().flightPlanDepartureLegCount()));
   if (!flightPlanApproachGroupingEqual(
           softkeyPeer_->softkeyController().flightPlanApproachState(),
           peerSkState)) {

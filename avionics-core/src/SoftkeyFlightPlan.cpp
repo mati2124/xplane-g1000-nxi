@@ -177,6 +177,7 @@ void SoftkeyController::stripCourseReversalHoldAtFix(const std::string& fixId) {
 
 FplRouteEdit SoftkeyController::flightPlanRouteEditState() const {
   auto* self = const_cast<SoftkeyController*>(this);
+  self->fplEnsureApproachInferred();
   FplRouteEdit edit{self->fplLegs_,           self->fplDestinationFilled_,
                     self->fplApproachLegStart_, self->fplApproachLegCount_,
                     self->fplCursorRow_,         &self->fplLoadedApproach_,
@@ -762,12 +763,57 @@ void SoftkeyController::tryRestorePersistedTerminalProcedures() {
   }
 }
 
+void SoftkeyController::fplEnsureApproachInferred() {
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  // The approach can never begin within or before a loaded SID/departure block;
+  // bound the inference so its untagged-feeder walk-back cannot swallow the SID
+  // when the destination-airport waypoint is absent.
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  std::string transition = fplLoadedApproach_.transition;
+  if (transition.empty() && persistedApproachRestore_.active) {
+    transition = persistedApproachRestore_.transition;
+  }
+
+  FlightPlanApproachState stored;
+  stored.legStart = fplApproachLegStart_;
+  stored.legCount = fplApproachLegCount_;
+  stored.loaded = fplLoadedApproach_;
+
+  const FlightPlanApproachState resolved = fplResolvedApproachState(
+      fplLegs_, stored, transition, arrivalEnd, departureEnd);
+  if (!resolved.active()) {
+    if (fplApproachLegCount_ > 0 &&
+        !approachStateFitsPlan(stored, fplLegs_)) {
+      fplApproachLegStart_ = 0;
+      fplApproachLegCount_ = 0;
+      fplLoadedApproach_ = {};
+    } else if (fplApproachLegCount_ <= 0) {
+      reinferApproachFromProcedureLegs();
+    }
+    return;
+  }
+
+  fplApproachLegStart_ = resolved.legStart;
+  fplApproachLegCount_ = resolved.legCount;
+  if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
+    fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
+  }
+}
+
 void SoftkeyController::reinferApproachFromProcedureLegs() {
   const int arrivalEnd =
       fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
-  // Never infer an approach that starts at or before the destination airport, so
-  // a STAR's role-tagged fixes are not swallowed when the arrival is untracked.
-  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  // Never infer an approach that starts at or before the destination airport (or
+  // inside a loaded SID), so a STAR's or SID's fixes are not swallowed when those
+  // blocks are untracked.
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
   const InferredProcedureBlock block =
       inferProcedureBlockInPlan(fplLegs_, arrivalFloor);
   if (!block.valid()) return;
@@ -907,10 +953,15 @@ PersistedFlightPlan SoftkeyController::persistedFlightPlanSnapshot() const {
   out.legs = fplLegs_;
   const int arrivalEnd =
       fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
-  // Never persist an approach block that overlaps the arrival/STAR block or
-  // starts before the destination airport: those leading legs are STAR legs, not
-  // an approach (avoids resurrecting a phantom approach that swallows the STAR).
-  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  // Never persist an approach block that overlaps the arrival/STAR block, starts
+  // inside a loaded SID, or starts before the destination airport: those leading
+  // legs are SID/STAR legs, not an approach (avoids resurrecting a phantom
+  // approach that swallows the SID/STAR).
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
   if (fplApproachLegCount_ > 0 && fplApproachLegStart_ >= arrivalFloor) {
     out.approachLegStart = fplApproachLegStart_;
     out.approachLegCount = fplApproachLegCount_;

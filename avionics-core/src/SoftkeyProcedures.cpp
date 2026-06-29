@@ -68,27 +68,32 @@ bool SoftkeyController::procMenuItemEnabled(int i) const {
 }
 
 std::string SoftkeyController::procDefaultAirportIcao() const {
-  if (procCategory() == ProcedureType::Departure && !fplLegs_.empty() &&
-      isAirportIdent(fplLegs_.front().id)) {
-    return fplLegs_.front().id;
+  if (procCategory() == ProcedureType::Departure) {
+    std::string origin = firstKnownAirportInPlan(fplLegs_, mapData_, navSource_);
+    if (origin.empty() && !fplLegs_.empty() &&
+        isAirportIdent(fplLegs_.front().id)) {
+      origin = fplLegs_.front().id;
+    }
+    if (!origin.empty()) return origin;
   }
 
-  const int approachEnd = fplApproachLegCount_ > 0
-                              ? fplApproachLegStart_
-                              : static_cast<int>(fplLegs_.size());
-  std::string icao = airportIcaoBeforeIndex(fplLegs_, approachEnd);
-  if (!icao.empty()) return icao;
-
-  icao = directToAirportIcao(mapData_);
-  if (!icao.empty()) return icao;
-
-  if (mapData_ != nullptr) {
-    icao = lastAirportInPlan(mapData_->flightPlan);
-    if (!icao.empty()) return icao;
+  std::string loadedApproachIcao;
+  if (persistedApproachRestore_.active) {
+    loadedApproachIcao = persistedApproachRestore_.airportIcao;
   }
-
-  icao = lastAirportInPlan(fplLegs_);
-  if (!icao.empty()) return icao;
+  std::string dest = fplDestinationAirportIcao(
+      {fplLegs_,
+       fplDestinationFilled_,
+       fplApproachLegStart_,
+       fplApproachLegCount_,
+       fplArrivalLegStart_,
+       fplArrivalLegCount_,
+       mapData_,
+       navSource_,
+       loadedApproachIcao,
+       flightPlanArrivalAirportIcao(),
+       {}});
+  if (!dest.empty()) return dest;
 
   if (isAirportIdent(activeWaypoint_)) return activeWaypoint_;
 
@@ -186,6 +191,14 @@ std::string SoftkeyController::flightPlanApproachAirportIcao() const {
   // (e.g. the approach was inferred from leg roles after a sim/Direct-To resync)
   // so the destination is not mislabeled as the airport before the approach.
   if (loadedIcao.empty()) loadedIcao = flightPlanArrivalAirportIcao();
+  const std::string headerLabel = flightPlanApproachHeaderLabel();
+  if (loadedIcao.empty() && !headerLabel.empty()) {
+    const std::size_t dash = headerLabel.find('-');
+    if (dash != std::string::npos) {
+      const std::string prefix = headerLabel.substr(0, dash);
+      if (isAirportIdent(prefix)) loadedIcao = prefix;
+    }
+  }
   return fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_, loadedIcao);
 }
 

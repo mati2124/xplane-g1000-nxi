@@ -47,25 +47,47 @@ void clearTerminalProcedureState(MapProcedure& loaded, int& legStart,
 void MfdController::fplEnsureApproachInferred() {
   const int arrivalEnd =
       fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
-  // The approach can only begin after the destination airport; a stored block
-  // that starts at or before it (inside the arrival/STAR block, or swallowing
-  // the STAR when the arrival is not tracked) is stale - its leading legs are
-  // STAR fixes that happen to carry procedureRole tags. Drop it so it is not
-  // rendered as a spurious second destination section.
-  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
-  if (fplApproachLegCount_ > 0 && fplApproachLegStart_ < arrivalFloor) {
-    fplApproachLegStart_ = 0;
-    fplApproachLegCount_ = 0;
-    fplLoadedApproach_ = {};
-    fplApproachHeaderLabel_.clear();
+  // The approach can never begin within or before a loaded SID/departure block;
+  // bound the inference so its untagged-feeder walk-back cannot swallow the SID
+  // when the destination-airport waypoint is absent.
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  std::string transition = fplLoadedApproach_.transition;
+  if (transition.empty() && persistedApproachRestore_.active) {
+    transition = persistedApproachRestore_.transition;
   }
-  if (fplApproachLegCount_ > 0) {
-    FlightPlanApproachState state;
-    state.legStart = fplApproachLegStart_;
-    state.legCount = fplApproachLegCount_;
-    if (approachStateFitsPlan(state, fplLegs_)) return;
+
+  FlightPlanApproachState stored;
+  stored.legStart = fplApproachLegStart_;
+  stored.legCount = fplApproachLegCount_;
+  stored.loaded = fplLoadedApproach_;
+  stored.headerLabel = fplApproachHeaderLabel_;
+
+  const FlightPlanApproachState resolved = fplResolvedApproachState(
+      fplLegs_, stored, transition, arrivalEnd, departureEnd);
+  if (!resolved.active()) {
+    if (fplApproachLegCount_ > 0 &&
+        !approachStateFitsPlan(stored, fplLegs_)) {
+      fplApproachLegStart_ = 0;
+      fplApproachLegCount_ = 0;
+      fplLoadedApproach_ = {};
+      fplApproachHeaderLabel_.clear();
+    } else if (fplApproachLegCount_ <= 0) {
+      reinferApproachFromProcedureLegs();
+    }
+    return;
   }
-  reinferApproachFromProcedureLegs();
+
+  // Keep cursor math aligned with the FPL page renderer, which resolves the
+  // approach block locally (MfdFlightPlanPage.cpp) rather than trusting a stale
+  // stored span that can swallow the origin airport (start=0).
+  fplApproachLegStart_ = resolved.legStart;
+  fplApproachLegCount_ = resolved.legCount;
+  if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
+    fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
+    fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
+  }
 }
 
 MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const {
@@ -79,7 +101,11 @@ MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const 
   // STAR is loaded but its arrival block is not separately tracked.
   const int arrivalEnd =
       fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
-  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
 
   const auto inferFromLegs = [&]() {
     const InferredProcedureBlock block =
@@ -127,6 +153,7 @@ MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const 
 
 FplRouteEdit MfdController::fplRouteEditState() const {
   auto* self = const_cast<MfdController*>(this);
+  self->fplEnsureApproachInferred();
   FplRouteEdit edit{self->fplLegs_,           self->fplDestinationFilled_,
                     self->fplApproachLegStart_, self->fplApproachLegCount_,
                     self->fplCursorRow_,         &self->fplLoadedApproach_,
@@ -927,6 +954,13 @@ std::string MfdController::fplApproachAirportIcao() const {
   // (e.g. the approach was inferred from leg roles after a sim/Direct-To resync)
   // so the destination is not mislabeled as the airport before the approach.
   if (loadedIcao.empty()) loadedIcao = fplArrivalAirportIcao();
+  if (loadedIcao.empty() && !fplApproachHeaderLabel_.empty()) {
+    const std::size_t dash = fplApproachHeaderLabel_.find('-');
+    if (dash != std::string::npos) {
+      const std::string prefix = fplApproachHeaderLabel_.substr(0, dash);
+      if (isAirportIdent(prefix)) loadedIcao = prefix;
+    }
+  }
   return ::avionics::fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_,
                                             loadedIcao);
 }
@@ -1018,9 +1052,14 @@ void MfdController::tryRestorePersistedTerminalProcedures() {
 void MfdController::reinferApproachFromProcedureLegs() {
   const int arrivalEnd =
       fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
-  // Never infer an approach that starts at or before the destination airport, so
-  // a STAR's role-tagged fixes are not swallowed when the arrival is untracked.
-  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  // Never infer an approach that starts at or before the destination airport (or
+  // inside a loaded SID), so a STAR's or SID's role-tagged/untagged fixes are not
+  // swallowed when those blocks are untracked.
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
   const InferredProcedureBlock block =
       inferProcedureBlockInPlan(fplLegs_, arrivalFloor);
   if (!block.valid()) return;
@@ -1062,10 +1101,15 @@ PersistedFlightPlan MfdController::persistedFlightPlanSnapshot() const {
   out.legs = fplLegs_;
   const int arrivalEnd =
       fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
-  // Never persist an approach block that overlaps the arrival/STAR block or
-  // starts before the destination airport: those leading legs are STAR legs, not
-  // an approach (avoids resurrecting a phantom approach that swallows the STAR).
-  const int arrivalFloor = fplApproachInferenceFloor(fplLegs_, arrivalEnd);
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  // Never persist an approach block that overlaps the arrival/STAR block, starts
+  // inside a loaded SID, or starts before the destination airport: those leading
+  // legs are SID/STAR legs, not an approach (avoids resurrecting a phantom
+  // approach that swallows the SID/STAR).
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
   if (fplApproachLegCount_ > 0 && fplApproachLegStart_ >= arrivalFloor) {
     out.approachLegStart = fplApproachLegStart_;
     out.approachLegCount = fplApproachLegCount_;

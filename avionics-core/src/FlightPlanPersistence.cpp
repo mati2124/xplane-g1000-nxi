@@ -147,6 +147,21 @@ void preserveFlightPlanIdents(std::vector<MapLeg>& plan,
         (leg.id == pub.id || isFmsLatLonIdent(leg.id))) {
       leg.viaAirway = pub.viaAirway;
     }
+    // Pilot-entered ("designated") VNAV altitude constraints live only in the
+    // avionics; the sim FMS does not echo them back. Restore a designated
+    // constraint from the last published plan onto a position-matched leg that
+    // returned without one so custom altitudes survive a sim round-trip (and a
+    // standalone restart that re-adopts the sim route after the saved route
+    // override is dropped). A constraint already present on the adopted leg is
+    // left alone — it comes from a loaded procedure (CIFP) and must win.
+    if (samePosition && pub.altitudeDesignated &&
+        pub.altitudeConstraint != AltConstraintType::None &&
+        leg.altitudeConstraint == AltConstraintType::None &&
+        (leg.id == pub.id || isFmsLatLonIdent(leg.id))) {
+      leg.altitudeConstraintFt = pub.altitudeConstraintFt;
+      leg.altitudeConstraint = pub.altitudeConstraint;
+      leg.altitudeDesignated = true;
+    }
     if (leg.id == pub.id) continue;
     if (!isFmsLatLonIdent(leg.id) || isFmsLatLonIdent(pub.id)) continue;
     if (!samePosition) continue;
@@ -268,8 +283,9 @@ int mapRoutePlanLegIndex(const std::vector<MapLeg>& legs, int routeLegIndex,
   return routeLegIndex;
 }
 
-int fplApproachInferenceFloor(const std::vector<MapLeg>& legs, int arrivalEnd) {
-  int floor = std::max(0, arrivalEnd);
+int fplApproachInferenceFloor(const std::vector<MapLeg>& legs, int arrivalEnd,
+                              int departureEnd) {
+  int floor = std::max({0, arrivalEnd, departureEnd});
   // The destination airport separates the STAR (before it) from the approach
   // (after it). Find the last airport ident that is followed by at least one
   // procedure-role leg: that airport is the destination, and the approach can

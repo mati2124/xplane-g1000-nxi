@@ -143,6 +143,59 @@ TEST(FplHoldRowTest, CursorOnHoldRowDetectsHoldDisplayRow) {
       edit, "KCMI", ::avionics::FplCursorLayout::SectionRows));
 }
 
+TEST(FplHoldRowTest, OriginLegIsSelectableWithSingleEnrouteSectionLeg) {
+  // Origin airport followed straight by a loaded approach (no enroute legs and
+  // no separate destination airport leg): KATL -> [R20L approach into KBNA].
+  // The single enroute-section leg (KATL) is the Origin, not a destination-only
+  // plan, so its display row must carry leg index 0 — otherwise the cursor sits
+  // on a row that maps to no leg and CLR cannot delete it.
+  const auto leg = [](const char* id, const char* role = "") {
+    MapLeg l;
+    l.id = id;
+    l.procedureRole = role;
+    return l;
+  };
+  const std::vector<MapLeg> legs = {
+      leg("KATL"), leg("WAYLN", "iaf"), leg("CRAMR"),
+      leg("JUUDD", "faf"), leg("XIYRI"), leg("RW20L", "mapt"),
+  };
+  const int approachStart = 1;
+  const int approachCount = 5;
+
+  const auto rows = buildFplApproachDisplayRows(legs, approachStart,
+                                                approachCount,
+                                                /*blankOriginSection=*/false,
+                                                /*destinationFilled=*/true);
+  bool sawOriginKatl = false;
+  for (const FplDisplayRow& dr : rows) {
+    if (dr.kind == FplDisplayRowKind::Origin) {
+      EXPECT_EQ(dr.legIndex, 0) << "Origin row must reference KATL (leg 0)";
+      sawOriginKatl = true;
+    }
+  }
+  EXPECT_TRUE(sawOriginKatl);
+
+  // The first selectable cursor row (the Origin) resolves to leg 0, so CLR on
+  // KATL removes it.
+  EXPECT_EQ(fplApproachLegIndexForSelectable(0, legs, approachStart,
+                                             approachCount,
+                                             /*blankOriginSection=*/false,
+                                             /*destinationFilled=*/true),
+            0);
+
+  std::vector<MapLeg> mutableLegs = legs;
+  bool destinationFilled = true;
+  int editApproachStart = approachStart;
+  int editApproachCount = approachCount;
+  int cursorRow = 0;
+  FplRouteEdit edit{mutableLegs,     destinationFilled, editApproachStart,
+                    editApproachCount, cursorRow,       nullptr,
+                    nullptr};
+  EXPECT_EQ(::avionics::fplCursorLegIndex(
+                edit, "KBNA", ::avionics::FplCursorLayout::SectionRows),
+            0);
+}
+
 TEST(FplHoldRowTest, HoldNavActiveUsesHoldSelectableRow) {
   MapLeg bostn;
   bostn.id = "BOSTN";

@@ -451,8 +451,10 @@ void drawGauge(Renderer& r, const FlightData& d, const EisGauge& gauge,
 }  // namespace
 
 float eisStripWidthFrac(EisStripStyle style) {
-  // 150/1024 piston, 195/1024 turbofan, against the 1024 px GDU canvas.
-  return style == EisStripStyle::Turbofan ? 195.0f / 1024.0f : 150.0f / 1024.0f;
+  // 150/1024 piston; 237/1024 turbofan. The turbofan strip is sized so its
+  // width-to-height ratio matches the real Perspective Touch+ EIS (strip w/h
+  // ~0.349 over the body height), which a narrower strip made look cramped.
+  return style == EisStripStyle::Turbofan ? 237.0f / 1024.0f : 150.0f / 1024.0f;
 }
 
 void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,

@@ -29,4 +29,16 @@ void drawUiWaypointIcon(Renderer& r, MapFeatureType type, float x, float y,
                         bool airportTowered = false,
                         bool airportServiced = false);
 
+// TCAS traffic target symbol by threat level (TIS/TAS symbology). `half` is the
+// symbol half-extent in pixels: open white diamond (Other), solid white diamond
+// (Proximity), or solid yellow circle (Advisory).
+void drawTrafficSymbol(Renderer& r, float x, float y, float half,
+                       TrafficThreat threat);
+
+// Off-scale Traffic Advisory: a half yellow circle drawn at the outer range
+// ring, bulging toward the intruder. `bearingRad` is the screen angle from the
+// scope center to the target (0 = up/ahead, increasing clockwise).
+void drawTrafficOffScaleAdvisory(Renderer& r, float x, float y, float half,
+                                 float bearingRad);
+
 }  // namespace avionics

@@ -77,12 +77,17 @@ int mapRoutePlanLegIndex(const std::vector<MapLeg>& legs, int routeLegIndex,
 // procedure tail AFTER the destination airport, so it can never start at or
 // before the last airport ident that is itself followed by procedure legs (that
 // airport is the destination). Returned floor is never below `arrivalEnd` (a
-// separately tracked arrival/STAR block). This keeps a STAR's role-tagged fixes
-// from being mistaken for the approach when the arrival block is not tracked
-// (e.g. a route adopted from the sim/external FMS), so the STAR and the approach
-// stay distinct parent sections on the flight plan page.
+// separately tracked arrival/STAR block) nor `departureEnd` (a separately
+// tracked SID/departure block). This keeps a STAR's role-tagged fixes from being
+// mistaken for the approach when the arrival block is not tracked (e.g. a route
+// adopted from the sim/external FMS), and keeps a loaded SID's fixes from being
+// swallowed by the approach inference's untagged-feeder walk-back when no
+// destination-airport waypoint separates the SID/enroute legs from the approach
+// (the sim drops the airport waypoint once an approach is loaded). So the
+// departure, enroute, and approach stay distinct parent sections on the flight
+// plan page.
 int fplApproachInferenceFloor(const std::vector<MapLeg>& legs,
-                              int arrivalEnd = 0);
+                              int arrivalEnd = 0, int departureEnd = 0);
 
 // Copies procedureRole (and any future per-leg PROC fields) from expanded legs
 // into the matching plan rows.
@@ -262,9 +267,10 @@ inline int approachBlockStartFromTransition(const std::vector<MapLeg>& legs,
 // otherwise infer from procedureRole tags, then anchor at the loaded transition.
 inline InferredProcedureBlock resolveApproachBlockInPlan(
     const std::vector<MapLeg>& legs, int storedStart, int storedCount,
-    const std::string& transition, int arrivalEnd = 0) {
+    const std::string& transition, int arrivalEnd = 0, int departureEnd = 0) {
   InferredProcedureBlock out;
-  const int minStart = fplApproachInferenceFloor(legs, arrivalEnd);
+  const int minStart =
+      fplApproachInferenceFloor(legs, arrivalEnd, departureEnd);
   // A stored block that falls inside a loaded arrival/STAR block is stale
   // (its legs belong to the arrival, not an approach) - re-infer the tail.
   const bool storedUsable = storedCount > 0 && storedStart >= minStart &&
@@ -406,6 +412,27 @@ inline int fplNormalizedApproachCount(int approachStart, int approachCount,
     return legCount - approachStart;
   }
   return approachCount;
+}
+
+// Resolve the approach leg span the FPL list renderer uses (stored grouping when
+// valid, otherwise infer from procedureRole tags). Corrects stale blocks that
+// start at the origin airport when the approach begins on the next leg.
+inline FlightPlanApproachState fplResolvedApproachState(
+    const std::vector<MapLeg>& legs, const FlightPlanApproachState& stored,
+    const std::string& transition, int arrivalEnd = 0, int departureEnd = 0) {
+  const InferredProcedureBlock block = resolveApproachBlockInPlan(
+      legs, stored.legStart, stored.legCount, transition, arrivalEnd,
+      departureEnd);
+  if (!block.valid()) return FlightPlanApproachState{};
+  FlightPlanApproachState out = stored;
+  out.legStart = block.start;
+  out.legCount = block.count;
+  if (out.legCount > 0 && out.legStart >= 0 &&
+      out.legStart + out.legCount < static_cast<int>(legs.size())) {
+    out.legCount = fplNormalizedApproachCount(
+        out.legStart, out.legCount, static_cast<int>(legs.size()));
+  }
+  return out;
 }
 
 // Active GPS Direct-To, saved across standalone restarts so the magenta

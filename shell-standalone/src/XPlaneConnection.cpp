@@ -391,11 +391,14 @@ constexpr std::size_t kMaxMapTaxiwayLabels = 400;
 constexpr float kObstacleQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxMapObstacles = 300;
 
-// Traffic display filtering and the simple TA threat heuristic (TIS-style:
-// proximate traffic within 1 NM and 1200 ft is upgraded to an advisory).
+// Traffic display filtering and the TCAS threat heuristic (TIS/TAS-style):
+// traffic within the TA gate is a Traffic Advisory; otherwise traffic within
+// 5 NM and 1200 ft is a Proximity Advisory; anything else is non-threat.
 constexpr float kTrafficMaxRangeNm = 40.0f;
 constexpr float kTrafficTaRangeNm = 1.0f;
 constexpr float kTrafficTaAltFt = 1200.0f;
+constexpr float kTrafficPaRangeNm = 5.0f;
+constexpr float kTrafficPaAltFt = 1200.0f;
 constexpr float kMetersToFeet = 3.28084f;
 constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 constexpr double kNmPerDegLat = 60.0;
@@ -1446,8 +1449,14 @@ void XPlaneConnection::updateMap(double dtSeconds) {
     tgt.lon = lon;
     tgt.relAltFt = trafficRaw_[t][2] * kMetersToFeet - data_.altitudeFt;
     tgt.verticalSpeedFpm = trafficRaw_[t][3];
-    tgt.trafficAdvisory = distNm <= kTrafficTaRangeNm &&
-                          std::fabs(tgt.relAltFt) <= kTrafficTaAltFt;
+    const float absAltFt = std::fabs(tgt.relAltFt);
+    if (distNm <= kTrafficTaRangeNm && absAltFt <= kTrafficTaAltFt) {
+      tgt.threat = TrafficThreat::Advisory;
+    } else if (distNm <= kTrafficPaRangeNm && absAltFt <= kTrafficPaAltFt) {
+      tgt.threat = TrafficThreat::Proximity;
+    } else {
+      tgt.threat = TrafficThreat::Other;
+    }
     map_.traffic.push_back(tgt);
   }
 }
@@ -1474,9 +1483,9 @@ void XPlaneConnection::updateFmaModes() {
   }
 
   auto mode = [&](int m) { return apModeStatus_[m]; };
-  // The lateral nav label follows the selected CDI source (GPS vs a VOR/LOC).
-  const std::string navLabel =
-      (data_.cdiSource == CdiSource::Gps) ? "GPS" : "VOR";
+  // The lateral nav label follows the selected CDI source (GPS / VOR / LOC).
+  const std::string navLabel = fmaLateralNavModeLabel(
+      data_.cdiSource, data_.nav1ActiveMhz, data_.nav2ActiveMhz);
   // RNAV GPS glidepath annunciates GP; ILS/localizer glideslope is GS.
   const std::string vertApproachLabel =
       (data_.cdiSource == CdiSource::Gps) ? "GP" : "GS";
@@ -1578,9 +1587,16 @@ void XPlaneConnection::updateNavInstrumentation() {
 
   if (data_.cdiSource == CdiSource::Nav1 || data_.cdiSource == CdiSource::Nav2) {
     const bool nav1 = data_.cdiSource == CdiSource::Nav1;
-    data_.vdiKind = VerticalDeviationKind::Glideslope;
-    data_.vdiValid = navInstr_[nav1 ? kNav1GsFlag : kNav2GsFlag] < 0.5f;
-    data_.vdiDeviationDots = navInstr_[nav1 ? kNav1Vdef : kNav2Vdef];
+    const float mhz = nav1 ? data_.nav1ActiveMhz : data_.nav2ActiveMhz;
+    if (isNavLocalizerMhz(mhz)) {
+      data_.vdiKind = VerticalDeviationKind::Glideslope;
+      data_.vdiValid = navInstr_[nav1 ? kNav1GsFlag : kNav2GsFlag] < 0.5f;
+      data_.vdiDeviationDots = navInstr_[nav1 ? kNav1Vdef : kNav2Vdef];
+    } else {
+      data_.vdiKind = VerticalDeviationKind::None;
+      data_.vdiValid = false;
+      data_.vdiDeviationDots = 0.0f;
+    }
     const float dme = navInstr_[nav1 ? kNav1Dme : kNav2Dme];
     data_.dmeValid = dme > 0.05f;
     data_.dmeDistanceNm = dme;

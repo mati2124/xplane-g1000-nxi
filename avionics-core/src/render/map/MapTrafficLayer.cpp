@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "avionics/render/MapSymbols.h"
+
 namespace avionics::mapview {
 namespace {
 
@@ -19,15 +21,10 @@ void drawTraffic(Renderer& r, const MapData& map, const Proj& proj,
     proj.toPx(t.lat, t.lon, x, y);
     if (!proj.onScreen(x, y, symSize * 2.0f)) continue;
 
-    const Color c = t.trafficAdvisory ? colors::kBandYellow : colors::kWhite;
-    const float s = symSize * 0.75f;
-    if (t.trafficAdvisory) {
-      r.fillCircle(x, y, s * 0.8f, c);
-    } else {
-      const Point diamond[5] = {
-          {x, y - s}, {x + s, y}, {x, y + s}, {x - s, y}, {x, y - s}};
-      r.strokePolyline(diamond, 5, 1.8f, c);
-    }
+    const Color c =
+        t.threat == TrafficThreat::Advisory ? colors::kBandYellow : colors::kWhite;
+    const float s = symSize;
+    drawTrafficSymbol(r, x, y, s, t.threat);
 
     if (!showLabels) continue;
 

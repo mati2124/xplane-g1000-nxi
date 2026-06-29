@@ -88,12 +88,34 @@ bool flightPlanLegsEqual(const std::vector<MapLeg>& a,
 
 bool isAirportIdent(const std::string& id);
 
-// True when `id` is a 4-letter ICAO that resolves to an airport in the nav
-// database (not a VOR/fix that happens to use four letters). When the database
+// Looser airport-code shape than isAirportIdent: a four-character ICAO code
+// starting with a region letter (remaining three may be digits: K1H2, KX01), or
+// a three-character FAA local identifier that contains a digit (1H2, 06C). Used
+// to gate the nav-DB lookup so airports whose idents contain digits -- and small
+// US fields that have no ICAO code at all -- are still recognised.
+bool isAirportCodeFormat(const std::string& id);
+
+// Airport-format code that contains a digit (K1H2, KX01, 1H2). A DB-free signal
+// that the ident is an airport (enroute fixes/navaids never take this shape),
+// used so FPL layout still recognises small airports the nav database has not
+// loaded.
+bool isAirportCodeWithDigit(const std::string& id);
+
+// True when `id` is a 4-character ICAO that resolves to an airport in the nav
+// database (not a VOR/fix that happens to use the same shape). When the database
 // is not ready yet, accepts any well-formed ICAO ident so charts are not blocked
 // on startup.
 bool isKnownAirportIdent(const std::string& id, const MapData* map,
                          const NavFeatureSource* navSource);
+
+// True when `id` is a flight-plan airport waypoint: 4-letter ICAO, nav-database
+// airport, or a digit-bearing airport code (K1H2 / KX01) that counts as a
+// destination even when the nav database has not loaded that field.
+inline bool isFlightPlanAirportIdent(const std::string& id, const MapData* map,
+                                     const NavFeatureSource* navSource) {
+  return isAirportIdent(id) || isKnownAirportIdent(id, map, navSource) ||
+         isAirportCodeWithDigit(id);
+}
 
 // First/last airport in a plan, using isKnownAirportIdent (not bare format).
 std::string firstKnownAirportInPlan(const std::vector<MapLeg>& legs,
@@ -104,6 +126,14 @@ std::string lastKnownAirportInPlan(const std::vector<MapLeg>& legs,
                                    const NavFeatureSource* navSource);
 
 std::string airportIcaoBeforeIndex(const std::vector<MapLeg>& legs, int before);
+
+// Last airport ident among legs[0, before), accepting any nav-database airport
+// (so digit-format ICAOs like K1H2 / KX01 are recognized) as well as plain
+// 4-letter idents. Limiting the scan to before the approach block keeps RNAV
+// runway/approach fixes (RW18, CF36) from being mistaken for the destination.
+std::string lastKnownAirportBeforeIndex(const std::vector<MapLeg>& legs,
+                                        int before, const MapData* map,
+                                        const NavFeatureSource* navSource);
 
 // First / last 4-letter airport ident in the leg list (skips fixes, airways, etc.).
 std::string firstAirportInPlan(const std::vector<MapLeg>& legs);
@@ -132,7 +162,7 @@ inline bool fplLayoutDestinationFilled(const std::vector<MapLeg>& legs,
                                        int approachLegCount) {
   if (approachLegCount > 0) return true;
   if (!destinationFilled || legs.empty()) return false;
-  return isAirportIdent(legs.back().id);
+  return isAirportCodeFormat(legs.back().id);
 }
 
 inline bool fplEditLayoutDestinationFilled(const FplRouteEdit& edit) {
@@ -143,6 +173,24 @@ inline bool fplEditLayoutDestinationFilled(const FplRouteEdit& edit) {
 std::string fplApproachAirportIcao(const std::vector<MapLeg>& legs,
                                    int approachStart, const MapData* map,
                                    const std::string& loadedApproachAirportIcao = {});
+
+// Inputs for resolving the flight-plan destination airport (PROC default,
+// charts, etc.). Mirrors the FPL header destination ident.
+struct FplDestinationAirportQuery {
+  const std::vector<MapLeg>& legs;
+  bool destinationFilled = false;
+  int approachLegStart = 0;
+  int approachLegCount = 0;
+  int arrivalLegStart = 0;
+  int arrivalLegCount = 0;
+  const MapData* map = nullptr;
+  const NavFeatureSource* nav = nullptr;
+  std::string loadedApproachAirportIcao;
+  std::string arrivalAirportIcao;
+  std::string simbriefDestinationIcao;
+};
+
+std::string fplDestinationAirportIcao(const FplDestinationAirportQuery& query);
 
 int fplCursorLegIndex(const FplRouteEdit& edit,
                       const std::string& approachAirport,

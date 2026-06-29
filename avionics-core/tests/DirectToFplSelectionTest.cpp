@@ -8,6 +8,8 @@
 #include "avionics/ConnectionState.h"
 #include "avionics/DataSource.h"
 #include "avionics/FlightData.h"
+#include "avionics/FmsWaypointEntry.h"
+#include "avionics/FplRouteEdit.h"
 #include "avionics/MapData.h"
 #include "avionics/MfdController.h"
 #include "avionics/Renderer.h"
@@ -155,6 +157,40 @@ TEST(DirectToFplSelectionTest, MfdDtoUsesPfdFplScrollSelection) {
   mfd.pressBezelKey(BezelKey::DirectTo);
   ASSERT_TRUE(mfd.mfdController().directToWindowOpen());
   EXPECT_EQ(mfd.mfdController().directToIdent(), "TEBOW");
+}
+
+// Regression: opening Direct-To from the FPL page pre-fills + preserves the
+// selected leg (e.g. the active leg RYAAN), but if the pilot then types a
+// different ident (SWFFT, also in the plan), the typed waypoint must win --
+// previously the stale preserved leg overrode it.
+TEST(DirectToFplSelectionTest, TypedIdentOverridesPreservedFplLeg) {
+  const std::vector<MapLeg> plan = {MakeLeg("SWFFT"), MakeLeg("HIMAT"),
+                                    MakeLeg("RYAAN"), MakeLeg("DEENN")};
+  constexpr int kRyaanIdx = 2;  // pre-filled active leg
+
+  FmsWaypointEntry entry;
+  entry.match.id = "SWFFT";  // pilot typed SWFFT instead
+  entry.hasMatch = true;
+
+  const MapLeg target = resolveDirectToTargetLeg(entry, /*preservePlan=*/true,
+                                                 kRyaanIdx, plan);
+  EXPECT_EQ(target.id, "SWFFT");
+}
+
+// Sanity: when the entry still refers to the preserved leg, that leg wins so
+// duplicate idents in the plan stay disambiguated by index.
+TEST(DirectToFplSelectionTest, PreservedFplLegUsedWhenEntryUnchanged) {
+  const std::vector<MapLeg> plan = {MakeLeg("SWFFT"), MakeLeg("HIMAT"),
+                                    MakeLeg("RYAAN"), MakeLeg("DEENN")};
+  constexpr int kRyaanIdx = 2;
+
+  FmsWaypointEntry entry;
+  entry.match.id = "RYAAN";
+  entry.hasMatch = true;
+
+  const MapLeg target = resolveDirectToTargetLeg(entry, /*preservePlan=*/true,
+                                                 kRyaanIdx, plan);
+  EXPECT_EQ(target.id, "RYAAN");
 }
 
 }  // namespace

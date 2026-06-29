@@ -56,6 +56,7 @@ struct VnvProfile {
   float fpaDeg = 0.0f;               // path flight-path angle
   float distanceToTodNm = 0.0f;      // distance to top of descent (<=0 past TOD)
   int timeToTodSec = 0;              // time to TOD at current ground speed
+  int timeToBodSec = 0;              // time to BOD (target leg) at current GS
   bool capturing = false;            // past TOD: descending on the path
   float verticalDeviationFt = 0.0f;  // current altitude minus path altitude
   // Geographic position of the top of descent along the route, for the MFD map

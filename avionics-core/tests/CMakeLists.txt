@@ -27,6 +27,7 @@ add_executable(avionics-core-tests
   MetarParserTest.cpp
   NearbyFeatureSelectTest.cpp
   RadioVolumeAnnunciationTest.cpp
+  NavLocalizerFrequencyTest.cpp
   FlightPlanPersistenceTest.cpp
   FlightPlanBridgeProtocolTest.cpp
   FplHoldRowTest.cpp
@@ -34,11 +35,13 @@ add_executable(avionics-core-tests
   AirwayLoadTest.cpp
   DepartureLoadTest.cpp
   ArrivalLoadTest.cpp
+  SidApproachInferenceTest.cpp
   StarApproachParentTest.cpp
   DirectToFplSelectionTest.cpp
   ChecklistPageTest.cpp
   WptAirportInfoPageTest.cpp
   ProcedureMenuCourseReversalTest.cpp
+  ApproachAirportDefaultTest.cpp
   DeleteFlightPlanTest.cpp
   RemoveWaypointTest.cpp
   ProcedureRemoveTest.cpp

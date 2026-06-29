@@ -341,7 +341,12 @@ class SoftkeyController {
   bool flightPlanDestinationFilledForLayout() const {
     if (fplApproachLegCount_ > 0) return true;
     if (!fplDestinationFilled_ || fplLegs_.empty()) return false;
-    return isKnownAirportIdent(fplLegs_.back().id, mapData_, navSource_);
+    // Confirmed airports always count; a digit-bearing airport code (e.g. K1H2)
+    // counts even when the nav database has not loaded that field, so the
+    // destination never falls through to the Enroute section.
+    const std::string& last = fplLegs_.back().id;
+    return isKnownAirportIdent(last, mapData_, navSource_) ||
+           isAirportCodeWithDigit(last);
   }
   // True while the pilot is building a route locally that has not been adopted
   // from the simulator feed (partial plans stay in-app only).
@@ -855,6 +860,7 @@ class SoftkeyController {
   void syncFlightPlanLegs(const MapData& map, bool navDirectTo = false);
   void tryRestorePersistedApproach();
   void tryRestorePersistedTerminalProcedures();
+  void fplEnsureApproachInferred();
   void reinferApproachFromProcedureLegs();
   // Open the removal confirmation, seeding the prompt subject from the FPL
   // header label (e.g. "KATL-BBABE.CHPPR1.RW08B").

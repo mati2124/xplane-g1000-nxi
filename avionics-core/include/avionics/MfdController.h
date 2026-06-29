@@ -761,6 +761,13 @@ class MfdController {
   // FETCH softkey latch: returns true once per press, so the shell can kick off
   // the OFP download for the signed-in account.
   bool consumeSimbriefFetchRequest();
+  // Catalog-open auto-refresh latch: returns true once each time the pilot
+  // opens the FPL - Flight Plan Catalog page while signed in to Navigraph, so
+  // the shell re-fetches the latest SimBrief OFP and a freshly generated plan
+  // shows up without restarting. Distinct from the FETCH latch above because
+  // the standalone shell lands the result into the catalog, whereas the in-sim
+  // plugin replaces the active route -- the plugin therefore ignores this one.
+  bool consumeCatalogRefreshRequest();
 
   // ---- Navigraph charts (AUX - Charts page) ----
   // Latest chart index + selected chart image, published by the shell each
@@ -1421,6 +1428,13 @@ class MfdController {
   bool navigraphLoginRequested_ = false;
   bool navigraphLogoutRequested_ = false;
   bool simbriefFetchRequested_ = false;
+  // Auto-refresh the catalog when the pilot enters the Flight Plan Catalog
+  // page: re-fetch the latest SimBrief OFP so a newly generated plan appears
+  // without a restart. Latched on the page-enter transition (not every frame)
+  // and tracked via the last page seen in update().
+  bool catalogRefreshRequested_ = false;
+  MfdPage lastPageForCatalogRefresh_ = MfdPage::NavigationMap;
+  void updateCatalogAutoRefresh();
   // Auto-start the device-authorization sign-in once per signed-out visit to the
   // SimBrief page, so the QR + code appear without a manual Login press. Armed
   // so exactly one device code is issued (not one request per frame).

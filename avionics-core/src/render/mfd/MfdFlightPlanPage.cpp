@@ -620,9 +620,13 @@ void drawFplLegRow(Renderer& r, const FlightData& d, const MapData& map,
   const bool altSel =
       showSelection && ui.fplCursorOn() &&
       ui.fplCursorCol() == MfdController::FplCursorCol::Altitude;
+  // The blinking selection cursor belongs to exactly one column. When it sits on
+  // the ALT field, the ident must not also flash (active-leg magenta included);
+  // it renders solid so only the altitude shows the cursor.
+  const bool identBlink = !altSel && activeNavBlink;
   const bool rowBlink =
       identSel ? ui.blinkOn()
-               : (showActive && activeNavBlink ? ui.blinkOn() : false);
+               : (showActive && identBlink ? ui.blinkOn() : false);
 
   if (showActive) {
     const float ax = innerX;
@@ -643,7 +647,7 @@ void drawFplLegRow(Renderer& r, const FlightData& d, const MapData& map,
                             identSel, showActive, rowBlink);
   } else if (showActive) {
     drawFplActiveIdentFlash(r, fixX, cy, leg.id, rowSize,
-                            activeNavBlink ? ui.blinkOn() : false);
+                            identBlink ? ui.blinkOn() : false);
   } else if (identSel) {
     drawCursorSelect(r, fixX, cy, leg.id, rowSize, TextAlign::Left,
                      ui.blinkOn());
@@ -2306,11 +2310,16 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     // The approach is the procedure tail after any loaded arrival/STAR block, so
     // its inference must skip the STAR legs (which can carry procedureRole tags).
     const int arrivalEnd = arrCount > 0 ? arrStart + arrCount : 0;
+    // The approach can never begin within or before a loaded SID/departure
+    // block; this keeps the approach inference's untagged-feeder walk-back from
+    // swallowing the SID/enroute legs when the destination-airport waypoint is
+    // absent (the sim drops it once an approach is loaded).
+    const int departureEnd = depCount > 0 ? depStart + depCount : 0;
     int approachStart = ui.fplApproachLegStart();
     int approachCount = ui.fplApproachLegCount();
     const InferredProcedureBlock approachBlock = resolveApproachBlockInPlan(
         plan, approachStart, approachCount, ui.fplApproachTransition(),
-        arrivalEnd);
+        arrivalEnd, departureEnd);
     approachStart = approachBlock.start;
     approachCount = approachBlock.count;
     if (approachCount > 0 && approachStart >= 0 &&
@@ -2342,7 +2351,14 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
           approachAirport = arrAirport;
         } else if (approachStart > 0 &&
                    approachStart <= static_cast<int>(plan.size())) {
-          approachAirport = plan[static_cast<std::size_t>(approachStart - 1)].id;
+          const std::string& before =
+              plan[static_cast<std::size_t>(approachStart - 1)].id;
+          // Do not treat the route origin as the approach airport when the IAF
+          // follows it (KATL -> R20L into KBNA with no KBNA enroute leg).
+          if (!(approachStart == 1 && !plan.empty() && before == plan.front().id &&
+                isAirportIdent(before))) {
+            approachAirport = before;
+          }
         }
       }
     }
@@ -2930,9 +2946,15 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
                     static_cast<int>(std::lround(vnv.vsRequiredFpm)));
       vsReq = vb;
     }
+    // The descent-timer field counts down to the top of descent while the
+    // descent is still ahead, then switches to the bottom of descent (the
+    // target constraint) once the aircraft is descending on the path, matching
+    // the real unit's TOD/BOD toggle (Pilot's Guide, Section 6).
+    const char* todLabel = vnv.capturing ? "BOD" : "TOD";
     std::string tod = kDashTime;
     if (vnv.active) {
-      const int secs = std::max(0, vnv.timeToTodSec);
+      const int secs =
+          std::max(0, vnv.capturing ? vnv.timeToBodSec : vnv.timeToTodSec);
       std::snprintf(vb, sizeof(vb), "%02d:%02d", (secs / 60) % 100, secs % 60);
       tod = vb;
     }
@@ -3023,7 +3045,7 @@ void drawActiveFlightPlanPage(Renderer& r, const FlightData& d,
     ly = drawField(r, left, ly, rowH, "VS REQ", vsReq, displayH,
                    colors::kWhitesmoke, kWtVnvValue);
     float ry = right.y;
-    ry = drawField(r, todRow, ry, rowH, "TOD", tod, displayH,
+    ry = drawField(r, todRow, ry, rowH, todLabel, tod, displayH,
                    colors::kWhitesmoke, kWtVnvValue);
     ry = drawField(r, right, ry, rowH, "FPA", fpa, displayH,
                    colors::kWhitesmoke, kWtVnvValue);

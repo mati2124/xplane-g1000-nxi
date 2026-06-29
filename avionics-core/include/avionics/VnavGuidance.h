@@ -26,9 +26,16 @@ inline constexpr int kVnavVdiShowBeforeTodSec = 60;
 // descends just below the path; this dead band makes it disappear at/near the
 // real top of descent instead of following the ownship down.
 inline constexpr float kVnavTodHideDevFt = 150.0f;
+// PFD VNAV indications (target altitude, VDI, required VS) are removed once the
+// aircraft is more than this many feet below the active VNAV target altitude
+// (G1000 NXi Pilot's Guide, Table 2-2).
+inline constexpr float kVnavIndicationHideBelowFt = 250.0f;
 
 // Computes the active VNAV profile from the flight plan's altitude constraints.
 VnvProfile computeVnvProfile(const MapData& map, const FlightData& data);
+
+// True when the PFD VNAV trio (target altitude, VDI, required VS) should show.
+bool vnavPfdIndicationsActive(const FlightData& data);
 
 // Applies a valid profile to FlightData (FPL VNV box + PFD vertical deviation).
 void applyVnav(FlightData& data, const MapData& map);

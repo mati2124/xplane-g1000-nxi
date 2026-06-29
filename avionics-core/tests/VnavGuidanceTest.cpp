@@ -194,6 +194,36 @@ TEST(VnavGuidanceTest, FloorNotTargetedWhenOnIdealPath) {
   EXPECT_EQ(vnv.targetAltFt, 10000);
 }
 
+// Regression: a near "at or above" floor sitting ABOVE the current altitude
+// must never become the descent target. Targeting it would yield a negative
+// descent distance, drawing the TOD marker beyond the BOD (TOD/BOD swapped on
+// the map). The deeper gate that is genuinely below the aircraft must win, and
+// the top of descent must stay short of (nearer than) the bottom of descent.
+TEST(VnavGuidanceTest, FloorAboveAircraftNotTargetedAndTodBeforeBod) {
+  std::vector<MapLeg> plan = {
+      makeLeg("ACT", 26.0, 0, AltConstraintType::None),
+      makeLeg("HIGHFL", 26.2, 10000, AltConstraintType::AtOrAbove),
+      makeLeg("DEEP", 27.0, 5000, AltConstraintType::At),
+  };
+  const MapData map = makeMap(plan);
+  const FlightData data = makeData("ACT", 8000.0f);
+
+  const VnvProfile vnv = computeVnvProfile(map, data);
+  ASSERT_TRUE(vnv.active);
+  EXPECT_EQ(vnv.targetWpt, "DEEP");
+  EXPECT_EQ(vnv.targetAltFt, 5000);
+
+  // The descent is real (target below the aircraft), so the TOD sits nearer the
+  // ownship than the BOD: distanceToTodNm is positive and less than the full
+  // along-track distance to the target (the BOD).
+  ASSERT_TRUE(vnv.todValid);
+  ASSERT_TRUE(vnv.bodValid);
+  EXPECT_GT(vnv.distanceToTodNm, 0.0f);
+  // Fixes run south->north, so a TOD nearer the (southern) ownship has a lower
+  // latitude than the BOD at the target fix.
+  EXPECT_LT(vnv.todLat, vnv.bodLat);
+}
+
 // Constraints at or above the aircraft are not descent targets.
 TEST(VnavGuidanceTest, NoDescentWhenConstraintsAtOrAboveAircraft) {
   std::vector<MapLeg> plan = {
@@ -206,6 +236,59 @@ TEST(VnavGuidanceTest, NoDescentWhenConstraintsAtOrAboveAircraft) {
 
   const VnvProfile vnv = computeVnvProfile(map, data);
   EXPECT_FALSE(vnv.active);
+}
+
+TEST(VnavGuidanceTest, PfdIndicationsActiveNearTod) {
+  FlightData data;
+  data.altitudeFt = 10000.0f;
+  data.vnv.active = true;
+  data.vnv.targetAltFt = 4000;
+  data.vnv.timeToTodSec = 30;
+  EXPECT_TRUE(vnavPfdIndicationsActive(data));
+}
+
+TEST(VnavGuidanceTest, PfdIndicationsActiveWhileCapturing) {
+  FlightData data;
+  data.altitudeFt = 5000.0f;
+  data.vnv.active = true;
+  data.vnv.targetAltFt = 4000;
+  data.vnv.capturing = true;
+  EXPECT_TRUE(vnavPfdIndicationsActive(data));
+}
+
+TEST(VnavGuidanceTest, PfdIndicationsHiddenFarFromTod) {
+  FlightData data;
+  data.altitudeFt = 10000.0f;
+  data.vnv.active = true;
+  data.vnv.targetAltFt = 4000;
+  data.vnv.timeToTodSec = 120;
+  EXPECT_FALSE(vnavPfdIndicationsActive(data));
+}
+
+TEST(VnavGuidanceTest, PfdIndicationsHiddenWellBelowTarget) {
+  FlightData data;
+  data.altitudeFt = 3600.0f;
+  data.vnv.active = true;
+  data.vnv.targetAltFt = 4000;
+  data.vnv.capturing = true;
+  EXPECT_FALSE(vnavPfdIndicationsActive(data));
+}
+
+TEST(VnavGuidanceTest, ApplyVnavClearsIndicationsWellBelowTarget) {
+  std::vector<MapLeg> plan = {
+      makeLeg("ACT", 26.0, 0, AltConstraintType::None),
+      makeLeg("ATFIX", 27.5, 4000, AltConstraintType::At),
+  };
+  const MapData map = makeMap(plan);
+  FlightData data = makeData("ACT", 3600.0f);
+  data.vdiKind = VerticalDeviationKind::Vnav;
+  data.vdiValid = true;
+  data.requiredVsValid = true;
+
+  applyVnav(data, map);
+
+  EXPECT_EQ(data.vdiKind, VerticalDeviationKind::None);
+  EXPECT_FALSE(data.requiredVsValid);
 }
 
 }  // namespace

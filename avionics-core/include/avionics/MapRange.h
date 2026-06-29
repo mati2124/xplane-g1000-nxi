@@ -10,23 +10,26 @@ namespace avionics {
 // Shared G1000 moving-map range ladder, in NM. The PFD inset map and the MFD
 // MAP page both step through this list (RNG- / RNG+ on the softkeys or the
 // on-screen bezel range rocker), so they share one definition rather than each
-// hard-coding their own. The NXi exposes 28 steps from 250 ft to 1000 NM
+// hard-coding their own. The NXi exposes 27 steps from 250 ft to 1000 NM
 // (Pilot's Guide §5); close-range foot steps support SafeTaxi taxi routing.
+// The 3000 ft step is intentionally omitted: at ~0.4937 NM it is visually
+// indistinguishable from the 0.5 NM step, so it added a zoom rung that "didn't
+// do much".
 inline constexpr float kFtPerNm = 6076.115f;
 inline constexpr float kMapRangeLadderNm[] = {
     250.0f / kFtPerNm,  500.0f / kFtPerNm,  750.0f / kFtPerNm,
     1000.0f / kFtPerNm, 1250.0f / kFtPerNm, 1500.0f / kFtPerNm,
     1750.0f / kFtPerNm, 2000.0f / kFtPerNm, 2250.0f / kFtPerNm,
-    2500.0f / kFtPerNm, 2750.0f / kFtPerNm, 3000.0f / kFtPerNm,
+    2500.0f / kFtPerNm, 2750.0f / kFtPerNm,
     0.5f,   1.0f,   1.5f,   2.5f,   5.0f,   10.0f,  15.0f,  25.0f,
     50.0f,  100.0f, 150.0f, 250.0f, 350.0f, 500.0f, 750.0f, 1000.0f};
 inline constexpr int kMapRangeLadderCount =
     static_cast<int>(sizeof(kMapRangeLadderNm) / sizeof(kMapRangeLadderNm[0]));
 
 // Close-range foot rungs prepended to the legacy NM ladder (16 steps).
-inline constexpr int kMapRangeCloseRungCount = 12;
+inline constexpr int kMapRangeCloseRungCount = 11;
 // Bump when the ladder layout changes so persisted range indices can migrate.
-inline constexpr int kMapRangeLadderVersion = 2;
+inline constexpr int kMapRangeLadderVersion = 3;
 // Pre-close-range ladder length (0.5 NM … 1000 NM); used to migrate saved
 // indices from before kMapRangeCloseRungCount foot steps were added.
 inline constexpr int kLegacyMapRangeLadderCount = 16;
@@ -35,7 +38,7 @@ inline constexpr int kLegacyMapRangeLadderCount = 16;
 inline constexpr float kMapRangeMinNm = kMapRangeLadderNm[0];
 
 // Default ladder position (10 NM), the G1000 power-on map range.
-inline constexpr int kMapRangeDefaultIndex = 17;
+inline constexpr int kMapRangeDefaultIndex = 16;
 
 // Default max map range (NM) for traffic symbols and labels on the navigation
 // map (Map Setup "Traffic Symbols" / "Traffic Labels" ranges).
@@ -184,14 +187,30 @@ inline void formatMapRange(char* buf, std::size_t n, float rangeNm) {
   }
 }
 
-// Migrate a persisted range index from an older ladder layout.
+// Index of the first NM rung (0.5 NM) on the v2 ladder, before the redundant
+// 3000 ft step was dropped. v2 prepended 12 foot rungs (250 ft … 3000 ft).
+inline constexpr int kV2CloseRungCount = 12;
+inline constexpr int kV2FirstNmIndex = kV2CloseRungCount;
+
+// Migrate a persisted range index from an older ladder layout, applying each
+// layout change in order so chained migrations compose.
 inline int migrateMapRangeIndex(int index, int savedVersion) {
-  index = std::max(0, std::min(kMapRangeLadderCount - 1, index));
-  if (savedVersion >= kMapRangeLadderVersion) return index;
-  // Indices 16+ did not exist on the legacy 16-step ladder.
-  if (index >= kLegacyMapRangeLadderCount) return index;
-  return std::min(kMapRangeLadderCount - 1,
-                  index + kMapRangeCloseRungCount);
+  if (savedVersion >= kMapRangeLadderVersion) {
+    return std::max(0, std::min(kMapRangeLadderCount - 1, index));
+  }
+  // v1 -> v2: the legacy 16-step ladder (0.5 NM … 1000 NM) had no close-range
+  // foot rungs, so shift its indices up past the prepended foot steps.
+  if (savedVersion < 2) {
+    if (index < kLegacyMapRangeLadderCount) index += kV2CloseRungCount;
+    savedVersion = 2;
+  }
+  // v2 -> v3: the redundant 3000 ft rung (the last foot step, ≈0.4937 NM) was
+  // removed, so every rung at 0.5 NM and wider shifts down one; a saved 3000 ft
+  // index folds into the 0.5 NM step.
+  if (savedVersion < 3 && index >= kV2FirstNmIndex) {
+    index -= 1;
+  }
+  return std::max(0, std::min(kMapRangeLadderCount - 1, index));
 }
 
 }  // namespace avionics

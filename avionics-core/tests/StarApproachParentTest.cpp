@@ -247,8 +247,9 @@ TEST(StarApproachParentTest, LoadedApproachAirportWinsOverAirportBeforeApproach)
   EXPECT_EQ(fplApproachAirportIcao(plan, /*approachStart=*/1, /*map=*/nullptr,
                                    /*loadedApproachAirportIcao=*/"KFMY"),
             "KFMY");
-  // Documents the underlying trap: with no known airport it falls back to the
-  // leg before the approach, which here is the origin KJAX.
+  // With no known approach airport the origin is not the destination when the
+  // plan continues past the IAF; fall back to the only airport in the plan
+  // (same-field IFR into the departure airport).
   EXPECT_EQ(fplApproachAirportIcao(plan, /*approachStart=*/1, /*map=*/nullptr,
                                    /*loadedApproachAirportIcao=*/std::string()),
             "KJAX");

@@ -594,8 +594,30 @@ void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
                                       transition);
   if (legs.empty()) return;
   if (host.state.category == ProcedureType::Approach) {
-    removeLoadedApproachLegs(host.fplLegs, host.approachLegStart,
-                             host.approachLegCount);
+    // Replace only a genuine prior approach. When the arrival/STAR block is not
+    // separately tracked (e.g. a route imported from the sim or an external
+    // FMS), an earlier procedureRole inference can leave the stored approach
+    // block spanning the STAR fixes. Erasing that block here would delete the
+    // STAR. Treat the stored block as a real approach only when an approach was
+    // actually loaded (loadedApproach carries a name) or a destination airport -
+    // other than the origin - precedes it: the marker that separates the STAR
+    // from a true approach tail.
+    bool priorApproachReal = !host.loadedApproach.name.empty();
+    if (!priorApproachReal && host.approachLegCount > 0 &&
+        host.approachLegStart > 0) {
+      const int limit = std::min(host.approachLegStart,
+                                 static_cast<int>(host.fplLegs.size()));
+      for (int i = 1; i < limit; ++i) {
+        if (isAirportIdent(host.fplLegs[static_cast<std::size_t>(i)].id)) {
+          priorApproachReal = true;
+          break;
+        }
+      }
+    }
+    if (priorApproachReal) {
+      removeLoadedApproachLegs(host.fplLegs, host.approachLegStart,
+                               host.approachLegCount);
+    }
     host.approachLegCount = static_cast<int>(legs.size());
   } else if (host.state.category == ProcedureType::Departure) {
     if (host.departureLegStart != nullptr && host.departureLegCount != nullptr) {

@@ -598,6 +598,8 @@ void MfdController::update(double dtSeconds, const FlightData& data) {
     if (gs >= 5.0f) s.movingTimeSec += dtSeconds;
     s.maxGroundSpeedKts = std::max(s.maxGroundSpeedKts, gs);
   }
+
+  updateCatalogAutoRefresh();
 }
 
 bool MfdController::keyEnabled(int i) const {
@@ -1415,6 +1417,30 @@ bool MfdController::consumeSimbriefFetchRequest() {
   return requested;
 }
 
+bool MfdController::consumeCatalogRefreshRequest() {
+  const bool requested = catalogRefreshRequested_;
+  catalogRefreshRequested_ = false;
+  return requested;
+}
+
+void MfdController::updateCatalogAutoRefresh() {
+  // Fire a one-shot refresh request the moment the pilot navigates into the
+  // Flight Plan Catalog page (not while merely sitting on it). Mirrors the FETCH
+  // softkey guard: only when signed in, the sim link is up, and no fetch is in
+  // flight. Re-fetching the same route is harmless -- the catalog dedupes by
+  // leg sequence and just updates the existing slot.
+  const MfdPage current = page();
+  if (current == MfdPage::FlightPlanCatalog &&
+      lastPageForCatalogRefresh_ != MfdPage::FlightPlanCatalog) {
+    if (simbriefState_.commAllowed &&
+        simbriefState_.loginPhase == NavigraphLoginPhase::LoggedIn &&
+        simbriefState_.status != SimBriefStatus::Fetching) {
+      catalogRefreshRequested_ = true;
+    }
+  }
+  lastPageForCatalogRefresh_ = current;
+}
+
 namespace {
 
 bool chartMatchesFilter(const ChartListItem& chart,
@@ -1476,7 +1502,12 @@ void MfdController::setChartsState(const ChartsState& state) {
 bool MfdController::fplDestinationFilledForLayout() const {
   if (fplApproachLegCount_ > 0) return true;
   if (!fplDestinationFilled_ || fplLegs_.empty()) return false;
-  return isKnownAirportIdent(fplLegs_.back().id, mapData_, navSource_);
+  // Confirmed airports always count; a digit-bearing airport code (e.g. K1H2)
+  // counts even when the nav database has not loaded that field, so the
+  // destination never falls through to the Enroute section.
+  const std::string& last = fplLegs_.back().id;
+  return isKnownAirportIdent(last, mapData_, navSource_) ||
+         isAirportCodeWithDigit(last);
 }
 
 std::string MfdController::chartsDestinationAirport() const {
@@ -1505,7 +1536,9 @@ std::string MfdController::chartsDestinationAirport() const {
         approachStart <= static_cast<int>(fplLegs_.size())) {
       const std::string candidate =
           fplLegs_[static_cast<std::size_t>(approachStart - 1)].id;
-      if (isKnownAirportIdent(candidate, mapData_, navSource_)) {
+      if (!(approachStart == 1 && !fplLegs_.empty() &&
+            candidate == fplLegs_.front().id && isAirportIdent(candidate)) &&
+          isKnownAirportIdent(candidate, mapData_, navSource_)) {
         approachAirport = candidate;
       } else {
         approachAirport.clear();
