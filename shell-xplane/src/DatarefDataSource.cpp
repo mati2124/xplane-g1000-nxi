@@ -184,12 +184,31 @@ ResolvedDataRef resolveDataRef(const char* path) {
 // Navaid identifier buffer: the SDK recommends >= 6 chars; 32 is generous.
 constexpr int kNavIdBufferSize = 32;
 
-// Return the features from `src` within rangeNm of (lat, lon), capped at
-// maxCount. Shared shape with the standalone NavDataStore::nearby.
-std::vector<MapFeature> filterNearby(const std::vector<MapFeature>& src,
-                                     double lat, double lon, float rangeNm,
-                                     std::size_t maxCount) {
-  return assembleNearbyMapFeaturesMixed(src, lat, lon, rangeNm, maxCount);
+// Return airports/navaids from `nav` plus nearby fixes, capped at maxCount.
+// Matches the standalone NavDataStore::nearby budget (airports and navaids
+// reserve slots before fixes fill the remainder).
+std::vector<MapFeature> filterNearbyNavAndFixes(
+    const std::vector<MapFeature>& nav, const std::vector<MapFeature>& fixes,
+    double lat, double lon, float rangeNm, std::size_t maxCount) {
+  std::vector<MapFeature> airports;
+  std::vector<MapFeature> navaids;
+  airports.reserve(256);
+  navaids.reserve(128);
+  for (const MapFeature& f : nav) {
+    switch (f.type) {
+      case MapFeatureType::Airport:
+        airports.push_back(f);
+        break;
+      case MapFeatureType::Vor:
+      case MapFeatureType::Ndb:
+        navaids.push_back(f);
+        break;
+      default:
+        break;
+    }
+  }
+  return assembleNearbyMapFeatures(airports, navaids, fixes, lat, lon, rangeNm,
+                                   maxCount);
 }
 
 // A single decoded FMS flight-plan entry: identifier plus lat/lon. The flight
@@ -572,7 +591,7 @@ void DatarefDataSource::ensureInstallDataLoaded() {
 }
 
 DatarefDataSource::~DatarefDataSource() {
-  // Stop the map-query worker first: it reads navCache_/runwayCells_/
+  // Stop the map-query worker first: it reads navCache_/fixCache_/runwayCells_/
   // airspaceCache_, so it must be joined before those members are destroyed.
   stopMapQueryWorker();
   if (airspaceThread_.joinable()) airspaceThread_.join();
@@ -1052,16 +1071,17 @@ void DatarefDataSource::buildNavCache() {
 
   // Walk the database one nav-aid type at a time. Like-typed nav-aids are
   // grouped contiguously, so iterating from the first to the last of each type
-  // visits exactly that type. Fixes are intentionally excluded: there are far
-  // too many to scan/draw usefully at inset-map scale.
+  // visits exactly that type.
   struct Kind {
     XPLMNavType xpType;
     MapFeatureType mapType;
+    std::vector<MapFeature>* cache = nullptr;
   };
   const Kind kinds[] = {
-      {xplm_Nav_Airport, MapFeatureType::Airport},
-      {xplm_Nav_VOR, MapFeatureType::Vor},
-      {xplm_Nav_NDB, MapFeatureType::Ndb},
+      {xplm_Nav_Airport, MapFeatureType::Airport, &navCache_},
+      {xplm_Nav_VOR, MapFeatureType::Vor, &navCache_},
+      {xplm_Nav_NDB, MapFeatureType::Ndb, &navCache_},
+      {xplm_Nav_Fix, MapFeatureType::Fix, &fixCache_},
   };
 
   for (const Kind& kind : kinds) {
@@ -1098,12 +1118,20 @@ void DatarefDataSource::buildNavCache() {
                             ? static_cast<float>(freq) / 100.0f
                             : static_cast<float>(freq);
         }
-        navCache_.push_back(std::move(f));
+        kind.cache->push_back(std::move(f));
       }
       if (ref == last) break;
       ref = XPLMGetNextNavAid(ref);
     }
   }
+
+  navCache_.shrink_to_fit();
+  fixCache_.shrink_to_fit();
+  char msg[128];
+  std::snprintf(msg, sizeof(msg),
+                "G1000 NXi: nav cache ready (%zu airports/navaids, %zu fixes)\n",
+                navCache_.size(), fixCache_.size());
+  XPLMDebugString(msg);
 }
 
 void DatarefDataSource::updateMap(double dtSeconds) {
@@ -1350,8 +1378,8 @@ void DatarefDataSource::mapQueryWorkerMain() {
     }
 
     MapQueryResult res;
-    res.features =
-        filterNearby(navCache_, lat, lon, kMapQueryRangeNm, kMaxMapFeatures);
+    res.features = filterNearbyNavAndFixes(navCache_, fixCache_, lat, lon,
+                                           kMapQueryRangeNm, kMaxMapFeatures);
     if (wantApt) {
       for (MapFeature& f : res.features) {
         enrichAirportFromMeta(f, aptMetaByIcao_);
@@ -1438,9 +1466,9 @@ void DatarefDataSource::rebuildInsetMap() {
   map_.insetMapLon = insetMapLon_;
   if (!navCacheBuilt_) return;
   const float featRange = std::max(insetMapRangeNm_, kMapQueryRangeNm * 0.25f);
-  map_.insetFeatures =
-      filterNearby(navCache_, insetMapLat_, insetMapLon_, featRange,
-                   kMaxMapFeatures);
+  map_.insetFeatures = filterNearbyNavAndFixes(
+      navCache_, fixCache_, insetMapLat_, insetMapLon_, featRange,
+      kMaxMapFeatures);
   for (MapFeature& f : map_.insetFeatures) {
     enrichAirportFromMeta(f, aptMetaByIcao_);
   }
