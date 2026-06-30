@@ -33,6 +33,7 @@ struct AircraftProfile {
   // leg sequencing. Matched to the native X-Plane lateral autopilot for each
   // airframe so NAV coupling starts outbound steering when the sim AP would.
   double flyByBankDeg = 15.0;
+  int numPfds = 1;
 };
 
 // Relative asset paths for the built-in profiles, also used as the dev-tree

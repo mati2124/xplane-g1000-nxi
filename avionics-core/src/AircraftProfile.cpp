@@ -68,7 +68,7 @@ std::string devFallback(const std::string &assetRel) {
 
 AircraftProfile c172Profile() {
   return {"c172", aircraft_assets::kC172Eis, aircraft_assets::kC172Checklist,
-          std::string(), "Cessna 172S", 15.0};
+          std::string(), "Cessna 172S", 15.0, 1};
 }
 
 AircraftProfile sf50Profile() {
@@ -76,12 +76,12 @@ AircraftProfile sf50Profile() {
   // default; a higher assumed bank shrinks fly-by lead so outbound steering and
   // leg sequencing align with when the sim AP actually begins the turn.
   return {"sf50", aircraft_assets::kSf50Eis, aircraft_assets::kSf50Checklist,
-          std::string(), "Cirrus Vision SF50", 25.0};
+          std::string(), "Cirrus Vision SF50", 25.0, 1};
 }
 
 AircraftProfile pa46tProfile() {
   return {"pa46t", aircraft_assets::kPa46tEis, aircraft_assets::kPa46tChecklist,
-          std::string(), "Piper PA-46T"};
+          std::string(), "Piper PA-46T", 15.0, 2};
 }
 
 std::vector<std::string>
