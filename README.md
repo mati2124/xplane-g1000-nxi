@@ -533,18 +533,24 @@ vector drawing.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0** — see
-the [LICENSE](LICENSE) file for the full text.
+This project is **source available** under the
+**[PolyForm Noncommercial License 1.0.0](LICENSE)** — not OSI-approved open
+source.
+
+- **Source code** is public. You may use, modify, and share it for
+  **non-commercial** purposes.
+- **Freeware aircraft** may bundle or integrate this avionics suite under those
+  terms (include [LICENSE](LICENSE) and the `Required Notice` line).
+- **Commercial use** — including payware aircraft or any for-profit
+  distribution — requires a separate license. See
+  [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 > Copyright (C) 2026 Andrew Miller
 >
-> This program is free software: you can redistribute it and/or modify it under
-> the terms of the GNU General Public License as published by the Free Software
-> Foundation, either version 3 of the License, or (at your option) any later
-> version. This program is distributed in the hope that it will be useful, but
-> WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-> FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
-> details.
+> Required Notice: Copyright Andrew Miller
+> (https://github.com/andywmm9-pixel/xplane-g1000-nxi)
 
 "Garmin" and "G1000" are trademarks of Garmin Ltd. This is an independent,
 unofficial reimplementation and is not affiliated with or endorsed by Garmin.
