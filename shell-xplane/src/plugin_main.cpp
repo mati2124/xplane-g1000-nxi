@@ -55,6 +55,7 @@
 #include "NavigraphStore.h"
 #include "UpdateNotify.h"
 #include "avionics/AssetPaths.h"
+#include "avionics/AircraftProfile.h"
 #include "avionics/Charts.h"
 #include "avionics/ChecklistStore.h"
 #include "avionics/EisStore.h"
@@ -243,6 +244,12 @@ AvionicsDevice g_pfd{
     avionics::DisplayPage::PrimaryFlightDisplay, /*drivesSource=*/true,
     kPresets[static_cast<int>(kDefaultPreset)].pfdEveryN, /*renderScale=*/1.0f,
     kPresets[static_cast<int>(kDefaultPreset)].pfdMaxHz, "PFD"};
+
+AvionicsDevice g_pfd2{
+    avionics::DisplayPage::PrimaryFlightDisplay, /*drivesSource=*/false,
+    kPresets[static_cast<int>(kDefaultPreset)].pfdEveryN, /*renderScale=*/1.0f,
+    kPresets[static_cast<int>(kDefaultPreset)].pfdMaxHz, "PFD2"};
+
 AvionicsDevice g_mfd{
     avionics::DisplayPage::MultiFunctionDisplay, /*drivesSource=*/false,
     kPresets[static_cast<int>(kDefaultPreset)].mfdEveryN,
@@ -280,15 +287,19 @@ void ApplyPreset(RatePreset preset) {
   if (idx < 0 || idx >= kPresetCount) return;
   g_preset = preset;
   g_pfd.renderEveryN = kPresets[idx].pfdEveryN;
+  g_pfd2.renderEveryN = kPresets[idx].pfdEveryN;
   g_mfd.renderEveryN = kPresets[idx].mfdEveryN;
   g_mfd.renderScale = kPresets[idx].mfdRenderScale;
   g_pfd.maxRenderHz = kPresets[idx].pfdMaxHz;
+  g_pfd2.maxRenderHz = kPresets[idx].pfdMaxHz;
   g_mfd.maxRenderHz = kPresets[idx].mfdMaxHz;
   // Force a fresh render on the next frame so the change is visible at once.
   // The cache is dropped too so a render-scale change resizes the FBO.
   g_pfd.frameCounter = 0;
+  g_pfd2.frameCounter = 0;
   g_mfd.frameCounter = 0;
   g_pfd.cacheReady = false;
+  g_pfd2.cacheReady = false;
   g_mfd.cacheReady = false;
 }
 
@@ -476,13 +487,18 @@ void BlitCache(AvionicsDevice& dev, int width, int height) {
 
 // Draws one device's screen. Returns 1 to let X-Plane draw its stock G1000
 // (when our renderer is unavailable), or 0 to suppress it and show ours.
+void InvalidateCaches() {
+  g_pfd.cacheReady = false;
+  g_pfd2.cacheReady = false;
+  g_mfd.cacheReady = false;
+}
+
 void InvalidateAvionicsCacheIfMapGeometryChanged() {
   if (!g_dataSource) return;
   const std::uint32_t epoch = g_dataSource->mapGeometryEpoch();
   if (epoch == g_mapGeometryEpoch) return;
   g_mapGeometryEpoch = epoch;
-  g_pfd.cacheReady = false;
-  g_mfd.cacheReady = false;
+  InvalidateCaches();
 }
 
 // Adds the renderer's most-recent-frame draw-call counts (valid right after a
@@ -510,9 +526,13 @@ void WireNavMapData(avionics::AvionicsEngine& engine) {
 }
 
 void WireSoftkeyPeers() {
-  if (!g_pfd.engine || !g_mfd.engine) return;
-  g_pfd.engine->setSoftkeyPeer(g_mfd.engine.get());
-  g_mfd.engine->setSoftkeyPeer(g_pfd.engine.get());
+  if (g_pfd.engine && g_mfd.engine) {
+    g_pfd.engine->setSoftkeyPeer(g_mfd.engine.get());
+    g_mfd.engine->setSoftkeyPeer(g_pfd.engine.get());
+  }
+  if (g_pfd2.engine && g_mfd.engine) {
+    g_pfd2.engine->setSoftkeyPeer(g_mfd.engine.get());
+  }
 }
 
 void ApplyQueuedFlightPlanEdits();
@@ -605,8 +625,8 @@ int DrawDevice(AvionicsDevice& dev) {
     if (dt < 0.0) dt = 0.0;
     dev.lastRenderElapsed = now;
     XPLMSetGraphicsState(/*fog=*/0, /*texUnits=*/1, /*lighting=*/0,
-                         /*alphaTest=*/0, /*alphaBlend=*/1, /*depthTest=*/0,
-                         /*depthWrite=*/0);
+                       /*alphaTest=*/0, /*alphaBlend=*/1, /*depthTest=*/0,
+                       /*depthWrite=*/0);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     dev.engine->update(dt);
@@ -703,6 +723,12 @@ int PfdDrawCallback(XPLMDeviceID /*device*/, int isBefore, void* /*ref*/) {
   if (!isBefore) return 1;
   if (!g_replaceDisplays) return 1;
   return RunDevice(g_pfd);
+}
+
+int Pfd2DrawCallback(XPLMDeviceID /*device*/, int isBefore, void* /*ref*/) {
+  if (!isBefore) return 1;
+  if (!g_replaceDisplays) return 1;
+  return RunDevice(g_pfd2);
 }
 
 int MfdDrawCallback(XPLMDeviceID /*device*/, int isBefore, void* /*ref*/) {
@@ -1493,6 +1519,7 @@ void ApplyDisplayBackup() {
     engine->mfdController().flashBezelKey(avionics::BezelKey::DisplayBackup);
   };
   flash(g_pfd.engine.get());
+  flash(g_pfd2.engine.get());
   flash(g_mfd.engine.get());
 }
 
@@ -2095,8 +2122,8 @@ void RegisterG1000Commands() {
   // the vector never reallocates while collecting (refcons point into it).
   g_commandBindings.reserve(448);
   CollectDeviceCommands(g_pfd, "g1000n1", "pfd", "PFD");
-  // Copilot-side GDU keys (g1000n2) drive the same pilot PFD engine.
-  CollectDeviceCommands(g_pfd, "g1000n2", "pfd_copilot", "PFD (copilot GDU)");
+  // Copilot-side GDU keys (g1000n2) drive the copilot PFD engine.
+  CollectDeviceCommands(g_pfd2, "g1000n2", "pfd_copilot", "PFD (copilot GDU)");
   CollectDeviceCommands(g_mfd, "g1000n3", "mfd", "MFD");
   // Optional GCU 478 control unit (routed dynamically to PFD or MFD).
   CollectGcuCommands();
@@ -2381,10 +2408,29 @@ void ShutdownDevice(AvionicsDevice& dev) {
   dev.cacheReady = false;
 }
 
+int GetAircraftNumPfds() {
+  XPLMDataRef acfIcao = XPLMFindDataRef("sim/aircraft/view/acf_ICAO");
+  XPLMDataRef acfPath = XPLMFindDataRef("sim/aircraft/view/acf_relative_path");
+  std::string icao;
+  std::string path;
+  if (acfIcao) {
+    char buf[64] = {};
+    if (XPLMGetDatab(acfIcao, buf, 0, sizeof(buf) - 1) > 0) icao = buf;
+  }
+  if (acfPath) {
+    char buf[1024] = {};
+    if (XPLMGetDatab(acfPath, buf, 0, sizeof(buf) - 1) > 0) path = buf;
+  }
+  return avionics::resolveAircraftProfile(icao, path).numPfds;
+}
+
 // Take over the built-in G1000 PFD (pilot) + MFD and grab the GDU keys.
 void EnableGlassTakeover() {
   if (g_pfd.handle == nullptr) {
     RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
+  }
+  if (g_pfd2.handle == nullptr && GetAircraftNumPfds() >= 2) {
+    RegisterDevice(g_pfd2, xplm_device_G1000_PFD_2, &Pfd2DrawCallback);
   }
   if (g_mfd.handle == nullptr) {
     RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
@@ -2399,6 +2445,7 @@ void EnableGlassTakeover() {
 void DisableGlassTakeover() {
   UnregisterG1000Commands();
   ShutdownDevice(g_pfd);
+  ShutdownDevice(g_pfd2);
   ShutdownDevice(g_mfd);
 }
 
@@ -2533,6 +2580,7 @@ PLUGIN_API void XPluginStop(void) {
   avionics::FmsDebugOverlay::unregisterDrawCallback();
   DestroyRateMenu();
   ShutdownDevice(g_pfd);
+  ShutdownDevice(g_pfd2);
   ShutdownDevice(g_mfd);
   // Join the terrain worker before the DataSource (which owns the TerrainSource
   // the worker samples) is destroyed, so the worker can't dereference freed
@@ -2575,11 +2623,18 @@ PLUGIN_API void XPluginReceiveMessage(XPLMPluginID /*from*/, int msg,
       XPLMUnregisterAvionicsCallbacks(g_pfd.handle);
       g_pfd.handle = nullptr;
     }
+    if (g_pfd2.handle) {
+      XPLMUnregisterAvionicsCallbacks(g_pfd2.handle);
+      g_pfd2.handle = nullptr;
+    }
     if (g_mfd.handle) {
       XPLMUnregisterAvionicsCallbacks(g_mfd.handle);
       g_mfd.handle = nullptr;
     }
     RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
+    if (GetAircraftNumPfds() >= 2) {
+      RegisterDevice(g_pfd2, xplm_device_G1000_PFD_2, &Pfd2DrawCallback);
+    }
     RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
     
     // Command interception depends on g_replaceDisplays
