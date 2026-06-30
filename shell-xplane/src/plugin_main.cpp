@@ -536,6 +536,8 @@ void WireSoftkeyPeers() {
 }
 
 void ApplyQueuedFlightPlanEdits();
+bool IsMfdMapRangeKey(avionics::BezelKey key);
+bool ApplyMfdMapRangeKey(avionics::BezelKey key);
 
 int DrawDevice(AvionicsDevice& dev) {
   InvalidateAvionicsCacheIfMapGeometryChanged();
@@ -1366,12 +1368,44 @@ int G1000CommandHandler(XPLMCommandRef /*cmd*/, XPLMCommandPhase phase,
 
   if (phase == xplm_CommandBegin) {
     forwarded = ForwardG1000Event(*b, avionics::cmdbridge::Phase::Begin);
+    // Trace range key handling: log device, engine status, and forwarding.
+    if (!b->isSoftkey) {
+      const auto bk = static_cast<avionics::BezelKey>(b->value);
+      if (IsMfdMapRangeKey(bk)) {
+        char dbg[320];
+        std::snprintf(dbg, sizeof(dbg),
+            "G1000 NXi: range cmd dev=%s hasEngine=%d forwarded=%d "
+            "replaceDisplays=%d\n",
+            b->dev == &g_mfd ? "MFD" : (b->dev == &g_pfd ? "PFD" : "PFD2"),
+            hasEngine ? 1 : 0, forwarded ? 1 : 0, g_replaceDisplays ? 1 : 0);
+        Log(dbg);
+      }
+    }
     if (hasEngine) {
-      if (b->isSoftkey) {
+      const auto bezelKey = static_cast<avionics::BezelKey>(b->value);
+      // MFD range keys need special handling: pressBezelKey alone updates the
+      // MfdController's rangeIndex_ but does not push the new value to the sim
+      // dataref, so syncMapRangeFromSim (which runs every frame) would revert
+      // the change. ApplyMfdMapRangeKey does both and mirrors the GCU path.
+      if (!b->isSoftkey && b->dev == &g_mfd && IsMfdMapRangeKey(bezelKey)) {
+        float beforeNm = g_mfd.engine ? g_mfd.engine->mfdController().rangeNm() : -1.0f;
+        ApplyMfdMapRangeKey(bezelKey);
+        float afterNm = g_mfd.engine ? g_mfd.engine->mfdController().rangeNm() : -1.0f;
+        if (g_dataSource) {
+          avionics::MfdController* ui =
+              g_mfd.engine ? &g_mfd.engine->mfdController() : nullptr;
+          if (ui) g_dataSource->pushMapRangeToSim(ui->rangeNm());
+        }
+        char dbg[256];
+        std::snprintf(dbg, sizeof(dbg),
+            "G1000 NXi: MFD range key %s, range %.1f -> %.1f nm\n",
+            bezelKey == avionics::BezelKey::RangeUp ? "UP" : "DOWN",
+            beforeNm, afterNm);
+        Log(dbg);
+      } else if (b->isSoftkey) {
         b->dev->engine->pressSoftkey(b->value);
       } else {
-        b->dev->engine->pressBezelKey(
-            static_cast<avionics::BezelKey>(b->value));
+        b->dev->engine->pressBezelKey(bezelKey);
         if (b->value2 >= 0) {
           b->dev->engine->pressBezelKey(
               static_cast<avionics::BezelKey>(b->value2));

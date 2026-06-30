@@ -392,6 +392,9 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   batteryMasterOn_ = XPLMFindDataRef(datarefs::kBatteryMasterOn);
   avionicsPowerOn_ = XPLMFindDataRef(datarefs::kAvionicsPowerOn);
   efisMapRangeNm_ = XPLMFindDataRef(datarefs::kEfisMapRangeNm);
+  if (efisMapRangeNm_ != nullptr && !XPLMCanWriteDataRef(efisMapRangeNm_)) {
+    efisMapRangeNm_ = nullptr;
+  }
 
   failAttitude_ = XPLMFindDataRef(datarefs::kFailAttitude);
   failHeading_ = XPLMFindDataRef(datarefs::kFailHeading);
