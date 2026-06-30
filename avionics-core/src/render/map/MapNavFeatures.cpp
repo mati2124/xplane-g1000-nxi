@@ -23,16 +23,49 @@ bool textRectsOverlap(const TextRect& a, const TextRect& b, float pad) {
            a.bottom + pad < b.top || b.bottom + pad < a.top);
 }
 
-TextRect expandTextRect(const TextRect& tr, float pad) {
-  return {tr.left - pad, tr.top - pad, tr.right + pad, tr.bottom + pad};
-}
-
-struct FixLabelCandidate {
+struct NavLabelCandidate {
   std::string id;
   float x = 0.0f;
   float y = 0.0f;
   float distSq = 0.0f;
+  MapFeatureType type = MapFeatureType::Fix;
+  bool isFix = false;
 };
+
+TextRect navLabelTextRect(float x, float labelY, const std::string& id,
+                          float textSize, Renderer& r) {
+  return r.measureTextRect(x, labelY, id, textSize, TextAlign::Center,
+                           kMapLabelFace);
+}
+
+TextRect navLabelClashRect(const TextRect& textRect, float x, float symY,
+                           float symSize, bool isFix, float pad) {
+  float left = textRect.left - pad;
+  float top = textRect.top - pad;
+  float right = textRect.right + pad;
+  float bottom = textRect.bottom + pad;
+  if (isFix) {
+    // Reserve the fix triangle so nearby fixes lose their idents as a group.
+    left = std::min(left, x - symSize * 0.85f - pad);
+    right = std::max(right, x + symSize * 0.85f + pad);
+    bottom = std::max(bottom, symY + symSize * 0.65f + pad);
+  }
+  return {left, top, right, bottom};
+}
+
+float navLabelY(MapFeatureType type, float symY, float symSize) {
+  const float offset =
+      (type == MapFeatureType::Airport ? symSize * 1.25f : symSize * 1.12f);
+  return symY - offset - kMapLabelLiftPx;
+}
+
+bool labelClashes(const TextRect& candidate, const std::vector<TextRect>& placed,
+                  float pad) {
+  for (const TextRect& existing : placed) {
+    if (textRectsOverlap(candidate, existing, pad)) return true;
+  }
+  return false;
+}
 
 bool visibleAtRange(MapFeatureType type, float rangeNm) {
   switch (type) {
@@ -205,9 +238,9 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
       routeOverlayLabelIds(map, config);
 
   const float textSize = labelSize * kMapIdentLabelScale;
-  std::vector<TextRect> placedFixLabels;
-  std::vector<FixLabelCandidate> fixLabels;
-  fixLabels.reserve(128);
+  std::vector<TextRect> placedLabelRects;
+  std::vector<NavLabelCandidate> labelCandidates;
+  labelCandidates.reserve(256);
 
   for (std::size_t i = 0; i < features.size(); ++i) {
     const MapFeature& f = features[i];
@@ -228,44 +261,36 @@ void drawNavFeatureLabels(Renderer& r, const MapData& map, const Proj& proj,
       continue;
     }
 
-    if (isFix) {
-      const float dx = x - proj.cx;
-      const float dy = y - proj.cy;
-      fixLabels.push_back({f.id, x, y, dx * dx + dy * dy});
-      continue;
-    }
-
-    const float labelY =
-        (f.type == MapFeatureType::Airport ? y - symSize * 1.25f
-                                           : y - symSize * 1.12f) -
-        kMapLabelLiftPx;
-    r.fillText(x, labelY, f.id, textSize, TextAlign::Center, colors::kWhite,
-               kMapLabelFace);
+    const float dx = x - proj.cx;
+    const float dy = y - proj.cy;
+    labelCandidates.push_back(
+        {f.id, x, y, dx * dx + dy * dy, f.type, isFix});
   }
 
-  // The PC Trainer labels only a subset of fix symbols: idents that fit without
-  // overlapping other fix labels (flight-plan idents are drawn separately).
-  std::sort(fixLabels.begin(), fixLabels.end(),
-            [](const FixLabelCandidate& a, const FixLabelCandidate& b) {
+  // Airports and navaids always win label slots; fixes are only labeled when
+  // their ident (and symbol footprint) fits without overlapping anything
+  // already placed, matching the real NXi in dense fix clusters.
+  std::sort(labelCandidates.begin(), labelCandidates.end(),
+            [](const NavLabelCandidate& a, const NavLabelCandidate& b) {
+              if (a.isFix != b.isFix) return !a.isFix;
               return a.distSq < b.distSq;
             });
-  placedFixLabels.reserve(fixLabels.size());
-  const float labelPad = textSize * 0.18f;
-  for (const FixLabelCandidate& fix : fixLabels) {
-    const float labelY = fix.y - symSize * 1.12f - kMapLabelLiftPx;
-    const TextRect tr = r.measureTextRect(fix.x, labelY, fix.id, textSize,
-                                          TextAlign::Center, kMapLabelFace);
-    bool clash = false;
-    for (const TextRect& placed : placedFixLabels) {
-      if (textRectsOverlap(tr, placed, labelPad)) {
-        clash = true;
-        break;
-      }
-    }
-    if (clash) continue;
-    r.fillText(fix.x, labelY, fix.id, textSize, TextAlign::Center,
+
+  placedLabelRects.reserve(labelCandidates.size());
+  const float navLabelPad = textSize * 0.22f;
+  const float fixLabelPad = textSize * 0.30f;
+  for (const NavLabelCandidate& cand : labelCandidates) {
+    const float labelY = navLabelY(cand.type, cand.y, symSize);
+    const TextRect textRect =
+        navLabelTextRect(cand.x, labelY, cand.id, textSize, r);
+    const float pad = cand.isFix ? fixLabelPad : navLabelPad;
+    const TextRect clashRect =
+        navLabelClashRect(textRect, cand.x, cand.y, symSize, cand.isFix, pad);
+    if (labelClashes(clashRect, placedLabelRects, 0.0f)) continue;
+
+    r.fillText(cand.x, labelY, cand.id, textSize, TextAlign::Center,
                colors::kWhite, kMapLabelFace);
-    placedFixLabels.push_back(expandTextRect(tr, labelPad));
+    placedLabelRects.push_back(clashRect);
   }
 }
 

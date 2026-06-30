@@ -280,6 +280,10 @@ void drawVorCompassRose(Renderer& r, float cx, float cy, float radiusPx,
 
   drawRangeRing(r, cx, cy, radiusPx, c);
 
+  constexpr int kTickCount =
+      360 / static_cast<int>(kVorRoseMinorTickDeg);  // 36 radial ticks
+  Point tickSegs[2 * kTickCount];
+  int segIdx = 0;
   for (int bearing = 0; bearing < 360;
        bearing += static_cast<int>(kVorRoseMinorTickDeg)) {
     const float screenDeg = static_cast<float>(bearing) + magvarDeg - rotationDeg;
@@ -287,7 +291,8 @@ void drawVorCompassRose(Renderer& r, float cx, float cy, float radiusPx,
     const float tickLen = major ? majorLen : minorLen;
     const Point outer = polarFromUp(cx, cy, radiusPx, screenDeg);
     const Point inner = polarFromUp(cx, cy, radiusPx - tickLen, screenDeg);
-    r.strokeLine(inner.x, inner.y, outer.x, outer.y, strokeW, c);
+    tickSegs[segIdx++] = inner;
+    tickSegs[segIdx++] = outer;
 
     if (drawLabels && bearing % static_cast<int>(kVorRoseLabelDeg) == 0) {
       char buf[4];
@@ -296,6 +301,7 @@ void drawVorCompassRose(Renderer& r, float cx, float cy, float radiusPx,
       r.fillText(lp.x, lp.y, buf, labelFont, TextAlign::Center, c);
     }
   }
+  r.strokeSegments(tickSegs, kTickCount, strokeW, c);
 }
 
 }  // namespace
