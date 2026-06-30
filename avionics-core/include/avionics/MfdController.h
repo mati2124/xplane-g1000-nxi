@@ -351,6 +351,7 @@ class MfdController {
   bool radarAct() const { return radarAct_; }
   // Antenna sweep position, 0..1 across one look, for the animated scan line.
   float radarSweepPhase() const { return static_cast<float>(radarSweepPhase_); }
+  bool radarCursorOn() const { return radarCursorOn_; }
 
   // Navigation Map pointer / pan mode (Pilot's Guide, Map Panning): push the
   // RANGE joystick on the MAP page to place a pan cursor; moving the joystick
@@ -1262,6 +1263,7 @@ class MfdController {
   bool radarStab_ = true;
   bool radarAct_ = false;
   double radarSweepPhase_ = 0.0;
+  bool radarCursorOn_ = false;
 
   bool mapPointerActive_ = false;
   double mapPointerLat_ = 0.0;

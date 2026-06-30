@@ -266,6 +266,7 @@ bool g_installUpdateMenuShown = false;
 // the networked standalone shell.
 bool g_replaceDisplays = true;
 bool g_showFmsDebug = false;
+avionics::AircraftOverride g_aircraftOverride = avionics::AircraftOverride::Auto;
 
 // Durable PFD/MFD display preferences (the softkey-selectable options that
 // survive between flights, e.g. the PFD inset map on/off). Loaded at startup,
@@ -300,6 +301,7 @@ constexpr const char* kConfigFileName = "g1000nxi.prf";
 constexpr const char* kKeyRate = "rate";
 constexpr const char* kKeyReplaceDisplays = "replace_displays";
 constexpr const char* kKeyFmsDebug = "fms_debug";
+constexpr const char* kKeyAircraftOverride = "aircraft_override";
 
 std::string ConfigFilePath() {
   char prefs[512] = {0};
@@ -318,6 +320,7 @@ void SaveConfig() {
   std::fprintf(f, "%s=%s\n", kKeyRate, kPresets[static_cast<int>(g_preset)].name);
   std::fprintf(f, "%s=%d\n", kKeyReplaceDisplays, g_replaceDisplays ? 1 : 0);
   std::fprintf(f, "%s=%d\n", kKeyFmsDebug, g_showFmsDebug ? 1 : 0);
+  std::fprintf(f, "%s=%d\n", kKeyAircraftOverride, static_cast<int>(g_aircraftOverride));
   std::string stateLines;
   avionics::appendStateLines(g_avionicsState, stateLines);
   std::fwrite(stateLines.data(), 1, stateLines.size(), f);
@@ -348,6 +351,11 @@ void LoadConfig() {
       g_replaceDisplays = (value == "1");
     } else if (key == kKeyFmsDebug) {
       g_showFmsDebug = (value == "1");
+    } else if (key == kKeyAircraftOverride) {
+      const int val = std::atoi(value.c_str());
+      if (val >= 0 && val < static_cast<int>(avionics::AircraftOverride::Count)) {
+        g_aircraftOverride = static_cast<avionics::AircraftOverride>(val);
+      }
     } else {
       // Durable display preferences are parsed by the shared core.
       avionics::applyStateLine(key, value, g_avionicsState);
@@ -693,11 +701,13 @@ int RunDevice(AvionicsDevice& dev) {
 
 int PfdDrawCallback(XPLMDeviceID /*device*/, int isBefore, void* /*ref*/) {
   if (!isBefore) return 1;
+  if (!g_replaceDisplays) return 1;
   return RunDevice(g_pfd);
 }
 
 int MfdDrawCallback(XPLMDeviceID /*device*/, int isBefore, void* /*ref*/) {
   if (!isBefore) return 1;
+  if (!g_replaceDisplays) return 1;
   return RunDevice(g_mfd);
 }
 
@@ -2152,8 +2162,18 @@ void DisableGlassTakeover();
 // ---- rate-preset menu --------------------------------------------------------
 // itemRef -1 toggles in-sim display replacement; 0..kPresetCount-1 pick a preset.
 constexpr int kReplaceDisplaysMenuRef = -1;
+constexpr int kAircraftOverrideAutoRef = -2;
+constexpr int kAircraftOverrideC172Ref = -3;
+constexpr int kAircraftOverrideSF50Ref = -4;
+constexpr int kAircraftOverridePA46TRef = -5;
+
 constexpr int kReplaceDisplaysMenuIndex = kPresetCount + 1;
 constexpr int kFmsDebugMenuIndex = kPresetCount + 2;
+
+constexpr int kAircraftOverrideAutoIndex = kPresetCount + 4;
+constexpr int kAircraftOverrideC172Index = kPresetCount + 5;
+constexpr int kAircraftOverrideSF50Index = kPresetCount + 6;
+constexpr int kAircraftOverridePA46TIndex = kPresetCount + 7;
 
 // Puts a check mark beside the active preset and clears the others.
 void RefreshRateMenuChecks() {
@@ -2168,6 +2188,14 @@ void RefreshRateMenuChecks() {
                     g_replaceDisplays ? xplm_Menu_Checked : xplm_Menu_Unchecked);
   XPLMCheckMenuItem(g_rateMenu, kFmsDebugMenuIndex,
                     g_showFmsDebug ? xplm_Menu_Checked : xplm_Menu_Unchecked);
+  XPLMCheckMenuItem(g_rateMenu, kAircraftOverrideAutoIndex,
+                    g_aircraftOverride == avionics::AircraftOverride::Auto ? xplm_Menu_Checked : xplm_Menu_Unchecked);
+  XPLMCheckMenuItem(g_rateMenu, kAircraftOverrideC172Index,
+                    g_aircraftOverride == avionics::AircraftOverride::C172 ? xplm_Menu_Checked : xplm_Menu_Unchecked);
+  XPLMCheckMenuItem(g_rateMenu, kAircraftOverrideSF50Index,
+                    g_aircraftOverride == avionics::AircraftOverride::SF50 ? xplm_Menu_Checked : xplm_Menu_Unchecked);
+  XPLMCheckMenuItem(g_rateMenu, kAircraftOverridePA46TIndex,
+                    g_aircraftOverride == avionics::AircraftOverride::PA46T ? xplm_Menu_Checked : xplm_Menu_Unchecked);
 }
 
 void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
@@ -2175,9 +2203,45 @@ void OnRateMenuItem(void* /*menuRef*/, void* itemRef) {
   if (idx == kReplaceDisplaysMenuRef) {
     g_replaceDisplays = !g_replaceDisplays;
     if (g_replaceDisplays) {
-      EnableGlassTakeover();
+      RegisterG1000Commands();
     } else {
-      DisableGlassTakeover();
+      UnregisterG1000Commands();
+    }
+    SaveConfig();
+    RefreshRateMenuChecks();
+    return;
+  }
+  if (idx == kAircraftOverrideAutoRef) {
+    g_aircraftOverride = avionics::AircraftOverride::Auto;
+    if (g_dataSource) {
+      g_dataSource->setAircraftOverride(avionics::AircraftOverride::Auto);
+    }
+    SaveConfig();
+    RefreshRateMenuChecks();
+    return;
+  }
+  if (idx == kAircraftOverrideC172Ref) {
+    g_aircraftOverride = avionics::AircraftOverride::C172;
+    if (g_dataSource) {
+      g_dataSource->setAircraftOverride(avionics::AircraftOverride::C172);
+    }
+    SaveConfig();
+    RefreshRateMenuChecks();
+    return;
+  }
+  if (idx == kAircraftOverrideSF50Ref) {
+    g_aircraftOverride = avionics::AircraftOverride::SF50;
+    if (g_dataSource) {
+      g_dataSource->setAircraftOverride(avionics::AircraftOverride::SF50);
+    }
+    SaveConfig();
+    RefreshRateMenuChecks();
+    return;
+  }
+  if (idx == kAircraftOverridePA46TRef) {
+    g_aircraftOverride = avionics::AircraftOverride::PA46T;
+    if (g_dataSource) {
+      g_dataSource->setAircraftOverride(avionics::AircraftOverride::PA46T);
     }
     SaveConfig();
     RefreshRateMenuChecks();
@@ -2260,6 +2324,19 @@ void BuildRateMenu() {
                              /*before=*/1, nullptr);
   XPLMAppendMenuItemWithCommand(g_rateMenu, "Show FMS debug overlay",
                                 g_fmsDebugCmd);
+  XPLMAppendMenuSeparator(g_rateMenu);
+  XPLMAppendMenuItem(
+      g_rateMenu, "Aircraft Layout: Auto",
+      reinterpret_cast<void*>(static_cast<intptr_t>(kAircraftOverrideAutoRef)), 1);
+  XPLMAppendMenuItem(
+      g_rateMenu, "Aircraft Layout: Cessna 172S",
+      reinterpret_cast<void*>(static_cast<intptr_t>(kAircraftOverrideC172Ref)), 1);
+  XPLMAppendMenuItem(
+      g_rateMenu, "Aircraft Layout: Cirrus SF50",
+      reinterpret_cast<void*>(static_cast<intptr_t>(kAircraftOverrideSF50Ref)), 1);
+  XPLMAppendMenuItem(
+      g_rateMenu, "Aircraft Layout: Piper PA-46T",
+      reinterpret_cast<void*>(static_cast<intptr_t>(kAircraftOverridePA46TRef)), 1);
   // "Install Update" is bound to its command so it is both clickable and
   // key-bindable. Disabled until the update pump finds a newer release.
   XPLMAppendMenuSeparator(g_rateMenu);
@@ -2410,6 +2487,9 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   // preferences) before building the menu, so the right item starts checked
   // and the engines pick up the saved options when first created.
   LoadConfig();
+  if (g_dataSource) {
+    g_dataSource->setAircraftOverride(g_aircraftOverride);
+  }
   avionics::FmsDebugOverlay::setEnabled(g_showFmsDebug);
   BuildRateMenu();
 
@@ -2425,10 +2505,8 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc) {
   // GL, so it is safe to run alongside X-Plane's render loop.
   avionics::map::setAsyncTerrainBuilds(true);
 
-  if (g_replaceDisplays) {
-    RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
-    RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
-  }
+  // Devices are registered on enable and aircraft load rather than plugin start
+  // to ensure X-Plane's built-in G1000 devices are fully initialized first.
 
   avionics::startUpdateCheckOnLaunch();
   return 1;
@@ -2474,17 +2552,40 @@ PLUGIN_API void XPluginStop(void) {
 PLUGIN_API int XPluginEnable(void) {
   if (g_flightPlanBridge) g_flightPlanBridge->start();
   if (g_commandBridge) g_commandBridge->start();
-  // Re-register after disable/re-enable so handlers are not duplicated.
-  UnregisterG1000Commands();
-  RegisterG1000Commands();
+  
+  // Seamlessly keep callbacks registered during plugin enable
+  EnableGlassTakeover();
+  if (!g_replaceDisplays) {
+    UnregisterG1000Commands();
+  }
   return 1;
 }
 PLUGIN_API void XPluginDisable(void) {
-  UnregisterG1000Commands();
+  DisableGlassTakeover();
   if (g_commandBridge) g_commandBridge->stop();
   if (g_flightPlanBridge) g_flightPlanBridge->stop();
 }
 PLUGIN_API void XPluginReceiveMessage(XPLMPluginID /*from*/, int msg,
                                       void* /*param*/) {
-  if (msg == XPLM_MSG_PLANE_LOADED) RefreshDisplayBackupStockCommand();
+  if (msg == XPLM_MSG_PLANE_LOADED) {
+    RefreshDisplayBackupStockCommand();
+    
+    // Re-register device callbacks because X-Plane recreated the screens
+    if (g_pfd.handle) {
+      XPLMUnregisterAvionicsCallbacks(g_pfd.handle);
+      g_pfd.handle = nullptr;
+    }
+    if (g_mfd.handle) {
+      XPLMUnregisterAvionicsCallbacks(g_mfd.handle);
+      g_mfd.handle = nullptr;
+    }
+    RegisterDevice(g_pfd, xplm_device_G1000_PFD_1, &PfdDrawCallback);
+    RegisterDevice(g_mfd, xplm_device_G1000_MFD, &MfdDrawCallback);
+    
+    // Command interception depends on g_replaceDisplays
+    UnregisterG1000Commands();
+    if (g_replaceDisplays) {
+      RegisterG1000Commands();
+    }
+  }
 }

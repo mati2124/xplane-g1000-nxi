@@ -349,13 +349,22 @@ void drawSettingsBox(Renderer& r, float x, float y, float w, float h,
 
   auto rowCy = [&](int i) { return y + rowH * (i + 0.5f); };
 
+  const bool cursorActive = ui.radarCursorOn();
+  const bool onBearing =
+      ui.radarBearingLineOn() && ui.radarScan() != RadarScan::Vertical;
+
   // Tilt: UP/DN with hundredths of a degree (Figure 6-70 shows "DN 0.25").
   const float tilt = ui.radarTiltDeg();
   std::snprintf(buf, sizeof(buf), "%s %.2f\xC2\xB0", tilt < 0.0f ? "DN" : "UP",
                 std::fabs(tilt));
   r.fillText(lx, rowCy(0), "Tilt", labelSize, TextAlign::Left,
              colors::kTitleGray);
-  r.fillText(rx, rowCy(0), buf, valueSize, TextAlign::Right, colors::kCyan);
+  if (cursorActive && !onBearing) {
+    drawCursorSelect(r, rx, rowCy(0), buf, valueSize, TextAlign::Right,
+                     ui.blinkOn());
+  } else {
+    r.fillText(rx, rowCy(0), buf, valueSize, TextAlign::Right, colors::kCyan);
+  }
 
   // Bearing: shown when the bearing line is up, else dashes.
   r.fillText(lx, rowCy(1), "Bearing", labelSize, TextAlign::Left,
@@ -365,7 +374,12 @@ void drawSettingsBox(Renderer& r, float x, float y, float w, float h,
     std::snprintf(buf, sizeof(buf), "%+.0f\xC2\xB0", ui.radarBearingDeg());
     brg = buf;
   }
-  r.fillText(rx, rowCy(1), brg, valueSize, TextAlign::Right, colors::kCyan);
+  if (cursorActive && onBearing) {
+    drawCursorSelect(r, rx, rowCy(1), brg, valueSize, TextAlign::Right,
+                     ui.blinkOn());
+  } else {
+    r.fillText(rx, rowCy(1), brg, valueSize, TextAlign::Right, colors::kCyan);
+  }
 
   // Sector Scan width.
   r.fillText(lx, rowCy(2), "Sector Scan", labelSize, TextAlign::Left,

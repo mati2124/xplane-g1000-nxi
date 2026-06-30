@@ -1,0 +1,68 @@
+# Piper PA-46T Meridian - MFD checklist set (G1000 NXi Checklist page group).
+# Auto-selected when the loaded aircraft is a PA46T.
+
+GROUP NORMAL PROCEDURES
+
+  CHECKLIST BEFORE STARTING ENGINE
+    Preflight Inspection : COMPLETE
+    Passenger Briefing : COMPLETE
+    Seats, Belts, Harnesses : ADJUST AND LOCK
+    Brakes : TEST AND SET
+    Circuit Breakers : CHECK IN
+    Condition Lever : CUT-OFF
+    Fuel Selector : ON / AUTO
+
+  CHECKLIST ENGINE START
+    Propeller : HIGH RPM
+    Battery Master : ON
+    Avionics Master : OFF
+    Fuel Pumps : ON / AUTO
+    Starter Switch : ENGAGE
+    Condition Lever : RUN (ABOVE 13% NG)
+    ITT : MONITOR (MAX 800 C)
+    Generator Switch : ON
+    Avionics Master : ON
+
+  CHECKLIST BEFORE TAKEOFF
+    Parking Brake : SET
+    Flight Controls : FREE AND CORRECT
+    Flight Instruments : CHECK AND SET
+    Flaps : SET FOR TAKEOFF (10 DEG)
+    Elevator Trim : SET FOR TAKEOFF
+    Annunciator Panel : CHECK
+
+  CHECKLIST CRUISE
+    Power (Torque) : SET (MAX 1313 FT-LB)
+    Engine Instruments : MONITOR
+    Fuel Quantity / Balance : CHECK
+
+  CHECKLIST BEFORE LANDING
+    Seats, Belts : SECURE
+    Landing Light : ON
+    Autopilot : DISENGAGE
+    Flaps : AS DESIRED (BELOW 168 KIAS)
+    Gear : DOWN (BELOW 168 KIAS)
+
+  CHECKLIST SHUTDOWN
+    Parking Brake : SET
+    Power Lever : IDLE
+    Avionics Master : OFF
+    Condition Lever : CUT-OFF
+    Generator Switch : OFF
+    Battery Master : OFF
+
+GROUP EMERGENCY PROCEDURES
+
+  CHECKLIST ENGINE FAILURE DURING TAKEOFF ROLL
+    Power Lever : IDLE
+    Brakes : APPLY
+    Condition Lever : CUT-OFF
+    Battery Master : OFF
+
+  CHECKLIST ENGINE FAILURE IN FLIGHT
+    Airspeed : 95 KIAS (Glide)
+    Power Lever : IDLE
+    Condition Lever : CUT-OFF
+    Fuel Selector : ON / AUTO
+    Battery Master : ON
+    Starter Switch : ENGAGE (Re-light)

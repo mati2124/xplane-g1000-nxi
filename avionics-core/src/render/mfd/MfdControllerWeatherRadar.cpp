@@ -8,6 +8,15 @@
 namespace avionics {
 
 bool MfdController::radarBezelKey(BezelKey key) {
+  if (key == BezelKey::FmsPush) {
+    radarCursorOn_ = !radarCursorOn_;
+    return true;
+  }
+
+  if (!radarCursorOn_) {
+    return false;
+  }
+
   const bool onBearing =
       radarBearingLineOn_ && radarScan_ != RadarScan::Vertical;
   switch (key) {
