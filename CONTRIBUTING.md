@@ -3,6 +3,10 @@
 Thank you for your interest in improving the X-Plane G1000 NXi project. Pull
 requests, bug reports, and discussion are welcome.
 
+**Forking is disabled** on this repository. You can still clone and read the
+source, but GitHub will not create personal fork copies. See
+[How to contribute](#how-to-contribute) below for the supported workflows.
+
 ## License
 
 This project is **source available** under the
@@ -29,13 +33,42 @@ Use `git commit -s` to add this line automatically.
 
 ## How to contribute
 
-1. **Discuss large changes first** — open an issue or comment on an existing one
-   before spending time on a major refactor or new feature.
-2. **Fork and branch** — work on a feature branch off `main`.
+### Everyone
+
+1. **Open an issue first for large changes** — describe the bug, feature, or
+   refactor before spending time on a major patch. Comment on existing issues
+   for smaller fixes.
+2. **Bug reports and ideas** — issues are always welcome; no repository write
+   access required.
+
+### If you have write access (collaborator)
+
+Forking is off, so work **in this repository** on a branch:
+
+1. Clone the repo (do not fork):
+   `git clone https://github.com/andywmm9-pixel/xplane-g1000-nxi.git`
+2. Create a feature branch from `main`:
+   `git checkout -b your-name/short-description`
 3. **Build and test** — see [README.md](README.md) and [AGENTS.md](AGENTS.md).
    Run `ctest` when your change touches logic covered by unit tests.
-4. **Open a pull request** — describe what changed and why. Link any related
-   issues.
+4. Commit with DCO sign-off (`git commit -s`).
+5. Push the branch to **this** repo and open a pull request against `main`.
+
+### If you do not have write access
+
+You cannot push branches or open pull requests until you are added as a
+collaborator. To contribute code:
+
+1. **Open an issue** describing the change, or find an issue you want to work
+   on and ask to be assigned.
+2. **Request collaborator access** in the issue if you plan to submit a pull
+   request. Maintainers can grant write access so you can push a branch here
+   (no fork needed).
+3. **Alternatively, attach a patch** — post a unified diff or link a gist in
+   the issue. Maintainers can apply it and credit you in the commit message.
+
+Do not create an unofficial mirror fork on another GitHub account to bypass this
+policy; use one of the paths above instead.
 
 ## Freeware aircraft developers
 
@@ -45,7 +78,37 @@ X-Plane aircraft under the PolyForm Noncommercial License. Include a copy of
 Payware or other commercial distribution requires a commercial license — see
 [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
+Cloning or downloading a release tarball for integration is fine; you do not
+need a GitHub fork for that.
+
 ## Code style
 
 Match the surrounding code: naming, formatting, and structure. Keep changes
 focused on the problem you are solving.
+
+## Repository settings (maintainers)
+
+Forking must be turned off in GitHub repository settings (the Cloud Agent token
+cannot change this automatically):
+
+1. Open **Settings → General** for
+   [andywmm9-pixel/xplane-g1000-nxi](https://github.com/andywmm9-pixel/xplane-g1000-nxi).
+2. Under **Features**, uncheck **Allow forking** (or set **Allow forking** to
+   off).
+3. Save.
+
+Or from a machine with admin access to the repo:
+
+```bash
+gh repo edit andywmm9-pixel/xplane-g1000-nxi --allow-forking=false
+```
+
+Verify:
+
+```bash
+gh api repos/andywmm9-pixel/xplane-g1000-nxi --jq .allow_forking
+# should print: false
+```
+
+When forking is disabled, add outside contributors as **collaborators**
+(**Settings → Collaborators**) if they need to open pull requests directly.
