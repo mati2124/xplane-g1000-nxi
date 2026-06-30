@@ -126,6 +126,12 @@ struct MapLeg {
   // Loaded procedure role suffix (e.g. "iaf", "faf") for the FPL ident column.
   std::string procedureRole;
 
+  // Name of the published airway this leg was loaded as part of (e.g. "Q118"),
+  // set on every leg in the loaded segment including the exit fix. Empty for a
+  // plain enroute fix. Drives the FPL "Airway - <name>.<exit>" group header and
+  // the collapse/expand display (Pilot's Guide, Flight Planning - Load Airway).
+  std::string viaAirway;
+
   // Published glidepath angle from CIFP (degrees, positive descent angle).
   // Non-zero on LPV final-segment legs; drives the PFD magenta glidepath diamond.
   float glidePathAngleDeg = 0.0f;
@@ -282,15 +288,22 @@ struct MapAirwaySegment {
   GeoPoint b;
 };
 
-// One TIS/TAS traffic target for the map overlay (TIS symbology: open white
-// diamond for non-threat traffic, solid yellow circle for a Traffic
-// Advisory, with a relative-altitude tag and climb/descend arrow).
+// TCAS threat classification for a traffic target, which selects the symbol
+// shape and color (Pilot's Guide, Hazard Avoidance - Traffic):
+//   Other      - non-threat: open white diamond
+//   Proximity  - proximity advisory: solid white diamond (within 5 NM and
+//                +/-1200 ft, but not a TA)
+//   Advisory   - traffic advisory (TA): solid yellow circle
+enum class TrafficThreat { Other, Proximity, Advisory };
+
+// One TIS/TAS traffic target for the map overlay, drawn with TCAS symbology
+// per `threat` plus a relative-altitude tag and climb/descend arrow.
 struct MapTraffic {
   double lat = 0.0;
   double lon = 0.0;
   float relAltFt = 0.0f;           // relative to ownship; + is above
   float verticalSpeedFpm = 0.0f;   // drives the climb/descend arrow
-  bool trafficAdvisory = false;    // TA threat level
+  TrafficThreat threat = TrafficThreat::Other;
 };
 
 // Land (cultural/hydro) vector data classes, from the bundled Natural Earth
@@ -355,12 +368,12 @@ struct AirportRunwayInfo {
   bool lighted = false;  // edge lights present
 };
 
-// One closed paved polygon (taxiway, apron, or ramp) from an apt.dat row-110
-// pavement chunk, for the close-range airport diagram (SafeTaxi-style). Only
-// the outer boundary is kept; holes and bezier curves are approximated as
-// straight segments between the boundary nodes.
+// One paved region (taxiway, apron, or ramp) from an apt.dat row-110 chunk, for
+// the close-range airport diagram (SafeTaxi-style). contours[0] is the outer
+// boundary; later contours are holes (grass islands punched out of the slab).
+// Bezier curves are approximated as straight segments between nodes.
 struct MapPavement {
-  std::vector<GeoPoint> outline;
+  std::vector<std::vector<GeoPoint>> contours;
 };
 
 // A taxiway identifier label (e.g. "A", "E2") for the SafeTaxi diagram, placed

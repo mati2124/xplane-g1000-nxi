@@ -20,9 +20,6 @@ constexpr char kDegUtf8[] = "\xC2\xB0";
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kFeetPerNm = 6076.12;
 constexpr double kG = 32.174;  // ft/s^2
-// Normal 15° bank angle used for leg smoothing (G1000 NXi Pilot's Guide,
-// Appendix D "When does turn anticipation begin?").
-constexpr double kTurnBankDeg = 15.0;
 // Countdown and flash window before the computed turn point.
 constexpr double kCountdownLeadSec = 10.0;
 // Use the turn-advisory wording when the outbound course change exceeds this.
@@ -44,14 +41,15 @@ double shortestTurnDeltaDeg(double inboundDeg, double outboundDeg) {
 }
 
 double turnLeadDistanceNm(double gsKts, double turnDeltaDeg,
-                          double maxTurnDegCap) {
+                          double maxTurnDegCap, double bankDeg) {
   if (gsKts < 1.0 || std::fabs(turnDeltaDeg) < 0.5) return 0.0;
   // Large course reversals cap the angle used in the formula so the annunciation
   // does not read "now" for miles; Direct-To off-route entries may use a higher
   // cap (e.g. 135°) so the fly-by still begins before the fix.
   const double cappedDeltaDeg =
       std::min(std::fabs(turnDeltaDeg), maxTurnDegCap);
-  const double bankRad = kTurnBankDeg * kPi / 180.0;
+  const double bankRad =
+      std::max(5.0, bankDeg) * kPi / 180.0;
   const double deltaRad = cappedDeltaDeg * kPi / 180.0 * 0.5;
   const double vFps = gsKts * kFeetPerNm / 3600.0;
   const double radiusFt = (vFps * vFps) / (kG * std::tan(bankRad));
@@ -67,6 +65,7 @@ TurnAnticipation computeTurnAnticipation(const MapData& map,
   if (cdiSource != CdiSource::Gps) return out;
   if (!map.positionValid || !data.dataLinkValid) return out;
   if (data.fmaToWpt.empty()) return out;
+  const double bankDeg = static_cast<double>(data.turnLeadBankDeg);
   const std::vector<MapLeg>& plan = map.flightPlan;
   if (plan.size() < 2) return out;
 
@@ -121,7 +120,7 @@ TurnAnticipation computeTurnAnticipation(const MapData& map,
       const double gsKts =
           std::max(40.0, static_cast<double>(data.groundSpeedKts));
       const double prevLeadNm =
-          turnLeadDistanceNm(gsKts, prevTurnDeltaDeg);
+          turnLeadDistanceNm(gsKts, prevTurnDeltaDeg, 90.0, bankDeg);
       const double distPrevFixNm =
           navDistanceNm(map.ownshipLat, map.ownshipLon, prevFix.lat, prevFix.lon);
       if (distPrevFixNm <= prevLeadNm + kTurnSteeringMarginNm) {
@@ -151,7 +150,8 @@ TurnAnticipation computeTurnAnticipation(const MapData& map,
   const double gsKts = std::max(40.0, static_cast<double>(data.groundSpeedKts));
   const double maxTurnDegCap =
       directToOnPlan ? kDirectToFlyByMaxTurnDegCap : 90.0;
-  const double leadNm = turnLeadDistanceNm(gsKts, turnDeltaDeg, maxTurnDegCap);
+  const double leadNm =
+      turnLeadDistanceNm(gsKts, turnDeltaDeg, maxTurnDegCap, bankDeg);
   const double steeringMarginNm =
       directToOnPlan ? kTurnSteeringMarginNm : 0.0;
   const double distToWptNm =

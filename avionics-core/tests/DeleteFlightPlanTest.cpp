@@ -32,6 +32,10 @@ void OpenDeleteFlightPlanConfirm(MfdController& ui) {
 
   ui.pressBezelKey(BezelKey::Fpl);  // Active Flight Plan page
   ASSERT_EQ(ui.pageGroup(), MfdPageGroup::FlightPlan);
+  if (ui.page() != MfdPage::ActiveFlightPlan) {
+    ui.pressBezelKey(BezelKey::FmsInnerCcw);
+  }
+  ASSERT_EQ(ui.page(), MfdPage::ActiveFlightPlan);
   ASSERT_FALSE(ui.fplLegs().empty());
 
   ui.pressBezelKey(BezelKey::Menu);  // open the Page Menu
@@ -82,6 +86,46 @@ TEST(DeleteFlightPlanTest, ClearedRouteSurvivesStaleSimSync) {
       MakeLeg("KCMI", 40.039, -88.278),
   };
   ui.syncFlightPlan(stale, /*activeWaypoint=*/{}, /*navDirectTo=*/false);
+
+  EXPECT_TRUE(ui.fplLegs().empty());
+}
+
+TEST(DeleteFlightPlanTest, ClearedRouteSurvivesStaleSimSyncAfterOffPlanDirectTo) {
+  MfdController ui;
+  const std::vector<MapLeg> plan = {
+      MakeLeg("KFMY", 26.586, -81.863),
+      MakeLeg("BOSTN", 26.700, -81.500),
+      MakeLeg("KCMI", 40.039, -88.278),
+  };
+  MapLeg offPlanVor = MakeLeg("RSW", 26.536, -81.755);
+
+  MapData map;
+  map.flightPlan = plan;
+  map.directToActive = true;
+  map.directTo = offPlanVor;
+  ui.syncFlightPlan(map, /*activeWaypoint=*/{}, /*navDirectTo=*/true);
+  ASSERT_TRUE(ui.fplLegs().empty());
+
+  ui.pressBezelKey(BezelKey::Fpl);
+  ui.pressBezelKey(BezelKey::Menu);
+  for (int i = 0; i < ui.pageMenuItemCount(); ++i) {
+    if (ui.pageMenuItemText(ui.pageMenuSelected()) == "Delete Flight Plan") {
+      break;
+    }
+    ui.pressBezelKey(BezelKey::FmsInnerCw);
+  }
+  ui.pressBezelKey(BezelKey::Ent);
+  ui.pressBezelKey(BezelKey::Ent);
+
+  std::vector<MapLeg> published;
+  ASSERT_TRUE(ui.consumeFlightPlanEdit(published));
+  EXPECT_TRUE(published.empty());
+  EXPECT_TRUE(ui.fplLocalDraft());
+
+  map.directToActive = false;
+  map.directTo = {};
+  map.flightPlan = plan;
+  ui.syncFlightPlan(map, /*activeWaypoint=*/{}, /*navDirectTo=*/false);
 
   EXPECT_TRUE(ui.fplLegs().empty());
 }

@@ -6,6 +6,7 @@
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/FplRouteEdit.h"
 #include "avionics/NavMath.h"
+#include "avionics/ProcedureSupport.h"
 #include "avionics/render/CursorHighlight.h"
 #include "avionics/FplRouteEdit.h"
 #include "render/mfd/MfdStyle.h"
@@ -19,9 +20,10 @@ namespace {
 // OK / CANCEL pair; the highlighted choice gets the cyan select plate.
 void drawFplConfirm(Renderer& r, const WindowFrame& f, float size,
                     const std::string& line1, const std::string& line2,
-                    bool okSelected, float a) {
+                    bool okSelected, float a, const std::string& line3 = {}) {
+  const bool threeLine = !line3.empty();
   const float boxW = f.w * 0.82f;
-  const float boxH = size * 6.2f;
+  const float boxH = size * (threeLine ? 7.3f : 6.2f);
   const float bx = f.x + (f.w - boxW) * 0.5f;
   const float by = f.top + (f.h - boxH) * 0.5f;
   const float radius = size * 0.4f;
@@ -31,10 +33,22 @@ void drawFplConfirm(Renderer& r, const WindowFrame& f, float size,
                       withAlpha(colors::kMenuBorderGray, a));
 
   const float cx = bx + boxW * 0.5f;
-  r.fillText(cx, by + size * 1.2f, line1, size, TextAlign::Center,
+  // Keep long procedure subjects (e.g. "SKNNR-RW08B.BANNG3.LUCKK") inside the
+  // box by shrinking any line that would overrun the available text width.
+  const float maxTextW = boxW - size * 1.0f;
+  const auto fitSize = [&](const std::string& s) {
+    const float w = r.measureTextWidth(s, size);
+    if (w <= maxTextW || w <= 0.0f) return size;
+    return size * (maxTextW / w);
+  };
+  r.fillText(cx, by + size * 1.2f, line1, fitSize(line1), TextAlign::Center,
              withAlpha(colors::kWhite, a));
   if (!line2.empty()) {
-    r.fillText(cx, by + size * 2.3f, line2, size, TextAlign::Center,
+    r.fillText(cx, by + size * 2.3f, line2, fitSize(line2), TextAlign::Center,
+               withAlpha(colors::kWhite, a));
+  }
+  if (threeLine) {
+    r.fillText(cx, by + size * 3.4f, line3, fitSize(line3), TextAlign::Center,
                withAlpha(colors::kWhite, a));
   }
 
@@ -99,8 +113,23 @@ float rnavGpsSuffixGap(float size) { return size * 0.08f; }
 // Trainer FPL after load: KFMY-RNAV GPS 05 LPV (no dash between RNAV and GPS).
 void drawFplApproachHeader(Renderer& r, float x, float cy, const std::string& icao,
                            const std::string& label, float size, const Color& color,
-                           float a) {
+                           float a, float maxWidth = 0.0f) {
   const std::string prefix = icao + "-";
+  // Shrink the whole header uniformly when it would run past the list edge /
+  // scroll bar (long procedure subjects like "SKNNR-RW08B.BANNG3.LUCKK").
+  if (maxWidth > 0.0f) {
+    float full = r.measureTextWidth(prefix, size);
+    if (labelIsRnavGps(label)) {
+      const float subSize = size * 0.72f;
+      full += r.measureTextWidth("RNAV", size) + rnavGpsSuffixGap(size) +
+              r.measureTextWidth("GPS", subSize);
+      const std::string rest = restAfterRnavGps(label);
+      if (!rest.empty()) full += r.measureTextWidth(" " + rest, size);
+    } else {
+      full += r.measureTextWidth(label, size);
+    }
+    if (full > maxWidth && full > 0.0f) size *= maxWidth / full;
+  }
   float xx = x;
   r.fillText(xx, cy, prefix, size, TextAlign::Left, withAlpha(color, a));
   xx += r.measureTextWidth(prefix, size);
@@ -386,6 +415,51 @@ void drawFplApproachDtkDisDashes(Renderer& r, float dtkRight, float disRight,
              TextAlign::Left, c);
 }
 
+void drawFplDepartureLegNavColumns(Renderer& r, float dtkRight, float disRight,
+                                   float rowCy, float size, float smallSize,
+                                   const std::vector<MapLeg>& legs, int legIdx,
+                                   bool showActive, const FlightData& d,
+                                   float alpha) {
+  const MapLeg& leg = legs[static_cast<std::size_t>(legIdx)];
+  const Color rowColor =
+      withAlpha(showActive ? colors::kMagenta : colors::kWhitesmoke, alpha);
+  if (isRunwayDepartureLegId(leg.id)) {
+    drawFplApproachDtkDisDashes(r, dtkRight, disRight, rowCy, size, smallSize,
+                                alpha);
+    return;
+  }
+  if (isHeadingDepartureLeg(leg)) {
+    float course = leg.legCourseDeg;
+    if (showActive && d.courseDeg > 0.0f) course = d.courseDeg;
+    // Published magnetic course may be absent on loaded SID legs; fall back to the
+    // track between the previous fix and this leg (prior PFD FPL behavior).
+    if (course <= 0.0f && legIdx > 0) {
+      const MapLeg& prev = legs[static_cast<std::size_t>(legIdx - 1)];
+      course = static_cast<float>(
+          navBearingDeg(prev.lat, prev.lon, leg.lat, leg.lon));
+    }
+    if (course > 0.0f) {
+      char buf[24];
+      std::snprintf(buf, sizeof(buf), "hdg %03.0f", course);
+      mfd::drawValueWithUnit(r, dtkRight, rowCy, buf, kDeg, size, rowColor);
+    } else {
+      mfd::drawValueWithUnit(r, dtkRight, rowCy, "hdg ___", kDeg, size,
+                             rowColor);
+    }
+    return;
+  }
+  if (legIdx > 0) {
+    const MapLeg& prev = legs[static_cast<std::size_t>(legIdx - 1)];
+    if (showActive) {
+      drawFplActiveRowValues(r, dtkRight, disRight, rowCy, size, smallSize,
+                             d.fmaLegBearingDeg, d.fmaLegDistanceNm, alpha);
+    } else {
+      drawFplLegRowValues(r, dtkRight, disRight, rowCy, size, smallSize, prev,
+                          leg, rowColor);
+    }
+  }
+}
+
 void drawFplDashRow(Renderer& r, float x, float cy, int count, float size,
                     const Color& color, bool highlighted, bool blinkOn,
                     float a) {
@@ -522,9 +596,13 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   const float identX = listLeft + listW * 0.04f;
   const float sectionIdentX = identX + fontPx(kFplSectionIdentIndentPx, h);
   constexpr float kFplDtkDisLeftPx = 10.0f;
+  // Nudge the DTK column right so right-aligned DTK values (e.g. "hdg 077°") no
+  // longer overlap the waypoint idents on their left.
+  constexpr float kFplDtkShiftPx = 30.0f;
   const float dtkDisLeft = fontPx(kFplDtkDisLeftPx, h);
   const float disRight = listRight - dtkDisLeft;
-  const float dtkRight = listLeft + listW * 0.58f - dtkDisLeft;
+  const float dtkRight =
+      listLeft + listW * 0.58f - dtkDisLeft + fontPx(kFplDtkShiftPx, h);
 
   // Active navigation header + DTK/DIS column labels (WT Fig. 5-48).
   constexpr float kFplActiveRowPx = 22.0f;
@@ -532,10 +610,43 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   constexpr float kFplBodyRowPx = 24.0f;
   const float activeLegSize = fontPx(16.0f, h);
   const bool approachLoadedUi = ui.flightPlanHasLoadedApproach();
+  int arrStart = ui.flightPlanArrivalLegStart();
+  int arrCount = ui.flightPlanArrivalLegCount();
+  std::string arrHeader = ui.flightPlanArrivalHeaderLabel();
+  const std::string arrAirport = ui.flightPlanArrivalAirportIcao();
+  int depStart = ui.flightPlanDepartureLegStart();
+  int depCount = ui.flightPlanDepartureLegCount();
+  std::string depHeader = ui.flightPlanDepartureHeaderLabel();
+  const std::string depAirport = ui.flightPlanDepartureAirportIcao();
+  // Drop terminal-procedure (departure/arrival) blocks whose indices no longer
+  // fit the current plan. This happens when a shorter plan replaces a longer
+  // route (e.g. loading an approach) without the grouping being cleared; the
+  // stale block would otherwise force the procedure display path and hide the
+  // real legs behind a phantom header + blank rows.
+  const int legPlanSize = static_cast<int>(legs.size());
+  if (!fplBlockFitsPlan(depStart, depCount, legPlanSize)) {
+    depStart = 0;
+    depCount = 0;
+    depHeader.clear();
+  }
+  if (!fplBlockFitsPlan(arrStart, arrCount, legPlanSize)) {
+    arrStart = 0;
+    arrCount = 0;
+    arrHeader.clear();
+  }
+  // The approach is the procedure tail after any loaded arrival/STAR block, so
+  // its inference must skip the STAR legs (which can carry procedureRole tags).
+  const int arrivalEnd = arrCount > 0 ? arrStart + arrCount : 0;
+  // The approach can never begin within or before a loaded SID/departure block;
+  // this keeps the approach inference's untagged-feeder walk-back from swallowing
+  // the SID/enroute legs when the destination-airport waypoint is absent (the
+  // sim drops it once an approach is loaded).
+  const int departureEnd = depCount > 0 ? depStart + depCount : 0;
   int approachStart = ui.flightPlanApproachLegStart();
   int approachCount = ui.flightPlanApproachLegCount();
   const InferredProcedureBlock approachBlock = resolveApproachBlockInPlan(
-      legs, approachStart, approachCount, ui.flightPlanApproachTransition());
+      legs, approachStart, approachCount, ui.flightPlanApproachTransition(),
+      arrivalEnd, departureEnd);
   approachStart = approachBlock.start;
   approachCount = approachBlock.count;
   if (approachCount > 0 && approachStart >= 0 &&
@@ -544,14 +655,6 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
         approachStart, approachCount, static_cast<int>(legs.size()));
   }
   const bool approachLoaded = approachCount > 0;
-  const int depStart = ui.flightPlanDepartureLegStart();
-  const int depCount = ui.flightPlanDepartureLegCount();
-  const std::string depHeader = ui.flightPlanDepartureHeaderLabel();
-  const std::string depAirport = ui.flightPlanDepartureAirportIcao();
-  const int arrStart = ui.flightPlanArrivalLegStart();
-  const int arrCount = ui.flightPlanArrivalLegCount();
-  const std::string arrHeader = ui.flightPlanArrivalHeaderLabel();
-  const std::string arrAirport = ui.flightPlanArrivalAirportIcao();
   const bool layoutDestFilled = ui.flightPlanDestinationFilledForLayout();
   // A loaded approach always ends the route at the approach airport, so the
   // destination section is filled — keep the destination airport (e.g. KJAX)
@@ -560,14 +663,36 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   // on the controller's stored approach count (which can lag for imported
   // routes whose approach is only inferred here).
   const bool destFilled = layoutDestFilled || approachLoaded;
-  const bool procedureDisplay = fplUsesProcedureDisplayRows(
-      depHeader, depCount, arrHeader, arrCount, approachCount);
+  // A plan carrying loaded-airway legs also uses the procedure display rows so
+  // the enroute legs group under "Airway -" headers and honor the collapse
+  // toggle (Pilot's Guide, Load Airway).
+  const bool hasAirwayLegs = fplPlanHasAirwayLegs(legs);
+  const bool airwaysCollapsed = ui.flightPlanAirwaysCollapsed();
+  const bool procedureDisplay =
+      fplUsesProcedureDisplayRows(depHeader, depCount, arrHeader, arrCount,
+                                  approachCount) ||
+      hasAirwayLegs;
   std::string approachAirport;
   if (approachLoaded) {
     approachAirport = ui.flightPlanApproachAirportIcao();
-    if (approachAirport.empty() && approachStart > 0 &&
-        approachStart <= static_cast<int>(legs.size())) {
-      approachAirport = legs[static_cast<std::size_t>(approachStart - 1)].id;
+    if (approachAirport.empty()) {
+      // The approach was inferred from leg roles but its airport identity was
+      // dropped (e.g. a Direct-To or external/sim resync cleared the loaded
+      // approach). The destination served by the STAR/arrival is the same
+      // airport as the approach, so prefer it over the naive "airport before
+      // the approach", which is the origin when no destination waypoint
+      // precedes the approach.
+      if (!arrAirport.empty()) {
+        approachAirport = arrAirport;
+      } else if (approachStart > 0 &&
+                 approachStart <= static_cast<int>(legs.size())) {
+        const std::string& before =
+            legs[static_cast<std::size_t>(approachStart - 1)].id;
+        if (!(approachStart == 1 && !legs.empty() && before == legs.front().id &&
+              isAirportIdent(before))) {
+          approachAirport = before;
+        }
+      }
     }
   }
   const int sectionLegCount =
@@ -635,7 +760,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
           ? buildFplProcedureDisplayRows(
                 legs, depStart, depCount, depHeader, arrStart, arrCount,
                 arrHeader, approachStart, approachCount, blankOriginSection,
-                destFilled)
+                destFilled, airwaysCollapsed)
           : std::vector<FplDisplayRow>{};
   const std::vector<FplSectionRow> sectionRows =
       procedureDisplay ? std::vector<FplSectionRow>{}
@@ -665,7 +790,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
           ? fplProcedureSelectableRowForLegIndex(
                 activeLegIdx, legs, depStart, depCount, depHeader, arrStart,
                 arrCount, arrHeader, approachStart, approachCount,
-                blankOriginSection, destFilled)
+                blankOriginSection, destFilled, airwaysCollapsed)
           : fplSectionSelectableRowForLegIndex(
                 activeLegIdx, sectionRows, bodyLegCount,
                 layoutDestFilled, directToPlanBody);
@@ -690,7 +815,8 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   if (procedureDisplay) {
     cursorLegIdx = fplProcedureLegIndexForSelectable(
         listCursorRow, legs, depStart, depCount, depHeader, arrStart, arrCount,
-        arrHeader, approachStart, approachCount, blankOriginSection, destFilled);
+        arrHeader, approachStart, approachCount, blankOriginSection, destFilled,
+        airwaysCollapsed);
   } else {
     cursorLegIdx = fplSectionLegIndexForSelectable(
         listCursorRow, sectionRows, bodyLegCount,
@@ -720,7 +846,7 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
       cursorDisplayRow = fplProcedureDisplayRowIndexForSelectable(
           sectionCursor, legs, depStart, depCount, depHeader, arrStart,
           arrCount, arrHeader, approachStart, approachCount, blankOriginSection,
-          destFilled);
+          destFilled, airwaysCollapsed);
     } else {
       int selectableBefore = 0;
       for (int i = 0; i < displayRowCount; ++i) {
@@ -857,6 +983,16 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
     }
   }
 
+  // Procedure header rows span the full list width (no DTK/DIS columns), so
+  // they may shrink to the right edge, reserving the scroll-bar lane.
+  const float headerRight = scrolling ? listRight - scrollW : listRight;
+  const float headerMaxW = headerRight - identX - fontPx(2.0f, h);
+  const auto headerFitSize = [&](const std::string& s) {
+    const float w = r.measureTextWidth(s, size);
+    if (w <= headerMaxW || w <= 0.0f) return size;
+    return size * (headerMaxW / w);
+  };
+
   for (int idx = first; idx < end; ++idx) {
     const float rowCy =
         bodyTop + rowH * (static_cast<float>(idx - first) + 0.5f);
@@ -864,14 +1000,34 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
       const FplDisplayRow& dr =
           procedureDisplayRows[static_cast<std::size_t>(idx)];
       switch (dr.kind) {
-        case FplDisplayRowKind::DepartureHeader:
-          drawFplApproachHeader(r, identX, rowCy, depAirport, depHeader, size,
-                                colors::kPopoutCyan, a);
+        case FplDisplayRowKind::DepartureHeader: {
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          if (showSelection) {
+            const std::string t = depAirport + "-" + depHeader;
+            render::drawCursorSelect(r, identX, rowCy, t, headerFitSize(t),
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            drawFplApproachHeader(r, identX, rowCy, depAirport, depHeader, size,
+                                  colors::kPopoutCyan, a, headerMaxW);
+          }
           continue;
-        case FplDisplayRowKind::ArrivalHeader:
-          drawFplApproachHeader(r, identX, rowCy, arrAirport, arrHeader, size,
-                                colors::kPopoutCyan, a);
+        }
+        case FplDisplayRowKind::ArrivalHeader: {
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          if (showSelection) {
+            const std::string t = arrAirport + "-" + arrHeader;
+            render::drawCursorSelect(r, identX, rowCy, t, headerFitSize(t),
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            drawFplApproachHeader(r, identX, rowCy, arrAirport, arrHeader, size,
+                                  colors::kPopoutCyan, a, headerMaxW);
+          }
           continue;
+        }
         case FplDisplayRowKind::SepDash: {
           const bool showSelection = fplShowListRowSelection(
               selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
@@ -880,12 +1036,46 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
                          withAlpha(colors::kPopoutCyan, a), showSelection, blinkOn, a);
           continue;
         }
-        case FplDisplayRowKind::ApproachHeader:
+        case FplDisplayRowKind::ApproachHeader: {
           // Procedure title aligns with section labels (Enroute); legs indent below.
-          drawFplApproachHeader(r, identX, rowCy, approachAirport,
-                                ui.flightPlanApproachHeaderLabel(), size,
-                                colors::kPopoutCyan, a);
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          if (showSelection) {
+            const std::string t =
+                approachAirport + "-" + ui.flightPlanApproachHeaderLabel();
+            render::drawCursorSelect(r, identX, rowCy, t, headerFitSize(t),
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            drawFplApproachHeader(r, identX, rowCy, approachAirport,
+                                  ui.flightPlanApproachHeaderLabel(), size,
+                                  colors::kPopoutCyan, a, headerMaxW);
+          }
           continue;
+        }
+        case FplDisplayRowKind::AirwayHeader: {
+          // "Airway - <name>.<exit>" parent row above a loaded airway segment
+          // (Pilot's Guide, Load Airway); aligned with Enroute. Selectable
+          // cursor stop: CLR on it removes the whole airway segment.
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          if (dr.legIndex < 0 ||
+              dr.legIndex >= static_cast<int>(legs.size())) {
+            continue;
+          }
+          const MapLeg& exitLeg = legs[static_cast<std::size_t>(dr.legIndex)];
+          const std::string awLabel =
+              "Airway - " + exitLeg.viaAirway + "." + exitLeg.id;
+          if (showSelection) {
+            render::drawCursorSelect(r, identX, rowCy, awLabel, size,
+                                     TextAlign::Left, blinkOn, a);
+          } else {
+            r.fillText(identX, rowCy, awLabel, size, TextAlign::Left,
+                       withAlpha(colors::kPopoutCyan, a));
+          }
+          continue;
+        }
         case FplDisplayRowKind::Hold: {
           if (dr.legIndex < 0 ||
               dr.legIndex >= static_cast<int>(legs.size())) {
@@ -1108,7 +1298,6 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
           continue;
         }
         case FplDisplayRowKind::EnrouteLeg:
-        case FplDisplayRowKind::DepartureLeg:
         case FplDisplayRowKind::ArrivalLeg: {
           const bool showSelection = fplShowListRowSelection(
               selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
@@ -1150,6 +1339,39 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
             drawFplLegRowValues(r, dtkRight, rowRight, rowCy, size, smallSize,
                                 prev, leg, withAlpha(colors::kWhitesmoke, a));
           }
+          continue;
+        }
+        case FplDisplayRowKind::DepartureLeg: {
+          const bool showSelection = fplShowListRowSelection(
+              selectableIdx, listCursorRow, activeSelectableRow, cursorOn);
+          ++selectableIdx;
+          const std::string ident =
+              legs[static_cast<std::size_t>(dr.legIndex)].id;
+          const MapLeg& depLeg =
+              legs[static_cast<std::size_t>(dr.legIndex)];
+          const bool showActive = fplShowActiveNavRow(
+              activeHighlight, dr.legIndex, activeLegIdx, depLeg, navToIdent);
+          if (showActive && !useConnector) {
+            drawFplActiveLegArrow(r, listLeft, rowCy, size,
+                                  withAlpha(colors::kMagenta, a));
+          }
+          if (showActive) {
+            drawFplActiveIdent(
+                r, filledIdentX, rowCy, ident, size,
+                fplRowIdentBlink(showSelection, showActive, dr.legIndex,
+                                 activeLegIdx, cursorLegIdx, cursorOn,
+                                 listCursorRow, activeSelectableRow, blinkOn),
+                a);
+          } else if (showSelection) {
+            render::drawCursorSelect(r, filledIdentX, rowCy, ident, size,
+                                       TextAlign::Left, blinkOn, a);
+          } else {
+            r.fillText(filledIdentX, rowCy, ident, size, TextAlign::Left,
+                       withAlpha(colors::kPopoutCyan, a));
+          }
+          drawFplDepartureLegNavColumns(r, dtkRight, rowRight, rowCy, size,
+                                        smallSize, legs, dr.legIndex,
+                                        showActive, d, a);
           continue;
         }
         case FplDisplayRowKind::EnrouteBlank: {
@@ -1341,6 +1563,15 @@ void drawFlightPlanWindow(Renderer& r, float w, float h, const Layout& L,
   if (confirm == SoftkeyController::FplConfirm::RemoveWaypoint) {
     drawFplConfirm(r, f, size, "Remove " + ui.flightPlanRemoveIdent(),
                    "from flight plan?", ui.flightPlanConfirmOk(), a);
+  } else if (confirm == SoftkeyController::FplConfirm::RemoveDeparture ||
+             confirm == SoftkeyController::FplConfirm::RemoveArrival ||
+             confirm == SoftkeyController::FplConfirm::RemoveApproach ||
+             confirm == SoftkeyController::FplConfirm::RemoveAirway) {
+    // The procedure / airway subject (e.g. "KATL-BBABE.CHPPR1.RW08B" or
+    // "Airway V16") gets its own line so it fits the narrow PFD window
+    // (trainer "Remove <subject> from flight plan?").
+    drawFplConfirm(r, f, size, "Remove", ui.flightPlanRemoveIdent(),
+                   ui.flightPlanConfirmOk(), a, "from flight plan?");
   } else if (confirm == SoftkeyController::FplConfirm::DeleteFlightPlan) {
     drawFplConfirm(r, f, size, "Delete the active", "flight plan?",
                    ui.flightPlanConfirmOk(), a);

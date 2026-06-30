@@ -45,13 +45,49 @@ void clearTerminalProcedureState(MapProcedure& loaded, int& legStart,
 }  // namespace
 
 void MfdController::fplEnsureApproachInferred() {
-  if (fplApproachLegCount_ > 0) {
-    FlightPlanApproachState state;
-    state.legStart = fplApproachLegStart_;
-    state.legCount = fplApproachLegCount_;
-    if (approachStateFitsPlan(state, fplLegs_)) return;
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  // The approach can never begin within or before a loaded SID/departure block;
+  // bound the inference so its untagged-feeder walk-back cannot swallow the SID
+  // when the destination-airport waypoint is absent.
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  std::string transition = fplLoadedApproach_.transition;
+  if (transition.empty() && persistedApproachRestore_.active) {
+    transition = persistedApproachRestore_.transition;
   }
-  reinferApproachFromProcedureLegs();
+
+  FlightPlanApproachState stored;
+  stored.legStart = fplApproachLegStart_;
+  stored.legCount = fplApproachLegCount_;
+  stored.loaded = fplLoadedApproach_;
+  stored.headerLabel = fplApproachHeaderLabel_;
+
+  const FlightPlanApproachState resolved = fplResolvedApproachState(
+      fplLegs_, stored, transition, arrivalEnd, departureEnd);
+  if (!resolved.active()) {
+    if (fplApproachLegCount_ > 0 &&
+        !approachStateFitsPlan(stored, fplLegs_)) {
+      fplApproachLegStart_ = 0;
+      fplApproachLegCount_ = 0;
+      fplLoadedApproach_ = {};
+      fplApproachHeaderLabel_.clear();
+    } else if (fplApproachLegCount_ <= 0) {
+      reinferApproachFromProcedureLegs();
+    }
+    return;
+  }
+
+  // Keep cursor math aligned with the FPL page renderer, which resolves the
+  // approach block locally (MfdFlightPlanPage.cpp) rather than trusting a stale
+  // stored span that can swallow the origin airport (start=0).
+  fplApproachLegStart_ = resolved.legStart;
+  fplApproachLegCount_ = resolved.legCount;
+  if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
+    fplLoadedApproach_ = mapProcedureFromPersisted(persistedApproachRestore_);
+    fplApproachHeaderLabel_ = formatApproachFplHeaderLabel(fplLoadedApproach_);
+  }
 }
 
 MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const {
@@ -59,8 +95,21 @@ MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const 
   out.start = fplApproachLegStart_;
   out.count = fplApproachLegCount_;
 
+  // The approach is the procedure tail after any loaded arrival/STAR block and
+  // after the destination airport; its fixes never belong to the approach even
+  // when they carry procedureRole tags. The floor also covers the case where a
+  // STAR is loaded but its arrival block is not separately tracked.
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
+
   const auto inferFromLegs = [&]() {
-    const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+    const InferredProcedureBlock block =
+        inferProcedureBlockInPlan(fplLegs_, arrivalFloor);
     if (block.valid()) {
       out.start = block.start;
       out.count = block.count;
@@ -71,8 +120,10 @@ MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const 
   };
 
   // Match the PFD Active Flight Plan window: infer the approach tail from
-  // procedureRole tags when stored grouping is missing or stale.
-  if (out.count <= 0) {
+  // procedureRole tags when stored grouping is missing or stale. A stored block
+  // that sits inside the arrival block (or before the destination airport) is
+  // stale (its legs are STAR legs).
+  if (out.count <= 0 || out.start < arrivalFloor) {
     inferFromLegs();
   } else {
     FlightPlanApproachState stored;
@@ -102,12 +153,17 @@ MfdController::FplEffectiveApproach MfdController::fplEffectiveApproach() const 
 
 FplRouteEdit MfdController::fplRouteEditState() const {
   auto* self = const_cast<MfdController*>(this);
+  self->fplEnsureApproachInferred();
   FplRouteEdit edit{self->fplLegs_,           self->fplDestinationFilled_,
                     self->fplApproachLegStart_, self->fplApproachLegCount_,
                     self->fplCursorRow_,         &self->fplLoadedApproach_,
                     &self->fplApproachHeaderLabel_};
   edit.directToActive = fplNavDirectToActive_;
   edit.localDraft = fplLocalDraft_;
+  // The MFD groups loaded-airway legs under "Airway -" headers and honors the
+  // collapse/expand toggle, so the cursor math runs the airway-aware path.
+  edit.groupAirways = true;
+  edit.airwaysCollapsed = fplAirwaysCollapsed_;
   fplRouteEditWireTerminalProcedures(
       edit, self->fplDepartureLegStart_, self->fplDepartureLegCount_,
       self->fplDepartureHeaderLabel_, self->fplArrivalLegStart_,
@@ -155,6 +211,10 @@ void MfdController::syncFlightPlan(const MapData& map,
       }
     }
     tryRestorePersistedApproach();
+  }
+  if ((fplDepartureRestorePending_ || fplArrivalRestorePending_) &&
+      navSource_ != nullptr && navSource_->ready()) {
+    tryRestorePersistedTerminalProcedures();
   }
 
   mapData_ = &map;
@@ -272,6 +332,13 @@ bool MfdController::consumeFlightPlanEdit(std::vector<MapLeg>& out) {
   return true;
 }
 
+bool MfdController::consumeActivatedFlightPlan(PersistedFlightPlan& out) {
+  if (!activatedPlanPending_) return false;
+  activatedPlanPending_ = false;
+  out = activatedPlan_;
+  return true;
+}
+
 void MfdController::fplPublishEdit() {
   fplEditPending_ = true;
   // Any pending edit (including a deliberate delete to empty) owns the plan
@@ -300,6 +367,79 @@ void MfdController::fplResetInteraction() {
   procMenuOpen_ = false;
   procMenu_ = ProcedureMenuState{};
   fplPreviewRangeManual_ = false;
+  closeLoadAirwayWindow();
+}
+
+void MfdController::syncFplPreviewRange(MfdPageGroup target) {
+  if (target == pageGroup_) return;
+  if (target == MfdPageGroup::FlightPlan) {
+    // Entering FPL: remember the current MAP zoom so the route auto-fit preview
+    // can take over rangeIndex_ without losing it.
+    rangeIndexBeforeFpl_ = rangeIndex_;
+  } else if (pageGroup_ == MfdPageGroup::FlightPlan) {
+    // Leaving FPL: restore the MAP zoom captured on entry.
+    rangeIndex_ = rangeIndexBeforeFpl_;
+    displayRangeNm_ = mapRangeNmAt(rangeIndex_);
+  }
+}
+
+void MfdController::fplOpenProcedureRemoveConfirm(FplConfirm which) {
+  fplConfirm_ = which;
+  fplConfirmOk_ = true;
+  // The prompt subject matches the FPL list header text exactly (trainer /
+  // Pilot's Guide: "Remove KATL-BBABE.CHPPR1.RW08B from flight plan?"): the
+  // airport ICAO, a dash, then the procedure header label. Fall back to the
+  // loaded procedure name, then the bare procedure word, when not known.
+  const auto subject = [](const std::string& icao, const std::string& label,
+                          const std::string& name, const char* word) {
+    const std::string body = !label.empty() ? label : name;
+    if (body.empty()) return std::string(word);
+    return icao.empty() ? body : icao + "-" + body;
+  };
+  switch (which) {
+    case FplConfirm::RemoveDeparture:
+      fplRemoveIdent_ = subject(fplDepartureAirportIcao(), fplDepartureHeaderLabel_,
+                                fplLoadedDeparture_.name, "departure");
+      break;
+    case FplConfirm::RemoveArrival:
+      fplRemoveIdent_ = subject(fplArrivalAirportIcao(), fplArrivalHeaderLabel_,
+                                fplLoadedArrival_.name, "arrival");
+      break;
+    case FplConfirm::RemoveApproach:
+      fplRemoveIdent_ = subject(fplApproachAirportIcao(), fplApproachHeaderLabel_,
+                                fplLoadedApproach_.name, "approach");
+      break;
+    default:
+      break;
+  }
+}
+
+void MfdController::fplRemoveLoadedDeparture() {
+  FplRouteEdit edit = fplRouteEditState();
+  if (!::avionics::fplRemoveDeparture(edit)) return;
+  persistedDepartureRestore_ = {};
+  fplDepartureRestorePending_ = false;
+  fplClampCursorRow();
+  fplPublishEdit();
+}
+
+void MfdController::fplRemoveLoadedArrival() {
+  FplRouteEdit edit = fplRouteEditState();
+  if (!::avionics::fplRemoveArrival(edit)) return;
+  persistedArrivalRestore_ = {};
+  fplArrivalRestorePending_ = false;
+  fplClampCursorRow();
+  fplPublishEdit();
+}
+
+void MfdController::fplRemoveLoadedApproach() {
+  fplEnsureApproachInferred();
+  FplRouteEdit edit = fplRouteEditState();
+  if (!::avionics::fplRemoveApproach(edit)) return;
+  persistedApproachRestore_ = {};
+  fplApproachRestorePending_ = false;
+  fplClampCursorRow();
+  fplPublishEdit();
 }
 
 void MfdController::fplAltEntryOpen(int row) {
@@ -386,20 +526,44 @@ bool MfdController::fplBezelKey(BezelKey key) {
     switch (key) {
       case BezelKey::Ent:
         if (fplConfirmOk_) {
-          if (fplConfirm_ == FplConfirm::RemoveWaypoint) {
-            const int legIndex =
-                ::avionics::fplCursorLegIndex(edit, approachAirport, layout);
-            if (::avionics::fplRemoveLegAtIndex(edit, legIndex)) {
-              fplPublishEdit();
+          switch (fplConfirm_) {
+            case FplConfirm::RemoveWaypoint: {
+              const int legIndex =
+                  ::avionics::fplCursorLegIndex(edit, approachAirport, layout);
+              if (::avionics::fplRemoveLegAtIndex(edit, legIndex)) {
+                fplPublishEdit();
+              }
+              break;
             }
-          } else {
-            ::avionics::fplClearFlightPlan(edit);
-            persistedApproachRestore_ = {};
-            persistedDepartureRestore_ = {};
-            persistedArrivalRestore_ = {};
-            dtoRequestTarget_ = {};
-            dtoRequestPending_ = true;
-            fplPublishEdit();
+            case FplConfirm::RemoveDeparture:
+              fplRemoveLoadedDeparture();
+              break;
+            case FplConfirm::RemoveArrival:
+              fplRemoveLoadedArrival();
+              break;
+            case FplConfirm::RemoveApproach:
+              fplRemoveLoadedApproach();
+              break;
+            case FplConfirm::RemoveAirway: {
+              const int exitLeg = ::avionics::fplCursorAirwayHeaderExitLeg(
+                  edit, approachAirport, layout);
+              if (::avionics::fplRemoveAirwaySegment(edit, exitLeg)) {
+                fplClampCursorRow();
+                fplPublishEdit();
+              }
+              break;
+            }
+            case FplConfirm::DeleteFlightPlan:
+              ::avionics::fplClearFlightPlan(edit);
+              persistedApproachRestore_ = {};
+              persistedDepartureRestore_ = {};
+              persistedArrivalRestore_ = {};
+              dtoRequestTarget_ = {};
+              dtoRequestPending_ = true;
+              fplPublishEdit();
+              break;
+            case FplConfirm::None:
+              break;
           }
         }
         fplConfirm_ = FplConfirm::None;
@@ -505,6 +669,30 @@ bool MfdController::fplBezelKey(BezelKey key) {
   const bool onLegRow = legIndex >= 0 && legIndex < legCount;
   const bool onAltCol =
       onLegRow && fplCursorCol_ == FplCursorCol::Altitude;
+  // The loaded SID/STAR/approach header rows are selectable cursor stops; CLR on
+  // one removes the whole procedure (Pilot's Guide 5.6, trainer).
+  const ::avionics::FplCursorProcedureBlock cursorProcHeader =
+      ::avionics::fplCursorProcedureHeader(edit, approachAirport, layout);
+  const bool onProcHeader =
+      cursorProcHeader != ::avionics::FplCursorProcedureBlock::None;
+  // The "Airway - <name>.<exit>" header is a selectable cursor stop too; CLR on
+  // it removes the whole loaded-airway segment (Pilot's Guide, Load Airway).
+  const int cursorAirwayExitLeg =
+      ::avionics::fplCursorAirwayHeaderExitLeg(edit, approachAirport, layout);
+  const bool onAirwayHeader = cursorAirwayExitLeg >= 0;
+  const auto confirmForCursorProcedure =
+      [](::avionics::FplCursorProcedureBlock block) {
+        switch (block) {
+          case ::avionics::FplCursorProcedureBlock::Departure:
+            return FplConfirm::RemoveDeparture;
+          case ::avionics::FplCursorProcedureBlock::Arrival:
+            return FplConfirm::RemoveArrival;
+          case ::avionics::FplCursorProcedureBlock::Approach:
+            return FplConfirm::RemoveApproach;
+          default:
+            return FplConfirm::None;
+        }
+      };
 
   switch (key) {
     case BezelKey::FmsOuterCw:
@@ -542,6 +730,8 @@ bool MfdController::fplBezelKey(BezelKey key) {
     case BezelKey::FmsInnerCcw:
       if (onAltCol) {
         fplAltEntryOpen(legIndex);
+      } else if (onProcHeader || onAirwayHeader) {
+        // A procedure / airway header is a removal stop, not a text-entry field.
       } else {
         if (!fplEntry_.active) {
           fplEntry_.open(navSource_, mapData_,
@@ -561,7 +751,20 @@ bool MfdController::fplBezelKey(BezelKey key) {
           leg.altitudeDesignated = false;
           fplPublishEdit();
         }
+      } else if (onProcHeader) {
+        // CLR on a SID/STAR/approach header removes the whole procedure.
+        fplOpenProcedureRemoveConfirm(confirmForCursorProcedure(cursorProcHeader));
+      } else if (onAirwayHeader) {
+        // CLR on an "Airway -" header removes the whole loaded-airway segment.
+        fplConfirm_ = FplConfirm::RemoveAirway;
+        fplConfirmOk_ = true;
+        fplRemoveIdent_ =
+            "Airway " +
+            fplLegs_[static_cast<std::size_t>(cursorAirwayExitLeg)].viaAirway;
       } else if (onLegRow) {
+        // CLR on an individual leg removes just that fix, whether it is a plain
+        // enroute waypoint or a single leg of a loaded SID/STAR/approach. CLR on
+        // the procedure header (handled above) removes the whole procedure.
         fplConfirm_ = FplConfirm::RemoveWaypoint;
         fplConfirmOk_ = true;
         fplRemoveIdent_ = fplLegs_[static_cast<std::size_t>(legIndex)].id;
@@ -582,6 +785,19 @@ void MfdController::requestActivateFlightPlanLeg(int toLegIndex) {
   dtoRequestPending_ = false;
   fplActivateLegIndex_ = toLegIndex;
   fplActivateLegPending_ = true;
+}
+
+bool MfdController::fplHasAirwayLegs() const {
+  for (const MapLeg& leg : fplLegs_) {
+    if (!leg.viaAirway.empty()) return true;
+  }
+  return false;
+}
+
+std::vector<std::string> MfdController::airwaysThroughFix(
+    const std::string& ident) const {
+  if (navSource_ == nullptr || ident.empty()) return {};
+  return navSource_->airwaysThrough(ident);
 }
 
 bool MfdController::consumeActivateLegRequest(int& toLegIndex) {
@@ -694,24 +910,27 @@ void MfdController::adoptFlightPlanFromPeer(
     const std::vector<MapLeg>& legs, bool destinationFilled,
     const FlightPlanApproachState& approach,
     const FlightPlanTerminalProcedureState& departure,
-    const FlightPlanTerminalProcedureState& arrival) {
+    const FlightPlanTerminalProcedureState& arrival,
+    bool peerLocalDraft) {
   if (fplEntry_.active || fplAltEntry_.active ||
       fplConfirm_ != FplConfirm::None || pageMenuOpen_) {
     return;
   }
+  const bool peerDraft = !legs.empty() || peerLocalDraft;
   if (flightPlanLegsEqual(fplLegs_, legs) &&
       fplDestinationFilled_ == destinationFilled &&
       flightPlanApproachState() == approach &&
       flightPlanDepartureState() == departure &&
-      flightPlanArrivalState() == arrival) {
+      flightPlanArrivalState() == arrival &&
+      fplLocalDraft_ == peerDraft) {
     return;
   }
   fplLegs_ = legs;
   fplDestinationFilled_ = destinationFilled;
   // Mirror the PFD Active Flight Plan window: a non-empty peer route is a local
-  // draft on this page too, including during GPS Direct-To (otherwise the MFD
-  // keeps drawing the blank Direct-To template even though legs were copied).
-  fplLocalDraft_ = !fplLegs_.empty();
+  // draft on this page too. An empty peer with localDraft set (Delete Flight
+  // Plan) must also stick so sync cannot resurrect a stale sim route.
+  fplLocalDraft_ = peerDraft;
   applyFlightPlanApproachState(approach);
   applyFlightPlanDepartureState(departure);
   applyFlightPlanArrivalState(arrival);
@@ -740,9 +959,21 @@ void MfdController::adoptFlightPlanCursorFromPeer(int cursorRow,
 
 std::string MfdController::fplApproachAirportIcao() const {
   if (fplApproachLegCount_ <= 0) return {};
-  const std::string loadedIcao =
+  std::string loadedIcao =
       persistedApproachRestore_.active ? persistedApproachRestore_.airportIcao
                                        : std::string();
+  // The approach serves the destination airport — the same airport a loaded
+  // arrival/STAR serves. Use it when the approach's own airport wasn't captured
+  // (e.g. the approach was inferred from leg roles after a sim/Direct-To resync)
+  // so the destination is not mislabeled as the airport before the approach.
+  if (loadedIcao.empty()) loadedIcao = fplArrivalAirportIcao();
+  if (loadedIcao.empty() && !fplApproachHeaderLabel_.empty()) {
+    const std::size_t dash = fplApproachHeaderLabel_.find('-');
+    if (dash != std::string::npos) {
+      const std::string prefix = fplApproachHeaderLabel_.substr(0, dash);
+      if (isAirportIdent(prefix)) loadedIcao = prefix;
+    }
+  }
   return ::avionics::fplApproachAirportIcao(fplLegs_, fplApproachLegStart_, mapData_,
                                             loadedIcao);
 }
@@ -787,8 +1018,63 @@ void MfdController::tryRestorePersistedApproach() {
   }
 }
 
+void MfdController::tryRestorePersistedTerminalProcedures() {
+  bool publishNeeded = false;
+
+  if (fplDepartureRestorePending_) {
+    const bool wasPending = fplDepartureRestorePending_;
+    const TerminalProcedureMetadataRestore result =
+        restoreTerminalProcedureMetadata(navSource_, persistedDepartureRestore_,
+                                         fplLegs_, fplDepartureLegStart_,
+                                         fplDepartureLegCount_);
+    if (result.spanCorrected()) {
+      fplDepartureLegStart_ = result.correctedStart;
+      fplDepartureLegCount_ = result.correctedCount;
+    }
+    if (result.merged || result.stopRetrying) {
+      fplDepartureRestorePending_ = false;
+    }
+    if (result.merged && wasPending) {
+      publishNeeded = true;
+    }
+  }
+
+  if (fplArrivalRestorePending_) {
+    const bool wasPending = fplArrivalRestorePending_;
+    const TerminalProcedureMetadataRestore result =
+        restoreTerminalProcedureMetadata(navSource_, persistedArrivalRestore_,
+                                         fplLegs_, fplArrivalLegStart_,
+                                         fplArrivalLegCount_);
+    if (result.spanCorrected()) {
+      fplArrivalLegStart_ = result.correctedStart;
+      fplArrivalLegCount_ = result.correctedCount;
+    }
+    if (result.merged || result.stopRetrying) {
+      fplArrivalRestorePending_ = false;
+    }
+    if (result.merged && wasPending) {
+      publishNeeded = true;
+    }
+  }
+
+  if (publishNeeded) {
+    fplPublishEdit();
+  }
+}
+
 void MfdController::reinferApproachFromProcedureLegs() {
-  const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  // Never infer an approach that starts at or before the destination airport (or
+  // inside a loaded SID), so a STAR's or SID's role-tagged/untagged fixes are not
+  // swallowed when those blocks are untracked.
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
+  const InferredProcedureBlock block =
+      inferProcedureBlockInPlan(fplLegs_, arrivalFloor);
   if (!block.valid()) return;
   int start = block.start;
   std::string transition = fplLoadedApproach_.transition;
@@ -796,6 +1082,7 @@ void MfdController::reinferApproachFromProcedureLegs() {
     transition = persistedApproachRestore_.transition;
   }
   start = approachBlockStartFromTransition(fplLegs_, transition, start);
+  if (start < arrivalFloor) return;
   fplApproachLegStart_ = start;
   fplApproachLegCount_ = static_cast<int>(fplLegs_.size()) - start;
   if (fplLoadedApproach_.name.empty() && persistedApproachRestore_.active) {
@@ -825,7 +1112,18 @@ PersistedFlightPlan MfdController::persistedFlightPlanSnapshot() const {
   out.active = true;
   out.destinationFilled = fplDestinationFilled_;
   out.legs = fplLegs_;
-  if (fplApproachLegCount_ > 0) {
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  const int departureEnd =
+      fplDepartureLegCount_ > 0 ? fplDepartureLegStart_ + fplDepartureLegCount_
+                                : 0;
+  // Never persist an approach block that overlaps the arrival/STAR block, starts
+  // inside a loaded SID, or starts before the destination airport: those leading
+  // legs are SID/STAR legs, not an approach (avoids resurrecting a phantom
+  // approach that swallows the SID/STAR).
+  const int arrivalFloor =
+      fplApproachInferenceFloor(fplLegs_, arrivalEnd, departureEnd);
+  if (fplApproachLegCount_ > 0 && fplApproachLegStart_ >= arrivalFloor) {
     out.approachLegStart = fplApproachLegStart_;
     out.approachLegCount = fplApproachLegCount_;
     out.approachAirportIcao = fplApproachAirportIcao();
@@ -885,6 +1183,8 @@ void MfdController::restorePersistedFlightPlan(
   fplLastPublished_ = saved.legs;
   fplLastMapPlan_ = saved.legs;
   fplApproachRestorePending_ = false;
+  fplDepartureRestorePending_ = false;
+  fplArrivalRestorePending_ = false;
   if (saved.approachLegCount > 0) {
     fplApproachLegStart_ = saved.approachLegStart;
     fplApproachLegCount_ = saved.approachLegCount;
@@ -931,7 +1231,14 @@ void MfdController::restorePersistedFlightPlan(
   fplApproachRestorePending_ = fplApproachLegCount_ > 0 &&
                                persistedApproachRestore_.active &&
                                !persistedApproachRestore_.name.empty();
+  fplDepartureRestorePending_ = saved.departureMeta.active &&
+                                !saved.departureMeta.name.empty() &&
+                                saved.departureLegCount > 0;
+  fplArrivalRestorePending_ = saved.arrivalMeta.active &&
+                              !saved.arrivalMeta.name.empty() &&
+                              saved.arrivalLegCount > 0;
   tryRestorePersistedApproach();
+  tryRestorePersistedTerminalProcedures();
 }
 
 // ---- Flight Plan Catalog (FPL group, 2nd page) ----
@@ -939,6 +1246,9 @@ void MfdController::restorePersistedFlightPlan(
 void MfdController::restoreFlightPlanCatalog(
     const std::vector<PersistedFlightPlan>& plans) {
   catalog_.setPlans(plans);
+  if (catalog_.dedupeByRoute() > 0) {
+    catalogDirty_ = true;
+  }
   catalogClampSelection();
 }
 
@@ -1000,6 +1310,11 @@ void MfdController::catalogCreateNew() {
 void MfdController::loadStoredPlanIntoActive(const PersistedFlightPlan& entry) {
   if (!entry.active || entry.legs.empty()) return;
   restorePersistedFlightPlan(entry);
+  // The route legs reach the peer GDU via the published route override, but the
+  // SID/STAR/approach grouping is per-controller state; hand the full plan to
+  // the shell so it can mirror that metadata onto the peer (PFD).
+  activatedPlan_ = entry;
+  activatedPlanPending_ = true;
   // Publish so the shell pushes the activated route to the sim/map and the peer
   // GDU (restorePersistedFlightPlan alone only sets the local draft).
   fplPublishEdit();

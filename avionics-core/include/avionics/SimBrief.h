@@ -23,7 +23,7 @@ enum class SimBriefStatus {
   NotConfigured,  // not signed in to Navigraph yet
   Idle,           // signed in, nothing fetched this session
   Fetching,       // request in flight
-  Ok,             // latest OFP fetched and loaded as the flight plan
+  Ok,             // latest OFP fetched; shell decides active route vs catalog
   Error,          // fetch or parse failed (see SimBriefState::error)
 };
 
@@ -57,7 +57,7 @@ struct SimBriefState {
   std::string destinationIcao;
   std::string route;         // filed route string (fixes/airways)
   std::string generatedUtc;  // OFP generation time, e.g. "10JUN 19:42Z"
-  int waypointCount = 0;     // legs loaded into the flight plan
+  int waypointCount = 0;     // legs parsed from the fetched OFP
 };
 
 }  // namespace avionics

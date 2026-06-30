@@ -408,6 +408,52 @@ void NanoVgRenderer::fillPolygon(const Point* points, int count,
   nvgFill(vg_);
 }
 
+void NanoVgRenderer::fillPolygonWithHoles(const Point* outer, int outerCount,
+                                          const Point* const* holes,
+                                          const int* holeCounts, int holeCount,
+                                          const Color& c) {
+  if (!vg_ || outerCount < 3) return;
+  for (int i = 0; i < outerCount; ++i) {
+    if (!finite2(outer[i].x, outer[i].y)) {
+      ++stats_.nonFinite;
+      return;
+    }
+  }
+  for (int h = 0; h < holeCount; ++h) {
+    if (holeCounts[h] < 3) continue;
+    for (int i = 0; i < holeCounts[h]; ++i) {
+      if (!finite2(holes[h][i].x, holes[h][i].y)) {
+        ++stats_.nonFinite;
+        return;
+      }
+    }
+  }
+
+  ++stats_.fills;
+  stats_.verts += outerCount;
+  nvgBeginPath(vg_);
+  nvgMoveTo(vg_, outer[0].x, outer[0].y);
+  for (int i = 1; i < outerCount; ++i) {
+    nvgLineTo(vg_, outer[i].x, outer[i].y);
+  }
+  nvgClosePath(vg_);
+
+  for (int h = 0; h < holeCount; ++h) {
+    const int count = holeCounts[h];
+    if (count < 3) continue;
+    stats_.verts += count;
+    nvgPathWinding(vg_, NVG_HOLE);
+    nvgMoveTo(vg_, holes[h][0].x, holes[h][0].y);
+    for (int i = 1; i < count; ++i) {
+      nvgLineTo(vg_, holes[h][i].x, holes[h][i].y);
+    }
+    nvgClosePath(vg_);
+  }
+
+  nvgFillColor(vg_, toNvg(c));
+  nvgFill(vg_);
+}
+
 void NanoVgRenderer::strokePolyline(const Point* points, int count,
                                     float widthPx, const Color& c) {
   if (!vg_ || count < 2) return;

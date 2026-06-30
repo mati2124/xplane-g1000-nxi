@@ -28,8 +28,9 @@ constexpr float kPi = 3.14159265358979323846f;
 // size of the piston stack's to keep labels from colliding.
 constexpr float kTitleWt = 9.0f;    // section titles ("Landing Gear", ...)
 constexpr float kLabelWt = 8.0f;    // small gauge / unit labels
-constexpr float kBarLabelWt = 7.5f; // the five turbine bar captions (N1%, ...)
-constexpr float kValueWt = 11.0f;   // numeric readouts
+constexpr float kBarLabelWt = 13.0f; // the five turbine bar captions (N1%, ...)
+constexpr float kBarValueWt = 19.0f; // the turbine bar numeric readouts
+constexpr float kValueWt = 11.0f;   // numeric readouts (fuel/electrical blocks)
 constexpr float kBigWt = 22.0f;     // the large % thrust number
 
 // Full-scale ranges for the synoptic mini-bars the Pilot's Guide draws but does
@@ -43,6 +44,18 @@ constexpr float kCabinAltMax = 15000.0f; // cabin altitude (ft)
 // The % Thrust arc uses a brighter, more saturated green than the airspeed-tape
 // band (#008000) to match the vivid green of the real Perspective Touch+ arc.
 constexpr Color kThrustGreen{0.04f, 0.80f, 0.04f, 1.0f};
+
+// Turbine-bar palette sampled pixel-for-pixel from the real Perspective Touch+
+// EIS (Pilot's Guide Fig. 3-1): the normal-range band is a grass green
+// rgb(105,189,69) and the redline ticks are rgb(237,28,36), both noticeably
+// different from the generic airspeed-tape bands.
+constexpr Color kEisGreen{0.412f, 0.741f, 0.271f, 1.0f};
+constexpr Color kEisRed{0.929f, 0.110f, 0.141f, 1.0f};
+// The gauge frame is a dim "[" bracket: a dark vertical scale spine with
+// brighter horizontal end caps (sampled ~rgb(64,64,64) spine, ~rgb(120,120,120)
+// caps).
+constexpr Color kEisSpine{0.255f, 0.255f, 0.255f, 1.0f};
+constexpr Color kEisCap{0.471f, 0.471f, 0.471f, 1.0f};
 
 std::string fmt(const char* pattern, double v) {
   char buf[32];
@@ -81,70 +94,163 @@ void rule(Renderer& r, const Rect& a, float y) {
                colors::kPanelSeparator);
 }
 
-// One vertical turbine/parameter bar (N1, N2, ITT, Oil °C, Oil PSI). The track
-// runs bottom(min) -> top(max); colored bands fill their sub-ranges, a red tick
-// marks the steady-state limit (redline), a white triangle points at the live
-// value from the right, and an optional cyan bug marks a reference (N1 takeoff).
+// One vertical turbine/parameter bar (N1, N2, ITT, Oil °C, Oil PSI), modeled
+// pixel-for-pixel on the real Perspective Touch+ EIS (Pilot's Guide Fig. 3-1):
+//   - a dim "[" bracket frame (dark vertical scale spine + brighter horizontal
+//     end caps) over a black background, NOT a filled track;
+//   - a thin grass-green band showing the normal operating range, drawn snug
+//     against the left spine;
+//   - thin red limit ticks at the green-facing edge of each red zone (the oil
+//     gauges carry both a low and a high tick);
+//   - a white pointer pointing left, its tip at the green band's right edge;
+//   - an optional cyan takeoff "⊢" reference bug to the left of the spine (N1).
 // The numeric value sits below the track, the label below that.
 void drawVertBar(Renderer& r, const Rect& cell, const EisGauge* g, float value,
                  bool valid, float displayH, const char* labelOverride) {
   const float labelSize = mfdFontPx(kBarLabelWt, displayH);
-  const float valueSize = mfdFontPx(kValueWt, displayH);
+  const float valueSize = mfdFontPx(kBarValueWt, displayH);
 
   const float minV = g ? g->min : 0.0f;
   const float maxV = g ? g->max : 100.0f;
   const float span = (maxV - minV) != 0.0f ? (maxV - minV) : 1.0f;
 
-  const float trackW = std::max(3.0f, cell.w * 0.16f);
-  const float trackX = cell.x + cell.w * 0.34f;
-  const float trackTop = cell.y + labelSize * 0.2f;
-  const float trackH = cell.h - valueSize * 2.6f;
+  // "[" bracket geometry: the spine sits at trackX, caps span trackW to the
+  // right. Leave room below the track for the value readout + caption.
+  const float trackW = std::max(6.0f, cell.w * 0.42f);
+  const float trackX = cell.x + cell.w * 0.26f;
+  const float trackTop = cell.y + labelSize * 0.15f;
+  const float trackH = cell.h - valueSize * 1.35f - labelSize * 1.25f;
+  const float trackBot = trackTop + trackH;
   auto yFor = [&](float v) {
     return trackTop + trackH * (1.0f - clamp01((v - minV) / span));
   };
 
-  r.fillRect(trackX, trackTop, trackW, trackH, Color{0.13f, 0.13f, 0.13f, 1.0f});
+  // Grass-green normal-range band(s): a thin bar against the spine. Red zones
+  // are rendered as ticks below, not as filled blocks.
+  const float greenW = std::max(3.0f, trackW * 0.36f);
   if (g != nullptr) {
     for (const EisBand& b : g->bands) {
+      if (b.color == EisBandColor::Red) continue;
+      const Color c =
+          b.color == EisBandColor::Green ? kEisGreen : eisBandColor(b.color);
       const float y0 = yFor(b.hi);
       const float y1 = yFor(b.lo);
-      r.fillRect(trackX, y0, trackW, y1 - y0, eisBandColor(b.color));
-    }
-    if (g->hasRedline) {
-      const float ry = yFor(g->redline);
-      r.strokeLine(trackX - trackW * 0.35f, ry, trackX + trackW * 1.35f, ry,
-                   2.0f, colors::kBandRed);
+      r.fillRect(trackX, y0, greenW, y1 - y0, c);
     }
   }
-  r.strokeLine(trackX, trackTop, trackX, trackTop + trackH, 1.0f,
-               colors::kPanelBorder);
 
+  // The "[" bracket: dim vertical spine, brighter top & bottom caps.
+  r.strokeLine(trackX, trackTop, trackX, trackBot, 1.4f, kEisSpine);
+  r.strokeLine(trackX, trackTop, trackX + trackW, trackTop, 1.4f, kEisCap);
+  r.strokeLine(trackX, trackBot, trackX + trackW, trackBot, 1.4f, kEisCap);
+
+  // Red limit ticks at the green-facing edge of each red zone: a low red zone
+  // (touching the scale minimum) ticks at its top, a high red zone at its
+  // bottom. Spans the full track width like the real redline.
+  if (g != nullptr) {
+    for (const EisBand& b : g->bands) {
+      if (b.color != EisBandColor::Red) continue;
+      const float limit = (b.lo <= minV + 1e-3f) ? b.hi : b.lo;
+      const float ry = yFor(limit);
+      r.strokeLine(trackX, ry, trackX + trackW, ry, 2.0f, kEisRed);
+    }
+  }
+
+  // White value pointer: points left, tip at the green band's right edge, base
+  // at the track's right cap. Turns red once at/over the redline.
   if (valid) {
+    const float vy = yFor(value);
+    const float tipX = trackX + greenW;
+    const float baseX = trackX + trackW;
+    // Slightly wider than tall, matching the real EIS carrots: on the native
+    // strip the N2 carrot is ~9 px long × ~7 px tall, so half-height ≈ 0.40 of
+    // its length (was 0.55 = too tall).
+    const float ph = (baseX - tipX) * 0.40f;
+    const Point ptr[3] = {{tipX, vy},
+                          {baseX, vy - ph},
+                          {baseX, vy + ph}};
+    const bool over = g != nullptr && g->hasRedline && value >= g->redline;
+    r.fillPolygon(ptr, 3, over ? kEisRed : colors::kWhite);
+
+    // Cyan takeoff "⊢" reference bug: a tall vertical bar left of the spine
+    // with a stem reaching in to the scale (N1 takeoff-thrust setting).
     if (g != nullptr && g->hasBug) {
       const float by = yFor(g->bug);
-      const Point bug[3] = {{trackX - trackW * 0.55f, by},
-                            {trackX - trackW * 1.25f, by - trackW * 0.6f},
-                            {trackX - trackW * 1.25f, by + trackW * 0.6f}};
-      r.fillPolygon(bug, 3, colors::kCyan);
+      const float bx = trackX - trackW * 0.46f;
+      const float armH = trackH * 0.085f;
+      r.strokeLine(bx, by - armH, bx, by + armH, 2.6f, colors::kCyan);
+      r.strokeLine(bx, by, trackX, by, 2.6f, colors::kCyan);
     }
-    const float vy = yFor(value);
-    const float ph = trackW * 1.1f;
-    const Point ptr[3] = {{trackX + trackW * 1.05f, vy},
-                          {trackX + trackW * 1.05f + ph, vy - ph * 0.85f},
-                          {trackX + trackW * 1.05f + ph, vy + ph * 0.85f}};
-    const bool over = g != nullptr && g->hasRedline && value >= g->redline;
-    r.fillPolygon(ptr, 3, over ? colors::kBandRed : colors::kWhite);
   }
 
-  const float cx = cell.x + cell.w * 0.5f;
-  const float valY = trackTop + trackH + valueSize * 0.85f;
+  const float cx = trackX + trackW * 0.5f;
+  const float valY = trackBot + valueSize * 0.95f;
   r.fillText(cx, valY,
              valid ? fmt(g ? g->format.c_str() : "%.0f", value)
                    : std::string("---"),
              valueSize, TextAlign::Center, colors::kWhite);
   const char* lbl = labelOverride ? labelOverride : (g ? g->label.c_str() : "");
-  r.fillText(cx, valY + labelSize * 1.25f, lbl, labelSize, TextAlign::Center,
+  r.fillText(cx, valY + labelSize * 1.4f, lbl, labelSize, TextAlign::Center,
              colors::kLabelText);
+}
+
+// Shared "[" bracket gauge chrome for every vertical EIS bar (turbine row, fuel
+// quantity/flow, electrical amps): a dim spine + brighter top/bottom caps over
+// black, grass-green (and amber) range bands snug against the spine, and thin
+// red limit ticks at each red zone's green-facing edge. Returns the green
+// band's right-edge x so callers can anchor pointers to it.
+// When `greenRight` is set the green/amber fill and spine sit on the RIGHT of
+// the track (the bars mirror so a value pointer can hug the outer green edge,
+// as the real fuel "R" tank and right-hand amp sources do). Returns the green
+// fill's OUTER edge x (right edge normally, left edge when mirrored) so callers
+// can anchor pointers snug against the colored fill.
+float drawBracketTrack(Renderer& r, float trackX, float trackTop, float trackW,
+                       float trackH, float minV, float maxV,
+                       const std::vector<EisBand>& bands,
+                       float bandFrac = 0.36f, bool greenRight = false) {
+  const float span = (maxV - minV) != 0.0f ? (maxV - minV) : 1.0f;
+  auto yFor = [&](float v) {
+    return trackTop + trackH * (1.0f - clamp01((v - minV) / span));
+  };
+  const float greenW = std::max(3.0f, trackW * bandFrac);
+  const float greenX = greenRight ? trackX + trackW - greenW : trackX;
+  const float spineX = greenRight ? trackX + trackW : trackX;
+  for (const EisBand& b : bands) {
+    if (b.color == EisBandColor::Red) continue;
+    const Color c =
+        b.color == EisBandColor::Green ? kEisGreen : colors::kBandYellow;
+    r.fillRect(greenX, yFor(b.hi), greenW, yFor(b.lo) - yFor(b.hi), c);
+  }
+  r.strokeLine(spineX, trackTop, spineX, trackTop + trackH, 1.4f, kEisSpine);
+  r.strokeLine(trackX, trackTop, trackX + trackW, trackTop, 1.4f, kEisCap);
+  r.strokeLine(trackX, trackTop + trackH, trackX + trackW, trackTop + trackH,
+               1.4f, kEisCap);
+  for (const EisBand& b : bands) {
+    if (b.color != EisBandColor::Red) continue;
+    const float limit = (b.lo <= minV + 1e-3f) ? b.hi : b.lo;
+    r.strokeLine(trackX, yFor(limit), trackX + trackW, yFor(limit), 2.0f,
+                 kEisRed);
+  }
+  return greenRight ? greenX : trackX + greenW;
+}
+
+// White value pointer pointing LEFT (tip on the left at tipX, base len to the
+// right) / RIGHT (tip on the right). Used to anchor a pointer to a bracket bar.
+// Half-height as a fraction of the pointer's length: the real EIS carrots are
+// slightly wider than tall (native ~9 px long × ~7 px tall), so the half-height
+// is ~0.40*len.
+constexpr float kPtrHalf = 0.40f;
+void ptrLeft(Renderer& r, float tipX, float vy, float len, const Color& c) {
+  const Point p[3] = {{tipX, vy},
+                      {tipX + len, vy - len * kPtrHalf},
+                      {tipX + len, vy + len * kPtrHalf}};
+  r.fillPolygon(p, 3, c);
+}
+void ptrRight(Renderer& r, float tipX, float vy, float len, const Color& c) {
+  const Point p[3] = {{tipX, vy},
+                      {tipX - len, vy - len * kPtrHalf},
+                      {tipX - len, vy + len * kPtrHalf}};
+  r.fillPolygon(p, 3, c);
 }
 
 // Small vertical synoptic bar (electrical amps, cabin Diff PSI / Alt Ft). A
@@ -172,19 +278,22 @@ void drawMiniVBar(Renderer& r, float cx, float top, float h, float trackW,
   r.strokeLine(x, top, x, top + h, 1.0f, colors::kPanelBorder);
   if (!valid) return;
   const float cw = trackW * 1.1f;
+  // Caret half-height ≈ 0.40 of its length (slightly wider than tall), matching
+  // the real EIS carrots (was 0.75 = too tall).
+  const float ch = (1.2f - 0.15f) * cw * 0.40f;
   if (hasL) {
     const float vy = yFor(vL);
     const Point p[3] = {{x - cw * 0.15f, vy},
-                        {x - cw * 1.2f, vy - cw * 0.75f},
-                        {x - cw * 1.2f, vy + cw * 0.75f}};
+                        {x - cw * 1.2f, vy - ch},
+                        {x - cw * 1.2f, vy + ch}};
     r.fillPolygon(p, 3, colors::kWhite);
   }
   if (hasR) {
     const float vy = yFor(vR);
     const float xr = x + trackW;
     const Point p[3] = {{xr + cw * 0.15f, vy},
-                        {xr + cw * 1.2f, vy - cw * 0.75f},
-                        {xr + cw * 1.2f, vy + cw * 0.75f}};
+                        {xr + cw * 1.2f, vy - ch},
+                        {xr + cw * 1.2f, vy + ch}};
     r.fillPolygon(p, 3, colors::kWhite);
   }
 }
@@ -308,137 +417,223 @@ void drawThrustArc(Renderer& r, const FlightData& d, const EisLayout& layout,
              FontFace::DejaVuSemiBold);
 }
 
-// Two-tank fuel block: L/R selected-tank boxes, the per-tank quantity bars,
-// total fuel, fuel flow and fuel temperature.
+// Total-fuel bracket (Fig. 3-1): a horizontal connector spanning the two tank
+// columns, with short verticals dropping down the LEFT and RIGHT sides of the
+// centered total value so the value sits nested between them. Drawn in the dim
+// cap-gray (not stark white) like the real unit's frame lines.
+void drawFuelTotalBracket(Renderer& r, float lCx, float rCx, float qtyRowY,
+                          float qtySize, float totalY, float totalSize,
+                          const std::string& tot) {
+  const float totCx = (lCx + rCx) * 0.5f;
+  const float tw = r.measureTextWidth(tot, totalSize);
+  // Corner brackets flanking the total (Fig. 3-1): each vertical runs from just
+  // above the total down to its vertical MIDDLE, where a short foot turns inward
+  // toward the digits. Dim cap-gray, like the real unit's frame lines.
+  (void)qtyRowY;
+  (void)qtySize;
+  // Digits use NVG_ALIGN_MIDDLE and have no descender, so their visual center
+  // rides ~0.2em above totalY; place the feet there so they hit the true middle.
+  const float visMid = totalY - totalSize * 0.20f;
+  const float vertTop = visMid - totalSize * 0.52f;  // a touch above the digits
+  const float vertBot = visMid;                       // foot at mid-height
+  const float footIn = totalSize * 0.24f;
+  const float gap = totalSize * 0.24f;
+  const float lx = totCx - tw * 0.5f - gap;
+  const float rx = totCx + tw * 0.5f + gap;
+  const float lw = 1.3f;
+  r.strokeLine(lx, vertTop, lx, vertBot, lw, kEisCap);
+  r.strokeLine(rx, vertTop, rx, vertBot, lw, kEisCap);
+  r.strokeLine(lx, vertBot, lx + footIn, vertBot, lw, kEisCap);
+  r.strokeLine(rx, vertBot, rx - footIn, vertBot, lw, kEisCap);
+  r.fillText(totCx, totalY, tot, totalSize, TextAlign::Center, colors::kWhite);
+}
+
+// Two-tank fuel block (Pilot's Guide Fig. 3-1): a tall fuel-flow (GPH) bracket
+// bar on the far left, then the L/R per-tank quantity bracket bars (grass-green
+// with an amber low-caution band and a red low tick), with the GPH/qty/total
+// readouts and fuel temperature below.
 void drawFuelBlock(Renderer& r, const FlightData& d, const EisLayout& layout,
                    const Rect& a, bool valid, float displayH) {
-  const float labelSize = mfdFontPx(kLabelWt, displayH);
-  const float valueSize = mfdFontPx(kValueWt, displayH);
+  // Font weights calibrated from the real Perspective Touch+ EIS strip
+  // (851×537 native): ink-run height × 1.6 ≈ mfdFontPx weight at 768 canvas.
+  const float hdrSize = mfdFontPx(13.0f, displayH);   // "L" / "R" headers
+  const float qtySize = mfdFontPx(14.0f, displayH);   // per-tank 105 readouts
+  const float totSize = mfdFontPx(15.0f, displayH);   // bracketed total
+  const float gphValSize = mfdFontPx(13.0f, displayH); // flow numeric
+  const float labelSize = mfdFontPx(13.0f, displayH);  // GPH / Fuel GAL
+
   const EisGauge* gl = layout.gaugeForChannel(eis_channels::kFuelQtyLeft);
-  const float maxV = gl ? gl->max : 150.0f;
-  const float minV = gl ? gl->min : 0.0f;
-  const float span = (maxV - minV) != 0.0f ? (maxV - minV) : 1.0f;
+  const float fmaxV = gl ? gl->max : 150.0f;
+  const float fminV = gl ? gl->min : 0.0f;
+  const std::vector<EisBand> emptyBands;
+  const std::vector<EisBand>& fBands = gl ? gl->bands : emptyBands;
 
   const float qL = chan(d, eis_channels::kFuelQtyLeft);
   const float qR = chan(d, eis_channels::kFuelQtyRight);
-  const bool rightSel = chan(d, eis_channels::kFuelSelected) > 0.5f;
-
-  // Selected-tank L / R boxes across the top.
-  const float boxW = a.w * 0.22f;
-  const float boxH = labelSize * 1.4f;
-  const float boxY = a.y;
-  const float lxC = a.x + a.w * 0.40f;
-  const float rxC = a.x + a.w * 0.78f;
-  auto tankBox = [&](float cxBox, const char* tag, bool selected) {
-    if (selected) {
-      r.strokeRoundedRect(cxBox - boxW * 0.5f, boxY, boxW, boxH, boxH * 0.25f,
-                          1.5f, colors::kWhite);
-    }
-    r.fillText(cxBox, boxY + boxH * 0.5f, tag, labelSize, TextAlign::Center,
-               colors::kWhite);
-  };
-  tankBox(lxC, "L", !rightSel);
-  tankBox(rxC, "R", rightSel);
-
-  // Per-tank vertical bars.
-  const float trackTop = boxY + boxH * 1.2f;
-  const float trackH = a.h * 0.42f;
-  const float trackW = std::max(4.0f, a.w * 0.13f);
-  auto yFor = [&](float v) {
-    return trackTop + trackH * (1.0f - clamp01((v - minV) / span));
-  };
-  auto fuelBar = [&](float cxBar, float qty) {
-    const float x = cxBar - trackW * 0.5f;
-    r.fillRect(x, trackTop, trackW, trackH, Color{0.13f, 0.13f, 0.13f, 1.0f});
-    if (gl != nullptr) {
-      for (const EisBand& b : gl->bands) {
-        const float y0 = yFor(b.hi);
-        const float y1 = yFor(b.lo);
-        r.fillRect(x, y0, trackW, y1 - y0, eisBandColor(b.color));
-      }
-    }
-    r.strokeLine(x, trackTop, x, trackTop + trackH, 1.0f, colors::kPanelBorder);
-    if (valid) {
-      const float vy = yFor(qty);
-      const Point ptr[3] = {{x + trackW * 1.05f, vy},
-                            {x + trackW * 2.0f, vy - trackW * 0.7f},
-                            {x + trackW * 2.0f, vy + trackW * 0.7f}};
-      r.fillPolygon(ptr, 3, colors::kWhite);
-    }
-  };
-  fuelBar(lxC, qL);
-  fuelBar(rxC, qR);
-
-  // Numeric rows below the bars (Fig. 3-2): GPH (left column), per-tank L/R
-  // quantities (under each bar), total below, then fuel temp + "Fuel GAL".
   const float gph = chan(d, eis_channels::kFuelFlow);
   const float ftemp = chan(d, eis_channels::kFuelTempC);
-  const float rowY = trackTop + trackH + valueSize * 0.7f;
-  r.fillText(a.x, rowY, valid ? fmt("%.0f", std::round(gph)) : std::string("--"),
-             valueSize, TextAlign::Left, colors::kWhite);
-  r.fillText(lxC, rowY, valid ? fmt("%.0f", std::round(qL)) : std::string("---"),
+
+  // Bar centers and track widths as fractions of the (narrow) fuel column,
+  // measured from the real strip (fuel col native x=6..73): GPH cx≈0.11,
+  // L≈0.558, R≈0.779; L/R track≈0.134w, GPH track≈0.119w; green ≈56 % track.
+  // The L/R pair is pulled inward from the old 0.47/0.84 so the R tank's
+  // outside carrot clears the fuel/electrical divider (was touching it), while
+  // staying far enough apart that the two quantity readouts don't collide.
+  const float gphCx = a.x + a.w * 0.10f;
+  const float lCx = a.x + a.w * 0.50f;
+  const float rCx = a.x + a.w * 0.75f;
+  const float lrTrackW = std::max(4.0f, a.w * 0.134f);
+  const float gphTrackW = std::max(4.0f, a.w * 0.119f);
+  constexpr float kFuelBandFrac = 0.56f;
+  constexpr float kGphBandFrac = 0.50f;
+
+  const float headerY = a.y + hdrSize * 0.85f;
+  const float trackTop = a.y + hdrSize * 1.65f;
+  const float gphTop = a.y + hdrSize * 0.15f;
+  const float trackBot = a.y + a.h * 0.58f;
+  const float trackH = trackBot - trackTop;
+  const float gphH = trackBot - gphTop;
+  const float ptrLen = lrTrackW * 0.85f;
+
+  // GPH fuel-flow bar (taller, starts higher than L/R).
+  constexpr float kGphMax = 100.0f;
+  {
+    const std::vector<EisBand> gb{{EisBandColor::Green, 0.0f, kGphMax}};
+    const float gx = gphCx - gphTrackW * 0.5f;
+    const float gRight = drawBracketTrack(r, gx, gphTop, gphTrackW, gphH, 0.0f,
+                                          kGphMax, gb, kGphBandFrac);
+    if (valid) {
+      const float vy = gphTop + gphH * (1.0f - clamp01(gph / kGphMax));
+      // Pointer snug against the right edge of the (thin) green fill, not the
+      // wide track edge, matching the real unit.
+      const float plen = gphTrackW * 0.8f;
+      ptrLeft(r, gRight + gphTrackW * 0.04f, vy, plen, colors::kWhite);
+    }
+  }
+
+  r.fillText(lCx, headerY, "L", hdrSize, TextAlign::Center, colors::kWhite);
+  r.fillText(rCx, headerY, "R", hdrSize, TextAlign::Center, colors::kWhite);
+  const float fspan = (fmaxV - fminV) != 0.0f ? (fmaxV - fminV) : 1.0f;
+  auto fuelBar = [&](float cxBar, float qty, bool isLeft) {
+    const float x = cxBar - lrTrackW * 0.5f;
+    // Mirror the R tank so its green hugs the track's right edge; the L tank
+    // green hugs the left edge. Each carrot's tip then sits snug against the
+    // green's OUTER edge (left for L, right for R), matching the real unit.
+    drawBracketTrack(r, x, trackTop, lrTrackW, trackH, fminV, fmaxV, fBands,
+                     kFuelBandFrac, /*greenRight=*/!isLeft);
+    if (valid) {
+      const float vy =
+          trackTop + trackH * (1.0f - clamp01((qty - fminV) / fspan));
+      if (isLeft)
+        ptrRight(r, x - ptrLen * 0.04f, vy, ptrLen, colors::kWhite);
+      else
+        ptrLeft(r, x + lrTrackW + ptrLen * 0.04f, vy, ptrLen, colors::kWhite);
+    }
+  };
+  fuelBar(lCx, qL, true);
+  fuelBar(rCx, qR, false);
+
+  // Per-tank quantities, then the inverted-U total bracket, then "Fuel GAL".
+  const float qtyRowY = trackBot + qtySize * 0.85f;
+  r.fillText(lCx, qtyRowY, valid ? fmt("%.0f", std::round(qL)) : "---", qtySize,
+             TextAlign::Center, colors::kWhite);
+  r.fillText(rCx, qtyRowY, valid ? fmt("%.0f", std::round(qR)) : "---", qtySize,
+             TextAlign::Center, colors::kWhite);
+
+  const float totCx = (lCx + rCx) * 0.5f;
+  const float totY = qtyRowY + qtySize * 1.55f;
+  const std::string tot = valid ? fmt("%.0f", std::round(qL + qR)) : "---";
+  drawFuelTotalBracket(r, lCx, rCx, qtyRowY, qtySize, totY, totSize, tot);
+
+  r.fillText(totCx, totY + totSize * 0.95f, "Fuel GAL", labelSize,
+             TextAlign::Center, colors::kLabelText);
+
+  // GPH value / label / fuel temp under the flow bar.
+  const float gphRowY = trackBot + gphValSize * 0.85f;
+  r.fillText(gphCx, gphRowY, valid ? fmt("%.0f", std::round(gph)) : "--",
+             gphValSize, TextAlign::Center, colors::kWhite);
+  r.fillText(gphCx, gphRowY + gphValSize * 0.95f, "GPH", labelSize,
+             TextAlign::Center, colors::kLabelText);
+  r.fillText(gphCx, gphRowY + gphValSize * 0.95f + labelSize * 1.15f,
+             valid ? fmt("%.0f\xC2\xB0""C", std::round(ftemp)) : "--\xC2\xB0""C",
              labelSize, TextAlign::Center, colors::kWhite);
-  r.fillText(rxC, rowY, valid ? fmt("%.0f", std::round(qR)) : std::string("---"),
-             labelSize, TextAlign::Center, colors::kWhite);
-  r.fillText(a.x, rowY + labelSize * 1.25f, "GPH", labelSize, TextAlign::Left,
-             colors::kLabelText);
-  r.fillText(a.x + a.w * 0.62f, rowY + labelSize * 1.25f,
-             valid ? fmt("%.0f", std::round(qL + qR)) : std::string("---"),
-             valueSize, TextAlign::Center, colors::kWhite);
-  r.fillText(a.x, rowY + labelSize * 2.6f,
-             valid ? fmt("%.0f\xC2\xB0""C", std::round(ftemp))
-                   : std::string("--\xC2\xB0""C"),
-             labelSize, TextAlign::Left, colors::kWhite);
-  r.fillText(a.x + a.w, rowY + labelSize * 2.6f, "Fuel GAL", labelSize,
-             TextAlign::Right, colors::kLabelText);
 }
 
-// Four-source electrical block: emergency bus volts, battery 1/2 and
-// generator 1/2 currents.
+// Four-source electrical block (Pilot's Guide Fig. 3-1): emergency bus volts in
+// the header, then the Battery 1/2 and Generator 1/2 dual-source amp bars drawn
+// in the same "[" bracket style (the battery bar carries a low amber band).
 void drawElecBlock(Renderer& r, const FlightData& d, const Rect& a, bool valid,
                    float displayH) {
-  const float labelSize = mfdFontPx(kLabelWt, displayH);
-  const float valueSize = mfdFontPx(kValueWt, displayH);
+  // Same calibration as drawFuelBlock (real ink height × 1.6).
+  const float hdrSize = mfdFontPx(16.0f, displayH);  // Emr Bus V + volts
+  const float ampSize = mfdFontPx(15.0f, displayH);  // per-source amps
+  const float labelSize = mfdFontPx(13.0f, displayH); // 1 Bat 2 / Amp
 
-  // Header row: "Emr Bus V" on the left, its volts on the right (Fig. 3-2).
   const float emer = chan(d, eis_channels::kEmerBusVolts);
-  const float hY = a.y + labelSize * 0.9f;
-  r.fillText(a.x, hY, "Emr Bus V", labelSize, TextAlign::Left,
-             colors::kLabelText);
-  r.fillText(a.x + a.w, hY, valid ? fmt("%.1f", emer) : std::string("--.-"),
-             valueSize, TextAlign::Right, colors::kWhite);
+  const float hY = a.y + hdrSize * 0.85f;
+  const std::string voltsStr = valid ? fmt("%.1f", emer) : std::string("--.-");
+  const float voltsW = r.measureTextWidth(voltsStr, hdrSize);
+  const float gap = a.w * 0.04f;
+  float capWt = 16.0f;
+  const float capW = r.measureTextWidth("Emr Bus V", mfdFontPx(capWt, displayH));
+  if (capW + voltsW + gap > a.w && capW > 0.0f)
+    capWt = std::max(13.0f, capWt * (a.w - voltsW - gap) / capW);
+  const float capSize = mfdFontPx(capWt, displayH);
+  r.fillText(a.x, hY, "Emr Bus V", capSize, TextAlign::Left, colors::kLabelText);
+  r.fillText(a.x + a.w, hY, voltsStr, hdrSize, TextAlign::Right, colors::kWhite);
 
-  // Two dual-source amp bars (Battery 1/2, Generator 1/2) side by side.
   const float bat1 = chan(d, eis_channels::kBatt1Amps);
   const float bat2 = chan(d, eis_channels::kBatt2Amps);
   const float gen1 = chan(d, eis_channels::kGen1Amps);
   const float gen2 = chan(d, eis_channels::kGen2Amps);
-  const float batCx = a.x + a.w * 0.26f;
-  const float genCx = a.x + a.w * 0.74f;
-  const float barTop = hY + labelSize * 0.8f;
-  const float barH = a.h * 0.40f;
-  const float trackW = std::max(4.0f, a.w * 0.07f);
-  drawMiniVBar(r, batCx, barTop, barH, trackW, 0.0f, kBattAmpsMax, bat1, true,
-               bat2, true, valid, 0.12f, 0.0f, 0.0f);
-  drawMiniVBar(r, genCx, barTop, barH, trackW, 0.0f, kGenAmpsMax, gen1, true,
-               gen2, true, valid, 0.12f, 0.0f, 0.0f);
+  // Centers and track width from real strip, relative to the (wider) electrical
+  // column (native x=73..181): Bat cx≈0.319, Gen≈0.815, track≈0.120w.
+  const float batCx = a.x + a.w * 0.319f;
+  const float genCx = a.x + a.w * 0.815f;
+  const float trackW = std::max(4.0f, a.w * 0.120f);
+  constexpr float kAmpBandFrac = 0.31f;
+  const float trackTop = hY + hdrSize * 0.65f;
+  const float trackBot = a.y + a.h * 0.58f;
+  const float trackH = trackBot - trackTop;
+  const float ptrLen = trackW * 0.85f;
 
-  // Per-bar source values and the wrapped "1 Bat 2 / Amp" caption below. The
-  // strip column is narrow, so this uses a compact font and tight spacing.
-  const float smallSize = labelSize * 0.85f;
-  const float dx = a.w * 0.10f;
-  const float rowY = barTop + barH + smallSize * 0.95f;
+  auto ampBar = [&](float cx, float vL, float vR, float maxA, bool amber) {
+    const float x = cx - trackW * 0.5f;
+    std::vector<EisBand> bands;
+    if (amber) {
+      bands.push_back({EisBandColor::Yellow, 0.0f, maxA * 0.40f});
+      bands.push_back({EisBandColor::Green, maxA * 0.40f, maxA});
+    } else {
+      bands.push_back({EisBandColor::Green, 0.0f, maxA});
+    }
+    const float gRight = drawBracketTrack(r, x, trackTop, trackW, trackH, 0.0f,
+                                          maxA, bands, kAmpBandFrac);
+    if (!valid) return;
+    auto yf = [&](float v) {
+      return trackTop + trackH * (1.0f - clamp01(v / maxA));
+    };
+    // Both source carrots flank the (narrow) central green: the left source
+    // tip hugs the green's left edge, the right source tip its right edge,
+    // rather than the wide cap edges (real unit).
+    ptrRight(r, x - ptrLen * 0.04f, yf(vL), ptrLen, colors::kWhite);
+    ptrLeft(r, gRight + ptrLen * 0.04f, yf(vR), ptrLen, colors::kWhite);
+  };
+  ampBar(batCx, bat1, bat2, kBattAmpsMax, true);
+  ampBar(genCx, gen1, gen2, kGenAmpsMax, false);
+
+  const float dx = a.w * 0.13f;
+  const float rowY = trackBot + ampSize * 0.85f;
   auto col = [&](float cxCol, float vL, float vR, const char* tag) {
     r.fillText(cxCol - dx, rowY,
-               valid ? fmtNoZeroSign("%.0f", vL) : std::string("--"),
-               smallSize, TextAlign::Center, colors::kWhite);
+               valid ? fmtNoZeroSign("%.0f", vL) : std::string("--"), ampSize,
+               TextAlign::Center, colors::kWhite);
     r.fillText(cxCol + dx, rowY,
-               valid ? fmtNoZeroSign("%.0f", vR) : std::string("--"),
-               smallSize, TextAlign::Center, colors::kWhite);
-    r.fillText(cxCol, rowY + smallSize * 1.2f, tag, smallSize,
-               TextAlign::Center, colors::kLabelText);
-    r.fillText(cxCol, rowY + smallSize * 2.3f, "Amp", smallSize,
-               TextAlign::Center, colors::kLabelText);
+               valid ? fmtNoZeroSign("%.0f", vR) : std::string("--"), ampSize,
+               TextAlign::Center, colors::kWhite);
+    r.fillText(cxCol, rowY + ampSize * 1.2f, tag, labelSize, TextAlign::Center,
+               colors::kLabelText);
+    r.fillText(cxCol, rowY + ampSize * 1.2f + labelSize * 1.05f, "Amp",
+               labelSize, TextAlign::Center, colors::kLabelText);
   };
   col(batCx, bat1, bat2, "1 Bat 2");
   col(genCx, gen1, gen2, "1 Gen 2");
@@ -448,25 +643,40 @@ void drawElecBlock(Renderer& r, const FlightData& d, const Rect& a, bool valid,
 // Each position shows DN (green, down & locked), UP (white), or an amber state.
 void drawGearBlock(Renderer& r, const FlightData& d, const Rect& a,
                    float displayH) {
-  const float labelSize = mfdFontPx(kLabelWt, displayH);
-  r.fillText(a.x + a.w * 0.5f, a.y + labelSize * 0.6f, "Landing Gear",
-             labelSize, TextAlign::Center, colors::kLabelText);
-  auto state = [&](const char* ch) -> std::pair<std::string, Color> {
+  const float hdrSize = mfdFontPx(13.0f, displayH);
+  const float discSize = mfdFontPx(12.0f, displayH);
+  const float vloSize = mfdFontPx(11.0f, displayH);
+  r.fillText(a.x + a.w * 0.5f, a.y + hdrSize * 0.85f, "Landing Gear", hdrSize,
+             TextAlign::Center, colors::kLabelText);
+  // Each gear position renders as a disc, matching the real unit: a green
+  // filled disc with black "DN" when down, an outlined disc with white "UP"
+  // when up, and an amber outline in transit.
+  enum class GearState { Down, Up, Transit };
+  auto state = [&](const char* ch) -> GearState {
     const float v = chan(d, ch, 0.0f);
-    if (v >= 0.95f) return {"DN", colors::kBandGreen};
-    if (v <= 0.05f) return {"UP", colors::kWhite};
-    return {"\xE2\x96\xA1", colors::kBandYellow};  // transit
+    if (v >= 0.95f) return GearState::Down;
+    if (v <= 0.05f) return GearState::Up;
+    return GearState::Transit;
   };
-  const auto nose = state(eis_channels::kGearNose);
-  const auto left = state(eis_channels::kGearLeft);
-  const auto right = state(eis_channels::kGearRight);
-  r.fillText(a.x + a.w * 0.5f, a.y + a.h * 0.38f, nose.first, labelSize,
-             TextAlign::Center, nose.second);
-  r.fillText(a.x + a.w * 0.27f, a.y + a.h * 0.62f, left.first, labelSize,
-             TextAlign::Center, left.second);
-  r.fillText(a.x + a.w * 0.73f, a.y + a.h * 0.62f, right.first, labelSize,
-             TextAlign::Center, right.second);
-  r.fillText(a.x + a.w * 0.5f, a.y + a.h * 0.90f, "Vlo extend: 210", labelSize,
+  const float discR = std::min(a.w * 0.16f, a.h * 0.17f);
+  auto disc = [&](float cx, float cy, GearState st) {
+    if (st == GearState::Down) {
+      r.fillCircle(cx, cy, discR, colors::kBandGreen);
+      r.fillText(cx, cy + discSize * 0.36f, "DN", discSize, TextAlign::Center,
+                 colors::kBlack);
+    } else {
+      const Color c =
+          st == GearState::Up ? colors::kWhite : colors::kBandYellow;
+      strokeCircle(r, cx, cy, discR, 1.8f, c);
+      r.fillText(cx, cy + discSize * 0.36f, st == GearState::Up ? "UP" : "  ",
+                 discSize, TextAlign::Center, c);
+    }
+  };
+  // Triangle layout: nose top-center, mains lower-left / lower-right.
+  disc(a.x + a.w * 0.5f, a.y + a.h * 0.42f, state(eis_channels::kGearNose));
+  disc(a.x + a.w * 0.28f, a.y + a.h * 0.68f, state(eis_channels::kGearLeft));
+  disc(a.x + a.w * 0.72f, a.y + a.h * 0.68f, state(eis_channels::kGearRight));
+  r.fillText(a.x + a.w * 0.5f, a.y + a.h * 0.96f, "Vlo extend: 210", vloSize,
              TextAlign::Center, colors::kLabelText);
 }
 
@@ -474,36 +684,44 @@ void drawGearBlock(Renderer& r, const FlightData& d, const Rect& a,
 // band and cyan pointer match the real pitch-trim indicator.
 void drawPitchTrim(Renderer& r, const FlightData& d, const Rect& a,
                    float displayH) {
-  const float labelSize = mfdFontPx(kLabelWt, displayH);
-  r.fillText(a.x + a.w * 0.5f, a.y + labelSize * 0.6f, "Pitch Trim", labelSize,
+  const float hdrSize = mfdFontPx(13.0f, displayH);
+  const float lblSize = mfdFontPx(12.0f, displayH);
+  const float valSize = mfdFontPx(15.0f, displayH);
+  r.fillText(a.x + a.w * 0.5f, a.y + hdrSize * 0.85f, "Pitch Trim", hdrSize,
              TextAlign::Center, colors::kLabelText);
-  const float scaleX = a.x + a.w * 0.62f;
-  const float top = a.y + a.h * 0.28f;
+  const float scaleX = a.x + a.w * 0.66f;
+  const float top = a.y + a.h * 0.32f;
   const float bot = a.y + a.h * 0.86f;
-  r.fillText(scaleX, top - labelSize * 0.6f, "UP", labelSize, TextAlign::Center,
+  r.fillText(scaleX, top - lblSize * 0.5f, "UP", lblSize, TextAlign::Center,
              colors::kLabelText);
-  r.fillText(scaleX, bot + labelSize * 0.6f, "DN", labelSize, TextAlign::Center,
+  r.fillText(scaleX, bot + lblSize * 1.15f, "DN", lblSize, TextAlign::Center,
              colors::kLabelText);
-  r.strokeLine(scaleX, top, scaleX, bot, 1.5f, colors::kPanelBorder);
+  r.strokeLine(scaleX, top, scaleX, bot, 1.6f, colors::kPanelBorder);
   // Bracket end ticks at the UP/DN limits (the real scale reads as a "[").
   const float tickW = a.w * 0.10f;
-  r.strokeLine(scaleX, top, scaleX + tickW, top, 1.5f, colors::kPanelBorder);
-  r.strokeLine(scaleX, bot, scaleX + tickW, bot, 1.5f, colors::kPanelBorder);
-  // Green takeoff band around the neutral region.
+  r.strokeLine(scaleX, top, scaleX + tickW, top, 1.6f, colors::kPanelBorder);
+  r.strokeLine(scaleX, bot, scaleX + tickW, bot, 1.6f, colors::kPanelBorder);
+  // Green takeoff band on the scale at the neutral region, labelled "TO" to
+  // its left (matches the real pitch-trim indicator).
   const float midY = (top + bot) * 0.5f;
-  r.strokeLine(scaleX - a.w * 0.05f, midY - (bot - top) * 0.12f,
-               scaleX - a.w * 0.05f, midY + (bot - top) * 0.12f, 3.0f,
-               colors::kBandGreen);
+  const float toH = (bot - top) * 0.13f;
+  r.strokeLine(scaleX - a.w * 0.05f, midY - toH, scaleX - a.w * 0.05f,
+               midY + toH, 4.0f, colors::kBandGreen);
+  r.fillText(a.x + a.w * 0.04f, midY + lblSize * 0.36f, "TO", lblSize,
+             TextAlign::Left, colors::kLabelText);
 
-  const float t = std::max(-1.0f, std::min(1.0f, chan(d, eis_channels::kPitchTrim)));
+  const float t =
+      std::max(-1.0f, std::min(1.0f, chan(d, eis_channels::kPitchTrim)));
   const float py = midY - t * (bot - top) * 0.5f;
-  const float s = a.w * 0.07f;
-  const Point ptr[3] = {{scaleX - a.w * 0.12f, py},
-                        {scaleX - a.w * 0.12f - s, py - s},
-                        {scaleX - a.w * 0.12f - s, py + s}};
+  // Cyan pointer pointing right toward the scale.
+  const float s = a.w * 0.09f;
+  const Point ptr[3] = {{scaleX - a.w * 0.10f, py},
+                        {scaleX - a.w * 0.10f - s, py - s},
+                        {scaleX - a.w * 0.10f - s, py + s}};
   r.fillPolygon(ptr, 3, colors::kCyan);
-  r.fillText(a.x + a.w * 0.30f, midY, fmt("%.0f\xC2\xB0", std::round(t * 10.0f)),
-             mfdFontPx(kValueWt, displayH), TextAlign::Center, colors::kCyan);
+  r.fillText(a.x + a.w * 0.34f, midY + valSize * 0.36f,
+             fmt("%.0f\xC2\xB0", std::round(t * 10.0f)), valSize,
+             TextAlign::Center, colors::kCyan);
 }
 
 // Flaps indicator: a swinging pointer with Up / 50% / 100% detents; the
@@ -626,17 +844,32 @@ const char* const kTurbineBarLabels[kTurbineBarCount] = {
     "N1%", "N2%", "ITT\xC2\xB0""C", "Oil\xC2\xB0""C", "Oil PSI"};
 
 // Turbine bars row, drawing the `n` channels in `chans` evenly across the row.
+// `groupAfter` is the 0-based bar index after which a tall group divider is
+// drawn (the real EIS splits the engine-speed group N1/N2 from the temp/
+// pressure group ITT/Oil °C/Oil PSI with a vertical rule); -1 draws none.
 void drawTurbineBars(Renderer& r, const FlightData& d, const EisLayout& layout,
                      const Rect& barsRow, bool valid, float displayH,
                      const char* const chans[], const char* const labels[],
-                     int n) {
+                     int n, int groupAfter = -1) {
   if (n <= 0) return;
+  const float cellW = barsRow.w / n;
   for (int i = 0; i < n; ++i) {
-    const Rect cell{barsRow.x + barsRow.w * (static_cast<float>(i) / n),
-                    barsRow.y, barsRow.w / n, barsRow.h};
+    const Rect cell{barsRow.x + cellW * static_cast<float>(i), barsRow.y, cellW,
+                    barsRow.h};
     const EisGauge* g = layout.gaugeForChannel(chans[i]);
     drawVertBar(r, cell, g, chan(d, chans[i]), valid, displayH, labels[i]);
   }
+  // The group divider after `groupAfter` is drawn by the caller (so it can span
+  // the full section height, rule-to-rule, matching the real unit). We only
+  // expose its x-coordinate here via turbineGroupDividerX().
+  (void)groupAfter;
+}
+
+// X of the group divider for an `n`-bar turbine row split after 0-based bar
+// `groupAfter` (the gap between that bar and the next); <0 if no split.
+float turbineGroupDividerX(const Rect& barsRow, int n, int groupAfter) {
+  if (n <= 0 || groupAfter < 0 || groupAfter >= n - 1) return -1.0f;
+  return barsRow.x + (barsRow.w / n) * static_cast<float>(groupAfter + 1);
 }
 
 // Is the gauge bound to `channel` flagged PFD (a primary reversionary gauge)?
@@ -739,36 +972,72 @@ void drawEisStripTurbofan(Renderer& r, const FlightData& d,
   drawThrustArc(r, d, layout, band(0.00f, 0.165f), valid, displayH);
   rule(r, area, a.y + a.h * 0.165f);
 
-  drawTurbineBars(r, d, layout, band(0.175f, 0.325f), valid, displayH,
-                  kTurbineBarChans, kTurbineBarLabels, kTurbineBarCount);
-  rule(r, area, a.y + a.h * 0.335f);
+  // Taller turbine bars to match the real EIS's vertical share of the strip
+  // (the bracketed gauges occupy ~0.20 of the column on the real unit). The
+  // lower synoptic rows shift down to make room, with the bottom cabin block
+  // absorbing the difference.
+  const Rect turbineRow = band(0.175f, 0.345f);
+  drawTurbineBars(r, d, layout, turbineRow, valid, displayH, kTurbineBarChans,
+                  kTurbineBarLabels, kTurbineBarCount, /*groupAfter=*/1);
+  rule(r, area, a.y + a.h * 0.355f);
+  // Group divider between the engine-speed group (N1/N2) and the temp/pressure
+  // group (ITT/Oil): a gray rule spanning the FULL section height on the real
+  // unit (the rule above to the rule below, through the value/label area).
+  {
+    const float tdx = turbineGroupDividerX(turbineRow, kTurbineBarCount,
+                                           /*groupAfter=*/1);
+    if (tdx >= 0.0f) {
+      r.strokeLine(tdx, a.y + a.h * 0.165f, tdx, a.y + a.h * 0.355f, 1.4f,
+                   Color{0.41f, 0.41f, 0.41f, 1.0f});
+    }
+  }
 
-  // Fuel (left) + electrical (right).
-  const Rect feRow = band(0.345f, 0.515f);
-  drawFuelBlock(r, d, layout, Rect{feRow.x, feRow.y, feRow.w * 0.52f, feRow.h},
-                valid, displayH);
-  r.strokeLine(feRow.x + feRow.w * 0.53f, feRow.y, feRow.x + feRow.w * 0.53f,
-               feRow.y + feRow.h, 1.0f, colors::kPanelSeparator);
+  // Fuel (left) + electrical (right). The divider sits at ~0.42 of the strip on
+  // the real unit (fuel column ~42 %, electrical ~58 %), not at mid-width. The
+  // wider fuel column (was 0.385) gives the L/R quantity readouts room so they
+  // don't collide once the bars are pulled inward off the divider.
+  const Rect feRow = band(0.365f, 0.535f);
+  constexpr float kFeDivider = 0.42f;
+  drawFuelBlock(r, d, layout,
+                Rect{feRow.x, feRow.y, feRow.w * kFeDivider, feRow.h}, valid,
+                displayH);
+  // Fuel/electrical divider: like the turbine group divider, it spans the full
+  // section height (the rule above to the rule below) on the real unit, in the
+  // same gray. The feRow band is inset from those rules, so anchor to them.
+  {
+    const float fdx = feRow.x + feRow.w * kFeDivider;
+    r.strokeLine(fdx, a.y + a.h * 0.355f, fdx, a.y + a.h * 0.545f, 1.4f,
+                 Color{0.41f, 0.41f, 0.41f, 1.0f});
+  }
   drawElecBlock(r, d,
-                Rect{feRow.x + feRow.w * 0.55f, feRow.y, feRow.w * 0.45f,
-                     feRow.h},
+                Rect{feRow.x + feRow.w * (kFeDivider + 0.02f), feRow.y,
+                     feRow.w * (1.0f - kFeDivider - 0.02f), feRow.h},
                 valid, displayH);
-  rule(r, area, a.y + a.h * 0.525f);
+  rule(r, area, a.y + a.h * 0.545f);
 
-  // Landing gear (left) + pitch trim (right).
-  const Rect gtRow = band(0.535f, 0.655f);
+  // Landing gear (left) + pitch trim (right). This row is the tallest synoptic
+  // block on the real unit (it holds the gear-disc triangle + the trim scale),
+  // so it gets a section height on par with the turbine/fuel rows above.
+  const Rect gtRow = band(0.555f, 0.705f);
   drawGearBlock(r, d, Rect{gtRow.x, gtRow.y, gtRow.w * 0.52f, gtRow.h},
                 displayH);
-  r.strokeLine(gtRow.x + gtRow.w * 0.53f, gtRow.y, gtRow.x + gtRow.w * 0.53f,
-               gtRow.y + gtRow.h, 1.0f, colors::kPanelSeparator);
+  // Gear/pitch-trim divider: at ~0.537 of the strip on the real unit (traced
+  // x=97 of 182), spanning the FULL section height rule-to-rule (the gtRow band
+  // is inset from its rules, so anchor to them). Unlike the bright rgb(105)
+  // engine/fuel group dividers, the lower synoptic dividers are a dim rgb(40)
+  // gray (traced from the real gear divider), dimmer than kPanelSeparator.
+  constexpr Color kSynopticDivider{0.157f, 0.157f, 0.157f, 1.0f};  // rgb(40)
+  r.strokeLine(gtRow.x + gtRow.w * 0.532f, a.y + a.h * 0.545f,
+               gtRow.x + gtRow.w * 0.532f, a.y + a.h * 0.715f, 1.0f,
+               kSynopticDivider);
   drawPitchTrim(r, d,
                 Rect{gtRow.x + gtRow.w * 0.55f, gtRow.y, gtRow.w * 0.45f,
                      gtRow.h},
                 displayH);
-  rule(r, area, a.y + a.h * 0.665f);
+  rule(r, area, a.y + a.h * 0.715f);
 
   // Flaps (left) + roll trim (right).
-  const Rect frRow = band(0.675f, 0.775f);
+  const Rect frRow = band(0.725f, 0.795f);
   drawFlaps(r, d, Rect{frRow.x, frRow.y, frRow.w * 0.52f, frRow.h}, displayH);
   r.strokeLine(frRow.x + frRow.w * 0.53f, frRow.y, frRow.x + frRow.w * 0.53f,
                frRow.y + frRow.h, 1.0f, colors::kPanelSeparator);
@@ -776,10 +1045,10 @@ void drawEisStripTurbofan(Renderer& r, const FlightData& d,
                Rect{frRow.x + frRow.w * 0.55f, frRow.y, frRow.w * 0.45f,
                     frRow.h},
                displayH);
-  rule(r, area, a.y + a.h * 0.785f);
+  rule(r, area, a.y + a.h * 0.805f);
 
   // Cabin pressurization.
-  drawCabinBlock(r, d, band(0.795f, 0.99f), valid, displayH);
+  drawCabinBlock(r, d, band(0.815f, 0.99f), valid, displayH);
 }
 
 }  // namespace avionics::mfd

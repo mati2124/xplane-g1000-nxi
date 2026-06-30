@@ -27,6 +27,16 @@ struct ProcedureMenuHost {
   MapProcedure& loadedApproach;
   PersistedLoadedApproach& persistedRestore;
   std::string* approachHeaderLabel = nullptr;
+  int* departureLegStart = nullptr;
+  int* departureLegCount = nullptr;
+  MapProcedure* loadedDeparture = nullptr;
+  PersistedLoadedApproach* persistedDepartureRestore = nullptr;
+  std::string* departureHeaderLabel = nullptr;
+  int* arrivalLegStart = nullptr;
+  int* arrivalLegCount = nullptr;
+  MapProcedure* loadedArrival = nullptr;
+  PersistedLoadedApproach* persistedArrivalRestore = nullptr;
+  std::string* arrivalHeaderLabel = nullptr;
 
   std::function<std::string()> defaultAirportIcao;
   std::function<std::vector<std::string>()> nearestAirportIds;
@@ -79,6 +89,18 @@ bool procedureMenuShowsPrimaryNavFreq(const ProcedureMenuHost& host);
 std::string procedureMenuPrimaryIdent(const ProcedureMenuHost& host);
 std::vector<MapLeg> procedureMenuPreviewLegs(const ProcedureMenuHost& host);
 bool procedureMenuBezelKey(ProcedureMenuHost& host, BezelKey key);
+
+// Load the selected procedure (SID/STAR/approach) into the host's flight plan,
+// splicing its legs into the right block (departure after the origin, arrival
+// before the destination, approach at the tail) and updating the matching
+// block bounds + header label.
+void procedureMenuLoadSelected(ProcedureMenuHost& host, const std::string& name,
+                               const std::string& transition);
+
+// As procedureMenuLoadSelected, then activate the loaded approach's first leg.
+void procedureMenuActivateSelected(ProcedureMenuHost& host,
+                                   const std::string& name,
+                                   const std::string& transition);
 
 // Answer the "Fly Course Reversal at <fix>?" prompt. flyIt = YES keeps the
 // HILPT (flown as the course reversal); NO removes it for a straight-in.

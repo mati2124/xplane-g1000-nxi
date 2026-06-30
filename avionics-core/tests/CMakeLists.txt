@@ -21,25 +21,37 @@ add_executable(avionics-core-tests
   FmsNavigatorTest.cpp
   HoldNavigationTest.cpp
   GlidepathGuidanceTest.cpp
+  VnavGuidanceTest.cpp
   MissedApproachGuidanceTest.cpp
   CifpParserTest.cpp
   MetarParserTest.cpp
   NearbyFeatureSelectTest.cpp
   RadioVolumeAnnunciationTest.cpp
+  NavLocalizerFrequencyTest.cpp
   FlightPlanPersistenceTest.cpp
   FlightPlanBridgeProtocolTest.cpp
   FplHoldRowTest.cpp
   FplCursorLegIndexTest.cpp
+  AirwayLoadTest.cpp
+  DepartureLoadTest.cpp
+  ArrivalLoadTest.cpp
+  SidApproachInferenceTest.cpp
+  StarApproachParentTest.cpp
   DirectToFplSelectionTest.cpp
   ChecklistPageTest.cpp
   WptAirportInfoPageTest.cpp
   ProcedureMenuCourseReversalTest.cpp
+  ApproachAirportDefaultTest.cpp
   DeleteFlightPlanTest.cpp
   RemoveWaypointTest.cpp
+  ProcedureRemoveTest.cpp
   FlightPlanPeerSyncTest.cpp
   FlightPlanCatalogTest.cpp
   SimBriefParseTest.cpp
   FplLayoutDestinationTest.cpp
+  FplSectionCommitCursorTest.cpp
+  MapRouteLegsTest.cpp
+  AptDatPavementTest.cpp
   DirectToRestoreTest.cpp
   stb_image_impl.cpp
 )

@@ -278,11 +278,16 @@ ViewRaster& viewFor(Renderer& r, float cx, float cy) {
 extern bool g_asyncBuilds;
 
 void prefetchTerrain(const TerrainSource& terrain, const Snapshot& s) {
-  const double nmLon = nmPerDegLon(s.centerLat);
-  const double minLat = s.centerLat - s.halfNm / kNmPerDegLat;
-  const double maxLat = s.centerLat + s.halfNm / kNmPerDegLat;
-  const double minLon = s.centerLon - s.halfNm / nmLon;
-  const double maxLon = s.centerLon + s.halfNm / nmLon;
+  // Match the Mercator-uniform sampling footprint (see sampleRows): the raster
+  // half-extent equals halfNm NM at the center latitude expressed in Mercator
+  // radians, which reaches slightly past halfNm/kNmPerDegLat toward the pole.
+  const double cosLat = std::max(0.05, std::cos(s.centerLat * kDegToRad));
+  const double halfMercRad = s.halfNm / (kNmPerEarthRad * cosLat);
+  const double centerMercY = mercatorYRad(s.centerLat);
+  const double minLat = mercatorLatDegFromY(centerMercY - halfMercRad);
+  const double maxLat = mercatorLatDegFromY(centerMercY + halfMercRad);
+  const double minLon = s.centerLon - halfMercRad / kDegToRad;
+  const double maxLon = s.centerLon + halfMercRad / kDegToRad;
   // The ChartLand mask covers only a few tiles (capped at close range) and its
   // first frame is useless when sampled before tiles load -- it builds an all-
   // water raster that only self-corrects on the next geometry change (the pilot
@@ -303,15 +308,24 @@ void sampleRows(ViewRaster& v, const TerrainSource& terrain, int rows) {
     terrain.setTerrainViewCenter(s.centerLat, s.centerLon, s.detailHalfNm);
     prefetchTerrain(terrain, s);
   }
-  const float stepNm = 2.0f * s.halfNm / rasterSize;
-  const double nmLon = nmPerDegLon(s.centerLat);
+  // Sample uniformly in Mercator space (rows in Mercator-Y, columns in
+  // longitude) so the raster shares the projection used by the nav symbology
+  // (mercatorOffsetRad -> mercatorPxPerRad). An equidistant lat/lon grid is
+  // compressed by cos(centerLat) relative to Mercator, which drifts the
+  // rendered coastline inland and leaves coastal airports over the ocean fill.
+  // The half-extent equals halfNm NM at the center latitude expressed in
+  // Mercator radians; drawTerrainRaster scales the drawn square to match.
+  const double cosLat = std::max(0.05, std::cos(s.centerLat * kDegToRad));
+  const double halfMercRad = s.halfNm / (kNmPerEarthRad * cosLat);
+  const double stepMerc = 2.0 * halfMercRad / rasterSize;
+  const double centerMercY = mercatorYRad(s.centerLat);
   const double lonStart =
-      s.centerLon + (-s.halfNm + 0.5 * stepNm) / nmLon;
-  const double lonStep = static_cast<double>(stepNm) / nmLon;
+      s.centerLon + (-halfMercRad + 0.5 * stepMerc) / kDegToRad;
+  const double lonStep = stepMerc / kDegToRad;
   const int endRow = std::min(rasterSize, v.rowsDone + rows);
   for (int i = v.rowsDone; i < endRow; ++i) {
-    const double northNm = s.halfNm - (i + 0.5) * stepNm;
-    const double lat = s.centerLat + northNm / kNmPerDegLat;
+    const double mercY = centerMercY + halfMercRad - (i + 0.5) * stepMerc;
+    const double lat = mercatorLatDegFromY(mercY);
     float* out =
         v.elevFt.data() + static_cast<std::size_t>(i) * rasterSize;
     terrain.elevationFtRow(lat, lonStart, lonStep, rasterSize, out);
@@ -866,8 +880,14 @@ bool drawTerrainRaster(Renderer& r, const TerrainSource& terrain,
   const float dyPx = -static_cast<float>(northRad * mercatorPxPerRad);
   // Scale with displayRangeNm only -- the cached texture's geographic halfNm is
   // fixed until zoom settles; pixelsPerNm already tracks the log-space zoom
-  // easing used by chart land and symbology.
-  const float halfPx = v.front.halfNm * pixelsPerNm;
+  // easing used by chart land and symbology. The texture is sampled in Mercator
+  // space (see sampleRows), so its drawn half-width is halfNm NM at the center
+  // latitude scaled by sec(lat) -- matching the Mercator-projected symbology
+  // (mercatorPxPerRad) instead of the equidistant pixelsPerNm.
+  const double cosLat =
+      std::max(0.05, std::cos(v.front.centerLat * kDegToRad));
+  const float halfPx =
+      static_cast<float>(v.front.halfNm / cosLat) * pixelsPerNm;
 
   r.save();
   r.translate(cx, cy);

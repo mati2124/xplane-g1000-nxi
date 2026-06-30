@@ -127,6 +127,16 @@ class ShellNavMapData : public NavFeatureSource {
     return airways_.expandAirway(airwayName, fromIdent, toIdent);
   }
 
+  std::vector<std::string> airwaysThrough(
+      const std::string& ident) const override {
+    return airways_.airwaysThrough(ident);
+  }
+
+  std::vector<MapLeg> airwayFixes(const std::string& airwayName,
+                                  const std::string& fromIdent) const override {
+    return airways_.airwayFixes(airwayName, fromIdent);
+  }
+
   std::vector<MapAirspace> nearbyAirspaces(double lat, double lon, float rangeNm,
                                            std::size_t maxCount) const override {
     return airspace_.nearby(lat, lon, rangeNm, maxCount);

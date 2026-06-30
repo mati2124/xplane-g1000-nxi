@@ -1547,6 +1547,7 @@ int RunScreenshot(const char* path, double seconds, const char* state,
                   const char* fmsPlan, bool showBezel,
                   const char* eisSelector, const char* checklistSelector) {
   glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  glfwWindowHint(GLFW_STENCIL_BITS, 8);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -1991,6 +1992,100 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.update(seconds);
     for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
     engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfplawy") == 0) {
+    // PFD Active Flight Plan window showing a loaded airway segment grouped
+    // under an "Airway - Q118.JAMIZ" header (Load Airway). Legs are pre-tagged
+    // with viaAirway so the grouped display renders without a live nav DB.
+    avionics::MapLeg origin;
+    origin.id = "KFMY";
+    origin.lat = 26.5862;
+    origin.lon = -81.8632;
+    avionics::MapLeg jinos;
+    jinos.id = "JINOS";
+    jinos.lat = 27.30;
+    jinos.lon = -81.60;
+    avionics::MapLeg bruts;
+    bruts.id = "BRUTS";
+    bruts.lat = 28.20;
+    bruts.lon = -81.40;
+    bruts.viaAirway = "Q118";
+    avionics::MapLeg jamiz;
+    jamiz.id = "JAMIZ";
+    jamiz.lat = 29.10;
+    jamiz.lon = -81.20;
+    jamiz.viaAirway = "Q118";
+    avionics::MapLeg dest;
+    dest.id = "KJAX";
+    dest.lat = 30.4941;
+    dest.lon = -81.6879;
+    dataSource.setRoute({origin, jinos, bruts, jamiz, dest});
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdfplawymenu") == 0) {
+    // PFD FPL page menu over the airway route, with the list cursor on JINOS
+    // (which lies on Q118 in the real nav DB): Activate Leg / Load Airway /
+    // Collapse Airways are all live (trainer screenshot069).
+    avionics::MapLeg origin;
+    origin.id = "KFMY";
+    origin.lat = 26.5862;
+    origin.lon = -81.8632;
+    avionics::MapLeg jinos;
+    jinos.id = "JINOS";
+    jinos.lat = 27.30;
+    jinos.lon = -81.60;
+    avionics::MapLeg bruts;
+    bruts.id = "BRUTS";
+    bruts.lat = 28.20;
+    bruts.lon = -81.40;
+    bruts.viaAirway = "Q118";
+    avionics::MapLeg jamiz;
+    jamiz.id = "JAMIZ";
+    jamiz.lat = 29.10;
+    jamiz.lon = -81.20;
+    jamiz.viaAirway = "Q118";
+    avionics::MapLeg dest;
+    dest.id = "KJAX";
+    dest.lat = 30.4941;
+    dest.lon = -81.6879;
+    dataSource.setRoute({origin, jinos, bruts, jamiz, dest});
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::FmsPush);     // cursor on
+    engine.pressBezelKey(avionics::BezelKey::FmsOuterCw);  // step onto JINOS
+    engine.pressBezelKey(avionics::BezelKey::Menu);        // open the page menu
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "pfdloadawy") == 0) {
+    // PFD FPL - Select Airway window opened on JINOS (which lies on Q118 in the
+    // real nav DB), so the Airway / Exit fields populate from the AirwayStore.
+    avionics::MapLeg origin;
+    origin.id = "KFMY";
+    origin.lat = 26.5862;
+    origin.lon = -81.8632;
+    avionics::MapLeg jinos;
+    jinos.id = "JINOS";
+    jinos.lat = 27.30;
+    jinos.lon = -81.60;
+    avionics::MapLeg dest;
+    dest.id = "KJAX";
+    dest.lat = 30.4941;
+    dest.lon = -81.6879;
+    dataSource.setRoute({origin, jinos, dest});
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.softkeyController().openLoadAirwayWindow("JINOS");
     for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "pfdfplroute") == 0) {
@@ -2659,6 +2754,104 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     // Let the open slide+fade finish (kWindowAnimSeconds) so the capture shows
     // the menu fully in place rather than mid-animation.
     for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdfplawy") == 0) {
+    // The Active Flight Plan page showing a loaded airway segment grouped under
+    // an "Airway - Q118.JAMIZ" header (Pilot's Guide, Load Airway). The airway
+    // legs are pre-tagged with viaAirway so the grouped display renders without
+    // a live nav database (deterministic screenshot).
+    avionics::MapLeg origin;
+    origin.id = "KFMY";
+    origin.lat = 26.5862;
+    origin.lon = -81.8632;
+    avionics::MapLeg jinos;
+    jinos.id = "JINOS";
+    jinos.lat = 27.30;
+    jinos.lon = -81.60;
+    avionics::MapLeg bruts;
+    bruts.id = "BRUTS";
+    bruts.lat = 28.20;
+    bruts.lon = -81.40;
+    bruts.viaAirway = "Q118";
+    avionics::MapLeg jamiz;
+    jamiz.id = "JAMIZ";
+    jamiz.lat = 29.10;
+    jamiz.lon = -81.20;
+    jamiz.viaAirway = "Q118";
+    avionics::MapLeg dest;
+    dest.id = "KJAX";
+    dest.lat = 30.4941;
+    dest.lon = -81.6879;
+    dataSource.setRoute({origin, jinos, bruts, jamiz, dest});
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdfplawycol") == 0) {
+    // Same airway route, with the airways collapsed via the page menu so only
+    // the "Airway - Q118.JAMIZ" header + the exit fix are shown.
+    avionics::MapLeg origin;
+    origin.id = "KFMY";
+    origin.lat = 26.5862;
+    origin.lon = -81.8632;
+    avionics::MapLeg jinos;
+    jinos.id = "JINOS";
+    jinos.lat = 27.30;
+    jinos.lon = -81.60;
+    avionics::MapLeg bruts;
+    bruts.id = "BRUTS";
+    bruts.lat = 28.20;
+    bruts.lon = -81.40;
+    bruts.viaAirway = "Q118";
+    avionics::MapLeg jamiz;
+    jamiz.id = "JAMIZ";
+    jamiz.lat = 29.10;
+    jamiz.lon = -81.20;
+    jamiz.viaAirway = "Q118";
+    avionics::MapLeg dest;
+    dest.id = "KJAX";
+    dest.lat = 30.4941;
+    dest.lon = -81.6879;
+    dataSource.setRoute({origin, jinos, bruts, jamiz, dest});
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    engine.pressBezelKey(avionics::BezelKey::Menu);
+    // The menu opens on the first enabled option; with airways present that is
+    // "Collapse Airways" (Load Airway is greyed while the cursor is off).
+    engine.pressBezelKey(avionics::BezelKey::Ent);  // toggle collapsed
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdloadawy") == 0) {
+    // FPL - Select Airway window opened on JINOS (which lies on Q118 in the real
+    // nav DB), so the Airway/Exit fields and the DTK/DIS readouts populate from
+    // the live AirwayStore.
+    avionics::MapLeg origin;
+    origin.id = "KFMY";
+    origin.lat = 26.5862;
+    origin.lon = -81.8632;
+    avionics::MapLeg jinos;
+    jinos.id = "JINOS";
+    jinos.lat = 27.30;
+    jinos.lon = -81.60;
+    avionics::MapLeg dest;
+    dest.id = "KJAX";
+    dest.lat = 30.4941;
+    dest.lon = -81.6879;
+    dataSource.setRoute({origin, jinos, dest});
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    for (int i = 0; i < 120; ++i) engine.update(1.0 / 60.0);
+    engine.pressBezelKey(avionics::BezelKey::Fpl);
+    for (int i = 0; i < 20; ++i) engine.update(1.0 / 60.0);
+    engine.mfdController().openLoadAirwayWindow("JINOS");
+    for (int i = 0; i < 30; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdmenu") == 0) {
     // The Navigation Map Page Menu (MENU bezel key, Pilot's Guide Fig. 5-6):
@@ -3462,6 +3655,7 @@ bool HasFlag(int argc, char** argv, const char* flag) {
 GLFWwindow* CreateAvionicsWindow(const char* title, bool alwaysOnTop,
                                  bool decorated, GLFWwindow* share, int width,
                                  int height, GLFWmonitor* monitor) {
+  glfwWindowHint(GLFW_STENCIL_BITS, 8);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -3675,6 +3869,7 @@ void IdentifyMonitors(double seconds) {
   if (seconds <= 0.0) seconds = 4.0;
   GLFWmonitor* primary = glfwGetPrimaryMonitor();
 
+  glfwWindowHint(GLFW_STENCIL_BITS, 8);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -4414,6 +4609,14 @@ int main(int argc, char** argv) {
           !navigraph.fetching()) {
         navigraph.requestFetch();
       }
+      // Opening the FPL - Flight Plan Catalog page re-fetches the latest OFP so
+      // a plan generated mid-session shows up without restarting (startup
+      // already auto-fetches on sign-in restore). The result lands in the
+      // catalog via storeFlightPlanFromSimBriefImport below.
+      if (mfdUi.consumeCatalogRefreshRequest() && simConnected &&
+          !navigraph.fetching()) {
+        navigraph.requestFetch();
+      }
     }
     // Persist the refresh token whenever the store rotates it (or clears it on
     // sign-out), so the next launch restores the session.
@@ -4578,13 +4781,16 @@ int main(int argc, char** argv) {
       mfdUi.setChartsState(chartsState);
     }
 
-    // A loaded PROC approach with an ILS frequency tunes NAV1 standby (same as
-    // the MFD's procedure load).
+    // Loaded ILS/LOC/VOR/NDB approach: NXi places the primary navaid frequency
+    // in NAV1 standby (pilot swaps active); CRS is not set — LOC slaving handles
+    // course when VLOC is selected.
     if (pfdEngine != nullptr) {
       avionics::MapProcedure pfdProc;
-      if (pfdEngine->softkeyController().consumeProcLoadRequest(pfdProc) &&
-          pfdProc.frequencyMhz > 0.0f) {
-        xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, pfdProc.frequencyMhz);
+      if (pfdEngine->softkeyController().consumeProcLoadRequest(pfdProc)) {
+        const float mhz = avionics::procedureApproachNavStandbyMhz(pfdProc);
+        if (mhz > 0.0f) {
+          xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, mhz);
+        }
       }
     }
 
@@ -4592,9 +4798,11 @@ int main(int argc, char** argv) {
     // SimBrief flow above — drained after bridge events below.
     if (mfdEngine != nullptr) {
       avionics::MapProcedure proc;
-      if (mfdEngine->mfdController().consumeProcLoadRequest(proc) &&
-          proc.frequencyMhz > 0.0f) {
-        xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, proc.frequencyMhz);
+      if (mfdEngine->mfdController().consumeProcLoadRequest(proc)) {
+        const float mhz = avionics::procedureApproachNavStandbyMhz(proc);
+        if (mhz > 0.0f) {
+          xplane.tuneRadioStandby(avionics::RadioUnit::Nav1, mhz);
+        }
       }
 
       // Map panning: keep the feed's nearby-data queries centered on the panned
@@ -4664,6 +4872,20 @@ int main(int argc, char** argv) {
             xplane, app.demoSource, editedPlan,
             mfdEngine->mfdController().fplDestinationFilled());
         app.flightPlanPersistDirty = true;
+      }
+      // A catalog plan was just activated on the MFD: mirror its SID/STAR/
+      // approach grouping onto the PFD. The route legs already propagate via the
+      // route override, but the procedure block ranges + headers are per-
+      // controller state, so without this the PFD would render the SID/STAR
+      // fixes as plain Enroute legs and not match the MFD.
+      avionics::PersistedFlightPlan activatedPlan;
+      if (mfdEngine->mfdController().consumeActivatedFlightPlan(activatedPlan) &&
+          pfdEngine != nullptr) {
+        pfdEngine->softkeyController().restorePersistedFlightPlan(activatedPlan);
+        if (activatedPlan.approachMeta.active) {
+          pfdEngine->softkeyController().setPersistedLoadedApproach(
+              activatedPlan.approachMeta);
+        }
       }
     }
 
@@ -4750,8 +4972,13 @@ int main(int argc, char** argv) {
           else xplane.setHeadingBug(deg);
         }
         if (ui.consumeCourse(deg)) {
-          if (demoRadio != nullptr) demoRadio->setSelectedCourse(deg);
-          else xplane.setSelectedCourse(deg);
+          if (demoRadio != nullptr) {
+            demoRadio->setSelectedCourse(deg);
+          } else {
+            const avionics::CdiSource src =
+                ui.cdiSourceFor(xplane.snapshot().cdiSource);
+            xplane.setSelectedCourse(deg, src);
+          }
         }
         float inHg = 0.0f;
         if (ui.consumeBaro(inHg)) {
@@ -4883,13 +5110,22 @@ int main(int argc, char** argv) {
         }
         const avionics::PersistedDirectTo directTo =
             AuthoritativeDirectToSnapshot(pfdEngine, mfdEngine, app.activeSource);
-        if (directTo.active) {
-          if (directTo != app.settings.persistedDirectTo) {
-            app.settings.persistedDirectTo = directTo;
-            avionics::SaveAppSettings(app.settings);
-          }
-        } else if (!app.settings.persistedDirectTo.active) {
-          if (directTo != app.settings.persistedDirectTo) {
+        if (directTo != app.settings.persistedDirectTo) {
+          // Overwriting a saved active Direct-To with an inactive snapshot is
+          // only trustworthy once the source is live. Before the sim connects
+          // (and during a reconnect) the snapshot can briefly read "no
+          // Direct-To" before the restored state is re-applied; persisting that
+          // would forget the pilot's Direct-To and fall back to the first leg.
+          // A live source means the inactive state is real -- the navigator
+          // just sequenced onto (captured) the Direct-To leg, or the pilot
+          // cancelled it -- so the stale Direct-To must not be restored again.
+          const bool clearsSavedDirectTo =
+              app.settings.persistedDirectTo.active && !directTo.active;
+          const bool sourceLive =
+              app.activeSource != nullptr &&
+              app.activeSource->connectionState() ==
+                  avionics::ConnectionState::Connected;
+          if (!clearsSavedDirectTo || sourceLive) {
             app.settings.persistedDirectTo = directTo;
             avionics::SaveAppSettings(app.settings);
           }

@@ -69,6 +69,7 @@
 #include "avionics/FlightPlanBridgeProtocol.h"
 #include "avionics/FlightPlanPersistence.h"
 #include "avionics/PersistentState.h"
+#include "avionics/ProcedureSupport.h"
 #include "avionics/Terrain.h"
 #include "avionics/render/BezelKeys.h"
 #include "avionics/render/GlLoader.h"
@@ -966,6 +967,31 @@ void PersistStateIfChanged() {
   }
 }
 
+// Drains the NAV/COM tuning, transponder, and HDG/CRS/BARO knob commands the
+// PFD softkey controller queues on a bezel/softkey press and writes them back
+// to the sim's datarefs (the standalone shell does this against its UDP link;
+// in-process we write the datarefs directly). Without this the bezel tunes the
+// on-screen readout but nothing reaches the radios or sim OBS. NAV/COM tuning
+// is a PFD-only bezel function, so only the PFD engine is drained for radios;
+// HDG/CRS/BARO knobs exist on both GDU bezels.
+static void ApplyQueuedKnobCommands(avionics::SoftkeyController& sk) {
+  if (!g_dataSource) return;
+
+  float deg = 0.0f;
+  if (sk.consumeHeadingBug(deg)) {
+    g_dataSource->setHeadingBug(deg);
+  }
+  if (sk.consumeCourse(deg)) {
+    const avionics::CdiSource src =
+        sk.cdiSourceFor(g_dataSource->snapshot().cdiSource);
+    g_dataSource->setSelectedCourse(deg, src);
+  }
+  float inHg = 0.0f;
+  if (sk.consumeBaro(inHg)) {
+    g_dataSource->setBaroInHg(inHg);
+  }
+}
+
 // Drains the NAV/COM tuning and transponder commands the PFD softkey controller
 // queues on a bezel/softkey press and writes them back to the sim's radio
 // datarefs (the standalone shell does this against its UDP link; in-process we
@@ -1001,6 +1027,11 @@ void ApplyQueuedRadioCommands() {
   if (sk.consumeXpdrModeCommit(xpdrMode)) {
     g_dataSource->setTransponderMode(xpdrMode);
   }
+
+  ApplyQueuedKnobCommands(sk);
+  if (g_mfd.engine) {
+    ApplyQueuedKnobCommands(g_mfd.engine->softkeyController());
+  }
 }
 
 // Drains flight-plan edits from both GDUs. Partial routes stay on the in-plugin
@@ -1035,10 +1066,11 @@ void ApplyQueuedFlightPlanEdits() {
       g_dataSource->setDirectTo(pfdDto, pfdDtoHold);
     }
     avionics::MapProcedure pfdProc;
-    if (g_pfd.engine->softkeyController().consumeProcLoadRequest(pfdProc) &&
-        pfdProc.frequencyMhz > 0.0f) {
-      g_dataSource->tuneRadioStandby(avionics::RadioUnit::Nav1,
-                                    pfdProc.frequencyMhz);
+    if (g_pfd.engine->softkeyController().consumeProcLoadRequest(pfdProc)) {
+      const float mhz = avionics::procedureApproachNavStandbyMhz(pfdProc);
+      if (mhz > 0.0f) {
+        g_dataSource->tuneRadioStandby(avionics::RadioUnit::Nav1, mhz);
+      }
     }
   }
 
@@ -1055,10 +1087,11 @@ void ApplyQueuedFlightPlanEdits() {
       g_dataSource->setDirectTo(dtoTarget, dtoHold);
     }
     avionics::MapProcedure proc;
-    if (g_mfd.engine->mfdController().consumeProcLoadRequest(proc) &&
-        proc.frequencyMhz > 0.0f) {
-      g_dataSource->tuneRadioStandby(avionics::RadioUnit::Nav1,
-                                    proc.frequencyMhz);
+    if (g_mfd.engine->mfdController().consumeProcLoadRequest(proc)) {
+      const float mhz = avionics::procedureApproachNavStandbyMhz(proc);
+      if (mhz > 0.0f) {
+        g_dataSource->tuneRadioStandby(avionics::RadioUnit::Nav1, mhz);
+      }
     }
   }
 }

@@ -91,6 +91,9 @@ class NanoVgRenderer : public Renderer {
                                 float radTR, float radBR, float radBL,
                                 float widthPx, const Color& c) override;
   void fillPolygon(const Point* points, int count, const Color& c) override;
+  void fillPolygonWithHoles(const Point* outer, int outerCount,
+                            const Point* const* holes, const int* holeCounts,
+                            int holeCount, const Color& c) override;
   void strokePolyline(const Point* points, int count, float widthPx,
                       const Color& c) override;
   void strokeSegments(const Point* segPts, int segmentCount, float widthPx,

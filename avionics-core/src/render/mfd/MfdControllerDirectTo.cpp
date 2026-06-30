@@ -2,6 +2,7 @@
 
 #include "avionics/DataSource.h"
 #include "avionics/FplRouteEdit.h"
+#include "avionics/ProcedureSupport.h"
 #include "render/mfd/MfdPageSupport.h"
 
 // Direct-To window (Direct-To bezel key, Pilot's Guide 5.5): opens over any MFD
@@ -125,7 +126,9 @@ void MfdController::directToOpen() {
       dtoOpen_ = false;
       return;
     }
-    const int legIdx = fplCursorLegIndex();
+    // Direct-To cannot target a synthetic departure row (RWxx/<alt>FT/MANSEQ);
+    // resolve to the next real fix in the plan so the field pre-fills with it.
+    const int legIdx = nextNavigableFixLegIndex(fplLegs_, fplCursorLegIndex());
     if (legIdx >= 0 && legIdx < static_cast<int>(fplLegs_.size())) {
       dtoPreserveLegIndex_ = legIdx;
       dtoPreserveFplCursorRow_ = fplCursorRow_;
@@ -134,7 +137,7 @@ void MfdController::directToOpen() {
     }
   }
   if (initial.empty() && !fplListCursorFollowsActive_ && !fplLegs_.empty()) {
-    const int legIdx = fplCursorLegIndex();
+    const int legIdx = nextNavigableFixLegIndex(fplLegs_, fplCursorLegIndex());
     if (legIdx >= 0 && legIdx < static_cast<int>(fplLegs_.size())) {
       dtoPreserveLegIndex_ = legIdx;
       dtoPreserveFplCursorRow_ = fplCursorRow_;

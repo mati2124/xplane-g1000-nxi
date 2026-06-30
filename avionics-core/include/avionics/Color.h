@@ -80,6 +80,12 @@ inline constexpr Color kPopoutBorder{0.588f, 0.588f, 0.588f, 1.0f};        // rg
 inline constexpr Color kPopoutBodyTop{0.0f, 0.0f, 0.0f, 0.75f};
 inline constexpr Color kPopoutBodyBottom{0.0f, 0.0f, 0.0f, 1.0f};
 
+// PFD Page Menu (WT .pfd-pagemenu): a flat opaque gray body, unlike the
+// translucent-black .popout-dialog. Sampled rgb(64,64,64) from the NXi trainer;
+// a subtle top-down gradient gives the panel a little depth.
+inline constexpr Color kPageMenuBodyTop{0.290f, 0.290f, 0.290f, 1.0f};     // rgb(74,74,74)
+inline constexpr Color kPageMenuBodyBottom{0.235f, 0.235f, 0.235f, 1.0f};  // rgb(60,60,60)
+
 // Garmin corporate-logo blue, used for the triangle trademark on the power-up
 // logo splash. The real wordmark's triangle is a gradient (#09bcef -> #00467f);
 // this is the brighter end (#09bcef), which reads as the recognizable Garmin

@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <string>
 
+#include "avionics/Radio.h"
+
 #include "render/pfd/HsiInternal.h"
 
 namespace avionics::pfd {
@@ -15,8 +17,10 @@ const char* cdiSourceLabel(const FlightData& d, bool obs, Color& color,
   isGps = false;
   switch (d.cdiSource) {
     case CdiSource::Gps:  color = colors::kMagenta;     isGps = true; return obs ? "OBS" : "GPS";
-    case CdiSource::Nav1: color = colors::kActiveGreen;               return "VOR1";
-    case CdiSource::Nav2: color = colors::kActiveGreen;               return "VOR2";
+    case CdiSource::Nav1:
+    case CdiSource::Nav2:
+      color = colors::kActiveGreen;
+      return cdiNavSourceLabel(d.cdiSource, d.nav1ActiveMhz, d.nav2ActiveMhz);
   }
   color = colors::kMagenta;
   return "GPS";

@@ -1020,8 +1020,11 @@ void drawRightColumnPA46(Renderer& r, const FlightData& d, const Rect& a, float 
 }
 
 float eisStripWidthFrac(EisStripStyle style) {
-  // 150/1024 piston, 195/1024 turbofan, 240/1024 turboprop (2-column layout), against the 1024 px GDU canvas.
-  if (style == EisStripStyle::Turbofan) return 195.0f / 1024.0f;
+  // 150/1024 piston; 237/1024 turbofan (sized so its width-to-height ratio
+  // matches the real Perspective Touch+ EIS, strip w/h ~0.349 over the body
+  // height); 240/1024 turboprop (2-column layout), against the 1024 px GDU
+  // canvas.
+  if (style == EisStripStyle::Turbofan) return 237.0f / 1024.0f;
   if (style == EisStripStyle::Turboprop) return 240.0f / 1024.0f;
   return 150.0f / 1024.0f;
 }

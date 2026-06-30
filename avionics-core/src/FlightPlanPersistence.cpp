@@ -1,8 +1,10 @@
 #include "avionics/FlightPlanPersistence.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <unordered_set>
 #include <vector>
 
 #include "avionics/FplRouteEdit.h"
@@ -80,6 +82,9 @@ bool parsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
     if (fields.size() >= 7) {
       legOut.procedureRole = fields[3];
       applyPersistedLegAltitudeFields(fields, 4, legOut);
+      // Optional trailing airway tag (Load Airway grouping), appended after the
+      // VNAV altitude fields so older saves still parse.
+      if (fields.size() >= 8) legOut.viaAirway = fields[7];
       return !legOut.id.empty();
     }
     return false;
@@ -91,7 +96,15 @@ bool parsePersistedFlightPlanLeg(const std::string& value, MapLeg& legOut) {
 std::string formatPersistedFlightPlanLeg(const MapLeg& leg) {
   char buf[256];
   const bool hasAlt = legHasPersistedAltitude(leg);
-  if (!leg.procedureRole.empty() && !hasAlt) {
+  if (!leg.viaAirway.empty()) {
+    // Full form with a trailing airway tag so Load Airway grouping survives a
+    // restart (altitude fields default to 0 when the leg has no constraint).
+    const int kind = static_cast<int>(leg.altitudeConstraint);
+    std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s|%d|%d|%d|%s",
+                  leg.id.c_str(), leg.lat, leg.lon, leg.procedureRole.c_str(),
+                  leg.altitudeConstraintFt, kind,
+                  leg.altitudeDesignated ? 1 : 0, leg.viaAirway.c_str());
+  } else if (!leg.procedureRole.empty() && !hasAlt) {
     std::snprintf(buf, sizeof(buf), "%s|%.6f|%.6f|%s", leg.id.c_str(), leg.lat,
                   leg.lon, leg.procedureRole.c_str());
   } else if (hasAlt) {
@@ -125,12 +138,33 @@ void preserveFlightPlanIdents(std::vector<MapLeg>& plan,
   for (std::size_t i = 0; i < plan.size() && i < published.size(); ++i) {
     MapLeg& leg = plan[i];
     const MapLeg& pub = published[static_cast<std::size_t>(i)];
+    const bool samePosition =
+        std::fabs(leg.lat - pub.lat) <= kLatLonMatchDeg &&
+        std::fabs(leg.lon - pub.lon) <= kLatLonMatchDeg;
+    // The sim FMS does not carry the airway tag; restore it from the last
+    // published plan so the FPL "Airway -" grouping survives the round trip.
+    if (leg.viaAirway.empty() && !pub.viaAirway.empty() && samePosition &&
+        (leg.id == pub.id || isFmsLatLonIdent(leg.id))) {
+      leg.viaAirway = pub.viaAirway;
+    }
+    // Pilot-entered ("designated") VNAV altitude constraints live only in the
+    // avionics; the sim FMS does not echo them back. Restore a designated
+    // constraint from the last published plan onto a position-matched leg that
+    // returned without one so custom altitudes survive a sim round-trip (and a
+    // standalone restart that re-adopts the sim route after the saved route
+    // override is dropped). A constraint already present on the adopted leg is
+    // left alone — it comes from a loaded procedure (CIFP) and must win.
+    if (samePosition && pub.altitudeDesignated &&
+        pub.altitudeConstraint != AltConstraintType::None &&
+        leg.altitudeConstraint == AltConstraintType::None &&
+        (leg.id == pub.id || isFmsLatLonIdent(leg.id))) {
+      leg.altitudeConstraintFt = pub.altitudeConstraintFt;
+      leg.altitudeConstraint = pub.altitudeConstraint;
+      leg.altitudeDesignated = true;
+    }
     if (leg.id == pub.id) continue;
     if (!isFmsLatLonIdent(leg.id) || isFmsLatLonIdent(pub.id)) continue;
-    if (std::fabs(leg.lat - pub.lat) > kLatLonMatchDeg ||
-        std::fabs(leg.lon - pub.lon) > kLatLonMatchDeg) {
-      continue;
-    }
+    if (!samePosition) continue;
     leg.id = pub.id;
   }
 }
@@ -161,9 +195,11 @@ bool findLegSequenceInPlan(const std::vector<MapLeg>& plan,
   return true;
 }
 
-InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs) {
+InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs,
+                                                 int minStart) {
   InferredProcedureBlock out;
-  for (int i = 0; i < static_cast<int>(legs.size()); ++i) {
+  const int scanFrom = std::max(0, minStart);
+  for (int i = scanFrom; i < static_cast<int>(legs.size()); ++i) {
     if (!legs[static_cast<std::size_t>(i)].procedureRole.empty()) {
       out.start = i;
       break;
@@ -174,7 +210,10 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
   // before AMXUQ when only GRRDN carries procedureRole after a sim re-import).
   // Walk back through those intermediates but stop at the destination airport
   // (KJAX) — it belongs in the approach header, not the approach leg block.
-  while (out.start > 0 &&
+  // Never walk back past `minStart`, which marks the end of an earlier
+  // procedure block (e.g. a loaded arrival/STAR) whose fixes are not approach
+  // legs.
+  while (out.start > scanFrom &&
          legs[static_cast<std::size_t>(out.start - 1)].procedureRole.empty()) {
     if (isAirportIdent(legs[static_cast<std::size_t>(out.start - 1)].id)) {
       break;
@@ -196,29 +235,173 @@ InferredProcedureBlock inferProcedureBlockInPlan(const std::vector<MapLeg>& legs
   return out;
 }
 
+int destinationAirportLegBeforeApproach(const std::vector<MapLeg>& legs,
+                                          int minStart) {
+  const int approachStart = fplApproachInferenceFloor(legs, minStart);
+  if (approachStart <= 0 ||
+      approachStart >= static_cast<int>(legs.size())) {
+    return -1;
+  }
+  const int destIdx = approachStart - 1;
+  if (destIdx < minStart) return -1;
+  if (!isAirportIdent(legs[static_cast<std::size_t>(destIdx)].id)) return -1;
+  return destIdx;
+}
+
+std::vector<MapLeg> mapRouteDisplayLegs(const std::vector<MapLeg>& legs,
+                                          int minStart) {
+  const int destIdx = destinationAirportLegBeforeApproach(legs, minStart);
+  if (destIdx < 0) return legs;
+  std::vector<MapLeg> out;
+  out.reserve(legs.size() - 1);
+  out.insert(out.end(), legs.begin(),
+             legs.begin() + static_cast<std::size_t>(destIdx));
+  out.insert(out.end(), legs.begin() + static_cast<std::size_t>(destIdx + 1),
+             legs.end());
+  return out;
+}
+
+int mapRouteDisplayLegIndex(const std::vector<MapLeg>& legs, int planLegIndex,
+                              int minStart) {
+  if (planLegIndex < 0 ||
+      planLegIndex >= static_cast<int>(legs.size())) {
+    return -1;
+  }
+  const int destIdx = destinationAirportLegBeforeApproach(legs, minStart);
+  if (destIdx < 0) return planLegIndex;
+  if (planLegIndex == destIdx) return -1;
+  if (planLegIndex > destIdx) return planLegIndex - 1;
+  return planLegIndex;
+}
+
+int mapRoutePlanLegIndex(const std::vector<MapLeg>& legs, int routeLegIndex,
+                           int minStart) {
+  if (routeLegIndex < 0) return -1;
+  const int destIdx = destinationAirportLegBeforeApproach(legs, minStart);
+  if (destIdx < 0) return routeLegIndex;
+  if (routeLegIndex >= destIdx) return routeLegIndex + 1;
+  return routeLegIndex;
+}
+
+int fplApproachInferenceFloor(const std::vector<MapLeg>& legs, int arrivalEnd,
+                              int departureEnd) {
+  int floor = std::max({0, arrivalEnd, departureEnd});
+  // The destination airport separates the STAR (before it) from the approach
+  // (after it). Find the last airport ident that is followed by at least one
+  // procedure-role leg: that airport is the destination, and the approach can
+  // only begin after it. Requiring a trailing role leg avoids treating a 4-char
+  // missed-approach fix (which isAirportIdent() also matches) as the boundary.
+  const int n = static_cast<int>(legs.size());
+  for (int i = n - 1; i >= 0; --i) {
+    if (!isAirportIdent(legs[static_cast<std::size_t>(i)].id)) continue;
+    bool roleAfter = false;
+    for (int j = i + 1; j < n; ++j) {
+      if (!legs[static_cast<std::size_t>(j)].procedureRole.empty()) {
+        roleAfter = true;
+        break;
+      }
+    }
+    if (roleAfter) {
+      floor = std::max(floor, i + 1);
+      break;
+    }
+  }
+  return floor;
+}
+
+void mergeProcedureLegFields(MapLeg& dst, const MapLeg& src) {
+  dst.procedureRole = src.procedureRole;
+  dst.hold = src.hold;
+  dst.pathTerminator = src.pathTerminator;
+  if (src.legCourseDeg > 0.0f) {
+    dst.legCourseDeg = src.legCourseDeg;
+  }
+  if (src.missedInitial.active) {
+    dst.missedInitial = src.missedInitial;
+  }
+  if (src.altitudeConstraintFt > 0) {
+    dst.altitudeConstraintFt = src.altitudeConstraintFt;
+    dst.altitudeConstraint = src.altitudeConstraint;
+  }
+  if (src.glidePathAngleDeg > 0.0f) {
+    dst.glidePathAngleDeg = src.glidePathAngleDeg;
+  }
+}
+
 void mergeProcedureLegMetadata(std::vector<MapLeg>& plan, int start,
                                const std::vector<MapLeg>& procedureLegs) {
   for (std::size_t i = 0; i < procedureLegs.size(); ++i) {
     const std::size_t idx = static_cast<std::size_t>(start) + i;
     if (idx >= plan.size()) break;
     if (plan[idx].id != procedureLegs[i].id) continue;
-    plan[idx].procedureRole = procedureLegs[i].procedureRole;
-    plan[idx].hold = procedureLegs[i].hold;
-    plan[idx].pathTerminator = procedureLegs[i].pathTerminator;
-    if (procedureLegs[i].legCourseDeg > 0.0f) {
-      plan[idx].legCourseDeg = procedureLegs[i].legCourseDeg;
-    }
-    if (procedureLegs[i].missedInitial.active) {
-      plan[idx].missedInitial = procedureLegs[i].missedInitial;
-    }
-    if (procedureLegs[i].altitudeConstraintFt > 0) {
-      plan[idx].altitudeConstraintFt = procedureLegs[i].altitudeConstraintFt;
-      plan[idx].altitudeConstraint = procedureLegs[i].altitudeConstraint;
-    }
-    if (procedureLegs[i].glidePathAngleDeg > 0.0f) {
-      plan[idx].glidePathAngleDeg = procedureLegs[i].glidePathAngleDeg;
+    mergeProcedureLegFields(plan[idx], procedureLegs[i]);
+  }
+}
+
+TerminalProcedureMetadataRestore restoreTerminalProcedureMetadata(
+    const NavFeatureSource* nav, const PersistedLoadedApproach& meta,
+    std::vector<MapLeg>& plan, int blockStart, int blockCount) {
+  TerminalProcedureMetadataRestore result;
+  if (!meta.active || meta.name.empty() || meta.airportIcao.empty()) {
+    result.stopRetrying = true;
+    return result;
+  }
+  if (nav == nullptr || !nav->ready() || plan.empty()) {
+    return result;
+  }
+  if (blockStart < 0 || blockCount <= 0 ||
+      blockStart + blockCount > static_cast<int>(plan.size())) {
+    result.stopRetrying = true;
+    return result;
+  }
+
+  const std::vector<MapLeg> expanded =
+      nav->expandProcedure(meta.airportIcao, meta.type, meta.name,
+                           meta.transition);
+  if (expanded.empty()) return result;
+
+  // Fix idents the procedure claims. The importer's via_airway heuristic can
+  // exclude a transition-entry/exit fix that CIFP includes (it carries the
+  // procedure's altitude restriction), so grow the block outward across any
+  // contiguous plan leg whose ident the procedure also names.
+  std::unordered_set<std::string> procedureIds;
+  for (const MapLeg& src : expanded) procedureIds.insert(src.id);
+
+  const int planSize = static_cast<int>(plan.size());
+  int start = blockStart;
+  int end = blockStart + blockCount;  // one past the last block leg
+  while (start - 1 >= 0) {
+    const MapLeg& prev = plan[static_cast<std::size_t>(start - 1)];
+    if (isAirportIdent(prev.id)) break;
+    if (procedureIds.find(prev.id) == procedureIds.end()) break;
+    --start;
+  }
+  while (end < planSize) {
+    const MapLeg& next = plan[static_cast<std::size_t>(end)];
+    if (isAirportIdent(next.id)) break;
+    if (procedureIds.find(next.id) == procedureIds.end()) break;
+    ++end;
+  }
+
+  int mergedCount = 0;
+  for (const MapLeg& src : expanded) {
+    for (int i = start; i < end; ++i) {
+      if (plan[static_cast<std::size_t>(i)].id != src.id) continue;
+      mergeProcedureLegFields(plan[static_cast<std::size_t>(i)], src);
+      ++mergedCount;
+      break;
     }
   }
+  if (mergedCount == 0) {
+    result.stopRetrying = true;
+    return result;
+  }
+  result.merged = true;
+  if (start != blockStart || end != blockStart + blockCount) {
+    result.correctedStart = start;
+    result.correctedCount = end - start;
+  }
+  return result;
 }
 
 void removeLoadedApproachLegs(std::vector<MapLeg>& legs, int approachStart,
@@ -514,9 +697,15 @@ void enrichPersistedFlightPlanFromLegs(PersistedFlightPlan& plan) {
     plan.approachLegStart = -1;
     plan.approachLegCount = 0;
   }
-  InferredProcedureBlock block = inferProcedureBlockInPlan(plan.legs);
+  // The approach is the procedure tail after any loaded arrival/STAR block; its
+  // fixes are not approach legs even when they carry procedureRole tags.
+  const int arrivalEnd = plan.arrivalLegCount > 0
+                             ? plan.arrivalLegStart + plan.arrivalLegCount
+                             : 0;
+  InferredProcedureBlock block =
+      inferProcedureBlockInPlan(plan.legs, arrivalEnd);
   if (!block.valid()) return;
-  if (plan.approachLegCount <= 0) {
+  if (plan.approachLegCount <= 0 || plan.approachLegStart < arrivalEnd) {
     plan.approachLegStart = block.start;
     plan.approachLegCount = block.count;
   }

@@ -40,10 +40,15 @@ void applyTurnAnticipation(FlightData& data, const MapData& map, bool obsMode,
 // Shortest signed course change from inbound to outbound (degrees, + = right).
 double shortestTurnDeltaDeg(double inboundDeg, double outboundDeg);
 
-// Fly-by lead distance for a course change at the given ground speed and bank
-// (G1000 NXi Pilot's Guide Appendix D, 15° bank). `maxTurnDegCap` limits the
-// course-change angle used in the formula (default 90° for published legs).
+// Default fly-by bank for piston profiles (G1000 NXi Pilot's Guide Appendix D).
+inline constexpr double kDefaultTurnLeadBankDeg = 15.0;
+
+// Fly-by lead distance for a course change at the given ground speed and bank.
+// `maxTurnDegCap` limits the course-change angle used in the formula (default
+// 90° for published legs). `bankDeg` should match the native lateral AP for the
+// loaded airframe (see resolveTurnLeadBankDeg).
 double turnLeadDistanceNm(double gsKts, double turnDeltaDeg,
-                          double maxTurnDegCap = 90.0);
+                          double maxTurnDegCap = 90.0,
+                          double bankDeg = kDefaultTurnLeadBankDeg);
 
 }  // namespace avionics

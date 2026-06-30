@@ -284,6 +284,14 @@ void drawLandData(Renderer& r, const std::vector<MapLandLine>& landLines,
 void drawRiverData(Renderer& r, const std::vector<MapLandLine>& landLines,
                    const Proj& proj, float rangeNm);
 
+// National (country) and state/province boundary lines, drawn after the topo
+// raster so they stay visible over terrain shading instead of being painted
+// over -- matching the real NXi. State/province boundaries are man-made land
+// data and suppressed when `showCulture` is false (Detail 3 declutter); country
+// borders are always drawn. Kept out of drawLandData's pre-terrain pass.
+void drawBorderData(Renderer& r, const std::vector<MapLandLine>& landLines,
+                    const Proj& proj, float rangeNm, bool showCulture = true);
+
 // Populated places: a dot plus name, decluttered by city rank vs. range.
 void drawCities(Renderer& r, const MapData& map, const Proj& proj,
                 float rangeNm, float symSize, float labelSize);
@@ -312,7 +320,7 @@ void drawAirspaces(Renderer& r, const MapData& map, const Proj& proj,
 
 // Taxiway/apron diagram (SafeTaxi pavement), drawn under the runway quads.
 void drawTaxiways(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm);
+                  float rangeNm, const Color& holeFill);
 
 // Runway diagrams: filled pavement quads with runway-end numbers at close range.
 void drawRunways(Renderer& r, const MapData& map, const Proj& proj,
@@ -340,6 +348,18 @@ void drawFlightPlan(Renderer& r, const MapData& map, const Proj& proj,
 void drawFlightPlanLabels(Renderer& r, const MapData& map, const Proj& proj,
                           const MapViewConfig& config, const FlightData& flight,
                           float symSize, float labelSize);
+
+// VNAV top-of-descent marker: a small ring on the course with a plain "TOD"
+// label, placed at the geographic point computed by the VNAV profile.
+void drawTopOfDescent(Renderer& r, const Proj& proj,
+                      const MapViewConfig& config, const FlightData& flight,
+                      float symSize, float labelSize);
+
+// VNAV bottom-of-descent marker: same ring/label style as the TOD marker,
+// placed where the descent path levels at the target constraint.
+void drawBottomOfDescent(Renderer& r, const Proj& proj,
+                         const MapViewConfig& config, const FlightData& flight,
+                         float symSize, float labelSize);
 
 // Procedure preview polyline (PROC menu): dashed cyan course through the
 // published fixes.

@@ -18,7 +18,9 @@ void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
   drawNearestWindow(r, w, h, L, ui);
   if (ui.flightPlanEntryActive()) {
     drawWaypointInformationWindow(r, w, h, L, ui);
-  } else {
+  } else if (!ui.loadAirwayWindowOpen()) {
+    // The Select Airway window replaces the FPL window popout (trainer); skip
+    // the FPL list while it is up so it does not bleed through the panel.
     drawFlightPlanWindow(r, w, h, L, d, ui);
   }
   drawProcWindow(r, w, h, L, ui);
@@ -27,6 +29,8 @@ void drawChrome(Renderer& r, const Layout& L, const FlightData& d,
   drawDirectToWindow(r, w, h, L, ui);
   // The Page Menu (MENU on an open popout) overlays the active window.
   drawPageMenuWindow(r, w, h, L, ui);
+  // The FPL Select Airway window (page menu -> Load Airway) overlays the FPL.
+  drawSelectAirwayWindow(r, w, h, L, ui);
   // The HILPT "Fly Course Reversal?" prompt overlays any page until answered.
   drawCourseReversalPrompt(r, w, h, L, ui);
   drawHoldActivatePrompt(r, w, h, L, ui);

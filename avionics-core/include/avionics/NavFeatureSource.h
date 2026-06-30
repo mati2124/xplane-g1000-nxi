@@ -183,6 +183,28 @@ class NavFeatureSource {
     (void)name;
     return false;
   }
+
+  // Names of the published airways that pass through `ident` (a fix or navaid),
+  // sorted and de-duplicated. Used by the FPL Load Airway window to validate and
+  // spell-ahead the airway field from the chosen entry waypoint. Empty when the
+  // ident is not on any airway (or no airway data is loaded).
+  virtual std::vector<std::string> airwaysThrough(
+      const std::string& ident) const {
+    (void)ident;
+    return {};
+  }
+
+  // Ordered fix chain of `airwayName` starting at `fromIdent` and continuing to
+  // the far end of the airway (the longer branch when the entry is interior).
+  // The first element is `fromIdent`; the rest are the candidate exit fixes in
+  // along-airway order, each carrying its lat/lon for course/distance readouts.
+  // Empty when the airway/entry cannot be resolved.
+  virtual std::vector<MapLeg> airwayFixes(const std::string& airwayName,
+                                          const std::string& fromIdent) const {
+    (void)airwayName;
+    (void)fromIdent;
+    return {};
+  }
 };
 
 }  // namespace avionics

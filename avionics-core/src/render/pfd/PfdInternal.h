@@ -63,9 +63,11 @@ constexpr float kWtPopoutBottomMarginPx = 26.0f;
 // Open popout is flush to the GDU right edge (WT .popout-dialog.open:
 // right:-320px + translate3d(-320px,0,0) on a 310px-wide box).
 constexpr float kWtPopoutRightMarginPx = 0.0f;
-// PFD Page Menu list viewport inside the shell (WT .pfd-pagemenu-listcontainer).
+// PFD Page Menu list viewport inside the shell (WT .pfd-pagemenu-listcontainer):
+// three 24 px rows are visible at once (72 px), longer menus scroll.
 constexpr float kWtPageMenuListHeightPx = 72.0f;
 constexpr float kWtPageMenuRowHeightPx = 24.0f;
+constexpr int kWtPageMenuVisibleRows = 3;
 // PFD Procedures top-level menu (WT PFDProc): six fixed rows at 29 px pitch.
 constexpr float kWtProcMenuRowHeightPx = 29.0f;
 constexpr float kWtProcMenuListTopPadFrac = 0.25f;  // fraction of kInfoValue

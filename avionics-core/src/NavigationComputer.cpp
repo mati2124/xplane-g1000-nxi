@@ -87,7 +87,7 @@ constexpr double kTurnSmoothMinDeltaDeg = 15.0;
 constexpr double kTurnRegionMarginNm = avionics::kTurnSteeringMarginNm;
 
 bool steerDirectToOutboundTurn(NavigationSolution& sol, const MapData& map,
-                               double gsKts) {
+                               double gsKts, double bankDeg) {
   if (!map.directToActive || map.directTo.id.empty()) return false;
   const std::vector<MapLeg>& plan = map.flightPlan;
   const int dtoIdx = legIndexInPlan(plan, map.directTo);
@@ -111,8 +111,8 @@ bool steerDirectToOutboundTurn(NavigationSolution& sol, const MapData& map,
   if (std::fabs(turnDeltaDeg) < 1.0) return false;
 
   const double gs = std::max(40.0, static_cast<double>(gsKts));
-  const double leadNm =
-      turnLeadDistanceNm(gs, turnDeltaDeg, kDirectToFlyByMaxTurnDegCap);
+  const double leadNm = turnLeadDistanceNm(gs, turnDeltaDeg,
+                                           kDirectToFlyByMaxTurnDegCap, bankDeg);
   const double distToNm =
       navDistanceNm(map.ownshipLat, map.ownshipLon, target.lat, target.lon);
   if (distToNm > leadNm + kTurnRegionMarginNm) return false;
@@ -163,7 +163,8 @@ NavigationSolution applyFlyByTurnCourse(NavigationSolution sol,
   // Direct-To the AP must track the direct course to the fix until the fly-by
   // lead point, then steer the outbound leg (see steerDirectToOutboundTurn).
   if (sol.directTo) {
-    steerDirectToOutboundTurn(sol, map, data.groundSpeedKts);
+    steerDirectToOutboundTurn(sol, map, data.groundSpeedKts,
+                              static_cast<double>(data.turnLeadBankDeg));
     return sol;
   }
 
@@ -194,7 +195,9 @@ NavigationSolution applyFlyByTurnCourse(NavigationSolution sol,
   if (std::fabs(turnDeltaDeg) < kTurnSmoothMinDeltaDeg) return sol;
 
   const double gsKts = std::max(40.0, static_cast<double>(data.groundSpeedKts));
-  const double leadNm = turnLeadDistanceNm(gsKts, turnDeltaDeg);
+  const double bankDeg = static_cast<double>(data.turnLeadBankDeg);
+  const double leadNm =
+      turnLeadDistanceNm(gsKts, turnDeltaDeg, 90.0, bankDeg);
   const double distFixNm =
       navDistanceNm(map.ownshipLat, map.ownshipLon, turnFix.lat, turnFix.lon);
   if (distFixNm > leadNm + kTurnRegionMarginNm) return sol;
@@ -236,6 +239,7 @@ void runNavigationFrame(FmsNavigator& navigator, const MapData& map,
   syncNavigatorFlightPlan(navigator, map);
   syncNavigatorDirectTo(navigator, map);
   navigator.setObsMode(obsMode);
+  navigator.setTurnLeadBankDeg(static_cast<double>(data.turnLeadBankDeg));
 
   if (map.flightPlan.empty() && !navigator.directToActive()) {
     clearNavigationFields(data);
@@ -249,7 +253,18 @@ void runNavigationFrame(FmsNavigator& navigator, const MapData& map,
     return;
   }
 
+  // In VOR/LOC mode the displayed course (CRS) is the nav radio's OBS, read from
+  // the sim into data.courseDeg upstream. The FMS still computes the active-leg
+  // solution for the nav status box, but its desired track must NOT overwrite the
+  // VOR OBS: doing so pins CRS to the flight-plan track every frame, so the CRS
+  // knob (and the sim's own OBS knob) appear to do nothing. Only a GPS source
+  // drives the displayed course from the FMS desired track. OBS mode is a GPS
+  // sub-mode whose solution already carries the OBS setting, so it keeps it.
+  const float obsCourseDeg = data.courseDeg;
   applyNavigationSolution(data, sol, nmPerDot);
+  if (cdiSource != CdiSource::Gps) {
+    data.courseDeg = obsCourseDeg;
+  }
 
   if (cdiSource == CdiSource::Gps && !obsMode) {
     sol = applyFlyByTurnCourse(sol, map, data, obsMode, cdiSource, nmPerDot);

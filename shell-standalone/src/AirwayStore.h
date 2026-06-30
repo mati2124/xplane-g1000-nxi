@@ -40,6 +40,12 @@ class AirwayStore {
                                    const std::string& fromIdent,
                                    const std::string& toIdent) const;
 
+  // Published airways passing through `ident`, sorted and de-duplicated.
+  std::vector<std::string> airwaysThrough(const std::string& ident) const;
+  // Ordered fix chain of `airwayName` from `fromIdent` toward the far end.
+  std::vector<MapLeg> airwayFixes(const std::string& airwayName,
+                                  const std::string& fromIdent) const;
+
  private:
   void load();  // background-thread entry point
 

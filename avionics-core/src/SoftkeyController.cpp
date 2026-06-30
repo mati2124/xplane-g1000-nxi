@@ -340,6 +340,9 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
   dtoAnim_ = approach(dtoAnim_, dtoOpen_ ? 1.0f : 0.0f, dt / kWindowAnimSeconds);
   pageMenuAnim_ =
       approach(pageMenuAnim_, pageMenuOpen_ ? 1.0f : 0.0f, dt / kWindowAnimSeconds);
+  fplLoadAirwayAnim_ = approach(fplLoadAirwayAnim_,
+                                fplLoadAirway_.open ? 1.0f : 0.0f,
+                                dt / kWindowAnimSeconds);
 
   // ~1 Hz blink phase for flashing annunciations (Alerts softkey, Baro
   // Transition Alert): on for the first half of each second.
@@ -390,6 +393,7 @@ void SoftkeyController::update(double dtSeconds, const FlightData& data,
 
 void SoftkeyController::toggleWindow(PfdWindow w) {
   pageMenuOpen_ = false;
+  closeLoadAirwayWindow();
   window_ = (window_ == w) ? PfdWindow::None : w;
   // Opening a window puts the FMS cursor at its first field/entry.
   if (window_ == PfdWindow::References) refCursor_ = RefField::TimerCmd;

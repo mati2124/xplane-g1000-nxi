@@ -34,6 +34,17 @@ ProcPrimaryNav resolveProcPrimaryNav(const NavFeatureSource* nav,
                                      const MapFeature& airport,
                                      const MapProcedure& proc);
 
+// Merge the published primary navaid frequency into proc.frequencyMhz when the
+// approach uses a ground-based navaid (ILS/LOC/VOR/NDB). Matches the NXi PRIM
+// FREQ row and the standby tune on Load.
+void mergeProcedurePrimaryNavFreq(const NavFeatureSource* nav,
+                                  const MapData* map,
+                                  const MapFeature& airport,
+                                  MapProcedure& proc);
+
+// Standby MHz to load into NAV1 when an approach is committed (0 = none).
+float procedureApproachNavStandbyMhz(const MapProcedure& proc);
+
 std::string defaultProcedureTransition(
     const std::vector<std::string>& transitions);
 
@@ -68,5 +79,21 @@ std::vector<MapLeg> expandArrivalDepartureProcedure(
 
 std::vector<std::string> uniqueProcedureNames(
     const std::vector<MapProcedure>& catalog);
+
+// Departure FPL rows: RWxx threshold, climb-to-alt (<alt>FT), vectors (MANSEQ).
+bool isRunwayTransitionId(const std::string& transition);
+bool isRunwayDepartureLegId(const std::string& id);
+bool isHeadingDepartureLeg(const MapLeg& leg);
+
+// True for synthetic departure rows that are not real navigable fixes (runway
+// threshold, climb-to-altitude, heading/vector legs). Direct-To cannot target
+// these, so the cursor must resolve to the next real fix instead.
+bool isNonFixDepartureLeg(const MapLeg& leg);
+
+// Starting at legIndex, return the index of the first leg that is a real
+// navigable fix (skipping non-fix departure legs such as RWxx/<alt>FT/MANSEQ).
+// Returns legIndex unchanged when it already points at a fix, or -1 when no
+// fix exists at or after legIndex.
+int nextNavigableFixLegIndex(const std::vector<MapLeg>& legs, int legIndex);
 
 }  // namespace avionics

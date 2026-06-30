@@ -68,12 +68,15 @@ std::string devFallback(const std::string &assetRel) {
 
 AircraftProfile c172Profile() {
   return {"c172", aircraft_assets::kC172Eis, aircraft_assets::kC172Checklist,
-          std::string(), "Cessna 172S"};
+          std::string(), "Cessna 172S", 15.0};
 }
 
 AircraftProfile sf50Profile() {
+  // X-Plane's Vision Jet lateral AP banks steeper than the G1000 NXi 15° piston
+  // default; a higher assumed bank shrinks fly-by lead so outbound steering and
+  // leg sequencing align with when the sim AP actually begins the turn.
   return {"sf50", aircraft_assets::kSf50Eis, aircraft_assets::kSf50Checklist,
-          std::string(), "Cirrus Vision SF50"};
+          std::string(), "Cirrus Vision SF50", 25.0};
 }
 
 AircraftProfile pa46tProfile() {
@@ -141,6 +144,11 @@ AircraftProfile resolveAircraftProfile(const std::string &icaoType,
 
   // 3. Default to the Cessna piston fit (the project's baseline aircraft).
   return c172Profile();
+}
+
+double resolveTurnLeadBankDeg(const std::string &icaoType,
+                              const std::string &acfRelativePath) {
+  return resolveAircraftProfile(icaoType, acfRelativePath).flyByBankDeg;
 }
 
 std::string typeKeyedEisAsset(const std::string &icaoType) {

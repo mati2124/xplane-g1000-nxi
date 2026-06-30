@@ -50,7 +50,13 @@ class FlightPlanCatalog {
 
   // Store a route from legs in the next free slot (returns the index, or -1).
   int addPlanFromLegs(const std::vector<MapLeg>& legs);
+  // Store a SimBrief OFP. Re-importing the same route updates the existing slot
+  // instead of appending a duplicate (returns the slot index, or -1 when full).
   int addPlanFromSimBriefImport(const SimBriefOfpImport& imp);
+
+  // Collapse entries whose waypoint sequence duplicates an earlier slot (keeps
+  // the first). Returns how many duplicate rows were removed.
+  int dedupeByRoute();
 
   // Remove the entry at index; later entries shift up to fill the slot. Returns
   // false for an out-of-range index.

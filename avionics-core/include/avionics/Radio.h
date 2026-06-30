@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include "avionics/FlightData.h"
 
 namespace avionics {
@@ -50,8 +52,42 @@ inline constexpr bool FlightData::* navIdentAudioMember(RadioUnit unit) {
 
 inline constexpr float kNavFreqMinMhz = 108.0f;
 inline constexpr float kNavFreqMaxMhz = 117.95f;
+inline constexpr float kLocFreqMinMhz = 108.10f;
+inline constexpr float kLocFreqMaxMhz = 111.95f;
 inline constexpr float kComFreqMinMhz = 118.0f;
 inline constexpr float kComFreqMaxMhz = 136.975f;
+
+// True when the tuned NAV frequency is an ILS localizer channel (108.10–111.95
+// MHz with an odd 100 kHz digit). VOR frequencies use even 100 kHz digits.
+inline bool isNavLocalizerMhz(float mhz) {
+  if (mhz < kLocFreqMinMhz - 0.001f || mhz > kLocFreqMaxMhz + 0.001f) {
+    return false;
+  }
+  const int frac100kHz = static_cast<int>(std::lround(mhz * 100.0f)) % 100;
+  return frac100kHz % 20 >= 10;
+}
+
+// FMA lateral nav mode (GPS / VOR / LOC) for the active CDI source.
+inline const char* fmaLateralNavModeLabel(CdiSource source, float nav1Mhz,
+                                            float nav2Mhz) {
+  if (source == CdiSource::Gps) return "GPS";
+  const float mhz = source == CdiSource::Nav1 ? nav1Mhz : nav2Mhz;
+  return isNavLocalizerMhz(mhz) ? "LOC" : "VOR";
+}
+
+// HSI / status-box CDI source label for a NAV receiver (VOR1/2 or LOC1/2).
+inline const char* cdiNavSourceLabel(CdiSource source, float nav1Mhz,
+                                     float nav2Mhz) {
+  switch (source) {
+    case CdiSource::Gps:
+      return "GPS";
+    case CdiSource::Nav1:
+      return isNavLocalizerMhz(nav1Mhz) ? "LOC1" : "VOR1";
+    case CdiSource::Nav2:
+      return isNavLocalizerMhz(nav2Mhz) ? "LOC2" : "VOR2";
+  }
+  return "GPS";
+}
 
 // Steps the NAV standby frequency one channel (50 kHz) in the given direction,
 // wrapping inside the VOR band. This is the small (inner) tuning knob.

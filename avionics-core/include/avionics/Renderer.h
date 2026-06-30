@@ -138,6 +138,15 @@ class Renderer {
   // Used for pointers, chevrons, slip/skid markers, and tape-box notches.
   virtual void fillPolygon(const Point* points, int count, const Color& c) = 0;
 
+  // Filled polygon with optional holes. holes/holeCounts may be nullptr when
+  // holeCount is zero. Default fills only the outer contour.
+  virtual void fillPolygonWithHoles(const Point* outer, int outerCount,
+                                    const Point* const* holes,
+                                    const int* holeCounts, int holeCount,
+                                    const Color& c) {
+    if (outerCount >= 3) fillPolygon(outer, outerCount, c);
+  }
+
   // Open polyline through `count` points (count >= 2); for outlines and arcs.
   virtual void strokePolyline(const Point* points, int count, float widthPx,
                               const Color& c) = 0;

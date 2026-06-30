@@ -1131,12 +1131,14 @@ void drawLandData(Renderer& r, const std::vector<MapLandLine>& landLines,
       continue;
     }
     if (line.landClass == LandClass::Border ||
+        line.landClass == LandClass::StateBorder ||
         line.landClass == LandClass::Coast) {
       continue;
     }
-    // Rivers overlay on top of the topo raster (drawn separately by
-    // drawRiverData after the terrain pass), so they stay visible whether
-    // terrain is on or off -- matching the real NXi.
+    // Rivers and political/state boundaries overlay on top of the topo raster
+    // (drawn separately by drawRiverData / drawBorderData after the terrain
+    // pass), so they stay visible whether terrain is on or off -- matching the
+    // real NXi.
     if (line.landClass == LandClass::River) continue;
     // Detail 3 declutter: drop roads/railroads/state boundaries but keep the
     // topographic water (rivers, lakes).
@@ -1153,8 +1155,30 @@ void drawLandData(Renderer& r, const std::vector<MapLandLine>& landLines,
     }
     drawProjectedLine(r, line, pts, rangeNm, clip, landLineGeoSpan(line));
   }
+}
 
-  // Political borders only at wide range; shoreline is land fill vs ocean.
+void drawBorderData(Renderer& r, const std::vector<MapLandLine>& landLines,
+                    const Proj& proj, float rangeNm, bool showCulture) {
+  const ClipBounds clip{proj.minX, proj.minY, proj.maxX, proj.maxY};
+  std::vector<Point> pts;
+
+  // State/province boundaries: man-made land data, decluttered at Detail 3.
+  for (const MapLandLine& line : landLines) {
+    if (line.landClass != LandClass::StateBorder || line.points.size() < 2) {
+      continue;
+    }
+    if (!showCulture) continue;
+    if (!shouldDrawLine(line, rangeNm)) continue;
+    if (!projectLine(line, proj, rangeNm, pts)) continue;
+    if (!polylineIntersectsClip(pts.data(), static_cast<int>(pts.size()), clip,
+                                kChartBorderClipMarginPx)) {
+      continue;
+    }
+    drawProjectedLine(r, line, pts, rangeNm, clip, landLineGeoSpan(line));
+  }
+
+  // National political borders only at wide range; shoreline is land fill vs
+  // ocean.
   for (const MapLandLine& line : landLines) {
     if (line.landClass != LandClass::Border) {
       continue;

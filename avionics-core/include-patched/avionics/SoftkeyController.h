@@ -341,7 +341,12 @@ class SoftkeyController {
   bool flightPlanDestinationFilledForLayout() const {
     if (fplApproachLegCount_ > 0) return true;
     if (!fplDestinationFilled_ || fplLegs_.empty()) return false;
-    return isKnownAirportIdent(fplLegs_.back().id, mapData_, navSource_);
+    // Confirmed airports always count; a digit-bearing airport code (e.g. K1H2)
+    // counts even when the nav database has not loaded that field, so the
+    // destination never falls through to the Enroute section.
+    const std::string& last = fplLegs_.back().id;
+    return isKnownAirportIdent(last, mapData_, navSource_) ||
+           isAirportCodeWithDigit(last);
   }
   // True while the pilot is building a route locally that has not been adopted
   // from the simulator feed (partial plans stay in-app only).
@@ -370,6 +375,38 @@ class SoftkeyController {
     return fplListCursorFollowsActive_;
   }
 
+  // FPL Load Airway display state (page menu Collapse/Expand Airways): true while
+  // loaded-airway segments are collapsed to just their "Airway -" header + exit.
+  bool flightPlanAirwaysCollapsed() const { return fplAirwaysCollapsed_; }
+  // True when the active plan carries any leg loaded as part of an airway.
+  bool flightPlanHasAirwayLegs() const;
+
+  // ---- FPL - Select Airway window (PFD FPL page MENU -> Load Airway) ----
+  // The compact PFD popout (trainer "Select Airway"): Entry fix is fixed, the
+  // Airway field picks the published airway, the Exit field scrolls the fix
+  // chain, and Load? inserts the expanded segment (Pilot's Guide, Load Airway).
+  enum class LoadAirwayField { Airway, Exit, Load };
+  bool loadAirwayWindowOpen() const { return fplLoadAirway_.open; }
+  float loadAirwayWindowAnim() const { return fplLoadAirwayAnim_; }
+  const std::string& loadAirwayEntryIdent() const {
+    return fplLoadAirway_.entryIdent;
+  }
+  std::string loadAirwayName() const;
+  std::string loadAirwayExitIdent() const;
+  LoadAirwayField loadAirwayField() const { return fplLoadAirway_.field; }
+  const std::vector<std::string>& loadAirwayAirways() const {
+    return fplLoadAirway_.airways;
+  }
+  int loadAirwayAirwaySel() const { return fplLoadAirway_.airwaySel; }
+  // Entry fix + the chain of fixes toward the far end of the airway.
+  const std::vector<MapLeg>& loadAirwayFixes() const {
+    return fplLoadAirway_.fixes;
+  }
+  int loadAirwayExitSel() const { return fplLoadAirway_.exitSel; }
+  bool loadAirwayCanLoad() const;
+  // Open the Select Airway window for `entryIdent` (also the dev-screenshot hook).
+  void openLoadAirwayWindow(const std::string& entryIdent);
+
   // Waypoint-ident entry overlay (the insert "Waypoint Information" entry):
   // active while spelling an identifier to insert before the cursor row.
   bool flightPlanEntryActive() const { return fplEntry_.active; }
@@ -384,8 +421,17 @@ class SoftkeyController {
   float flightPlanEntryDistanceNm() const;
 
   // Modal confirmation prompt shown over the window (CLR removes a waypoint,
-  // MENU deletes the whole plan).
-  enum class FplConfirm { None, RemoveWaypoint, DeleteFlightPlan };
+  // MENU deletes the whole plan). RemoveDeparture/Arrival/Approach delete a
+  // whole loaded SID/STAR/approach block (Pilot's Guide 5.6).
+  enum class FplConfirm {
+    None,
+    RemoveWaypoint,
+    RemoveDeparture,
+    RemoveArrival,
+    RemoveApproach,
+    RemoveAirway,
+    DeleteFlightPlan
+  };
   FplConfirm flightPlanConfirm() const { return fplConfirm_; }
   bool flightPlanConfirmOk() const { return fplConfirmOk_; }
   const std::string& flightPlanRemoveIdent() const { return fplRemoveIdent_; }
@@ -417,7 +463,8 @@ class SoftkeyController {
       const std::vector<MapLeg>& legs, bool destinationFilled,
       const FlightPlanApproachState& approach,
       const FlightPlanTerminalProcedureState& departure = {},
-      const FlightPlanTerminalProcedureState& arrival = {});
+      const FlightPlanTerminalProcedureState& arrival = {},
+      bool peerLocalDraft = false);
   // Mirror the peer GDU's FPL list scroll/selection (PFD window vs MFD page).
   void adoptFlightPlanCursorFromPeer(int cursorRow, bool followsActive);
 
@@ -812,7 +859,16 @@ class SoftkeyController {
   FmsWaypointEntry* activeWaypointEntry();
   void syncFlightPlanLegs(const MapData& map, bool navDirectTo = false);
   void tryRestorePersistedApproach();
+  void tryRestorePersistedTerminalProcedures();
+  void fplEnsureApproachInferred();
   void reinferApproachFromProcedureLegs();
+  // Open the removal confirmation, seeding the prompt subject from the FPL
+  // header label (e.g. "KATL-BBABE.CHPPR1.RW08B").
+  void fplOpenProcedureRemoveConfirm(FplConfirm which);
+  // Remove a whole loaded terminal procedure and clear its restore state.
+  void fplRemoveLoadedDeparture();
+  void fplRemoveLoadedArrival();
+  void fplRemoveLoadedApproach();
   // Procedures window (PROC bezel key): build the top-level menu on open, route
   // the FMS knob / ENT / CLR while it is open, move the menu cursor (skipping
   // disabled rows), and load the selected procedure's legs into the plan.
@@ -828,10 +884,18 @@ class SoftkeyController {
   std::vector<std::string> procTransitions(ProcedureType type,
                                            const std::string& name) const;
   enum class PfdPageMenuAction {
-    Disabled,
+    Disabled,            // greyed and skipped (the feature is not modeled)
+    DisplayOnly,         // selectable but inert (the feature is not modeled)
     RefAllOn,
     RefAllOff,
     RefRestoreDefaults,
+    FplActivateLeg,      // activate the highlighted FPL leg (Pilot's Guide 5.6)
+    FplLoadAirway,       // open the Select Airway window for the cursor fix
+    FplCollapseAirways,  // toggle the FPL airway collapse/expand display
+    FplRemoveDeparture,  // open the Remove Departure confirmation
+    FplRemoveArrival,    // open the Remove Arrival confirmation
+    FplRemoveApproach,   // open the Remove Approach confirmation
+    FplDeleteFlightPlan, // open the Delete Flight Plan confirmation
   };
   struct PfdPageMenuItem {
     std::string text;
@@ -842,6 +906,14 @@ class SoftkeyController {
   bool pageMenuBezelKey(BezelKey key);
   void pageMenuStep(int direction);
   void pageMenuActivate();
+
+  // FPL - Select Airway window (Load Airway): published airways through a fix,
+  // the ordered fix chain from a fix, and the window open/refresh/commit logic.
+  std::vector<std::string> airwaysThroughFix(const std::string& ident) const;
+  void closeLoadAirwayWindow();
+  void loadAirwayRefreshFixes();
+  void loadAirwayCommit();
+  bool loadAirwayBezelKey(BezelKey key);
   // Advance the Selected Altitude alerting state machine (Pilot's Guide,
   // Altitude Alerting).
   void updateAltAlert(double dtSeconds, const FlightData& data);
@@ -952,6 +1024,23 @@ class SoftkeyController {
   bool fplConfirmOk_ = true;
   std::string fplRemoveIdent_;
 
+  // FPL Load Airway: collapse/expand display toggle (page menu) and the compact
+  // Select Airway window state. The window is a sub-mode of the FlightPlan
+  // popout; its eased open animation rides fplLoadAirwayAnim_.
+  bool fplAirwaysCollapsed_ = false;
+  struct LoadAirwayState {
+    bool open = false;
+    std::string entryIdent;
+    int entryLegIndex = -1;            // index in fplLegs_ of the entry fix
+    std::vector<std::string> airways;  // airways through the entry fix
+    int airwaySel = 0;                 // index into airways
+    std::vector<MapLeg> fixes;         // entry fix + chain toward the far end
+    int exitSel = 1;                   // index into fixes (>=1, never the entry)
+    LoadAirwayField field = LoadAirwayField::Airway;
+  };
+  LoadAirwayState fplLoadAirway_;
+  float fplLoadAirwayAnim_ = 0.0f;  // 0..1 open progress, eased by update()
+
   // Procedures window (PROC key): shared menu state; logic in ProcedureMenu.cpp.
   ProcedureMenuState procMenu_;
   MapProcedure fplLoadedApproach_{};
@@ -973,6 +1062,8 @@ class SoftkeyController {
   // is ready. Set on restore, cleared once the re-expansion has been applied (or
   // is known to be unmatchable).
   bool fplApproachRestorePending_ = false;
+  bool fplDepartureRestorePending_ = false;
+  bool fplArrivalRestorePending_ = false;
   MapProcedure procSelectedProcedure() const;
   std::string formatApproachLabel(const MapProcedure& proc) const;
   std::string procDefaultAirportIcao() const;

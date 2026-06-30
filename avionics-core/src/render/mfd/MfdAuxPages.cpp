@@ -9,6 +9,7 @@
 
 #include "avionics/Color.h"
 #include "avionics/NavMath.h"
+#include "avionics/Radio.h"
 #include "render/mfd/MfdPageSupport.h"
 #include "render/mfd/MfdStyle.h"
 
@@ -440,20 +441,12 @@ void drawGpsStatusPage(Renderer& r, const FlightData& d, const MapData& map,
                    gpsOk ? colors::kActiveGreen : colors::kWhitesmoke);
     fy = drawField(r, inner, fy, rowH, "PHASE", d.gpsFlightPhase, displayH,
                    colors::kWhitesmoke);
-    // CDI source annunciation, colored like the HSI: GPS magenta, VOR green.
+    // CDI source annunciation, colored like the HSI: GPS magenta, VOR/LOC green.
     const char* cdiSrc = "GPS";
     Color cdiColor = colors::kMagenta;
-    switch (d.cdiSource) {
-      case CdiSource::Gps:
-        break;
-      case CdiSource::Nav1:
-        cdiSrc = "VOR1";
-        cdiColor = colors::kActiveGreen;
-        break;
-      case CdiSource::Nav2:
-        cdiSrc = "VOR2";
-        cdiColor = colors::kActiveGreen;
-        break;
+    if (d.cdiSource != CdiSource::Gps) {
+      cdiSrc = cdiNavSourceLabel(d.cdiSource, d.nav1ActiveMhz, d.nav2ActiveMhz);
+      cdiColor = colors::kActiveGreen;
     }
     fy = drawField(r, inner, fy, rowH, "CDI SRC", cdiSrc, displayH, cdiColor);
     fy = drawField(r, inner, fy, rowH, "LATERAL", d.fmaLateralActive, displayH,

@@ -349,4 +349,96 @@ std::vector<MapLeg> AirwayStore::expandAirway(const std::string& airwayName,
   return result;
 }
 
+std::vector<std::string> AirwayStore::airwaysThrough(
+    const std::string& ident) const {
+  std::vector<std::string> names;
+  if (!loaded() || ident.empty()) return names;
+  const std::string prefix = ident + '|';
+  std::unordered_set<std::string> seen;
+  for (const auto& kv : graph_) {
+    if (kv.first.compare(0, prefix.size(), prefix) != 0) continue;
+    for (const auto& edge : kv.second) {
+      if (seen.insert(edge.second).second) names.push_back(edge.second);
+    }
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+std::vector<MapLeg> AirwayStore::airwayFixes(const std::string& airwayName,
+                                             const std::string& fromIdent) const {
+  std::vector<MapLeg> result;
+  if (!loaded() || airwayName.empty() || fromIdent.empty()) return result;
+
+  // Adjacency restricted to this airway (the labelled subgraph is ~linear).
+  std::unordered_map<std::string, std::vector<std::string>> adj;
+  for (const auto& kv : graph_) {
+    for (const auto& edge : kv.second) {
+      if (edge.second != airwayName) continue;
+      adj[kv.first].push_back(edge.first);
+    }
+  }
+  if (adj.empty()) return result;
+
+  // Entry key(s) for the ident; prefer the one that actually sits on the airway.
+  const std::string prefix = fromIdent + '|';
+  std::string startKey;
+  for (const auto& kv : adj) {
+    if (kv.first.compare(0, prefix.size(), prefix) == 0) {
+      startKey = kv.first;
+      break;
+    }
+  }
+  if (startKey.empty()) return result;
+
+  const auto walk = [&](const std::string& first) {
+    std::vector<std::string> chain;
+    std::unordered_set<std::string> visited;
+    visited.insert(startKey);
+    std::string cur = first;
+    while (!cur.empty() && visited.insert(cur).second) {
+      chain.push_back(cur);
+      std::string next;
+      const auto it = adj.find(cur);
+      if (it != adj.end()) {
+        for (const std::string& nb : it->second) {
+          if (visited.count(nb) == 0) {
+            next = nb;
+            break;
+          }
+        }
+      }
+      cur = next;
+    }
+    return chain;
+  };
+
+  // From the entry, take the longer branch toward the far end of the airway.
+  std::vector<std::string> best;
+  const auto it = adj.find(startKey);
+  if (it != adj.end()) {
+    for (const std::string& nb : it->second) {
+      std::vector<std::string> branch = walk(nb);
+      if (branch.size() > best.size()) best = std::move(branch);
+    }
+  }
+
+  std::vector<std::string> chainKeys;
+  chainKeys.reserve(best.size() + 1);
+  chainKeys.push_back(startKey);
+  for (const std::string& k : best) chainKeys.push_back(k);
+
+  for (const std::string& key : chainKeys) {
+    const auto pt = points_.find(key);
+    if (pt == points_.end()) continue;
+    const std::size_t sep = key.find('|');
+    MapLeg leg;
+    leg.id = sep == std::string::npos ? key : key.substr(0, sep);
+    leg.lat = pt->second.first;
+    leg.lon = pt->second.second;
+    result.push_back(std::move(leg));
+  }
+  return result;
+}
+
 }  // namespace avionics

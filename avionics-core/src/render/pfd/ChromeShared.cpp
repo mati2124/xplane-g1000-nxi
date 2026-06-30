@@ -53,7 +53,8 @@ float drawFplDirectToTargetRow(Renderer& r, float x, float cy,
 
 WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
                             float rawAnim, const char* title, float panelW,
-                            float panelH) {
+                            float panelH, Color bodyTop, Color bodyBottom,
+                            Color titleColor, float titleTopPad) {
   WindowFrame f;
   if (rawAnim <= 0.0f) return f;
   const float a = smoothstep(rawAnim);
@@ -72,18 +73,17 @@ WindowFrame drawWindowFrame(Renderer& r, float w, float h, const Layout& L,
   const float borderW = fontPx(kWtPopoutBorderPx, h);
   r.fillRoundedRectVerticalGradient(
       panelX, panelTop, panelW, panelH, radius, panelTop, panelTop + panelH,
-      withAlpha(colors::kPopoutBodyTop, a),
-      withAlpha(colors::kPopoutBodyBottom, a));
+      withAlpha(bodyTop, a), withAlpha(bodyBottom, a));
   r.strokeRoundedRect(panelX + borderW * 0.5f, panelTop + borderW * 0.5f,
                       panelW - borderW, panelH - borderW, radius, borderW,
                       withAlpha(colors::kPopoutBorder, a));
 
   // Cyan centered title (WT h1, 16 px Roboto) with a 1 px grey rule beneath.
   const float titleSize = fontPx(wt::kInfoLabel, h);
-  const float titleCy = panelTop + borderW + titleSize * 0.72f;
+  const float titleCy = panelTop + borderW + titleSize * 0.72f + titleTopPad;
   const float sepY = titleCy + titleSize * 0.62f;
   r.fillText(panelX + panelW * 0.5f, titleCy, title, titleSize,
-             TextAlign::Center, withAlpha(colors::kPopoutCyan, a));
+             TextAlign::Center, withAlpha(titleColor, a));
   const float sepInset = borderW + panelW * 0.01f;
   r.strokeLine(panelX + sepInset, sepY, panelX + panelW - sepInset, sepY, 1.0f,
                withAlpha(colors::kPopoutBorder, a));

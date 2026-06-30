@@ -146,6 +146,7 @@ class XPlaneConnection : public SimulatorConnection {
   // Dedicated HDG / CRS / BARO knob commits (degrees magnetic, inches Hg).
   void setHeadingBug(float deg);
   void setSelectedCourse(float deg);
+  void setSelectedCourse(float deg, CdiSource source);
   void setBaroInHg(float inHg);
 
   void applyGpsNavigation(FmsNavigator& navigator, bool obsMode,

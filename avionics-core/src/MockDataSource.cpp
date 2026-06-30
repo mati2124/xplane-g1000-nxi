@@ -410,24 +410,41 @@ void MockDataSource::update(double dtSeconds) {
   refreshFeatures(dtSeconds);
 
   // Demo traffic orbits ownship so targets stay on the map as the route is
-  // flown: one proximate (open diamond) and one close advisory (yellow TA).
+  // flown, exercising every TCAS symbol: an open white diamond (non-threat),
+  // a solid white diamond (proximity advisory), a solid yellow circle (TA),
+  // and an off-scale TA half symbol pinned to the traffic scope's outer ring.
   {
     const float orbit = t * 0.05f;
-    MapTraffic prox;
+
+    MapTraffic other;  // beyond +/-1200 ft -> non-threat open diamond
+    other.lat = map_.ownshipLat + 0.05 * std::cos(orbit * 0.8f);
+    other.lon = map_.ownshipLon - 0.05 * std::sin(orbit * 0.8f);
+    other.relAltFt = 2500.0f;
+    other.verticalSpeedFpm = -300.0f;
+    other.threat = TrafficThreat::Other;
+
+    MapTraffic prox;  // within 5 NM and +/-1200 ft -> solid diamond
     prox.lat = map_.ownshipLat + 0.06 * std::cos(orbit);
     prox.lon = map_.ownshipLon + 0.07 * std::sin(orbit);
     prox.relAltFt = 700.0f + 200.0f * std::sin(t * 0.08f);
     prox.verticalSpeedFpm = 600.0f * std::sin(t * 0.08f);
-    prox.trafficAdvisory = false;
+    prox.threat = TrafficThreat::Proximity;
 
-    MapTraffic ta;
+    MapTraffic ta;  // close, conflicting -> yellow circle
     ta.lat = map_.ownshipLat - 0.012 * std::cos(orbit * 1.7f);
     ta.lon = map_.ownshipLon + 0.012 * std::sin(orbit * 1.7f);
     ta.relAltFt = -300.0f;
     ta.verticalSpeedFpm = -400.0f;
-    ta.trafficAdvisory = true;
+    ta.threat = TrafficThreat::Advisory;
 
-    map_.traffic = {prox, ta};
+    MapTraffic offScaleTa;  // beyond the 6 NM scope -> half-circle at the ring
+    offScaleTa.lat = map_.ownshipLat + 0.13 * std::cos(orbit * 0.5f);
+    offScaleTa.lon = map_.ownshipLon + 0.13 * std::sin(orbit * 0.5f);
+    offScaleTa.relAltFt = 200.0f;
+    offScaleTa.verticalSpeedFpm = 800.0f;
+    offScaleTa.threat = TrafficThreat::Advisory;
+
+    map_.traffic = {other, prox, ta, offScaleTa};
   }
 
   publishMapBackground(dtSeconds);

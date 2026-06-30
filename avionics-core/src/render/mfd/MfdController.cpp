@@ -533,6 +533,7 @@ void MfdController::selectGroup(MfdPageGroup group) {
   if (pageGroup_ == group) {
     stepPage(1);
   } else {
+    syncFplPreviewRange(group);
     if (pageGroup_ == MfdPageGroup::Map) {
       mapResetPointer();
       radarCursorOn_ = false;
@@ -571,6 +572,7 @@ void MfdController::update(double dtSeconds, const FlightData& data) {
   dtoAnim_ = approachAnim(dtoAnim_, dtoOpen_);
   pageMenuAnim_ = approachAnim(pageMenuAnim_, pageMenuOpen_);
   mapSettingsAnim_ = approachAnim(mapSettingsAnim_, mapSettingsOpen_);
+  loadAirway_.anim = approachAnim(loadAirway_.anim, loadAirway_.open);
 
   // ~1 Hz blink for highlight-select cursor fields: on for the first half of
   // each second (matches SoftkeyController::blinkOn_ and WT pulse).
@@ -601,6 +603,8 @@ void MfdController::update(double dtSeconds, const FlightData& data) {
     if (gs >= 5.0f) s.movingTimeSec += dtSeconds;
     s.maxGroundSpeedKts = std::max(s.maxGroundSpeedKts, gs);
   }
+
+  updateCatalogAutoRefresh();
 }
 
 bool MfdController::keyEnabled(int i) const {
@@ -843,6 +847,14 @@ void MfdController::pressBezelKey(BezelKey key) {
     return;
   }
 
+  // The Select Airway window is modal over the FPL page: it owns the FMS knob /
+  // ENT / CLR until Load? runs or it is backed out. RANGE still zooms the map.
+  if (loadAirway_.open && !isMapRangePanBezelKey(key)) {
+    loadAirwayBezelKey(key);
+    rebuildLabels();
+    return;
+  }
+
   // The Procedures window owns the FMS knob / ENT / CLR while it is open
   // (Pilot's Guide 5.8). It must run before the FPL page handler: PROC is
   // opened as an overlay on the FPL page, and fplBezelKey would otherwise
@@ -919,9 +931,11 @@ void MfdController::pressBezelKey(BezelKey key) {
       // FPL toggles the Active Flight Plan page; pressing it again returns to
       // the page that was displayed before.
       if (pageGroup_ == MfdPageGroup::FlightPlan) {
+        syncFplPreviewRange(groupBeforeFpl_);
         pageGroup_ = groupBeforeFpl_;
         fplResetInteraction();
       } else {
+        syncFplPreviewRange(MfdPageGroup::FlightPlan);
         groupBeforeFpl_ = pageGroup_;
         pageGroup_ = MfdPageGroup::FlightPlan;
         // Open the page with the FMS cursor inactive, like the real unit: no fix
@@ -1009,6 +1023,7 @@ void MfdController::stepPageGroup(int direction) {
     }
   }
   if (target == pageGroup_) return;
+  syncFplPreviewRange(target);
   // Drop any per-group interaction state of the group we are leaving, mirroring
   // selectGroup() so the knob and the group keys behave identically.
   switch (pageGroup_) {
@@ -1056,6 +1071,7 @@ void MfdController::clrDefaultMap() {
   chartViewActive_ = false;
   chartsAirportEntry_.reset();
   chartsAirportOverride_.clear();
+  syncFplPreviewRange(MfdPageGroup::Map);
   pageGroup_ = MfdPageGroup::Map;
   pageIndex_[static_cast<int>(MfdPageGroup::Map)] = 0;
   rebuildLabels();
@@ -1412,6 +1428,30 @@ bool MfdController::consumeSimbriefFetchRequest() {
   return requested;
 }
 
+bool MfdController::consumeCatalogRefreshRequest() {
+  const bool requested = catalogRefreshRequested_;
+  catalogRefreshRequested_ = false;
+  return requested;
+}
+
+void MfdController::updateCatalogAutoRefresh() {
+  // Fire a one-shot refresh request the moment the pilot navigates into the
+  // Flight Plan Catalog page (not while merely sitting on it). Mirrors the FETCH
+  // softkey guard: only when signed in, the sim link is up, and no fetch is in
+  // flight. Re-fetching the same route is harmless -- the catalog dedupes by
+  // leg sequence and just updates the existing slot.
+  const MfdPage current = page();
+  if (current == MfdPage::FlightPlanCatalog &&
+      lastPageForCatalogRefresh_ != MfdPage::FlightPlanCatalog) {
+    if (simbriefState_.commAllowed &&
+        simbriefState_.loginPhase == NavigraphLoginPhase::LoggedIn &&
+        simbriefState_.status != SimBriefStatus::Fetching) {
+      catalogRefreshRequested_ = true;
+    }
+  }
+  lastPageForCatalogRefresh_ = current;
+}
+
 namespace {
 
 bool chartMatchesFilter(const ChartListItem& chart,
@@ -1473,17 +1513,29 @@ void MfdController::setChartsState(const ChartsState& state) {
 bool MfdController::fplDestinationFilledForLayout() const {
   if (fplApproachLegCount_ > 0) return true;
   if (!fplDestinationFilled_ || fplLegs_.empty()) return false;
-  return isKnownAirportIdent(fplLegs_.back().id, mapData_, navSource_);
+  // Confirmed airports always count; a digit-bearing airport code (e.g. K1H2)
+  // counts even when the nav database has not loaded that field, so the
+  // destination never falls through to the Enroute section.
+  const std::string& last = fplLegs_.back().id;
+  return isKnownAirportIdent(last, mapData_, navSource_) ||
+         isAirportCodeWithDigit(last);
 }
 
 std::string MfdController::chartsDestinationAirport() const {
   int approachStart = fplApproachLegStart_;
   int approachCount = fplApproachLegCount_;
-  if (!fplHasLoadedApproach() || approachCount <= 0) {
-    const InferredProcedureBlock block = inferProcedureBlockInPlan(fplLegs_);
+  const int arrivalEnd =
+      fplArrivalLegCount_ > 0 ? fplArrivalLegStart_ + fplArrivalLegCount_ : 0;
+  if (!fplHasLoadedApproach() || approachCount <= 0 ||
+      approachStart < arrivalEnd) {
+    const InferredProcedureBlock block =
+        inferProcedureBlockInPlan(fplLegs_, arrivalEnd);
     if (block.valid()) {
       approachStart = block.start;
       approachCount = block.count;
+    } else {
+      approachStart = 0;
+      approachCount = 0;
     }
   }
   const bool approachLoaded = approachCount > 0;
@@ -1495,7 +1547,9 @@ std::string MfdController::chartsDestinationAirport() const {
         approachStart <= static_cast<int>(fplLegs_.size())) {
       const std::string candidate =
           fplLegs_[static_cast<std::size_t>(approachStart - 1)].id;
-      if (isKnownAirportIdent(candidate, mapData_, navSource_)) {
+      if (!(approachStart == 1 && !fplLegs_.empty() &&
+            candidate == fplLegs_.front().id && isAirportIdent(candidate)) &&
+          isKnownAirportIdent(candidate, mapData_, navSource_)) {
         approachAirport = candidate;
       } else {
         approachAirport.clear();
@@ -1774,7 +1828,8 @@ bool MfdController::blocksRadioBezel() const {
   // active Map Pointer does not claim the knob here.
   return dtoOpen_ || dtoEntry_.active || fplEntry_.active ||
          fplAltEntry_.active || fplConfirm_ != FplConfirm::None ||
-         wptEntry_.active || procMenuOpen_ || mapSettingsOpen_;
+         wptEntry_.active || procMenuOpen_ || mapSettingsOpen_ ||
+         loadAirway_.open;
 }
 
 }  // namespace avionics

@@ -1,5 +1,6 @@
 #include "avionics/SoftkeyController.h"
 
+#include "avionics/FplRouteEdit.h"
 #include "avionics/render/BezelKeys.h"
 
 namespace avionics {
@@ -16,6 +17,68 @@ SoftkeyController::buildPfdPageMenu() const {
       return {{"All References On", PfdPageMenuAction::RefAllOn},
               {"All References Off", PfdPageMenuAction::RefAllOff},
               {"Restore Defaults", PfdPageMenuAction::RefRestoreDefaults}};
+    case PfdWindow::FlightPlan: {
+      // The PFD Active Flight Plan window page menu (trainer): Activate Leg,
+      // Load Airway, and Collapse/Expand Airways, with Delete Flight Plan below.
+      // Delete Flight Plan moved here from the bare MENU shortcut so MENU now
+      // opens the real page menu like the trainer.
+      const FplRouteEdit edit = flightPlanRouteEditState();
+      const std::string approachAirport = flightPlanApproachAirportIcao();
+      const int cursorLeg = fplCursorLegIndex(edit, approachAirport,
+                                              FplCursorLayout::SectionRows);
+      const int legCount = static_cast<int>(fplLegs_.size());
+
+      // Activate Leg is live only with the cursor on a real plan leg.
+      const PfdPageMenuAction activateState =
+          (fplCursorOn_ && cursorLeg >= 0 && cursorLeg < legCount)
+              ? PfdPageMenuAction::FplActivateLeg
+              : PfdPageMenuAction::Disabled;
+
+      // Load Airway is live only when the cursor sits on a fix that lies on a
+      // published airway (Pilot's Guide, Load Airway); otherwise it greys out.
+      PfdPageMenuAction loadAirwayState = PfdPageMenuAction::Disabled;
+      if (fplCursorOn_ && cursorLeg >= 0 && cursorLeg < legCount) {
+        const std::string& ident =
+            fplLegs_[static_cast<std::size_t>(cursorLeg)].id;
+        if (!airwaysThroughFix(ident).empty()) {
+          loadAirwayState = PfdPageMenuAction::FplLoadAirway;
+        }
+      }
+
+      // Collapse/Expand Airways toggles the loaded-airway display; it is live
+      // (and only changes its label) when the plan carries airway legs.
+      const bool hasAirways = flightPlanHasAirwayLegs();
+      const char* collapseText =
+          fplAirwaysCollapsed_ ? "Expand Airways" : "Collapse Airways";
+      const PfdPageMenuAction collapseState =
+          hasAirways ? PfdPageMenuAction::FplCollapseAirways
+                     : PfdPageMenuAction::DisplayOnly;
+
+      const PfdPageMenuAction deleteState =
+          legCount > 0 ? PfdPageMenuAction::FplDeleteFlightPlan
+                       : PfdPageMenuAction::Disabled;
+
+      // Remove Departure/Arrival/Approach are live only when that terminal
+      // procedure is loaded (Pilot's Guide 5.6); otherwise they grey out.
+      const PfdPageMenuAction removeDepState =
+          flightPlanHasLoadedDeparture() ? PfdPageMenuAction::FplRemoveDeparture
+                                         : PfdPageMenuAction::Disabled;
+      const PfdPageMenuAction removeArrState =
+          flightPlanHasLoadedArrival() ? PfdPageMenuAction::FplRemoveArrival
+                                       : PfdPageMenuAction::Disabled;
+      const PfdPageMenuAction removeApprState =
+          flightPlanHasLoadedApproach() ? PfdPageMenuAction::FplRemoveApproach
+                                        : PfdPageMenuAction::Disabled;
+      return {
+          {"Activate Leg", activateState},
+          {"Load Airway", loadAirwayState},
+          {collapseText, collapseState},
+          {"Remove Departure", removeDepState},
+          {"Remove Arrival", removeArrState},
+          {"Remove Approach", removeApprState},
+          {"Delete Flight Plan", deleteState},
+      };
+    }
     case PfdWindow::Nearest:
     case PfdWindow::Alerts:
       return {};
@@ -91,6 +154,53 @@ void SoftkeyController::pageMenuActivate() {
       }
       pageMenuOpen_ = false;
       break;
+    case PfdPageMenuAction::FplActivateLeg: {
+      pageMenuOpen_ = false;
+      const FplRouteEdit edit = flightPlanRouteEditState();
+      const int cursorLeg = fplCursorLegIndex(
+          edit, flightPlanApproachAirportIcao(), FplCursorLayout::SectionRows);
+      if (cursorLeg >= 0 && cursorLeg < static_cast<int>(fplLegs_.size())) {
+        requestActivateFlightPlanLeg(cursorLeg);
+      }
+      break;
+    }
+    case PfdPageMenuAction::FplLoadAirway: {
+      pageMenuOpen_ = false;  // the page menu closes as the window opens
+      const FplRouteEdit edit = flightPlanRouteEditState();
+      const int cursorLeg = fplCursorLegIndex(
+          edit, flightPlanApproachAirportIcao(), FplCursorLayout::SectionRows);
+      if (cursorLeg >= 0 && cursorLeg < static_cast<int>(fplLegs_.size())) {
+        openLoadAirwayWindow(fplLegs_[static_cast<std::size_t>(cursorLeg)].id);
+      }
+      break;
+    }
+    case PfdPageMenuAction::FplCollapseAirways: {
+      fplAirwaysCollapsed_ = !fplAirwaysCollapsed_;
+      // The row count changes; keep the cursor in range.
+      FplRouteEdit edit = flightPlanRouteEditState();
+      fplClampCursorRow(edit, flightPlanApproachAirportIcao(),
+                        FplCursorLayout::SectionRows);
+      pageMenuOpen_ = false;
+      break;
+    }
+    case PfdPageMenuAction::FplRemoveDeparture:
+      pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveDeparture);
+      break;
+    case PfdPageMenuAction::FplRemoveArrival:
+      pageMenuOpen_ = false;
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveArrival);
+      break;
+    case PfdPageMenuAction::FplRemoveApproach:
+      pageMenuOpen_ = false;
+      fplOpenProcedureRemoveConfirm(FplConfirm::RemoveApproach);
+      break;
+    case PfdPageMenuAction::FplDeleteFlightPlan:
+      pageMenuOpen_ = false;  // the page menu closes as the confirmation opens
+      fplConfirm_ = FplConfirm::DeleteFlightPlan;
+      fplConfirmOk_ = true;
+      break;
+    case PfdPageMenuAction::DisplayOnly:
     case PfdPageMenuAction::Disabled:
       break;
   }

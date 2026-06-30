@@ -20,6 +20,7 @@
 #include "XPLMNavigation.h"
 #include "XPLMPlugin.h"
 #include "XPLMUtilities.h"
+#include "avionics/AircraftProfile.h"
 #include "avionics/AptDatGeometryCache.h"
 #include "avionics/AptDatParser.h"
 #include "avionics/AssetPaths.h"
@@ -52,6 +53,14 @@ constexpr std::size_t kMaxMapTaxiwayLabels = 400;
 // Obstacles only draw at low ranges (and the DOF is dense).
 constexpr float kObstacleQueryRangeNm = 30.0f;
 constexpr std::size_t kMaxMapObstacles = 300;
+// TCAS traffic overlay (mirrors the standalone shell's XPlaneConnection decode).
+constexpr int kTrafficTargetCount = 8;
+constexpr float kTrafficMaxRangeNm = 40.0f;
+constexpr float kTrafficTaRangeNm = 1.0f;
+constexpr float kTrafficTaAltFt = 1200.0f;
+constexpr float kTrafficPaRangeNm = 5.0f;
+constexpr float kTrafficPaAltFt = 1200.0f;
+constexpr float kMetersToFeet = 3.28084f;
 constexpr std::size_t kMaxMapLandLines = 8000;
 constexpr std::size_t kMaxMapCities = 600;
 
@@ -88,10 +97,12 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegToRad = kPi / 180.0;
 constexpr double kNmPerDeg = 60.0;
 
-// X-Plane's NAV/COM frequency datarefs are integers of MHz x 100 (e.g. 11800
-// == 118.00 MHz), so convert in both directions around the FlightData MHz.
-constexpr float kRadioHzToMhz = 0.01f;
+// X-Plane's legacy NAV frequency datarefs are integers of MHz x 100 (e.g.
+// 11800 == 118.00 MHz). COM uses the 8.33 kHz-capable datarefs instead, which
+// store the channel in kHz (MHz x 1000, e.g. 135925 == 135.925) so the
+// .x25/.x75 digit is kept. Each RadioRef carries its own MHz scale (mhzToInt).
 constexpr float kMhzToRadioHz = 100.0f;
+constexpr float kMhzToCom833Hz = 1000.0f;
 
 // X-Plane failure_enum: 0 = working, 6 = inoperative (failed now); intermediate
 // values are armed conditions that have not yet tripped. An instrument is shown
@@ -339,6 +350,10 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   gpsNavId_ = XPLMFindDataRef(datarefs::kGpsNavId);
   gpsHdef_ = XPLMFindDataRef(datarefs::kGpsHdefNmPerDot);
   hsiObsCourse_ = XPLMFindDataRef(datarefs::kHsiObsCourseDegMag);
+  nav1ObsCourse_ = XPLMFindDataRef(datarefs::kNav1ObsCourseDegMag);
+  nav2ObsCourse_ = XPLMFindDataRef(datarefs::kNav2ObsCourseDegMag);
+  selectedHeading_ = XPLMFindDataRef(datarefs::kSelectedHeadingDegMag);
+  baroSetting_ = XPLMFindDataRef(datarefs::kBaroSettingInHg);
   hsiSourceSelect_ = XPLMFindDataRef(datarefs::kHsiSourceSelect);
   overrideGps_ = XPLMFindDataRef(datarefs::kOverrideGps);
   gpsCourseDegMag_ = XPLMFindDataRef(datarefs::kGpsCourseDegMag);
@@ -352,24 +367,24 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   radios_[static_cast<int>(RadioUnit::Nav1)] = {
       XPLMFindDataRef(datarefs::kNav1FrequencyHz),
       XPLMFindDataRef(datarefs::kNav1StandbyFrequencyHz),
-      &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz,
+      &FlightData::nav1ActiveMhz, &FlightData::nav1StandbyMhz, kMhzToRadioHz,
       XPLMFindDataRef(datarefs::kNav1Volume), &FlightData::nav1Volume,
       XPLMFindDataRef(datarefs::kNav1IdentAudio), &FlightData::nav1IdentAudio};
   radios_[static_cast<int>(RadioUnit::Nav2)] = {
       XPLMFindDataRef(datarefs::kNav2FrequencyHz),
       XPLMFindDataRef(datarefs::kNav2StandbyFrequencyHz),
-      &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz,
+      &FlightData::nav2ActiveMhz, &FlightData::nav2StandbyMhz, kMhzToRadioHz,
       XPLMFindDataRef(datarefs::kNav2Volume), &FlightData::nav2Volume,
       XPLMFindDataRef(datarefs::kNav2IdentAudio), &FlightData::nav2IdentAudio};
   radios_[static_cast<int>(RadioUnit::Com1)] = {
-      XPLMFindDataRef(datarefs::kCom1FrequencyHz),
-      XPLMFindDataRef(datarefs::kCom1StandbyFrequencyHz),
-      &FlightData::com1ActiveMhz, &FlightData::com1StandbyMhz,
+      XPLMFindDataRef(datarefs::kCom1FrequencyHz833),
+      XPLMFindDataRef(datarefs::kCom1StandbyFrequencyHz833),
+      &FlightData::com1ActiveMhz, &FlightData::com1StandbyMhz, kMhzToCom833Hz,
       XPLMFindDataRef(datarefs::kCom1Volume), &FlightData::com1Volume};
   radios_[static_cast<int>(RadioUnit::Com2)] = {
-      XPLMFindDataRef(datarefs::kCom2FrequencyHz),
-      XPLMFindDataRef(datarefs::kCom2StandbyFrequencyHz),
-      &FlightData::com2ActiveMhz, &FlightData::com2StandbyMhz,
+      XPLMFindDataRef(datarefs::kCom2FrequencyHz833),
+      XPLMFindDataRef(datarefs::kCom2StandbyFrequencyHz833),
+      &FlightData::com2ActiveMhz, &FlightData::com2StandbyMhz, kMhzToCom833Hz,
       XPLMFindDataRef(datarefs::kCom2Volume), &FlightData::com2Volume};
 
   transponderCode_ = XPLMFindDataRef(datarefs::kTransponderCode);
@@ -395,6 +410,12 @@ DatarefDataSource::DatarefDataSource(EisSource* eisSource)
   acfVfe_ = XPLMFindDataRef(datarefs::kAcfVfe);
   acfVno_ = XPLMFindDataRef(datarefs::kAcfVno);
   acfVne_ = XPLMFindDataRef(datarefs::kAcfVne);
+
+  tcasTargetLat_ = XPLMFindDataRef(datarefs::kTcasTargetLat);
+  tcasTargetLon_ = XPLMFindDataRef(datarefs::kTcasTargetLon);
+  tcasTargetEleMeters_ = XPLMFindDataRef(datarefs::kTcasTargetEleMeters);
+  tcasTargetVerticalSpeedFpm_ =
+      XPLMFindDataRef(datarefs::kTcasTargetVerticalSpeedFpm);
 
   rebuildEisBindings();
 
@@ -475,6 +496,8 @@ void DatarefDataSource::updateAircraftProfile() {
   if (acfPath == lastAircraftAcfPath_ && icao == lastAircraftIcao_) return;
   lastAircraftAcfPath_ = acfPath;
   lastAircraftIcao_ = icao;
+  data_.turnLeadBankDeg = static_cast<float>(
+      resolveTurnLeadBankDeg(icao, acfPath));
 
   // Re-probe the radar fit for the newly loaded airframe.
   weather_.resetEquipment();
@@ -623,6 +646,14 @@ void DatarefDataSource::update(double dtSeconds) {
   if (gpsDistance_) data_.fmaLegDistanceNm = XPLMGetDataf(gpsDistance_);
   if (gpsBearing_) data_.fmaLegBearingDeg = XPLMGetDataf(gpsBearing_);
 
+  // Selected course (HSI OBS) from the cockpit CRS knob. In GPS mode
+  // applyGpsNavigation() overwrites this with the computed desired track, but in
+  // VLOC/OBS the knob is the only source, so the glass course pointer must track
+  // the sim OBS dataref (mirrors the standalone shell's dataref binding).
+  if (hsiObsCourse_) data_.courseDeg = XPLMGetDataf(hsiObsCourse_);
+  if (selectedHeading_) data_.selectedHeadingDeg = XPLMGetDataf(selectedHeading_);
+  if (baroSetting_) data_.baroSettingInHg = XPLMGetDataf(baroSetting_);
+
   // Sim UTC clock (chrome clock readout) and date (Trip Planning
   // sunrise/sunset).
   if (zuluTimeSec_) {
@@ -640,9 +671,10 @@ void DatarefDataSource::update(double dtSeconds) {
   // tracks the live radios (and reflects bezel tuning we wrote back). These are
   // integer datarefs, so read with XPLMGetDatai.
   for (const RadioRef& r : radios_) {
-    if (r.active) data_.*(r.activeMember) = XPLMGetDatai(r.active) * kRadioHzToMhz;
+    if (r.active)
+      data_.*(r.activeMember) = XPLMGetDatai(r.active) / r.mhzToInt;
     if (r.standby)
-      data_.*(r.standbyMember) = XPLMGetDatai(r.standby) * kRadioHzToMhz;
+      data_.*(r.standbyMember) = XPLMGetDatai(r.standby) / r.mhzToInt;
     // Audio volume is a float dataref (0..1).
     if (r.volume) data_.*(r.volumeMember) = XPLMGetDataf(r.volume);
     // NAV Morse-ident audio selection is an int dataref (0/1).
@@ -869,7 +901,7 @@ void DatarefDataSource::tuneRadioStandby(RadioUnit unit, float standbyMhz) {
   const RadioRef& r = radios_[static_cast<int>(unit)];
   if (r.standby) {
     XPLMSetDatai(r.standby,
-                 static_cast<int>(std::lround(standbyMhz * kMhzToRadioHz)));
+                 static_cast<int>(std::lround(standbyMhz * r.mhzToInt)));
   }
   data_.*(r.standbyMember) = standbyMhz;
 }
@@ -880,11 +912,11 @@ void DatarefDataSource::transferRadio(RadioUnit unit) {
   const float standby = data_.*(r.standbyMember);
   if (r.active) {
     XPLMSetDatai(r.active,
-                 static_cast<int>(std::lround(standby * kMhzToRadioHz)));
+                 static_cast<int>(std::lround(standby * r.mhzToInt)));
   }
   if (r.standby) {
     XPLMSetDatai(r.standby,
-                 static_cast<int>(std::lround(active * kMhzToRadioHz)));
+                 static_cast<int>(std::lround(active * r.mhzToInt)));
   }
   data_.*(r.activeMember) = standby;
   data_.*(r.standbyMember) = active;
@@ -910,6 +942,35 @@ void DatarefDataSource::setTransponderCode(int code) {
 void DatarefDataSource::setTransponderMode(int mode) {
   if (transponderMode_) XPLMSetDatai(transponderMode_, mode);
   data_.transponderMode = xpdrModeString(mode);
+}
+
+void DatarefDataSource::setHeadingBug(float deg) {
+  if (selectedHeading_ != nullptr) XPLMSetDataf(selectedHeading_, deg);
+  data_.selectedHeadingDeg = deg;
+}
+
+void DatarefDataSource::setSelectedCourse(float deg, CdiSource source) {
+  XPLMDataRef ref = nullptr;
+  switch (source) {
+    case CdiSource::Nav1:
+      ref = nav1ObsCourse_;
+      break;
+    case CdiSource::Nav2:
+      ref = nav2ObsCourse_;
+      break;
+    case CdiSource::Gps:
+    default:
+      ref = hsiObsCourse_;
+      break;
+  }
+  if (ref != nullptr) XPLMSetDataf(ref, deg);
+  data_.courseDeg = deg;
+  lastPushedCourseDeg_ = deg;
+}
+
+void DatarefDataSource::setBaroInHg(float inHg) {
+  if (baroSetting_ != nullptr) XPLMSetDataf(baroSetting_, inHg);
+  data_.baroSettingInHg = inHg;
 }
 
 void DatarefDataSource::setLocalFlightPlan(std::vector<MapLeg> route) {
@@ -1123,6 +1184,45 @@ void DatarefDataSource::updateMap(double dtSeconds) {
     }
   }
   rebuildInsetMap();
+
+  // Traffic: decoded every frame so targets track live TCAS data instead of the
+  // throttled nearby-feature rebuild (mirrors the standalone shell).
+  map_.traffic.clear();
+  if (map_.positionValid && tcasTargetLat_ && tcasTargetLon_ &&
+      tcasTargetEleMeters_ && tcasTargetVerticalSpeedFpm_) {
+    const double cosLat = std::cos(map_.ownshipLat * kDegToRad);
+    for (int t = 1; t <= kTrafficTargetCount; ++t) {
+      float lat = 0.0f;
+      float lon = 0.0f;
+      float eleMeters = 0.0f;
+      float verticalSpeedFpm = 0.0f;
+      XPLMGetDatavf(tcasTargetLat_, &lat, t, 1);
+      XPLMGetDatavf(tcasTargetLon_, &lon, t, 1);
+      XPLMGetDatavf(tcasTargetEleMeters_, &eleMeters, t, 1);
+      XPLMGetDatavf(tcasTargetVerticalSpeedFpm_, &verticalSpeedFpm, t, 1);
+      if (lat == 0.0f && lon == 0.0f) continue;  // unused TCAS slot
+
+      const double dLatNm = (lat - map_.ownshipLat) * kNmPerDeg;
+      const double dLonNm = (lon - map_.ownshipLon) * kNmPerDeg * cosLat;
+      const double distNm = std::sqrt(dLatNm * dLatNm + dLonNm * dLonNm);
+      if (distNm > kTrafficMaxRangeNm) continue;
+
+      MapTraffic tgt;
+      tgt.lat = lat;
+      tgt.lon = lon;
+      tgt.relAltFt = eleMeters * kMetersToFeet - data_.altitudeFt;
+      tgt.verticalSpeedFpm = verticalSpeedFpm;
+      const float absAltFt = std::fabs(tgt.relAltFt);
+      if (distNm <= kTrafficTaRangeNm && absAltFt <= kTrafficTaAltFt) {
+        tgt.threat = TrafficThreat::Advisory;
+      } else if (distNm <= kTrafficPaRangeNm && absAltFt <= kTrafficPaAltFt) {
+        tgt.threat = TrafficThreat::Proximity;
+      } else {
+        tgt.threat = TrafficThreat::Other;
+      }
+      map_.traffic.push_back(tgt);
+    }
+  }
 }
 
 void DatarefDataSource::startMapQueryWorker() {

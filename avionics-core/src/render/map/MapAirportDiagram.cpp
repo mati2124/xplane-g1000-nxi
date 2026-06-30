@@ -67,24 +67,47 @@ void drawRunwayNumber(Renderer& r, float ex, float ey, float dirX, float dirY,
 }  // namespace
 
 void drawTaxiways(Renderer& r, const MapData& map, const Proj& proj,
-                  float rangeNm) {
+                  float rangeNm, const Color& holeFill) {
   if (rangeNm > kAirportDiagramMaxRangeNm) return;
-  std::vector<Point> pts;
+  std::vector<Point> outerPts;
+  std::vector<std::vector<Point>> holePts;
   for (const MapPavement& pav : map.taxiways) {
-    const std::size_t count =
-        std::min(pav.outline.size(), static_cast<std::size_t>(kMaxPavementVerts));
-    if (count < 3) continue;
-    pts.clear();
-    pts.reserve(count);
+    if (pav.contours.empty() || pav.contours[0].size() < 3) continue;
+
+    auto projectContour = [&](const std::vector<GeoPoint>& contour,
+                              std::vector<Point>& out, bool& anyOnScreen) {
+      const std::size_t count =
+          std::min(contour.size(), static_cast<std::size_t>(kMaxPavementVerts));
+      if (count < 3) return false;
+      out.clear();
+      out.reserve(count);
+      for (std::size_t i = 0; i < count; ++i) {
+        float x = 0.0f, y = 0.0f;
+        proj.toPx(contour[i].lat, contour[i].lon, x, y);
+        if (proj.onScreen(x, y, 0.0f)) anyOnScreen = true;
+        out.push_back({x, y});
+      }
+      return out.size() >= 3;
+    };
+
     bool anyOnScreen = false;
-    for (std::size_t i = 0; i < count; ++i) {
-      float x = 0.0f, y = 0.0f;
-      proj.toPx(pav.outline[i].lat, pav.outline[i].lon, x, y);
-      if (proj.onScreen(x, y, 0.0f)) anyOnScreen = true;
-      pts.push_back({x, y});
+    if (!projectContour(pav.contours[0], outerPts, anyOnScreen)) continue;
+
+    holePts.clear();
+    for (std::size_t c = 1; c < pav.contours.size(); ++c) {
+      std::vector<Point> hole;
+      if (!projectContour(pav.contours[c], hole, anyOnScreen)) continue;
+      holePts.push_back(std::move(hole));
     }
     if (!anyOnScreen) continue;
-    r.fillPolygon(pts.data(), static_cast<int>(pts.size()), kTaxiwayFill);
+
+    r.fillPolygon(outerPts.data(), static_cast<int>(outerPts.size()),
+                  kTaxiwayFill);
+    // Punch grass islands out of the slab. NanoVG holes need a stencil buffer,
+    // so overdraw the chart base instead of relying on NVG_HOLE.
+    for (const std::vector<Point>& hole : holePts) {
+      r.fillPolygon(hole.data(), static_cast<int>(hole.size()), holeFill);
+    }
   }
 }
 

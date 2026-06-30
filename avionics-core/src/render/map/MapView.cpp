@@ -83,20 +83,40 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   r.save();
   r.clip(config.x, config.y, config.w, config.h);
 
+  // When X-Plane DSF tiles are available, sample elevation for the black-land /
+  // navy-water chart base instead of GSHHG Mercator chord fills (which leave
+  // wedges and meridian seams). The topo TER softkey still switches to hillshade
+  // or REL coloring on top of the same DEM path.
+  // The DEM mask only pays off where the view spans a handful of DSF tiles;
+  // past kChartLandMaxRangeNm the tile count explodes, so fall back to the
+  // instant in-memory GSHHG vector coastline at continental scale.
+  // Popup inset maps (Direct-To, FPL entry) center on arbitrary targets and rely
+  // on the inset GSHHG query instead of DSF tiles prewarmed at ownship.
+  const bool useDsfLandMask =
+      !useInsetData && config.style.showLand &&
+      config.style.terrain == TerrainDisplay::Off &&
+      rangeNm <= map::kChartLandMaxRangeNm && map.terrain != nullptr &&
+      map.terrain->hasElevationTiles();
+
   // NXi chart base. Default to black "land" and only paint the navy ocean base
-  // once real coastline/land data is available for the view: a map with no land
-  // data yet (the GSHHG store still loading, or a failed load) reads as land,
-  // not as a screen full of blank ocean. The DSF terrain raster, when present,
-  // paints accurate per-pixel land/water on top of either base. The Direct-To /
-  // FPL popup inset always uses the black land base.
+  // once real GSHHG coastline data is available for the view: a map with no
+  // coastline data (the GSHHG store still loading, a failed load, or a
+  // DSF-elevation-only build) reads as land, not as a screen full of blank
+  // ocean. DSF elevation tiles alone do NOT justify the navy base -- at wide
+  // range (e.g. 150 NM) only a few tiles around ownship are resident, so the
+  // rest of the view samples NaN and a navy base would show through as "blue
+  // over land". With a black base the terrain raster instead paints navy only
+  // where it has confirmed water (e <= 0) and topo on land, and uncovered
+  // no-data pixels stay black. When the DSF land mask is active the base also
+  // stays black for the same reason. The Direct-To / FPL popup inset always
+  // uses the black land base.
   if (config.style.showLand && map.positionValid &&
       (config.style.showChrome || config.style.showLand)) {
-    const bool landDataLoaded =
-        !landLines.empty() ||
-        (map.terrain != nullptr && map.terrain->hasElevationTiles());
-    const Color chartBase = (config.useInsetMapData || !landDataLoaded)
-                                ? mapview::kMapLandFill
-                                : mapview::kMapOceanFill;
+    const bool landDataLoaded = !landLines.empty();
+    const Color chartBase =
+        (config.useInsetMapData || !landDataLoaded || useDsfLandMask)
+            ? mapview::kMapLandFill
+            : mapview::kMapOceanFill;
     r.fillRect(config.x, config.y, config.w, config.h, chartBase);
   }
 
@@ -137,21 +157,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   proj.maxY = config.y + config.h;
   proj.init();
 
-  // When X-Plane DSF tiles are available, sample elevation for the black-land /
-  // navy-water chart base instead of GSHHG Mercator chord fills (which leave
-  // wedges and meridian seams). The topo TER softkey still switches to hillshade
-  // or REL coloring on top of the same DEM path.
-  // The DEM mask only pays off where the view spans a handful of DSF tiles;
-  // past kChartLandMaxRangeNm the tile count explodes, so fall back to the
-  // instant in-memory GSHHG vector coastline at continental scale.
-  // Popup inset maps (Direct-To, FPL entry) center on arbitrary targets and rely
-  // on the inset GSHHG query instead of DSF tiles prewarmed at ownship.
-  const bool useDsfLandMask =
-      !useInsetData && config.style.showLand &&
-      config.style.terrain == TerrainDisplay::Off &&
-      rangeNm <= map::kChartLandMaxRangeNm && map.terrain != nullptr &&
-      map.terrain->hasElevationTiles();
-
+  // The DSF land mask (decided above, before the chart base fill) samples
+  // elevation for the black-land / navy-water chart base.
   if (useDsfLandMask) {
     map::drawTerrainRaster(
         r, *map.terrain, map::TerrainRasterMode::ChartLand, 0.0f, viewCenterLat,
@@ -160,8 +167,8 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   }
 
   // Lakes, borders, roads, and labels. GSHHG land-mass chord fills are skipped
-  // when the DSF mask is active; transparent raster pixels show the navy base
-  // until tiles finish loading.
+  // when the DSF mask is active; transparent raster pixels (tiles not yet
+  // streamed in) show the black land base rather than navy ocean.
   if (config.style.showLand && (!landLines.empty() || !cities.empty())) {
     mapview::drawLandData(r, landLines, proj, rangeNm, useDsfLandMask,
                           viewHalfExtentNm, scaleRangeNm,
@@ -185,11 +192,14 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
         scaleRangeNm, viewHalfExtentNm, config.style.terrainMaxRangeNm);
   }
 
-  // Rivers overlay on top of the topo raster so the thin blue hydrography stays
-  // visible whether terrain is on or off (the raster otherwise paints over the
-  // river lines), matching the real NXi.
+  // Rivers and political/state boundaries overlay on top of the topo raster so
+  // the thin hydrography and the country/state lines stay visible whether
+  // terrain is on or off (the raster otherwise paints over them), matching the
+  // real NXi.
   if (config.style.showLand && !landLines.empty()) {
     mapview::drawRiverData(r, landLines, proj, rangeNm);
+    mapview::drawBorderData(r, landLines, proj, rangeNm,
+                            config.style.showLandData);
   }
 
   // Dim fallback when land styling is off and no terrain raster is shown.
@@ -288,7 +298,12 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
   // Taxiway/apron pavement at very close range, under the runway quads.
   if (config.style.showTaxiways && config.style.showFeatures &&
       !map.taxiways.empty()) {
-    mapview::drawTaxiways(r, map, proj, rangeNm);
+    const bool landDataLoaded = !landLines.empty();
+    const Color taxiwayHoleFill =
+        (config.useInsetMapData || !landDataLoaded || useDsfLandMask)
+            ? mapview::kMapLandFill
+            : mapview::kMapOceanFill;
+    mapview::drawTaxiways(r, map, proj, rangeNm, taxiwayHoleFill);
   }
 
   // Runway pavement quads at close range, under the airport symbols/labels.
@@ -335,6 +350,11 @@ void MapView::render(Renderer& r, const MapData& map, const FlightData& flight,
       !procPreviewActive) {
     mapview::drawFlightPlanLabels(r, map, proj, config, flight, symSize,
                                   labelSize);
+  }
+  // VNAV top/bottom-of-descent markers, on the active flight-plan course.
+  if (config.style.showFlightPlan && !procPreviewActive) {
+    mapview::drawTopOfDescent(r, proj, config, flight, symSize, labelSize);
+    mapview::drawBottomOfDescent(r, proj, config, flight, symSize, labelSize);
   }
   if (config.style.showFlightPlan && map.positionValid && !procPreviewActive) {
     mapview::drawDirectToCourseLabel(r, map, flight, proj, config, symSize,
