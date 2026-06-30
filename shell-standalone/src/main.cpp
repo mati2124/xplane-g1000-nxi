@@ -2944,6 +2944,27 @@ int RunScreenshot(const char* path, double seconds, const char* state,
     engine.pressSoftkey(10);  // Back
     for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
     RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
+  } else if (state != nullptr && std::strcmp(state, "mfdnavsym10") == 0) {
+    // MFD MAP at 10 NM with standard map colors (TER off) and an airport-only
+    // route so nearby fix/VOR/NDB nav symbols stay visible for symbology review.
+    // The default demo route uses ESTRO/CCRAL legs, which suppress those fix
+    // icons in favor of boxed flight-plan idents.
+    avionics::MapLeg kfmy;
+    kfmy.id = "KFMY";
+    kfmy.lat = 26.5862;
+    kfmy.lon = -81.8632;
+    avionics::MapLeg krsw;
+    krsw.id = "KRSW";
+    krsw.lat = 26.5362;
+    krsw.lon = -81.7552;
+    dataSource.setRoute({kfmy, krsw});
+    dataSource.cancelDirectTo();
+    engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
+    engine.skipBoot();
+    engine.update(seconds);
+    WarmChartLandTiles(terrain, 26.5862, -81.7552);
+    for (int i = 0; i < 180; ++i) engine.update(1.0 / 60.0);
+    RenderSuiteSettled(renderer, engine, fbWidth, fbHeight, showBezel);
   } else if (state != nullptr && std::strcmp(state, "mfdtopo10") == 0) {
     // MFD MAP at 10 NM (default range) with TER Topo.
     engine.setPage(avionics::DisplayPage::MultiFunctionDisplay);
