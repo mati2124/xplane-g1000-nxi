@@ -38,7 +38,8 @@ enum class AircraftOverride {
   C172 = 1,
   SF50 = 2,
   PA46T = 3,
-  Count = 4
+  C208 = 4,
+  Count = 5
 };
 
 // In-process DataSource for the X-Plane plugin: resolves dataref handles once
@@ -162,11 +163,10 @@ class DatarefDataSource : public DataSource {
   // throttled by dtSeconds rather than run every frame.
   void updateMap(double dtSeconds);
 
-  // One-time walk of X-Plane's in-RAM navigation database into flat caches,
-  // range-filtered into map_.features as ownship moves. Airports and navaids
-  // live in navCache_; fixes are kept separately so ident lookup stays fast.
-  // The XPLMNavigation API must be called on the sim thread, which is where
-  // update() runs, so no synchronization is needed.
+  // One-time walk of X-Plane's in-RAM navigation database (airports, VORs,
+  // NDBs) into a flat cache, range-filtered into map_.features as ownship
+  // moves. The XPLMNavigation API must be called on the sim thread, which is
+  // where update() runs, so no synchronization is needed.
   void buildNavCache();
 
   // One-time discovery of apt.dat, airspace.txt, and terrain tiles. Deferred
@@ -242,7 +242,6 @@ class DatarefDataSource : public DataSource {
   MetarFileStore metar_;
 
   std::vector<MapFeature> navCache_;
-  std::vector<MapFeature> fixCache_;
   bool navCacheBuilt_ = false;
   double sinceMapRebuildSeconds_ = 0.0;
 

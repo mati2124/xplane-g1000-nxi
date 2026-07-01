@@ -51,6 +51,8 @@ inline constexpr const char* kSf50Eis = "eis/sf50.eis";
 inline constexpr const char* kSf50Checklist = "checklists/sf50.checklist";
 inline constexpr const char* kPa46tEis = "eis/pa46t.eis";
 inline constexpr const char* kPa46tChecklist = "checklists/pa46t.checklist";
+inline constexpr const char* kC208Eis = "eis/c208.eis";
+inline constexpr const char* kC208Checklist = "checklists/c208.checklist";
 }  // namespace aircraft_assets
 
 // Relative asset paths (under the runtime assets/ tree) for a user-droppable,

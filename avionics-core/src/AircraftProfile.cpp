@@ -84,6 +84,11 @@ AircraftProfile pa46tProfile() {
           std::string(), "Piper PA-46T", 15.0, 2};
 }
 
+AircraftProfile c208Profile() {
+  return {"c208", aircraft_assets::kC208Eis, aircraft_assets::kC208Checklist,
+          std::string(), "Cessna 208B Grand Caravan", 15.0, 2};
+}
+
 std::vector<std::string>
 candidateBootHeroPaths(const std::string &aircraftAcfRelativePath,
                        const std::string &typeKeyedPath,
@@ -121,6 +126,8 @@ AircraftProfile resolveAircraftProfile(const std::string &icaoType,
   const std::string icao = toUpper(trim(icaoType));
   if (icao == "SF50")
     return sf50Profile();
+  if (icao == "C208" || icao == "C208B")
+    return c208Profile();
   if (icao == "PA46T" || icao == "PA46")
     return pa46tProfile();
   if (icao == "C172" || icao == "C72R" || icao == "C172SP")
@@ -132,6 +139,9 @@ AircraftProfile resolveAircraftProfile(const std::string &icaoType,
   if (contains(path, "sf50") || contains(path, "vision jet") ||
       contains(path, "visionjet") || contains(path, "cirrus")) {
     return sf50Profile();
+  }
+  if (contains(path, "c208") || contains(path, "caravan")) {
+    return c208Profile();
   }
   if (contains(path, "pa46t") || contains(path, "pa46") ||
       contains(path, "meridian") || contains(path, "malibu")) {

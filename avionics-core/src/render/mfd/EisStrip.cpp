@@ -533,6 +533,33 @@ void drawDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
 
   const bool valid = d.dataLinkValid;
   const float val = eisChannelValue(d, gauge.channel, 0.0f);
+  const float bugValue = !gauge.bugChannel.empty()
+      ? eisChannelValue(d, gauge.bugChannel, gauge.bug)
+      : gauge.bug;
+  const float redlineValue = !gauge.redlineChannel.empty()
+      ? eisChannelValue(d, gauge.redlineChannel, gauge.redline)
+      : gauge.redline;
+
+  if (gauge.hasBug && valid) {
+    const float ba = rad(angleFor(bugValue));
+    const float bsa = std::sin(ba);
+    const float bca = std::cos(ba);
+    const float br0 = radius + ringW * 0.20f;
+    const float br1 = outerLineR + std::max(5.0f, radius * 0.16f);
+    r.strokeLine(cx + br0 * bsa, cy - (br0 * bca) * yScale,
+                 cx + br1 * bsa, cy - (br1 * bca) * yScale,
+                 std::max(2.0f, radius * 0.055f), colors::kCyan);
+  }
+  if (gauge.hasRedline && valid) {
+    const float ra = rad(angleFor(redlineValue));
+    const float rsa = std::sin(ra);
+    const float rca = std::cos(ra);
+    const float rr0 = radius - ringW * 0.65f;
+    const float rr1 = outerLineR + std::max(2.0f, radius * 0.05f);
+    r.strokeLine(cx + rr0 * rsa, cy - (rr0 * rca) * yScale,
+                 cx + rr1 * rsa, cy - (rr1 * rca) * yScale,
+                 std::max(2.0f, radius * 0.045f), colors::kBandRed);
+  }
 
   if (valid) {
     const float a = rad(angleFor(val));
@@ -549,7 +576,7 @@ void drawDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
       {cx + baseR * sa - baseW * ca, cy - (baseR * ca + baseW * sa) * yScale},
       {cx + baseR * sa + baseW * ca, cy - (baseR * ca - baseW * sa) * yScale}
     };
-    const bool overspeed = gauge.hasRedline && val >= gauge.redline;
+    const bool overspeed = gauge.hasRedline && val >= redlineValue;
     r.fillPolygon(ptr, 3, overspeed ? colors::kBandRed : colors::kWhite);
   }
 
@@ -572,7 +599,7 @@ void drawDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
   // Digital readout inside the middle of the gauge, dynamically colored by band
   Color readoutColor = colors::kWhite;
   if (valid) {
-    if (gauge.hasRedline && val >= gauge.redline) {
+    if (gauge.hasRedline && val >= redlineValue) {
       readoutColor = colors::kBandRed;
     } else {
       for (const EisBand& band : gauge.bands) {
@@ -1054,6 +1081,42 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
   const float barStride = labelSize * 3.1f;
   const float topPad = labelSize * 0.9f;
   const float bottomMargin = labelSize * 1.2f;
+
+  if (layout.style == EisStripStyle::Caravan) {
+    // Single narrow column matching the Cessna 208B G1000 EIS. The top three
+    // indications are TRQ, ITT and Ng arcs; PROP RPM and the remaining systems
+    // are compact rows below them.
+    const Rect inner{area.x + pad * 0.55f, area.y, area.w - pad * 1.10f, area.h};
+    const float topY = area.y + topPad * 0.45f;
+    const float dialsBottom = area.y + area.h * 0.43f;
+    const float dialStride = (dialsBottom - topY) / 3.0f;
+    int dialIndex = 0;
+    for (const EisSection& section : layout.sections) {
+      for (const EisGauge& gauge : section.gauges) {
+        if (gauge.type == EisGaugeType::Dial) {
+          float gy = topY + dialIndex * dialStride;
+          drawGauge(r, d, gauge, inner, gy, valid, displayH, barStride, labelSize);
+          ++dialIndex;
+        }
+      }
+    }
+
+    float gy = dialsBottom + labelSize * 0.25f;
+    for (const EisSection& section : layout.sections) {
+      for (const EisGauge& gauge : section.gauges) {
+        if (gauge.type != EisGaugeType::Dial) {
+          drawGauge(r, d, gauge, inner, gy, valid, displayH,
+                    labelSize * 2.45f, labelSize);
+          if (gauge.channel == "eng.oil_temp_c" ||
+              gauge.type == EisGaugeType::FuelQtyVert) {
+            r.strokeLine(inner.x, gy, inner.x + inner.w, gy, 1.0f, colors::kPanelSeparator);
+            gy += labelSize * 0.35f;
+          }
+        }
+      }
+    }
+    return;
+  }
 
   if (layout.style == EisStripStyle::Turboprop) {
     // Two-column layout for the PA-46T!

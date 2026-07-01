@@ -544,8 +544,6 @@ source.
 - **Commercial use** — including payware aircraft or any for-profit
   distribution — requires a separate license. See
   [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
-- **Forking is disabled** on GitHub — clone the repo to read or build; see
-  [CONTRIBUTING.md](CONTRIBUTING.md) for how to submit changes.
 
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 

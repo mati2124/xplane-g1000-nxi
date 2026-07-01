@@ -127,6 +127,8 @@ EisLayout parseEisText(const std::string& text) {
         layout.style = EisStripStyle::Turbofan;
       } else if (rest == "TURBOPROP") {
         layout.style = EisStripStyle::Turboprop;
+      } else if (rest == "CARAVAN") {
+        layout.style = EisStripStyle::Caravan;
       } else {
         layout.style = EisStripStyle::Piston;
       }
@@ -202,6 +204,12 @@ EisLayout parseEisText(const std::string& text) {
       currentGauge->scale = true;
     } else if (matchKeyword(line, "PFD", rest)) {
       currentGauge->pfd = true;
+    } else if (matchKeyword(line, "BUG_CHANNEL", rest)) {
+      currentGauge->bugChannel = rest;
+      currentGauge->hasBug = true;
+    } else if (matchKeyword(line, "REDLINE_CHANNEL", rest)) {
+      currentGauge->redlineChannel = rest;
+      currentGauge->hasRedline = true;
     } else if (matchKeyword(line, "BUG", rest)) {
       currentGauge->bug = std::strtof(rest.c_str(), nullptr);
       currentGauge->hasBug = true;

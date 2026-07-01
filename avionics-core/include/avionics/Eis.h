@@ -83,6 +83,7 @@ enum class EisStripStyle {
   Piston,
   Turbofan,
   Turboprop,
+  Caravan,
 };
 
 enum class EisBandColor {
@@ -111,6 +112,10 @@ struct EisGauge {
   // Cyan reference bug on the gauge (turbofan N1 / % thrust takeoff setting).
   float bug = 0.0f;
   bool hasBug = false;
+  // Optional live channel for a moving cyan reference bug.
+  std::string bugChannel;
+  // Optional live channel for a moving redline marker.
+  std::string redlineChannel;
   // Number of graduation intervals drawn beneath a Bar track (0 = none). The
   // real Cessna FFLOW and EGT bars carry a combed scale; OIL/VAC bars do not.
   int ticks = 0;

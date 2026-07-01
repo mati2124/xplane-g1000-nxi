@@ -1,0 +1,106 @@
+# Cessna 208B Grand Caravan G1000 engine strip — initial test profile.
+# Layout and scales are based on real-aircraft references supplied by Matias.
+TITLE ENGINE
+STYLE CARAVAN
+
+GAUGE DIAL
+  LABEL TRQ FT-LB X100
+  CHANNEL eng.torque
+  MIN 0 MAX 2500
+  REDLINE 2397
+  REDLINE_CHANNEL eng.torque_redline
+  BUG 1800
+  BUG_CHANNEL eng.torque_bug
+  BAND GREEN 0 1970
+  BAND YELLOW 1970 2397
+  BAND RED 2397 2500
+  FORMAT %.0f
+
+GAUGE DIAL
+  LABEL ITT C
+  CHANNEL eng.itt_c
+  MIN 0 MAX 950
+  REDLINE 900
+  BAND GREEN 0 805
+  BAND YELLOW 805 900
+  BAND RED 900 950
+  FORMAT %.0f
+
+GAUGE DIAL
+  LABEL Ng % RPM
+  CHANNEL eng.ng
+  MIN 0 MAX 110
+  REDLINE 103.7
+  BAND GREEN 12 103.7
+  BAND RED 103.7 110
+  FORMAT %.1f
+
+GAUGE READOUT
+  LABEL PROP RPM
+  CHANNEL eng.prop_rpm
+  FORMAT %.0f
+
+GAUGE BAR
+  LABEL OIL PSI
+  CHANNEL eng.oil_pres
+  MIN 0 MAX 130
+  BAND RED 0 39
+  BAND YELLOW 39 84
+  BAND GREEN 84 105
+  BAND YELLOW 105 130
+  FORMAT %.0f
+
+GAUGE BAR
+  LABEL OIL C
+  CHANNEL eng.oil_temp_c
+  MIN -50 MAX 115
+  BAND RED -50 -41
+  BAND YELLOW -41 31
+  BAND GREEN 31 99
+  BAND YELLOW 99 104
+  BAND RED 104 115
+  FORMAT %.0f
+
+SECTION
+GAUGE FUEL_QTY_VERT
+  LABEL FUEL QTY LBS
+  LEFT L fuel.qty_left
+  RIGHT R fuel.qty_right
+  MIN 0 MAX 1000
+  BAND RED 0 100
+  BAND GREEN 100 1000
+
+SECTION
+GAUGE READOUT
+  LABEL FFLOW PPH
+  CHANNEL eng.fuel_flow
+  FORMAT %.0f
+
+GAUGE READOUT
+  LABEL BAT AMPS
+  CHANNEL elec.bat_amps
+  FORMAT %.0f
+
+GAUGE READOUT
+  LABEL BUS VOLTS
+  CHANNEL elec.bus_volts
+  FORMAT %.1f
+
+GAUGE READOUT
+  LABEL A-ICE GAL
+  CHANNEL antiice.gal
+  FORMAT %.1f
+
+# Standard X-Plane dataref bindings. Aircraft-specific g1000_eis.txt files may
+# override these with custom Thranda datarefs where needed.
+BIND eng.torque sim/cockpit2/engine/indicators/torque_ft_lbs[0] 1 0
+BIND eng.itt_c sim/cockpit2/engine/indicators/ITT_deg_C[0] 1 0
+BIND eng.prop_rpm sim/cockpit2/engine/indicators/prop_speed_rpm[0] 1 0
+BIND eng.ng sim/cockpit2/engine/indicators/N1_percent[0] 1 0
+BIND eng.oil_pres sim/cockpit2/engine/indicators/oil_pressure_psi[0] 1 0
+BIND eng.oil_temp_c sim/cockpit2/engine/indicators/oil_temperature_deg_C[0] 1 0
+BIND fuel.qty_left sim/cockpit2/fuel/fuel_quantity[0] 2.20462 0
+BIND fuel.qty_right sim/cockpit2/fuel/fuel_quantity[1] 2.20462 0
+BIND eng.fuel_flow sim/cockpit2/engine/indicators/fuel_flow_kg_sec[0] 7936.64 0
+BIND elec.bat_amps sim/cockpit2/electrical/battery_amps[0] 1 0
+BIND elec.bus_volts sim/cockpit2/electrical/bus_volts[0] 1 0
