@@ -654,15 +654,20 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
   const bool trq = gauge.channel == "eng.torque";
   const bool itt = gauge.channel == "eng.itt_c";
   const bool ng = gauge.channel == "eng.ng";
-  const float cx = a.x + a.w * 0.50f;
-  const float radius = a.w * 0.48f;
-  const float cy = topY + h * 0.58f;
-  const float yScale = 0.91f;
-  const float ringW = std::max(3.0f, radius * 0.095f);
-  const float lineR = radius + ringW * 0.62f;
-  const float lineW = std::max(1.3f, radius * 0.025f);
-  const float lbl = mfdFontPx(kLabelWt * 0.93f, displayH);
-  const float num = mfdFontPx(kValueWt * 1.18f, displayH);
+
+  // Geometry measured against the real Caravan EIS photographs.  The dial is
+  // intentionally left-biased so the large numeric readout has its own clear
+  // column on the lower right.
+  const float cx = a.x + a.w * 0.46f;
+  const float cy = topY + h * 0.67f;
+  const float radius = std::min(a.w * 0.43f, h * 0.67f);
+  const float yScale = 0.94f;
+  const float ringW = std::max(3.0f, radius * 0.105f);
+  const float outlineR = radius + ringW * 0.64f;
+  const float outlineW = std::max(1.25f, radius * 0.026f);
+  const float lbl = mfdFontPx(kLabelWt * 0.82f, displayH);
+  const float tickFont = lbl * 0.73f;
+  const float num = mfdFontPx(kValueWt * 1.23f, displayH);
 
   std::vector<std::pair<float,float>> map;
   if (trq) map = {{0,-137},{1000,-101},{1500,-53},{2000,6},{2397,58},{2500,65},{3000,102}};
@@ -671,17 +676,18 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
   auto angleFor = [&](float v){ return caravanPiecewise(v, map); };
   auto rad = [](float deg){ return deg * kPi / 180.0f; };
 
-  // White base arc and configured coloured operating ranges.
+  // Base arc and coloured operating ranges.
   strokeArc(r, cx, cy, radius, map.front().second, map.back().second,
             ringW, colors::kWhite, yScale);
   for (const EisBand& band : gauge.bands) {
     strokeArc(r, cx, cy, radius, angleFor(band.lo), angleFor(band.hi),
-              ringW * 1.03f, eisBandColor(band.color), yScale);
+              ringW * 1.04f, eisBandColor(band.color), yScale);
   }
-  strokeArc(r, cx, cy, lineR, map.front().second, map.back().second,
-            lineW, colors::kWhite, yScale);
+  strokeArc(r, cx, cy, outlineR, map.front().second, map.back().second,
+            outlineW, colors::kWhite, yScale);
 
-  // Major graduations and their real-aircraft labels.
+  // Major tick marks.  Tick labels use fixed placements modelled on the real
+  // unit so they remain legible even in the narrow in-panel render target.
   std::vector<std::pair<float,const char*>> ticks;
   if (trq) ticks = {{1000,"10"},{1500,"15"},{2000,"20"}};
   else if (itt) ticks = {{0,"0"},{700,"700"},{900,"900"}};
@@ -689,75 +695,85 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
   for (const auto& t : ticks) {
     const float aa = rad(angleFor(t.first));
     const float si = std::sin(aa), co = std::cos(aa);
-    const float r0 = radius - ringW * 1.25f;
-    const float r1 = lineR + lineW;
+    const float r0 = radius - ringW * 1.20f;
+    const float r1 = outlineR + outlineW * 0.7f;
     r.strokeLine(cx + r0*si, cy - r0*co*yScale,
                  cx + r1*si, cy - r1*co*yScale,
-                 std::max(1.5f, radius*0.025f), colors::kWhite);
-    const float rt = radius - ringW * 2.10f;
-    r.fillText(cx + rt*si, cy - rt*co*yScale + lbl*0.24f, t.second,
-               lbl*0.77f, TextAlign::Center, colors::kWhite,
+                 std::max(1.4f, radius*0.028f), colors::kWhite);
+    const float rt = radius - ringW * 2.05f;
+    r.fillText(cx + rt*si, cy - rt*co*yScale + tickFont*0.25f, t.second,
+               tickFont, TextAlign::Center, colors::kWhite,
                FontFace::DejaVuSemiBold);
   }
 
-  // Cyan cruise-torque bug, drawn as the broad inward-pointing marker seen on
-  // the real Caravan rather than a thin radial line.
+  // Cyan cruise-torque bug. If an aircraft-specific bug channel is absent or
+  // returns an out-of-range zero, retain the configured fallback bug so the
+  // feature is visible and testable.
   if (trq && gauge.hasBug && valid) {
-    const float bug = !gauge.bugChannel.empty()
-        ? eisChannelValue(d, gauge.bugChannel, gauge.bug) : gauge.bug;
+    float bug = gauge.bug;
+    if (!gauge.bugChannel.empty()) {
+      const float candidate = eisChannelValue(d, gauge.bugChannel, gauge.bug);
+      if (candidate > gauge.min + 1.0f && candidate < gauge.max + 500.0f) bug = candidate;
+    }
     const float aa = rad(angleFor(bug));
     const float si=std::sin(aa), co=std::cos(aa);
     auto pt=[&](float rr,float side)->Point {
       return {cx + rr*si + side*co, cy - rr*co*yScale + side*si*yScale};
     };
-    const float outer=lineR + radius*0.10f;
-    const float inner=radius - ringW*1.25f;
-    const float hw=std::max(3.0f,radius*0.075f);
+    const float outer=outlineR + radius*0.115f;
+    const float inner=radius - ringW*1.38f;
+    const float hw=std::max(3.2f,radius*0.080f);
     const Point bugPoly[5]={pt(outer,-hw),pt(outer,hw),pt(radius,hw),pt(inner,0),pt(radius,-hw)};
     r.fillPolygon(bugPoly,5,colors::kCyan);
   }
 
   if (gauge.hasRedline && valid) {
-    const float rv = !gauge.redlineChannel.empty()
-        ? eisChannelValue(d, gauge.redlineChannel, gauge.redline) : gauge.redline;
+    float rv = gauge.redline;
+    if (!gauge.redlineChannel.empty()) {
+      const float candidate=eisChannelValue(d,gauge.redlineChannel,gauge.redline);
+      if(candidate>gauge.min+1.0f) rv=candidate;
+    }
     const float aa=rad(angleFor(rv)), si=std::sin(aa), co=std::cos(aa);
-    r.strokeLine(cx+(radius-ringW*0.7f)*si, cy-(radius-ringW*0.7f)*co*yScale,
-                 cx+(lineR+radius*0.08f)*si, cy-(lineR+radius*0.08f)*co*yScale,
-                 std::max(2.3f,radius*0.055f),colors::kBandRed);
+    r.strokeLine(cx+(radius-ringW*0.75f)*si, cy-(radius-ringW*0.75f)*co*yScale,
+                 cx+(outlineR+radius*0.10f)*si, cy-(outlineR+radius*0.10f)*co*yScale,
+                 std::max(2.3f,radius*0.058f),colors::kBandRed);
   }
 
-  // White pointer with a short broad root and narrow tip.
+  // Real-style pointer: a visible shaft from the lower-centre pivot with a
+  // broad white head near the scale. This avoids the detached triangle seen
+  // in the earlier prototype.
   if (valid) {
     const float aa=rad(angleFor(value)), si=std::sin(aa), co=std::cos(aa);
-    auto pt=[&](float rr,float side)->Point {
-      return {cx+rr*si+side*co,cy-rr*co*yScale+side*si*yScale};
-    };
-    const float tip=radius-ringW*0.55f;
-    const float root=radius*0.22f;
-    const float hw=std::max(3.2f,radius*0.075f);
-    const Point needle[4]={pt(tip,0),pt(root,-hw),pt(root*0.78f,0),pt(root,hw)};
-    r.fillPolygon(needle,4,colors::kWhite);
+    const Point pivot{cx, cy + radius*0.06f};
+    const Point tip{cx+(radius-ringW*0.72f)*si,
+                    cy-(radius-ringW*0.72f)*co*yScale};
+    r.strokeLine(pivot.x,pivot.y,tip.x,tip.y,
+                 std::max(2.0f,radius*0.045f),colors::kWhite);
+    const float head=std::max(3.0f,radius*0.085f);
+    const Point headPoly[3]={{tip.x,tip.y},
+      {tip.x-head*co-head*0.70f*si,tip.y-head*si*yScale+head*0.70f*co*yScale},
+      {tip.x+head*co-head*0.70f*si,tip.y+head*si*yScale+head*0.70f*co*yScale}};
+    r.fillPolygon(headPoly,3,colors::kWhite);
+    r.fillCircle(pivot.x,pivot.y,std::max(2.2f,radius*0.05f),colors::kWhite);
   }
 
-  // Labels and digital value. Keep the large readout at lower right as in the
-  // real unit.
-  const float left=a.x + a.w*0.06f;
-  r.fillText(left, topY + lbl*0.55f,
+  const float left=a.x + a.w*0.035f;
+  r.fillText(left, topY + lbl*0.48f,
              trq ? "TRQ" : (itt ? "ITT" : "Ng"), lbl,
              TextAlign::Left, colors::kWhite, FontFace::DejaVuSemiBold);
   if (trq) {
-    r.fillText(cx, cy-radius*0.02f, "FT-LB", lbl*0.90f, TextAlign::Center, colors::kWhite);
-    r.fillText(cx, cy+lbl*0.88f, "x100", lbl*0.78f, TextAlign::Center, colors::kWhite);
+    r.fillText(cx, cy-radius*0.03f, "FT-LB", lbl*0.88f, TextAlign::Center,
+               colors::kWhite, FontFace::DejaVuSemiBold);
+    r.fillText(cx, cy+lbl*0.84f, "x100", lbl*0.75f, TextAlign::Center,
+               colors::kWhite, FontFace::DejaVuSemiBold);
   } else {
-    r.fillText(cx, cy+lbl*0.75f, itt ? "°C" : "% RPM", lbl*0.83f,
-               TextAlign::Center, colors::kWhite);
+    r.fillText(cx, cy+lbl*0.72f, itt ? "°C" : "% RPM", lbl*0.80f,
+               TextAlign::Center, colors::kWhite, FontFace::DejaVuSemiBold);
   }
+
   Color vc=colors::kWhite;
-  if (valid) {
-    for (const EisBand& b:gauge.bands) if (value>=b.lo && value<=b.hi) vc=eisBandColor(b.color);
-    if (gauge.hasRedline && value>=gauge.redline) vc=colors::kBandRed;
-  }
-  r.fillText(a.x+a.w*0.98f, topY+h*0.88f,
+  if(valid && gauge.hasRedline && value>=gauge.redline) vc=colors::kBandRed;
+  r.fillText(a.x+a.w*0.985f, topY+h*0.89f,
              valid?fmt(gauge.format.c_str(),value):std::string("____"),
              num, TextAlign::Right, vc, FontFace::DejaVuSemiBold);
 }

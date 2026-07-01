@@ -1,4 +1,4 @@
-# Cessna 208B Grand Caravan G1000 engine strip — v2 real-layout profile.
+# Cessna 208B Grand Caravan G1000 engine strip — v3 real-layout profile.
 # Layout and scales are based on real-aircraft references supplied by Matias.
 TITLE ENGINE
 STYLE CARAVAN
@@ -93,7 +93,7 @@ GAUGE READOUT
 
 # Standard X-Plane dataref bindings. Aircraft-specific g1000_eis.txt files may
 # override these with custom Thranda datarefs where needed.
-BIND eng.torque sim/cockpit2/engine/indicators/torque_ft_lbs[0] 1 0
+BIND eng.torque sim/flightmodel/engine/ENGN_TRQ[0] 0.737562 0
 BIND eng.itt_c sim/cockpit2/engine/indicators/ITT_deg_C[0] 1 0
 BIND eng.prop_rpm sim/cockpit2/engine/indicators/prop_speed_rpm[0] 1 0
 BIND eng.ng sim/cockpit2/engine/indicators/N1_percent[0] 1 0

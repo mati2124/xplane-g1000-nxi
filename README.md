@@ -554,3 +554,6 @@ Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 "Garmin" and "G1000" are trademarks of Garmin Ltd. This is an independent,
 unofficial reimplementation and is not affiliated with or endorsed by Garmin.
+
+## Caravan EIS v3 test branch
+Uses the Working Title-matching DejaVu Sans SemiBold face and revised real-aircraft gauge geometry.
