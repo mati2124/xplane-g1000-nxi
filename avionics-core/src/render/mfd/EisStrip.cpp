@@ -654,19 +654,22 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
   const bool trq = gauge.channel == "eng.torque";
   const bool itt = gauge.channel == "eng.itt_c";
 
-  const float cx = a.x + a.w * 0.50f;
-  const float cy = topY + h * 0.69f;
-  const float radius = std::min(a.w * 0.485f, h * 0.70f);
-  const float yScale = 0.97f;
-  const float ringW = std::max(2.5f, radius * 0.078f);
+  // Geometry is normalized from the approved Caravan EIS reference image.
+  // The dials deliberately occupy almost the full strip width and are taller
+  // than the previous generic layout.
+  const float cx = a.x + a.w * 0.505f;
+  const float cy = topY + h * 0.625f;
+  const float radius = std::min(a.w * 0.485f, h * 0.665f);
+  const float yScale = 0.98f;
+  const float ringW = std::max(2.7f, radius * 0.080f);
   const float outlineR = radius + ringW * 0.62f;
   const float outlineW = std::max(1.15f, radius * 0.022f);
   // Size text from the strip width, not the whole display height.  This keeps
   // the Caravan EIS legible and gives it the same visual density as the real
   // 173-pixel-wide G1000 strip.
-  const float lbl = std::max(8.0f, a.w * 0.105f);
-  const float tickFont = std::max(6.0f, a.w * 0.073f);
-  const float num = std::max(15.0f, a.w * 0.205f);
+  const float lbl = std::max(8.5f, a.w * 0.108f);
+  const float tickFont = std::max(6.2f, a.w * 0.075f);
+  const float num = std::max(16.0f, a.w * 0.220f);
 
   std::vector<std::pair<float,float>> map;
   if (trq) map = {{0,-137},{1000,-101},{1500,-53},{2000,0},{2500,48},{3000,103}};
@@ -773,7 +776,7 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
 
   Color vc=colors::kWhite;
   if(valid && gauge.hasRedline && value>=gauge.redline) vc=colors::kBandRed;
-  r.fillText(a.x+a.w*0.985f, topY+h*0.94f,
+  r.fillText(a.x+a.w*0.985f, topY+h*0.905f,
              valid?fmt(gauge.format.c_str(),value):std::string("____"),
              num, TextAlign::Right, vc, FontFace::DejaVuSemiBold);
 }
@@ -785,7 +788,7 @@ void drawCaravanOilBar(Renderer& r, const FlightData& d, const EisGauge& g,
   const float lbl=std::max(8.0f,a.w*0.100f);
   const float val=std::max(10.0f,a.w*0.125f);
   const float x0=a.x+a.w*0.03f, x1=a.x+a.w*0.97f;
-  const Color rowBg{0.11f,0.11f,0.11f,1.0f};
+  const Color rowBg{0.105f,0.115f,0.115f,1.0f};
   r.fillRect(a.x,y,a.w,rowH,rowBg);
   r.strokeLine(a.x,y,a.x+a.w,y,1.0f,colors::kPanelSeparator);
   const float textY=y+lbl*0.92f;
@@ -807,7 +810,7 @@ void drawCaravanOilBar(Renderer& r, const FlightData& d, const EisGauge& g,
 void drawCaravanFuel(Renderer& r,const FlightData& d,const EisGauge& g,
                      const Rect& a,float y,float h,float displayH){
   const float lbl=std::max(7.5f,a.w*0.090f);
-  const Color rowBg{0.10f,0.10f,0.10f,1.0f};
+  const Color rowBg{0.105f,0.115f,0.115f,1.0f};
   r.fillRect(a.x,y,a.w,h,rowBg);
   r.strokeLine(a.x,y,a.x+a.w,y,1.0f,colors::kPanelSeparator);
   r.fillText(a.x+a.w*0.5f,y+lbl*0.90f,"FUEL QTY",lbl,TextAlign::Center,colors::kWhite);
@@ -1280,7 +1283,9 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
   }
 
   // Solid black backing for the whole engine instrument strip (real unit).
-  r.fillRect(area.x, area.y, area.w, area.h, colors::kBlack);
+  const Color caravanPanelBg{0.105f, 0.115f, 0.115f, 1.0f};
+  r.fillRect(area.x, area.y, area.w, area.h,
+             layout.style == EisStripStyle::Caravan ? caravanPanelBg : colors::kBlack);
   r.strokeLine(area.x + area.w, area.y, area.x + area.w, area.y + area.h, 2.0f,
                colors::kPanelBorder);
 
@@ -1297,8 +1302,8 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
   const float bottomMargin = labelSize * 1.2f;
 
   if (layout.style == EisStripStyle::Caravan) {
-    const Rect inner{area.x + area.w * 0.035f, area.y,
-                     area.w * 0.93f, area.h};
+    const Rect inner{area.x + area.w * 0.012f, area.y,
+                     area.w * 0.976f, area.h};
     const EisGauge* trq=nullptr; const EisGauge* itt=nullptr; const EisGauge* ng=nullptr;
     const EisGauge* prop=nullptr; const EisGauge* oilP=nullptr; const EisGauge* oilT=nullptr;
     const EisGauge* fuel=nullptr;
@@ -1313,15 +1318,22 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
       else if(g.type==EisGaugeType::FuelQtyVert) fuel=&g;
       else if(g.type==EisGaugeType::Readout) rows.push_back(&g);
     }
-    const float dialTop=area.y+area.h*0.004f;
-    const float dialH=area.h*0.135f;
+    // Vertical proportions copied from the approved 302 x 1225 reference:
+    // larger TRQ/ITT/Ng group, then compact rows and the tall fuel block.
+    const float dialTop=area.y+area.h*0.002f;
+    const float trqH=area.h*0.180f;
+    const float ittH=area.h*0.165f;
+    const float ngH =area.h*0.165f;
     const float dialGap=area.h*0.0010f;
-    if(trq) drawCaravanDial(r,d,*trq,inner,dialTop,dialH,displayH);
-    if(itt) drawCaravanDial(r,d,*itt,inner,dialTop+dialH+dialGap,dialH,displayH);
-    if(ng) drawCaravanDial(r,d,*ng,inner,dialTop+2*(dialH+dialGap),dialH,displayH);
-    float y=dialTop+3*(dialH+dialGap)+area.h*0.001f;
-    const Color rowBg{0.11f,0.11f,0.11f,1.0f};
-    const float propH=area.h*0.043f;
+    float dialY=dialTop;
+    if(trq) drawCaravanDial(r,d,*trq,inner,dialY,trqH,displayH);
+    dialY += trqH + dialGap;
+    if(itt) drawCaravanDial(r,d,*itt,inner,dialY,ittH,displayH);
+    dialY += ittH + dialGap;
+    if(ng) drawCaravanDial(r,d,*ng,inner,dialY,ngH,displayH);
+    float y=dialY+ngH+area.h*0.001f;
+    const Color rowBg{0.105f,0.115f,0.115f,1.0f};
+    const float propH=area.h*0.045f;
     if(prop){
       r.fillRect(inner.x,y,inner.w,propH,rowBg);
       r.strokeLine(inner.x,y,inner.x+inner.w,y,1.0f,colors::kPanelSeparator);
@@ -1335,13 +1347,13 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
                  propVal,TextAlign::Right,valid?colors::kBandGreen:colors::kWhite);
       y+=propH;
     }
-    const float oilH=area.h*0.056f;
+    const float oilH=area.h*0.055f;
     if(oilP){drawCaravanOilBar(r,d,*oilP,inner,y,oilH,displayH); y+=oilH;}
     if(oilT){drawCaravanOilBar(r,d,*oilT,inner,y,oilH,displayH); y+=oilH;}
-    const float fuelH=area.h*0.235f;
+    const float fuelH=area.h*0.210f;
     if(fuel) drawCaravanFuel(r,d,*fuel,inner,y,fuelH,displayH);
     y += fuelH;
-    const float rowH=area.h*0.038f;
+    const float rowH=area.h*0.031f;
     for(const EisGauge* g:rows){
       const bool antiIce=(g->channel=="antiice.gal");
       const Color antiIceBg{0.36f,0.37f,0.10f,1.0f};
