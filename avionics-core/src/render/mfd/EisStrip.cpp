@@ -653,30 +653,25 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
   const float value = eisChannelValue(d, gauge.channel, 0.0f);
   const bool trq = gauge.channel == "eng.torque";
   const bool itt = gauge.channel == "eng.itt_c";
-  const bool ng = gauge.channel == "eng.ng";
 
-  // Geometry measured against the real Caravan EIS photographs.  The dial is
-  // intentionally left-biased so the large numeric readout has its own clear
-  // column on the lower right.
-  const float cx = a.x + a.w * 0.46f;
-  const float cy = topY + h * 0.67f;
-  const float radius = std::min(a.w * 0.43f, h * 0.67f);
-  const float yScale = 0.94f;
-  const float ringW = std::max(3.0f, radius * 0.105f);
-  const float outlineR = radius + ringW * 0.64f;
-  const float outlineW = std::max(1.25f, radius * 0.026f);
-  const float lbl = mfdFontPx(kLabelWt * 0.82f, displayH);
-  const float tickFont = lbl * 0.73f;
-  const float num = mfdFontPx(kValueWt * 1.23f, displayH);
+  const float cx = a.x + a.w * 0.49f;
+  const float cy = topY + h * 0.68f;
+  const float radius = std::min(a.w * 0.46f, h * 0.66f);
+  const float yScale = 0.96f;
+  const float ringW = std::max(2.7f, radius * 0.085f);
+  const float outlineR = radius + ringW * 0.62f;
+  const float outlineW = std::max(1.15f, radius * 0.022f);
+  const float lbl = mfdFontPx(kLabelWt * 0.79f, displayH);
+  const float tickFont = lbl * 0.69f;
+  const float num = mfdFontPx(kValueWt * 1.20f, displayH);
 
   std::vector<std::pair<float,float>> map;
-  if (trq) map = {{0,-137},{1000,-101},{1500,-53},{2000,6},{2397,58},{2500,65},{3000,102}};
-  else if (itt) map = {{0,-103},{600,-34},{850,36},{900,50},{950,64}};
+  if (trq) map = {{0,-137},{1000,-101},{1500,-53},{2000,0},{2500,48},{3000,103}};
+  else if (itt) map = {{0,-103},{600,-34},{850,34},{900,49},{950,64}};
   else map = {{0,-103},{12,-91},{50,-58},{100,43},{103.7f,50},{110,63}};
   auto angleFor = [&](float v){ return caravanPiecewise(v, map); };
   auto rad = [](float deg){ return deg * kPi / 180.0f; };
 
-  // Base arc and coloured operating ranges.
   strokeArc(r, cx, cy, radius, map.front().second, map.back().second,
             ringW, colors::kWhite, yScale);
   for (const EisBand& band : gauge.bands) {
@@ -686,45 +681,46 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
   strokeArc(r, cx, cy, outlineR, map.front().second, map.back().second,
             outlineW, colors::kWhite, yScale);
 
-  // Major tick marks.  Tick labels use fixed placements modelled on the real
-  // unit so they remain legible even in the narrow in-panel render target.
   std::vector<std::pair<float,const char*>> ticks;
-  if (trq) ticks = {{1000,"10"},{1500,"15"},{2000,"20"}};
-  else if (itt) ticks = {{0,"0"},{700,"700"},{900,"900"}};
+  if (trq) ticks = {{0,"0"},{1000,"10"},{1500,"15"},{2000,"20"},{2500,"25"},{3000,"30"}};
+  else if (itt) ticks = {{0,"0"},{600,"600"},{900,"900"}};
   else ticks = {{12,"12"},{50,"50"},{100,"100"}};
   for (const auto& t : ticks) {
     const float aa = rad(angleFor(t.first));
     const float si = std::sin(aa), co = std::cos(aa);
-    const float r0 = radius - ringW * 1.20f;
+    const float r0 = radius - ringW * 1.08f;
     const float r1 = outlineR + outlineW * 0.7f;
     r.strokeLine(cx + r0*si, cy - r0*co*yScale,
                  cx + r1*si, cy - r1*co*yScale,
-                 std::max(1.4f, radius*0.028f), colors::kWhite);
-    const float rt = radius - ringW * 2.05f;
-    r.fillText(cx + rt*si, cy - rt*co*yScale + tickFont*0.25f, t.second,
+                 std::max(1.2f, radius*0.024f), colors::kWhite);
+    const float rt = radius - ringW * (trq ? 2.15f : 1.95f);
+    r.fillText(cx + rt*si, cy - rt*co*yScale + tickFont*0.22f, t.second,
                tickFont, TextAlign::Center, colors::kWhite,
                FontFace::DejaVuSemiBold);
   }
 
-  // Cyan cruise-torque bug. If an aircraft-specific bug channel is absent or
-  // returns an out-of-range zero, retain the configured fallback bug so the
-  // feature is visible and testable.
+  // Cruise torque bug is shown only in the propeller-RPM range where the real
+  // Caravan displays the cruise reference cue.
   if (trq && gauge.hasBug && valid) {
-    float bug = gauge.bug;
-    if (!gauge.bugChannel.empty()) {
-      const float candidate = eisChannelValue(d, gauge.bugChannel, gauge.bug);
-      if (candidate > gauge.min + 1.0f && candidate < gauge.max + 500.0f) bug = candidate;
+    const float propRpm = eisChannelValue(d, "eng.prop_rpm", 0.0f);
+    if (propRpm >= 1600.0f && propRpm <= 1925.0f) {
+      float bug = gauge.bug;
+      if (!gauge.bugChannel.empty()) {
+        const float candidate = eisChannelValue(d, gauge.bugChannel, gauge.bug);
+        if (candidate > gauge.min + 1.0f && candidate <= gauge.max) bug = candidate;
+      }
+      const float aa = rad(angleFor(bug));
+      const float si=std::sin(aa), co=std::cos(aa);
+      auto pt=[&](float rr,float side)->Point {
+        return {cx + rr*si + side*co, cy - rr*co*yScale + side*si*yScale};
+      };
+      const float outer=outlineR + radius*0.11f;
+      const float inner=radius - ringW*1.30f;
+      const float hw=std::max(3.0f,radius*0.075f);
+      const Point bugPoly[6]={pt(outer,-hw),pt(outer,hw),pt(radius+ringW*0.30f,hw),
+                              pt(inner,0),pt(radius+ringW*0.30f,-hw),pt(outer,-hw)};
+      r.fillPolygon(bugPoly,6,colors::kCyan);
     }
-    const float aa = rad(angleFor(bug));
-    const float si=std::sin(aa), co=std::cos(aa);
-    auto pt=[&](float rr,float side)->Point {
-      return {cx + rr*si + side*co, cy - rr*co*yScale + side*si*yScale};
-    };
-    const float outer=outlineR + radius*0.115f;
-    const float inner=radius - ringW*1.38f;
-    const float hw=std::max(3.2f,radius*0.080f);
-    const Point bugPoly[5]={pt(outer,-hw),pt(outer,hw),pt(radius,hw),pt(inner,0),pt(radius,-hw)};
-    r.fillPolygon(bugPoly,5,colors::kCyan);
   }
 
   if (gauge.hasRedline && valid) {
@@ -734,99 +730,111 @@ void drawCaravanDial(Renderer& r, const FlightData& d, const EisGauge& gauge,
       if(candidate>gauge.min+1.0f) rv=candidate;
     }
     const float aa=rad(angleFor(rv)), si=std::sin(aa), co=std::cos(aa);
-    r.strokeLine(cx+(radius-ringW*0.75f)*si, cy-(radius-ringW*0.75f)*co*yScale,
-                 cx+(outlineR+radius*0.10f)*si, cy-(outlineR+radius*0.10f)*co*yScale,
-                 std::max(2.3f,radius*0.058f),colors::kBandRed);
+    r.strokeLine(cx+(radius-ringW*0.78f)*si, cy-(radius-ringW*0.78f)*co*yScale,
+                 cx+(outlineR+radius*0.075f)*si, cy-(outlineR+radius*0.075f)*co*yScale,
+                 std::max(2.1f,radius*0.052f),colors::kBandRed);
   }
 
-  // Real-style pointer: a visible shaft from the lower-centre pivot with a
-  // broad white head near the scale. This avoids the detached triangle seen
-  // in the earlier prototype.
   if (valid) {
     const float aa=rad(angleFor(value)), si=std::sin(aa), co=std::cos(aa);
-    const Point pivot{cx, cy + radius*0.06f};
-    const Point tip{cx+(radius-ringW*0.72f)*si,
-                    cy-(radius-ringW*0.72f)*co*yScale};
+    const Point pivot{cx, cy + radius*0.075f};
+    const float tipR = radius-ringW*0.82f;
+    const Point tip{cx+tipR*si, cy-tipR*co*yScale};
     r.strokeLine(pivot.x,pivot.y,tip.x,tip.y,
-                 std::max(2.0f,radius*0.045f),colors::kWhite);
-    const float head=std::max(3.0f,radius*0.085f);
-    const Point headPoly[3]={{tip.x,tip.y},
-      {tip.x-head*co-head*0.70f*si,tip.y-head*si*yScale+head*0.70f*co*yScale},
-      {tip.x+head*co-head*0.70f*si,tip.y+head*si*yScale+head*0.70f*co*yScale}};
-    r.fillPolygon(headPoly,3,colors::kWhite);
-    r.fillCircle(pivot.x,pivot.y,std::max(2.2f,radius*0.05f),colors::kWhite);
+                 std::max(2.0f,radius*0.039f),colors::kWhite);
+    // Broad diamond pointer head, matching the real Garmin cue.
+    const float headR = std::max(4.0f,radius*0.115f);
+    const float backX = tip.x - headR*0.75f*si;
+    const float backY = tip.y + headR*0.75f*co*yScale;
+    const Point headPoly[4]={{tip.x,tip.y},
+      {backX-headR*0.46f*co,backY-headR*0.46f*si*yScale},
+      {tip.x-headR*1.42f*si,tip.y+headR*1.42f*co*yScale},
+      {backX+headR*0.46f*co,backY+headR*0.46f*si*yScale}};
+    r.fillPolygon(headPoly,4,colors::kWhite);
+    r.fillCircle(pivot.x,pivot.y,std::max(1.9f,radius*0.043f),colors::kWhite);
   }
 
-  const float left=a.x + a.w*0.035f;
-  r.fillText(left, topY + lbl*0.48f,
+  const float left=a.x + a.w*0.015f;
+  r.fillText(left, topY + lbl*0.42f,
              trq ? "TRQ" : (itt ? "ITT" : "Ng"), lbl,
              TextAlign::Left, colors::kWhite, FontFace::DejaVuSemiBold);
   if (trq) {
-    r.fillText(cx, cy-radius*0.03f, "FT-LB", lbl*0.88f, TextAlign::Center,
+    r.fillText(cx, cy-radius*0.03f, "FT-LB", lbl*0.83f, TextAlign::Center,
                colors::kWhite, FontFace::DejaVuSemiBold);
-    r.fillText(cx, cy+lbl*0.84f, "x100", lbl*0.75f, TextAlign::Center,
+    r.fillText(cx, cy+lbl*0.76f, "x100", lbl*0.70f, TextAlign::Center,
                colors::kWhite, FontFace::DejaVuSemiBold);
   } else {
-    r.fillText(cx, cy+lbl*0.72f, itt ? "°C" : "% RPM", lbl*0.80f,
+    r.fillText(cx, cy+lbl*0.70f, itt ? "°C" : "% RPM", lbl*0.76f,
                TextAlign::Center, colors::kWhite, FontFace::DejaVuSemiBold);
   }
 
   Color vc=colors::kWhite;
   if(valid && gauge.hasRedline && value>=gauge.redline) vc=colors::kBandRed;
-  r.fillText(a.x+a.w*0.985f, topY+h*0.89f,
+  r.fillText(a.x+a.w*0.985f, topY+h*0.91f,
              valid?fmt(gauge.format.c_str(),value):std::string("____"),
              num, TextAlign::Right, vc, FontFace::DejaVuSemiBold);
 }
 
 void drawCaravanOilBar(Renderer& r, const FlightData& d, const EisGauge& g,
-                       const Rect& a, float y, float displayH) {
+                       const Rect& a, float y, float rowH, float displayH) {
   const bool valid=d.dataLinkValid;
   const float v=eisChannelValue(d,g.channel,0.0f);
-  const float lbl=mfdFontPx(kLabelWt*0.90f,displayH);
-  const float val=mfdFontPx(kValueWt*0.95f,displayH);
-  const float x0=a.x+a.w*0.05f, x1=a.x+a.w*0.96f;
-  const float axisY=y+lbl*1.42f;
-  r.fillText(x0,y,g.label.c_str(),lbl,TextAlign::Left,colors::kWhite);
-  r.fillText(x1,y,valid?fmt(g.format.c_str(),v):std::string("__"),val,
+  const float lbl=mfdFontPx(kLabelWt*0.88f,displayH);
+  const float val=mfdFontPx(kValueWt*0.92f,displayH);
+  const float x0=a.x+a.w*0.03f, x1=a.x+a.w*0.97f;
+  const Color rowBg{0.11f,0.11f,0.11f,1.0f};
+  r.fillRect(a.x,y,a.w,rowH,rowBg);
+  r.strokeLine(a.x,y,a.x+a.w,y,1.0f,colors::kPanelSeparator);
+  const float textY=y+lbl*0.92f;
+  const float axisY=y+rowH*0.78f;
+  r.fillText(x0,textY,g.label.c_str(),lbl,TextAlign::Left,colors::kWhite);
+  r.fillText(x1,textY,valid?fmt(g.format.c_str(),v):std::string("__"),val,
              TextAlign::Right,valid?colors::kBandGreen:colors::kWhite);
   auto xf=[&](float q){return x0+(x1-x0)*clamp01((q-g.min)/(g.max-g.min));};
-  for(const EisBand& b:g.bands){r.fillRect(xf(b.lo),axisY-lbl*0.40f,xf(b.hi)-xf(b.lo),lbl*0.40f,eisBandColor(b.color));}
-  r.strokeLine(x0,axisY,x1,axisY,1.2f,colors::kWhite);
-  r.strokeLine(x0,axisY-lbl*0.62f,x0,axisY,1.4f,colors::kWhite);
-  r.strokeLine(x1,axisY-lbl*0.62f,x1,axisY,1.4f,colors::kWhite);
-  if(valid) drawDownPointer(r,xf(v),axisY-lbl*0.08f,lbl*0.82f,lbl*0.28f);
+  const float bandH=lbl*0.34f;
+  for(const EisBand& b:g.bands){
+    r.fillRect(xf(b.lo),axisY-bandH,xf(b.hi)-xf(b.lo),bandH,eisBandColor(b.color));
+  }
+  r.strokeLine(x0,axisY,x1,axisY,1.15f,colors::kWhite);
+  r.strokeLine(x0,axisY-lbl*0.54f,x0,axisY,1.35f,colors::kWhite);
+  r.strokeLine(x1,axisY-lbl*0.54f,x1,axisY,1.35f,colors::kWhite);
+  if(valid) drawDownPointer(r,xf(v),axisY-bandH*0.12f,lbl*0.78f,lbl*0.30f);
 }
 
 void drawCaravanFuel(Renderer& r,const FlightData& d,const EisGauge& g,
                      const Rect& a,float y,float h,float displayH){
-  const float lbl=mfdFontPx(kLabelWt*0.86f,displayH);
-  r.fillText(a.x+a.w*0.5f,y,"FUEL QTY",lbl,TextAlign::Center,colors::kWhite);
-  r.fillText(a.x+a.w*0.5f,y+lbl*0.9f,"LBS",lbl,TextAlign::Center,colors::kWhite);
-  const float top=y+lbl*2.15f,bottom=y+h-lbl*0.35f;
-  const float xl=a.x+a.w*0.27f,xr=a.x+a.w*0.73f;
-  const float outerL=xl-a.w*0.10f,outerR=xr+a.w*0.10f;
-  r.fillText(xl,top-lbl*0.20f,"L",lbl,TextAlign::Center,colors::kWhite);
-  r.fillText(xr,top-lbl*0.20f,"R",lbl,TextAlign::Center,colors::kWhite);
+  const float lbl=mfdFontPx(kLabelWt*0.82f,displayH);
+  const Color rowBg{0.10f,0.10f,0.10f,1.0f};
+  r.fillRect(a.x,y,a.w,h,rowBg);
+  r.strokeLine(a.x,y,a.x+a.w,y,1.0f,colors::kPanelSeparator);
+  r.fillText(a.x+a.w*0.5f,y+lbl*0.90f,"FUEL QTY",lbl,TextAlign::Center,colors::kWhite);
+  r.fillText(a.x+a.w*0.5f,y+lbl*1.72f,"LBS",lbl,TextAlign::Center,colors::kWhite);
+  const float top=y+lbl*2.55f,bottom=y+h-lbl*0.62f;
+  const float scaleX=a.x+a.w*0.5f;
+  const float xl=a.x+a.w*0.25f,xr=a.x+a.w*0.75f;
+  r.fillText(xl,y+lbl*1.75f,"L",lbl,TextAlign::Center,colors::kWhite);
+  r.fillText(xr,y+lbl*1.75f,"R",lbl,TextAlign::Center,colors::kWhite);
   auto yf=[&](float v){return bottom-(bottom-top)*clamp01((v-g.min)/(g.max-g.min));};
   const float lv=eisChannelValue(d,g.channel,0),rv=eisChannelValue(d,g.channelRight,0);
-  // Scale and bracket ticks: 1000/800/600/400/200/0.
   for(int v=0;v<=1000;v+=200){
     const float yy=yf((float)v);
-    r.fillText(a.x+a.w*0.5f,yy+lbl*0.28f,fmt("%.0f",(float)v),lbl*0.72f,
+    r.fillText(scaleX,yy+lbl*0.25f,fmt("%.0f",(float)v),lbl*0.66f,
                TextAlign::Center,colors::kWhite);
-    r.strokeLine(xl-a.w*0.055f,yy,xl+a.w*0.020f,yy,1.0f,colors::kWhite);
-    r.strokeLine(xr-a.w*0.020f,yy,xr+a.w*0.055f,yy,1.0f,colors::kWhite);
+    r.strokeLine(scaleX-a.w*0.16f,yy,scaleX-a.w*0.085f,yy,1.0f,colors::kWhite);
+    r.strokeLine(scaleX+a.w*0.085f,yy,scaleX+a.w*0.16f,yy,1.0f,colors::kWhite);
   }
-  r.strokeLine(xl-a.w*0.055f,top,xl-a.w*0.055f,bottom,1.3f,colors::kWhite);
-  r.strokeLine(xr+a.w*0.055f,top,xr+a.w*0.055f,bottom,1.3f,colors::kWhite);
-  const float bw=std::max(6.0f,a.w*0.065f);
+  r.strokeLine(scaleX-a.w*0.16f,top,scaleX-a.w*0.16f,bottom,1.2f,colors::kWhite);
+  r.strokeLine(scaleX+a.w*0.16f,top,scaleX+a.w*0.16f,bottom,1.2f,colors::kWhite);
+
+  const float bw=std::max(7.0f,a.w*0.105f);
+  const float leftX=a.x+a.w*0.105f;
+  const float rightX=a.x+a.w*0.895f-bw;
   if(d.dataLinkValid){
-    r.fillRect(outerL-bw*0.5f,yf(lv),bw,bottom-yf(lv),colors::kWhite);
-    r.fillRect(outerR-bw*0.5f,yf(rv),bw,bottom-yf(rv),colors::kWhite);
+    r.fillRect(leftX,yf(lv),bw,bottom-yf(lv),colors::kWhite);
+    r.fillRect(rightX,yf(rv),bw,bottom-yf(rv),colors::kWhite);
   }
-  // Red unusable-fuel marks at the bottom.
-  r.fillRect(outerL-bw*0.5f,bottom-lbl*0.22f,bw,lbl*0.22f,colors::kBandRed);
-  r.fillRect(outerR-bw*0.5f,bottom-lbl*0.22f,bw,lbl*0.22f,colors::kBandRed);
+  r.fillRect(leftX,bottom-lbl*0.20f,bw,lbl*0.20f,colors::kBandRed);
+  r.fillRect(rightX,bottom-lbl*0.20f,bw,lbl*0.20f,colors::kBandRed);
 }
 
 std::vector<BarBand> toBarBands(const EisGauge& gauge) {
@@ -1302,38 +1310,42 @@ void drawEisStrip(Renderer& r, const FlightData& d, const EisLayout& layout,
       else if(g.type==EisGaugeType::FuelQtyVert) fuel=&g;
       else if(g.type==EisGaugeType::Readout) rows.push_back(&g);
     }
-    const float dialTop=area.y+area.h*0.008f;
-    const float dialH=area.h*0.128f;
-    const float dialGap=area.h*0.004f;
+    const float dialTop=area.y+area.h*0.004f;
+    const float dialH=area.h*0.145f;
+    const float dialGap=area.h*0.0015f;
     if(trq) drawCaravanDial(r,d,*trq,inner,dialTop,dialH,displayH);
     if(itt) drawCaravanDial(r,d,*itt,inner,dialTop+dialH+dialGap,dialH,displayH);
     if(ng) drawCaravanDial(r,d,*ng,inner,dialTop+2*(dialH+dialGap),dialH,displayH);
-    float y=dialTop+3*(dialH+dialGap)+area.h*0.004f;
-    r.strokeLine(inner.x,y,inner.x+inner.w,y,1.0f,colors::kPanelSeparator);
-    y += labelSize*0.48f;
+    float y=dialTop+3*(dialH+dialGap)+area.h*0.001f;
+    const Color rowBg{0.11f,0.11f,0.11f,1.0f};
+    const float propH=area.h*0.047f;
     if(prop){
+      r.fillRect(inner.x,y,inner.w,propH,rowBg);
+      r.strokeLine(inner.x,y,inner.x+inner.w,y,1.0f,colors::kPanelSeparator);
       const float pv=eisChannelValue(d,prop->channel,0.0f);
-      r.fillText(inner.x,y,"PROP RPM",labelSize*0.92f,TextAlign::Left,colors::kWhite);
-      r.fillText(inner.x+inner.w,y,valid?fmt(prop->format.c_str(),pv):std::string("____"),
-                 valueSize*0.96f,TextAlign::Right,valid?colors::kBandGreen:colors::kWhite);
-      y += valueSize*1.20f;
+      const float ty=y+propH*0.63f;
+      r.fillText(inner.x+inner.w*0.02f,ty,"PROP RPM",labelSize*0.88f,TextAlign::Left,colors::kWhite);
+      r.fillText(inner.x+inner.w*0.98f,ty,valid?fmt(prop->format.c_str(),pv):std::string("____"),
+                 valueSize*0.92f,TextAlign::Right,valid?colors::kBandGreen:colors::kWhite);
+      y+=propH;
     }
-    if(oilP){drawCaravanOilBar(r,d,*oilP,inner,y,displayH); y+=labelSize*2.25f;}
-    if(oilT){drawCaravanOilBar(r,d,*oilT,inner,y,displayH); y+=labelSize*2.35f;}
-    r.strokeLine(inner.x,y,inner.x+inner.w,y,1.0f,colors::kPanelSeparator);
-    y+=labelSize*0.35f;
-    const float fuelH=area.h*0.245f;
+    const float oilH=area.h*0.061f;
+    if(oilP){drawCaravanOilBar(r,d,*oilP,inner,y,oilH,displayH); y+=oilH;}
+    if(oilT){drawCaravanOilBar(r,d,*oilT,inner,y,oilH,displayH); y+=oilH;}
+    const float fuelH=area.h*0.255f;
     if(fuel) drawCaravanFuel(r,d,*fuel,inner,y,fuelH,displayH);
-    y += fuelH+labelSize*0.20f;
-    r.strokeLine(inner.x,y,inner.x+inner.w,y,1.0f,colors::kPanelSeparator);
-    y+=labelSize*0.55f;
+    y += fuelH;
+    const float rowH=area.h*0.041f;
     for(const EisGauge* g:rows){
+      r.fillRect(inner.x,y,inner.w,rowH,rowBg);
+      r.strokeLine(inner.x,y,inner.x+inner.w,y,1.0f,colors::kPanelSeparator);
       const float vv=eisChannelValue(d,g->channel,0.0f);
       Color c=(g->channel=="antiice.gal")?colors::kBandGreen:colors::kWhite;
-      r.fillText(inner.x,y,g->label.c_str(),labelSize*0.88f,TextAlign::Left,colors::kWhite);
-      r.fillText(inner.x+inner.w,y,valid?fmt(g->format.c_str(),vv):std::string("__"),
-                 valueSize*0.90f,TextAlign::Right,c);
-      y+=valueSize*1.12f;
+      const float ty=y+rowH*0.64f;
+      r.fillText(inner.x+inner.w*0.02f,ty,g->label.c_str(),labelSize*0.82f,TextAlign::Left,colors::kWhite);
+      r.fillText(inner.x+inner.w*0.98f,ty,valid?fmt(g->format.c_str(),vv):std::string("__"),
+                 valueSize*0.84f,TextAlign::Right,c);
+      y+=rowH;
     }
     return;
   }

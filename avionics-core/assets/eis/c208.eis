@@ -1,4 +1,4 @@
-# Cessna 208B Grand Caravan G1000 engine strip — v3 real-layout profile.
+# Cessna 208B Grand Caravan G1000 engine strip — v4 approved-mockup profile.
 # Layout and scales are based on real-aircraft references supplied by Matias.
 TITLE ENGINE
 STYLE CARAVAN
@@ -6,14 +6,14 @@ STYLE CARAVAN
 GAUGE DIAL
   LABEL TRQ FT-LB X100
   CHANNEL eng.torque
-  MIN 0 MAX 2500
+  MIN 0 MAX 3000
   REDLINE 2397
   REDLINE_CHANNEL eng.torque_redline
-  BUG 1800
+  BUG 2200
   BUG_CHANNEL eng.torque_bug
-  BAND GREEN 0 1970
-  BAND YELLOW 1970 2397
-  BAND RED 2397 2500
+  BAND GREEN 0 2300
+  BAND YELLOW 2300 2397
+  BAND RED 2397 3000
   FORMAT %.0f
 
 GAUGE DIAL
